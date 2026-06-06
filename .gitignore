@@ -1,0 +1,16 @@
+/logs
+/__pycache__
+/.DS_Store
+/error.log
+/worktrees/
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/

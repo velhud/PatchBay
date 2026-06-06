@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex Job Result",
+  "description": "Structured output from Codex execution jobs",
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "High-level summary of what was accomplished"
+    },
+    "files_changed": {
+      "type": "array",
+      "description": "List of file paths that were created, modified, or deleted",
+      "items": {
+        "type": "string"
+      }
+    },
+    "commands_run": {
+      "type": "array",
+      "description": "List of shell commands that were executed",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tests_run": {
+      "type": "array",
+      "description": "List of test commands or test files that were run",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Additional notes, warnings, or considerations"
+    },
+    "next_steps": {
+      "type": "array",
+      "description": "Suggested follow-up actions",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "summary",
+    "files_changed",
+    "commands_run",
+    "tests_run",
+    "notes",
+    "next_steps"
+  ],
+  "additionalProperties": false
+}

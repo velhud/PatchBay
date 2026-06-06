@@ -1,0 +1,22 @@
+server:
+  host: 127.0.0.1
+  port: 8000
+  max_concurrent_jobs: 1
+  job_timeout_seconds: 1800  # 30 minutes
+  job_cleanup_after_hours: 24
+
+repositories:
+  projects_base: .
+  default: .
+  allowed:
+    - .
+
+security:
+  require_git_repo: true
+  default_sandbox: read-only
+  allow_dangerously_bypass: false
+
+logging:
+  level: INFO
+  audit_file: ./logs/audit.log
+  job_logs_dir: ./logs/jobs
