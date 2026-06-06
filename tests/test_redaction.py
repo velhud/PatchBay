@@ -2,7 +2,7 @@ from security import redact_config_value, redact_sensitive_output
 
 
 def test_redacts_openai_key_pattern():
-    data = {"output": "OPENAI_API_KEY=REDACTION_EXAMPLE_TOKEN"}
+    data = {"output": "OPENAI_API_KEY=dummy-secret-token-for-tests"}
     assert redact_sensitive_output(data)["output"] == "[REDACTED_POSSIBLE_SECRET]"
 
 
