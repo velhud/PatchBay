@@ -4,6 +4,10 @@ server:
   max_concurrent_jobs: 1
   job_timeout_seconds: 1800  # 30 minutes
   job_cleanup_after_hours: 24
+  enable_cors: false
+  allowed_origins:
+    - http://127.0.0.1:3000
+    - http://localhost:3000
 
 repositories:
   projects_base: .
@@ -15,8 +19,19 @@ security:
   require_git_repo: true
   default_sandbox: read-only
   allow_dangerously_bypass: false
+  expose_codex_sandbox_tool: false
+  allowed_env_keys:
+    - PATH
+    - HOME
+    - USER
+    - SHELL
+    - TMPDIR
+    - OPENAI_API_KEY
+  allowed_config_override_prefixes: []
 
 logging:
   level: INFO
   audit_file: ./logs/audit.log
   job_logs_dir: ./logs/jobs
+  log_prompt_bodies: false
+  log_response_bodies: false

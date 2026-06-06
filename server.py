@@ -49,15 +49,20 @@ audit_logger.setLevel(logging.INFO)
 # Initialize app
 app = FastAPI(title="Codex MCP Wrapper")
 
-# CORS for tunnel access
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Mcp-Session-Id"],
-)
+# CORS is disabled by default. Enable only for trusted local UIs.
+if config.get("server", {}).get("enable_cors", False):
+    allowed_origins = config.get("server", {}).get(
+        "allowed_origins",
+        ["http://127.0.0.1:3000", "http://localhost:3000"],
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["POST", "GET", "DELETE"],
+        allow_headers=["Content-Type", "Mcp-Session-Id", "Authorization"],
+        expose_headers=["Mcp-Session-Id"],
+    )
 
 # Initialize components
 job_manager = JobManager(config)
@@ -75,7 +80,7 @@ async def root():
     """Health check endpoint"""
     return {
         "name": "codex-mcp-wrapper",
-        "version": "2.0.0",
+        "version": "0.1.0",
         "transport": "streamable-http",
         "status": "running",
         "active_operations": len([j for j in job_manager.jobs.values() if j.state.value == "running"]),
@@ -158,16 +163,23 @@ async def mcp_endpoint(request: Request):
             headers={"Mcp-Session-Id": session_id}
         )
     
-    # Log audit trail
-    audit_logger.info(f"[{session_id}] Received: {json.dumps(message)}")
+    # Log audit metadata only by default. Prompt/response bodies can contain secrets.
+    params = message.get("params", {}) if isinstance(message, dict) else {}
+    audit_logger.info(
+        "[%s] method=%s id=%s tool=%s",
+        session_id,
+        message.get("method"),
+        message.get("id"),
+        params.get("name"),
+    )
     
     # Handle MCP message
     try:
         response = await mcp_protocol.handle_message(message)
         
         if response:
-            # Log response
-            audit_logger.info(f"[{session_id}] Responding: {json.dumps(response)}")
+            if config.get("logging", {}).get("log_response_bodies", False):
+                audit_logger.info("[%s] response=%s", session_id, json.dumps(response))
             
             # Return JSON-RPC response with session header
             return JSONResponse(
@@ -186,7 +198,7 @@ async def mcp_endpoint(request: Request):
         return JSONResponse(
             content={
                 "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": str(e)},
+                "error": {"code": -32603, "message": "Internal processing error"},
                 "id": message.get("id")
             },
             status_code=500,
