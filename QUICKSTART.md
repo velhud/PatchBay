@@ -40,15 +40,28 @@ Use Streamable HTTP transport and the `/mcp` endpoint.
 
 Do not expose this server with a public tunnel unless you add authentication and understand that connected clients can ask Codex to inspect or edit allowed repositories.
 
-## 5. Try a Tool
+## 5. Try Read-only Analysis
 
-Ask your MCP client to call `query_text_analytics` with:
+Ask your MCP client to call `codex_plan_job` with:
 
 ```json
 {
   "spec": "List the Python files and summarize the project layout.",
-  "data_source": "/absolute/path/to/your/repo"
+  "repo_path": "/absolute/path/to/your/repo"
 }
 ```
 
-Then call `fetch_operation_result` with the returned `reference_id`.
+Then call `codex_get_status` and `codex_get_result` with the returned `job_id`.
+
+## 6. Try an Isolated Apply Job
+
+Call `codex_apply_job` only after reviewing a read-only plan:
+
+```json
+{
+  "spec": "Add a focused regression test for path validation.",
+  "repo_path": "/absolute/path/to/your/repo"
+}
+```
+
+Inspect changes with `codex_get_diff` before merging anything manually.
