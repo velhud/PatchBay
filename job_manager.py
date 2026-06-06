@@ -13,6 +13,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import git
 
+from security import validate_allowed_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,16 +136,7 @@ class JobManager:
     def _validate_repo_allowed(self, repo_path: str) -> None:
         """Require repo_path to sit under one of the configured allowed roots."""
         allowed = self.config.get('repositories', {}).get('allowed') or []
-        if not allowed:
-            raise ValueError("No allowed repositories configured")
-
-        resolved_repo = Path(repo_path).expanduser().resolve()
-        allowed_roots = [Path(p).expanduser().resolve() for p in allowed]
-        for root in allowed_roots:
-            if resolved_repo == root or root in resolved_repo.parents:
-                return
-
-        raise ValueError(f"Repository is outside configured allowed roots: {resolved_repo}")
+        validate_allowed_path(repo_path, allowed)
     
     def _create_worktree(self, job_id: str, repo_path: str) -> tuple[Path, str]:
         """
