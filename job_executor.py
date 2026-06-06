@@ -4,11 +4,13 @@ import json
 import logging
 import subprocess
 import re
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 
 from job_manager import JobManager, JobState
+from security import validate_allowed_path
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +187,9 @@ class JobExecutor:
         # Additional directories
         if 'add_dirs' in options and options['add_dirs']:
             for add_dir in options['add_dirs']:
-                cmd.extend(['--add-dir', add_dir])
+                allowed = self.config.get('repositories', {}).get('allowed') or []
+                validated = validate_allowed_path(add_dir, allowed)
+                cmd.extend(['--add-dir', str(validated)])
         
         # Config overrides via -c flag
         if 'config_overrides' in options:
@@ -195,9 +199,17 @@ class JobExecutor:
         return cmd
     
     def _build_env(self) -> Dict[str, str]:
-        """Build environment variables for Codex execution"""
-        import os
-        return os.environ.copy()
+        """Build a restricted environment for Codex execution."""
+        allowed = self.config.get('security', {}).get('allowed_env_keys') or [
+            "PATH",
+            "HOME",
+            "USER",
+            "SHELL",
+            "TMPDIR",
+            "OPENAI_API_KEY",
+        ]
+        allowed_set = set(allowed)
+        return {k: v for k, v in os.environ.items() if k in allowed_set}
     
     async def _parse_result(self, stdout: bytes, result_file: Path, options: Dict[str, Any] = None) -> Dict[str, Any]:
         """Parse result from Codex output."""
@@ -338,7 +350,10 @@ class JobExecutor:
                         return '\n'.join(diff_lines)
             
             # If file is new/untracked, show its content as a diff
-            file_full_path = Path(job.worktree_path) / file_path
+            file_full_path = validate_allowed_path(
+                str(Path(job.worktree_path) / file_path),
+                [job.worktree_path],
+            )
             if file_full_path.exists():
                 content = file_full_path.read_text()
                 return f"--- /dev/null\n+++ b/{file_path}\n" + '\n'.join(

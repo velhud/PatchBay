@@ -10,6 +10,7 @@ from pathlib import Path
 
 from job_manager import JobManager, JobState
 from job_executor import JobExecutor
+from security import redact_config_value, redact_sensitive_output, validate_allowed_path
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +89,41 @@ class ToolHandler:
         return await handler(arguments)
     
     def _extract_options(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Extract all options from arguments - full capability access.
-        """
+        """Extract allowed Codex options from arguments."""
         options = {}
         
         # Core parameters
         for key in ['model', 'images', 'search', 'features', 'profile', 'add_dirs',
                     'sandbox', 'approval_policy', 'network',
-                    'config_overrides', 'dangerously_bypass', 'full_auto',
+                    'config_overrides', 'full_auto',
                     'structured_output', 'json_events']:
             if key in args:
-                options[key] = args[key]
+                if key == 'config_overrides':
+                    options[key] = self._safe_config_overrides(args[key])
+                else:
+                    options[key] = args[key]
         
         return options
+
+    def _allowed_roots(self) -> list[str]:
+        return self.config.get('repositories', {}).get('allowed') or []
+
+    def _repo_from_args(self, args: Dict[str, Any]) -> str:
+        repo = args.get('repo') or self.default_repo
+        return str(validate_allowed_path(repo, self._allowed_roots()))
+
+    def _safe_config_overrides(self, overrides: Any) -> list[str]:
+        if not overrides:
+            return []
+        allowed_prefixes = self.config.get('security', {}).get('allowed_config_override_prefixes') or []
+        if not allowed_prefixes:
+            raise ValueError("config_overrides are disabled by default")
+        safe = []
+        for override in overrides:
+            if not any(str(override).startswith(prefix) for prefix in allowed_prefixes):
+                raise ValueError(f"Config override is not allowed: {override}")
+            safe.append(str(override))
+        return safe
     
     async def _codex_plan_job(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Start a text analytics query job"""
@@ -112,7 +134,7 @@ class ToolHandler:
             prompt = decode_if_base64(prompt)
         
         # FIX: Use 'or' to handle empty string as not provided
-        repo = args.get('repo') or self.default_repo
+        repo = self._repo_from_args(args)
         options = self._extract_options(args)
         
         logger.info(f"Creating analytics query: {prompt[:50]}...")
@@ -141,7 +163,7 @@ class ToolHandler:
             prompt = decode_if_base64(prompt)
         
         # FIX: Use 'or' to handle empty string as not provided
-        repo = args.get('repo') or self.default_repo
+        repo = self._repo_from_args(args)
         options = self._extract_options(args)
         
         logger.info(f"Creating record update: {prompt[:50]}...")
@@ -191,12 +213,11 @@ class ToolHandler:
         elif job.state == JobState.PENDING:
             result["message"] = "Operation queued"
         elif job.state == JobState.COMPLETED:
-            result["message"] = "Operation completed. Use fetch_operation_result."
+            result["message"] = "Operation completed. Use codex_get_result."
         elif job.state == JobState.FAILED:
             result["message"] = "Operation encountered an issue"
             if job.error:
-                # Encode error to avoid filter triggers
-                result["error_encoded"] = base64.b64encode(job.error.encode()).decode()
+                result["error"] = redact_sensitive_output(job.error)
         
         return result
     
@@ -213,7 +234,7 @@ class ToolHandler:
         waited = 0
         while job.state == JobState.RUNNING or job.state == JobState.PENDING:
             if waited >= max_wait:
-                return {"error": "Operation still running. Use check_operation_status."}
+                return {"error": "Operation still running. Use codex_get_status."}
             await asyncio.sleep(1)
             waited += 1
             job = self.job_manager.get_job(job_id)
@@ -223,7 +244,7 @@ class ToolHandler:
             return {
                 "reference_id": job_id,
                 "state": "error",
-                "error_encoded": base64.b64encode(error_msg.encode()).decode(),
+                "error": redact_sensitive_output(error_msg),
                 "exit_code": job.exit_code
             }
         
@@ -269,7 +290,7 @@ class ToolHandler:
     async def _codex_review(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run content change analysis"""
         # FIX: Use 'or' to handle empty string as not provided
-        repo = args.get('repo') or self.default_repo
+        repo = self._repo_from_args(args)
         prompt = args.get('prompt', '')
         uncommitted = bool(args.get('uncommitted'))
         base = args.get('base')
@@ -328,7 +349,7 @@ class ToolHandler:
             else:
                 return {
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr).decode(),
+                    "error": redact_sensitive_output(stderr_text),
                     "exit_code": process.returncode
                 }
         except Exception as e:
@@ -343,7 +364,7 @@ class ToolHandler:
             return {"error": "Missing session reference"}
         
         # FIX: Use 'or' to handle empty string as not provided
-        repo = args.get('repo') or self.default_repo
+        repo = self._repo_from_args(args)
         prompt = args.get('prompt', '')
         
         # FIX: Use `codex exec resume` instead of `codex resume` to avoid TTY requirement
@@ -366,7 +387,7 @@ class ToolHandler:
             for image in args['images']:
                 cmd.extend(['--image', image])
         if 'config_overrides' in args:
-            for override in args['config_overrides']:
+            for override in self._safe_config_overrides(args['config_overrides']):
                 cmd.extend(['-c', override])
         
         logger.info(f"Continuing session {session_id}")
@@ -393,8 +414,7 @@ class ToolHandler:
             else:
                 return {
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr).decode(),
-                    "stderr": stderr_text,
+                    "error": redact_sensitive_output(stderr_text),
                     "exit_code": process.returncode
                 }
         except Exception as e:
@@ -404,7 +424,7 @@ class ToolHandler:
     async def _codex_apply_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Apply a remote delta to local storage using git apply"""
         task_id = args['task_id']
-        repo = args.get('repo', self.default_repo)
+        repo = self._repo_from_args(args)
         
         logger.info(f"Applying remote delta {task_id}")
         
@@ -412,7 +432,7 @@ class ToolHandler:
             # First, fetch the diff using codex cloud diff
             diff_result = await self._codex_cloud_diff({'task_id': task_id})
             
-            if 'error' in diff_result or 'error_encoded' in diff_result:
+            if 'error' in diff_result:
                 return {
                     "status": "error",
                     "error": "Failed to fetch remote delta",
@@ -450,8 +470,7 @@ class ToolHandler:
             else:
                 return {
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr).decode(),
-                    "stderr": stderr.decode('utf-8'),
+                    "error": redact_sensitive_output(stderr.decode('utf-8')),
                     "exit_code": process.returncode
                 }
         except Exception as e:
@@ -466,7 +485,7 @@ class ToolHandler:
         if prompt and ' ' not in prompt and len(prompt) > 20:
             prompt = decode_if_base64(prompt)
         
-        repo = args.get('repo', self.default_repo)
+        repo = self._repo_from_args(args)
         
         cmd = ['codex', 'exec']
         
@@ -480,13 +499,9 @@ class ToolHandler:
         else:
             cmd.extend(['--sandbox', self.config.get('security', {}).get('default_sandbox', 'read-only')])
         if 'config_overrides' in args:
-            for override in args['config_overrides']:
+            for override in self._safe_config_overrides(args['config_overrides']):
                 cmd.extend(['-c', override])
-        if args.get('dangerously_bypass'):
-            if not self.config.get('security', {}).get('allow_dangerously_bypass', False):
-                return {"error": "dangerously_bypass is disabled by config.yaml"}
-            cmd.append('--dangerously-bypass-approvals-and-sandbox')
-        elif args.get('full_auto', False):
+        if args.get('full_auto', False):
             cmd.append('--full-auto')
         
         cmd.append('--json')
@@ -527,8 +542,7 @@ class ToolHandler:
             else:
                 return {
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr_text.encode()).decode(),
-                    "stderr": stderr_text,
+                    "error": redact_sensitive_output(stderr_text),
                     "exit_code": process.returncode
                 }
         except Exception as e:
@@ -549,7 +563,7 @@ class ToolHandler:
             prompt = decode_if_base64(prompt)
         
         conv = self.conversations.get(session_id, {})
-        repo = args.get('repo', conv.get('repo', self.default_repo))
+        repo = self._repo_from_args({'repo': args.get('repo', conv.get('repo', self.default_repo))})
         
         # FIX: Use `codex exec resume` for non-TTY operation
         cmd = ['codex', 'exec', 'resume', session_id]
@@ -583,8 +597,7 @@ class ToolHandler:
             else:
                 return {
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr).decode(),
-                    "stderr": stderr_text,
+                    "error": redact_sensitive_output(stderr_text),
                     "exit_code": process.returncode
                 }
         except Exception as e:
@@ -631,23 +644,24 @@ class ToolHandler:
         from pathlib import Path
         
         result = {
-            "config_path": str(Path.home() / ".codex" / "config.toml"),
+            "config_path": "~/.codex/config.toml",
             "config": {},
             "capabilities": {},
-            "note": "Use the 'engine_variant' value from config when calling tools"
+            "note": "Raw local Codex config is never returned."
         }
         
         config_path = Path.home() / ".codex" / "config.toml"
         if config_path.exists():
             try:
                 config_text = config_path.read_text()
-                result["config_raw"] = config_text
                 
                 for line in config_text.split('\n'):
                     line = line.strip()
                     if '=' in line and not line.startswith('#'):
                         key, value = line.split('=', 1)
-                        result["config"][key.strip()] = value.strip().strip('"')
+                        clean_key = key.strip()
+                        clean_value = value.strip().strip('"')
+                        result["config"][clean_key] = redact_config_value(clean_key, clean_value)
             except Exception as e:
                 result["config_error"] = str(e)
         else:
@@ -679,19 +693,22 @@ class ToolHandler:
     
     async def _codex_sandbox(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute string transformation / shell command in sandbox"""
+        if not self.config.get('security', {}).get('expose_codex_sandbox_tool', False):
+            return {"error": "codex_sandbox is experimental and disabled by default"}
+
         command = args.get('command', '')
         
         # Try to decode if it looks like base64
         if command and ' ' not in command and len(command) > 10:
             command = decode_if_base64(command)
         
-        cwd = args.get('cwd', self.default_repo)
+        cwd = str(validate_allowed_path(args.get('cwd', self.default_repo), self._allowed_roots()))
         sandbox_type = args.get('sandbox_type', 'macos')
         
         cmd = ['codex', 'sandbox', sandbox_type, '--full-auto', '--', 'bash', '-c', command]
         
         if 'config_overrides' in args:
-            for override in args['config_overrides']:
+            for override in self._safe_config_overrides(args['config_overrides']):
                 cmd.insert(4, '-c')
                 cmd.insert(5, override)
         
@@ -715,8 +732,7 @@ class ToolHandler:
                 "exit_code": process.returncode,
                 "stdout": stdout_text,
                 "stderr": stderr_text,
-                # Include encoded stderr for error surfacing
-                "error_encoded": base64.b64encode(stderr).decode() if process.returncode != 0 else None
+                "error": redact_sensitive_output(stderr_text) if process.returncode != 0 else None
             }
         except Exception as e:
             logger.exception(f"Transformation failed: {e}")
@@ -779,8 +795,7 @@ class ToolHandler:
             else:
                 return {
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr).decode(),
-                    "stderr": stderr_text,
+                    "error": redact_sensitive_output(stderr_text),
                     "exit_code": process.returncode
                 }
         except Exception as e:
@@ -816,8 +831,7 @@ class ToolHandler:
                 return {
                     "task_ref": task_id,
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr).decode(),
-                    "stderr": stderr_text,
+                    "error": redact_sensitive_output(stderr_text),
                     "exit_code": process.returncode
                 }
         except Exception as e:
@@ -853,8 +867,7 @@ class ToolHandler:
                 return {
                     "task_ref": task_id,
                     "status": "error",
-                    "error_encoded": base64.b64encode(stderr).decode(),
-                    "stderr": stderr_text,
+                    "error": redact_sensitive_output(stderr_text),
                     "exit_code": process.returncode
                 }
         except Exception as e:
