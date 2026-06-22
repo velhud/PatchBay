@@ -7,7 +7,7 @@ Use Codex to review a local PR branch before human approval.
 ## Preconditions
 
 - Repository is owned or authorized.
-- Server is local.
+- Server is local or token-gated through an intentional ChatGPT tunnel.
 - Repository path is allowed.
 - Secrets are not included in prompts.
 

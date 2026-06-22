@@ -1,6 +1,6 @@
 # Security Model
 
-`codex-mcp-wrapper` is local-first maintainer infrastructure. It connects MCP-compatible clients to Codex CLI workflows and may interact with local repositories, git worktrees, subprocesses, prompts, diffs, logs, and local configuration.
+`codex-mcp-wrapper` is a local-control ChatGPT-to-local-Codex bridge. It connects MCP-compatible clients to local workspace context tools and Codex CLI workflows, and may interact with local repositories, git worktrees, subprocesses, prompts, diffs, logs, and local configuration.
 
 ## Scope
 
@@ -23,10 +23,11 @@ This project is intended for repositories the operator owns, maintains, administ
 - Treat repository paths as explicit trusted roots.
 - Avoid exposing arbitrary filesystem access.
 - Avoid logging secrets.
-- Keep read-only analysis as the default safe mode.
+- Keep read-only analysis as the default first mode.
 - Run apply jobs in isolated git worktrees.
 - Make generated diffs visible before integration.
 - Require explicit user control for risky operations.
+- Require explicit server-side config for direct edit, bash, transcript-read, and public tunnel power modes.
 - Keep dangerous bypass disabled by default.
 - Keep public examples conservative.
 
@@ -68,8 +69,8 @@ This project is intended for repositories the operator owns, maintains, administ
 ## Planned Hardening
 
 - Add command allowlisting around Codex CLI invocation.
-- Add optional local bearer-token authentication.
-- Add stricter origin-header validation.
+- Complete real ChatGPT Developer Mode and token-gated tunnel release evals.
+- Add stricter origin-header validation if a browser/local UI requires CORS.
 - Add CI checks for dependency vulnerabilities.
 - Add CodeQL or equivalent static analysis.
 - Add security test fixtures.

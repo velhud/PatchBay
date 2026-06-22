@@ -7,7 +7,7 @@ Use Codex to assist security review of repositories the maintainer owns or admin
 ## Preconditions
 
 - Repository is owned or authorized.
-- Server is local.
+- Server is local or token-gated through an intentional ChatGPT tunnel.
 - Repository path is allowed.
 - Secrets are not included in prompts.
 

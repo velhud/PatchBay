@@ -7,10 +7,9 @@ import re
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional
-from datetime import datetime
 
 from job_manager import JobManager, JobState
-from security import validate_allowed_path
+from security import redact_sensitive_output, redact_text, validate_allowed_path
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +25,7 @@ class JobExecutor:
         self.schema_path = Path(__file__).parent / 'codex_output_schema.json'
         self.job_logs_dir = Path(config['logging']['job_logs_dir'])
         self.job_logs_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, asyncio.subprocess.Process] = {}
         
     async def execute_job(self, job_id: str):
         """Execute a Codex job asynchronously."""
@@ -33,12 +33,19 @@ class JobExecutor:
         if not job:
             logger.error(f"Job {job_id} not found")
             return
+        if job.state == JobState.CANCELLED:
+            logger.info(f"Job {job_id} was cancelled before execution started")
+            return
         
         try:
             self.job_manager.update_job_state(job_id, JobState.RUNNING)
             
-            # Build command
+            # Build command and keep prompt text off argv when the Codex CLI supports stdin.
             cmd = self._build_codex_command(job.mode, job.prompt, job.worktree_path, job.options)
+            stdin_data = self._stdin_for_command(job.prompt, cmd)
+            if self._job_is_cancelled(job_id):
+                logger.info(f"Job {job_id} was cancelled before process launch")
+                return
             
             logger.info(f"Executing job {job_id}: {' '.join(cmd[:5])}...")
             
@@ -52,22 +59,27 @@ class JobExecutor:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=job.worktree_path,
+                stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._build_env()
             )
+            self.processes[job_id] = process
             
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
+                    process.communicate(input=stdin_data),
                     timeout=timeout
                 )
                 
-                stdout_log.write_bytes(stdout)
-                stderr_log.write_bytes(stderr)
+                self._write_process_artifact(stdout_log, stdout)
+                self._write_process_artifact(stderr_log, stderr)
+
+                if self._job_is_cancelled(job_id):
+                    logger.info(f"Job {job_id} process exited after cancellation")
+                    return
                 
-                # Store raw stdout for fallback parsing
-                raw_stdout = stdout.decode('utf-8')
+                raw_stdout = stdout.decode('utf-8', errors='replace')
                 
                 result = await self._parse_result(stdout, result_file, job.options)
                 
@@ -76,8 +88,7 @@ class JobExecutor:
                 if not session_id:
                     session_id = self._extract_session_id(stderr.decode('utf-8'))
                 
-                # Store raw output in result for fallback access
-                result['_raw_stdout'] = raw_stdout
+                result = redact_sensitive_output(result)
                 
                 if process.returncode == 0:
                     self.job_manager.update_job_state(
@@ -89,7 +100,7 @@ class JobExecutor:
                     )
                     logger.info(f"Job {job_id} completed successfully")
                 else:
-                    error_msg = stderr.decode('utf-8')[-2000:]
+                    error_msg = redact_text(stderr.decode('utf-8', errors='replace')[-2000:])
                     self.job_manager.update_job_state(
                         job_id,
                         JobState.FAILED,
@@ -99,16 +110,20 @@ class JobExecutor:
                     logger.error(f"Job {job_id} failed: exit code {process.returncode}")
                     
             except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+                await self._terminate_process(job_id, process)
                 self.job_manager.update_job_state(
                     job_id,
                     JobState.FAILED,
                     error=f"Job timed out after {timeout} seconds"
                 )
                 logger.error(f"Job {job_id} timed out")
+            finally:
+                self.processes.pop(job_id, None)
                 
         except Exception as e:
+            if self._job_is_cancelled(job_id):
+                logger.info(f"Job {job_id} stopped after cancellation")
+                return
             logger.exception(f"Job {job_id} execution failed: {e}")
             self.job_manager.update_job_state(
                 job_id,
@@ -131,11 +146,18 @@ class JobExecutor:
         """
         if options is None:
             options = {}
+        if mode == "resume":
+            return self._build_codex_resume_command(prompt, options)
         
         security = self.config.get('security', {})
-        sandbox = options.get('sandbox') or security.get('default_sandbox', 'read-only')
-        
-        cmd = ['codex', 'exec', prompt]
+        if mode == "plan":
+            sandbox = "read-only"
+        elif mode == "apply":
+            sandbox = options.get('sandbox') or "workspace-write"
+        else:
+            sandbox = options.get('sandbox') or security.get('default_sandbox', 'read-only')
+
+        cmd = ['codex', 'exec']
         
         if options.get('dangerously_bypass'):
             if not security.get('allow_dangerously_bypass', False):
@@ -145,8 +167,9 @@ class JobExecutor:
             # Only add sandbox if not bypassing
             cmd.extend(['--sandbox', sandbox])
             
-            if options.get('full_auto', False):
-                cmd.append('--full-auto')
+            # Current Codex CLI versions no longer expose the historical
+            # --full-auto flag. Keep accepting the option for older clients,
+            # but do not emit a stale CLI argument.
         
         # Structured output
         if options.get('structured_output', True):
@@ -165,15 +188,12 @@ class JobExecutor:
             for image in options['images']:
                 cmd.extend(['--image', image])
         
-        # Feature flags - default disable skills to avoid malformed SKILL.md issues
+        # Feature flags. Do not inject defaults here: feature names change
+        # across Codex CLI releases, and unknown flags are hard failures.
         features = options.get('features', {})
         disable = set(features.get('disable', []))
         enable = set(features.get('enable', []))
-        
-        # Default: disable skills unless explicitly enabled (avoids SKILL.md parsing errors)
-        if 'skills' not in enable:
-            disable.add('skills')
-        
+
         # Apply feature flags
         for f in enable:
             cmd.extend(['--enable', f])
@@ -195,8 +215,64 @@ class JobExecutor:
         if 'config_overrides' in options:
             for override in options['config_overrides']:
                 cmd.extend(['-c', override])
-        
+
+        if prompt:
+            cmd.append("-")
+
         return cmd
+
+    def _build_codex_resume_command(self, prompt: str, options: Dict[str, Any]) -> list[str]:
+        """Build `codex exec resume` with options before SESSION_ID/PROMPT."""
+        security = self.config.get('security', {})
+        session_id = str(options.get("resume_session_id") or "").strip()
+        if not session_id:
+            raise ValueError("resume_session_id is required for resume jobs")
+
+        cmd = ['codex', 'exec', 'resume']
+
+        if options.get('dangerously_bypass'):
+            if not security.get('allow_dangerously_bypass', False):
+                raise PermissionError("dangerously_bypass is disabled by config.yaml")
+            cmd.append('--dangerously-bypass-approvals-and-sandbox')
+        elif options.get('full_auto', False):
+            # Current Codex CLI versions no longer expose the historical
+            # --full-auto flag. Keep accepting the option for compatibility,
+            # but do not emit a stale CLI argument.
+            pass
+
+        if options.get('json_events', True):
+            cmd.append('--json')
+
+        if 'model' in options and options['model']:
+            cmd.extend(['--model', options['model']])
+
+        if 'images' in options and options['images']:
+            for image in options['images']:
+                cmd.extend(['--image', image])
+
+        features = options.get('features', {})
+        disable = set(features.get('disable', []))
+        enable = set(features.get('enable', []))
+        for feature in enable:
+            cmd.extend(['--enable', feature])
+        for feature in disable:
+            cmd.extend(['--disable', feature])
+
+        if 'config_overrides' in options:
+            for override in options['config_overrides']:
+                cmd.extend(['-c', override])
+
+        cmd.append(session_id)
+        if prompt:
+            cmd.append("-")
+
+        return cmd
+
+    def _stdin_for_command(self, prompt: str, cmd: list[str]) -> bytes | None:
+        """Return prompt stdin when command uses Codex's '-' prompt sentinel."""
+        if prompt and cmd and cmd[-1] == "-":
+            return prompt.encode("utf-8")
+        return None
     
     def _build_env(self) -> Dict[str, str]:
         """Build a restricted environment for Codex execution."""
@@ -210,6 +286,25 @@ class JobExecutor:
         ]
         allowed_set = set(allowed)
         return {k: v for k, v in os.environ.items() if k in allowed_set}
+
+    def _job_log_max_bytes(self) -> int:
+        configured = int(self.config.get('logging', {}).get('job_log_max_bytes', 200_000))
+        return max(1, configured)
+
+    def _write_process_artifact(self, path: Path, output: bytes) -> None:
+        """Write bounded/redacted process artifacts unless raw logs are explicitly enabled."""
+        if self.config.get('logging', {}).get('write_raw_job_logs', False):
+            path.write_bytes(output)
+            return
+
+        text = output.decode('utf-8', errors='replace')
+        safe_text = redact_text(text)
+        encoded = safe_text.encode('utf-8')
+        max_bytes = self._job_log_max_bytes()
+        if len(encoded) > max_bytes:
+            safe_text = encoded[:max_bytes].decode('utf-8', errors='replace')
+            safe_text += f"\n...[log truncated to {max_bytes} bytes]"
+        path.write_text(safe_text, encoding='utf-8')
     
     async def _parse_result(self, stdout: bytes, result_file: Path, options: Dict[str, Any] = None) -> Dict[str, Any]:
         """Parse result from Codex output."""
@@ -222,7 +317,7 @@ class JobExecutor:
             # If structured output was disabled, return raw
             if not options.get('structured_output', True):
                 return {
-                    "summary": stdout_text,
+                    "summary": redact_text(stdout_text),
                     "raw_output": True,
                     "files_changed": []
                 }
@@ -246,6 +341,20 @@ class JobExecutor:
                         if parsed.get('type') == 'result' and 'data' in parsed:
                             result = parsed['data']
                             break
+                        elif parsed.get('type') == 'item.completed':
+                            item = parsed.get('item') or {}
+                            if isinstance(item, dict) and item.get('type') == 'agent_message':
+                                text = item.get('text')
+                                if isinstance(text, str) and text.strip():
+                                    try:
+                                        message_result = json.loads(text)
+                                        if isinstance(message_result, dict):
+                                            result = message_result
+                                        else:
+                                            result = {"summary": str(message_result), "files_changed": []}
+                                    except json.JSONDecodeError:
+                                        result = {"summary": text, "files_changed": []}
+                                    break
                         elif 'summary' in parsed:
                             result = parsed
                             break
@@ -253,12 +362,13 @@ class JobExecutor:
                     continue
             
             if result:
-                result_file.write_text(json.dumps(result, indent=2))
-                return result
+                safe_result = redact_sensitive_output(result)
+                result_file.write_text(json.dumps(safe_result, indent=2))
+                return safe_result
             
             # Fallback: return raw summary
             return {
-                "summary": stdout_text[:2000],
+                "summary": redact_text(stdout_text[:2000]),
                 "files_changed": [],
                 "notes": "Could not extract structured result"
             }
@@ -266,7 +376,7 @@ class JobExecutor:
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse Codex result: {e}")
             return {
-                "summary": stdout.decode('utf-8')[:2000],
+                "summary": redact_text(stdout.decode('utf-8', errors='replace')[:2000]),
                 "files_changed": [],
                 "notes": f"Could not parse as JSON: {str(e)}"
             }
@@ -301,70 +411,116 @@ class JobExecutor:
                     return match.group(0)
         return None
     
-    async def cancel_job(self, job_id: str):
+    async def cancel_job(self, job_id: str, reason: str = "Cancelled by request") -> Dict[str, Any]:
         """Cancel a running job."""
         job = self.job_manager.get_job(job_id)
-        if not job or job.state != JobState.RUNNING:
-            logger.warning(f"Cannot cancel job {job_id}: not running")
-            return
-        
-        self.job_manager.update_job_state(job_id, JobState.CANCELLED)
-        logger.info(f"Job {job_id} marked as cancelled")
+        if not job:
+            return {"cancelled": False, "reason": f"Unknown job: {job_id}"}
+        if job.state not in (JobState.PENDING, JobState.RUNNING):
+            logger.warning(f"Cannot cancel job {job_id}: state={job.state}")
+            return {"cancelled": False, "job_id": job_id, "state": job.state.value, "reason": "Job is not running"}
+
+        process = self.processes.get(job_id)
+        process_signalled = False
+        if process and process.returncode is None:
+            process_signalled = await self._terminate_process(job_id, process)
+
+        self.job_manager.update_job_state(job_id, JobState.CANCELLED, error=reason)
+        logger.info(f"Job {job_id} cancelled")
+        return {
+            "cancelled": True,
+            "job_id": job_id,
+            "state": JobState.CANCELLED.value,
+            "process_signalled": process_signalled,
+        }
+
+    async def cancel_all_running(self, reason: str = "Server shutting down") -> None:
+        """Cancel every tracked subprocess and mark queued/running jobs terminal."""
+        for job_id in list(self.processes.keys()):
+            await self.cancel_job(job_id, reason=reason)
+        self.job_manager.mark_active_jobs_cancelled(reason)
+
+    async def _terminate_process(self, job_id: str, process: asyncio.subprocess.Process) -> bool:
+        if process.returncode is not None:
+            return False
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            logger.warning(f"Job {job_id} did not terminate gracefully; killing")
+            process.kill()
+            await process.wait()
+        return True
+
+    def _job_is_cancelled(self, job_id: str) -> bool:
+        job = self.job_manager.get_job(job_id)
+        return bool(job and job.state == JobState.CANCELLED)
     
     def get_diff(self, job_id: str, file_path: str) -> Optional[str]:
         """Get unified diff for a file in a job's worktree."""
         job = self.job_manager.get_job(job_id)
         if not job or not job.worktree_path:
             return None
+        if job.mode != "apply" or job.state != JobState.COMPLETED:
+            return None
         
         try:
+            worktree_path = Path(job.worktree_path).resolve()
+            file_full_path = validate_allowed_path(
+                str(worktree_path / file_path),
+                [str(worktree_path)],
+            )
+            rel_path = os.path.relpath(file_full_path, worktree_path).replace(os.sep, "/")
+            if rel_path.startswith("../") or rel_path == "..":
+                return None
+
             # First try git diff with proper -- separator
             result = subprocess.run(
-                ['git', 'diff', 'HEAD', '--', file_path],
-                cwd=job.worktree_path,
+                ['git', 'diff', 'HEAD', '--', rel_path],
+                cwd=worktree_path,
                 capture_output=True,
                 text=True,
                 timeout=10
             )
             
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout
-            
-            # Fallback: try to extract diff from stored job output
-            if job.result and '_raw_stdout' in job.result:
-                raw = job.result['_raw_stdout']
-                # Look for diff-like content mentioning this file
-                if file_path in raw:
-                    # Try to extract a diff block
-                    lines = raw.split('\n')
-                    diff_lines = []
-                    in_diff = False
-                    for line in lines:
-                        if line.startswith('diff --git') and file_path in line:
-                            in_diff = True
-                        if in_diff:
-                            diff_lines.append(line)
-                            if line.startswith('diff --git') and file_path not in line:
-                                break
-                    if diff_lines:
-                        return '\n'.join(diff_lines)
-            
-            # If file is new/untracked, show its content as a diff
-            file_full_path = validate_allowed_path(
-                str(Path(job.worktree_path) / file_path),
-                [job.worktree_path],
+                return self._format_diff_output(result.stdout)
+
+            status = subprocess.run(
+                ['git', 'status', '--porcelain', '--', rel_path],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
-            if file_full_path.exists():
-                content = file_full_path.read_text()
-                return f"--- /dev/null\n+++ b/{file_path}\n" + '\n'.join(
-                    f"+{line}" for line in content.split('\n')
-                )
-            
-            # FIX: Only log if stderr has actual content (not just empty diff for nonexistent file)
-            if result.stderr and result.stderr.strip():
-                logger.debug(f"git diff returned no output for {file_path}: {result.stderr}")
-            return None
+            if status.returncode != 0 or not status.stdout.strip():
+                return None
+            if not any(line.startswith("?? ") for line in status.stdout.splitlines()):
+                return None
+
+            return self._diff_untracked_file(file_full_path, rel_path) or None
                 
         except Exception as e:
             logger.debug(f"Failed to get diff for {file_path}: {e}")
             return None
+
+    def _format_diff_output(self, diff: str) -> str:
+        safe_diff = redact_text(diff)
+        max_bytes = int(self.config.get('security', {}).get('max_diff_bytes', 200_000))
+        encoded = safe_diff.encode('utf-8')
+        if len(encoded) > max_bytes:
+            safe_diff = encoded[:max_bytes].decode('utf-8', errors='replace')
+            safe_diff += f"\n...[diff truncated to {max_bytes} bytes]"
+        return safe_diff
+
+    def _diff_untracked_file(self, path: Path, rel_path: str) -> str:
+        if not path.exists() or not path.is_file():
+            return ""
+        sample = path.read_bytes()[:4096]
+        if b"\0" in sample:
+            return f"--- /dev/null\n+++ b/{rel_path}\nBinary file changed; diff omitted."
+        content = path.read_text(encoding='utf-8', errors='replace')
+        diff = f"--- /dev/null\n+++ b/{rel_path}\n" + "".join(
+            f"+{line}\n" for line in content.splitlines()
+        )
+        return self._format_diff_output(diff)

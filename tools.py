@@ -1,16 +1,20 @@
 """Tool handler for Codex MCP operations."""
 import asyncio
-import subprocess
 import base64
+import hashlib
 import json
 import logging
-import re
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from auth import auth_public_metadata, build_auth_policy
+from codex_sessions import CodexSessionReader
+from connector import connector_status
 from job_manager import JobManager, JobState
 from job_executor import JobExecutor
-from security import redact_config_value, redact_sensitive_output, validate_allowed_path
+from power_tools import PowerToolRunner
+from security import redact_sensitive_output, validate_allowed_path
+from workspace_context import WorkspaceContext
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,9 @@ class ToolHandler:
         self.job_manager = job_manager
         self.job_executor = job_executor
         self.default_repo = config['repositories']['default']
+        self.workspace_context = WorkspaceContext(config)
+        self.power_tools = PowerToolRunner(config, self.workspace_context)
+        self.codex_sessions = CodexSessionReader(config)
         # Track interactive conversations
         self.conversations: Dict[str, Dict[str, Any]] = {}
     
@@ -64,29 +71,138 @@ class ToolHandler:
         logger.info(f"Handling tool: {tool_name}")
         
         handlers = {
+            "codex_open_workspace": self._codex_open_workspace,
+            "codex_repo_tree": self._codex_repo_tree,
+            "codex_read_file": self._codex_read_file,
+            "codex_search_repo": self._codex_search_repo,
+            "codex_load_context": self._codex_load_context,
+            "codex_export_context": self._codex_export_context,
+            "codex_list_skills": self._codex_list_skills,
+            "codex_load_skill": self._codex_load_skill,
+            "codex_write_handoff": self._codex_write_handoff,
+            "codex_get_handoff_status": self._codex_get_handoff_status,
+            "codex_get_handoff_diff": self._codex_get_handoff_diff,
+            "codex_list_workspaces": self._codex_list_workspaces,
+            "codex_workspace_snapshot": self._codex_workspace_snapshot,
+            "codex_inventory": self._codex_inventory,
+            "codex_git_status": self._codex_git_status,
+            "codex_git_diff": self._codex_git_diff,
+            "codex_show_changes": self._codex_show_changes,
+            "codex_write_file": self._codex_write_file,
+            "codex_edit_file": self._codex_edit_file,
+            "codex_run_command": self._codex_run_command,
             "codex_plan_job": self._codex_plan_job,
             "codex_apply_job": self._codex_apply_job,
             "codex_get_status": self._codex_get_status,
             "codex_get_result": self._codex_get_result,
             "codex_get_diff": self._codex_get_diff,
+            "codex_cancel_job": self._codex_cancel_job,
             "codex_review": self._codex_review,
+            "codex_list_sessions": self._codex_list_sessions,
+            "codex_read_session": self._codex_read_session,
             "codex_resume": self._codex_resume,
-            "codex_apply_diff": self._codex_apply_diff,
             "codex_interactive": self._codex_interactive,
             "codex_interactive_reply": self._codex_interactive_reply,
+            "codex_self_test": self._codex_self_test,
             "codex_get_config": self._codex_get_config,
-            "codex_sandbox": self._codex_sandbox,
-            "codex_cloud_exec": self._codex_cloud_exec,
-            "codex_cloud_status": self._codex_cloud_status,
-            "codex_cloud_diff": self._codex_cloud_diff,
-            "string_transform": self._string_transform,  # New real transform handler
         }
-        
         handler = handlers.get(tool_name)
         if not handler:
             raise ValueError(f"Unknown tool: {tool_name}")
         
         return await handler(arguments)
+
+    async def _codex_self_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return connector readiness checks and ChatGPT connection metadata."""
+        return connector_status(
+            self.config,
+            public_base_url=args.get("public_base_url"),
+            reveal_token=False,
+        )
+
+    async def _codex_open_workspace(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Open an allowed workspace and return bounded orientation."""
+        return self.workspace_context.open_summary(args)
+
+    async def _codex_repo_tree(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a bounded repository tree."""
+        return self.workspace_context.repo_tree(args)
+
+    async def _codex_read_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read a bounded workspace file slice."""
+        return self.workspace_context.read_file(args)
+
+    async def _codex_search_repo(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Search an allowed workspace."""
+        return self.workspace_context.search_repo(args)
+
+    async def _codex_load_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Load Codex-ready workspace context."""
+        return self.workspace_context.load_context(args)
+
+    async def _codex_export_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Export Codex-ready context under .ai-bridge."""
+        return self.workspace_context.export_context(args)
+
+    async def _codex_list_skills(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List discovered workspace/user/plugin skills with sanitized paths."""
+        return self.workspace_context.list_skills(args)
+
+    async def _codex_load_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Load a bounded discovered SKILL.md body by name/source/path."""
+        return self.workspace_context.load_skill(args)
+
+    async def _codex_write_handoff(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Write a .ai-bridge handoff plan without executing local commands."""
+        return self.workspace_context.write_handoff(args)
+
+    async def _codex_get_handoff_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read .ai-bridge handoff status files."""
+        return self.workspace_context.read_handoff_status(args)
+
+    async def _codex_get_handoff_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read .ai-bridge implementation diff."""
+        return self.workspace_context.read_handoff_diff(args)
+
+    async def _codex_list_workspaces(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List configured workspaces known to this connector."""
+        return self.workspace_context.list_workspaces(args)
+
+    async def _codex_workspace_snapshot(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a CodexPro-style workspace snapshot."""
+        return self.workspace_context.workspace_snapshot(args)
+
+    async def _codex_inventory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return connector/workspace capability inventory."""
+        return self.workspace_context.inventory(args)
+
+    async def _codex_git_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return git status without using bash."""
+        return self.workspace_context.git_status_text(args)
+
+    async def _codex_git_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a bounded git diff without using bash."""
+        return self.workspace_context.git_diff_tool(args)
+
+    async def _codex_show_changes(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return review-oriented status, stats, and diff."""
+        return self.workspace_context.show_changes(args)
+
+    async def _codex_write_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or overwrite a workspace file when direct writes are enabled."""
+        if not self.power_tools.write_enabled():
+            raise ValueError("codex_write_file is disabled. Set power_tools.direct_write to true.")
+        return self.workspace_context.write_file(args)
+
+    async def _codex_edit_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply an exact text replacement when direct writes are enabled."""
+        if not self.power_tools.write_enabled():
+            raise ValueError("codex_edit_file is disabled. Set power_tools.direct_write to true.")
+        return self.workspace_context.edit_file(args)
+
+    async def _codex_run_command(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run an optional safe/full command in the workspace."""
+        return await self.power_tools.run_command(args)
     
     def _extract_options(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Extract allowed Codex options from arguments."""
@@ -124,6 +240,29 @@ class ToolHandler:
                 raise ValueError(f"Config override is not allowed: {override}")
             safe.append(str(override))
         return safe
+
+    def _repo_for_session(self, session_id: str, fallback_repo: Optional[str] = None) -> str:
+        if fallback_repo:
+            return self._repo_from_args({"repo": fallback_repo})
+        jobs = sorted(
+            self.job_manager.jobs.values(),
+            key=lambda job: job.completed_at or job.started_at or 0,
+            reverse=True,
+        )
+        for job in jobs:
+            if job.session_id == session_id and job.repo_path:
+                try:
+                    return self._repo_from_args({"repo": job.repo_path})
+                except ValueError:
+                    logger.warning("Ignoring out-of-scope repo path for session %s", session_id)
+                    continue
+        conv = self.conversations.get(session_id, {})
+        if conv.get("repo"):
+            try:
+                return self._repo_from_args({"repo": conv["repo"]})
+            except ValueError:
+                logger.warning("Ignoring out-of-scope conversation repo for session %s", session_id)
+        return self._repo_from_args({})
     
     async def _codex_plan_job(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Start a text analytics query job"""
@@ -136,6 +275,8 @@ class ToolHandler:
         # FIX: Use 'or' to handle empty string as not provided
         repo = self._repo_from_args(args)
         options = self._extract_options(args)
+        options["sandbox"] = "read-only"
+        options["full_auto"] = False
         
         logger.info(f"Creating analytics query: {prompt[:50]}...")
         
@@ -165,6 +306,7 @@ class ToolHandler:
         # FIX: Use 'or' to handle empty string as not provided
         repo = self._repo_from_args(args)
         options = self._extract_options(args)
+        options.setdefault("sandbox", "workspace-write")
         
         logger.info(f"Creating record update: {prompt[:50]}...")
         
@@ -286,39 +428,15 @@ class ToolHandler:
             "record_path": file_path,
             "delta_content": diff
         }
+
+    async def _codex_cancel_job(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Cancel a pending or running Codex job."""
+        return await self.job_executor.cancel_job(args["job_id"])
     
     async def _codex_review(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run content change analysis"""
-        # FIX: Use 'or' to handle empty string as not provided
         repo = self._repo_from_args(args)
-        prompt = args.get('prompt', '')
-        uncommitted = bool(args.get('uncommitted'))
-        base = args.get('base')
-        commit = args.get('commit')
-        
-        # Build command with skills disabled to avoid SKILL.md errors
-        cmd = ['codex', '--disable', 'skills', 'review']
-        
-        # FIX: Enforce mutual exclusion - if uncommitted, ignore base/commit
-        if uncommitted:
-            cmd.append('--uncommitted')
-            # Don't pass prompt, base, or commit when using --uncommitted
-        else:
-            if base:
-                cmd.extend(['--base', base])
-            if commit:
-                cmd.extend(['--commit', commit])
-            if prompt:
-                cmd.append(prompt)
-        
-        if 'title' in args:
-            cmd.extend(['--title', args['title']])
-        if 'model' in args:
-            cmd.extend(['-c', f'model="{args["model"]}"'])
-        
-        if 'config_overrides' in args:
-            for override in args['config_overrides']:
-                cmd.extend(['-c', override])
+        cmd, stdin_data = self._build_review_command(args)
         
         logger.info(f"Running content analysis in {repo}")
         
@@ -326,24 +444,25 @@ class ToolHandler:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=repo,
+                stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=self.job_executor._build_env(),
             )
             
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+            stdout, stderr = await asyncio.wait_for(process.communicate(input=stdin_data), timeout=600)
             
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
+            stdout_text = stdout.decode('utf-8', errors='replace')
+            stderr_text = stderr.decode('utf-8', errors='replace')
             
             if process.returncode == 0:
-                # FIX: If stdout is empty but stderr has content, use stderr
                 analysis = stdout_text.strip()
                 if not analysis and stderr_text.strip():
                     analysis = stderr_text.strip()
                 
                 return {
                     "status": "completed",
-                    "analysis": analysis if analysis else "No changes to analyze",
+                    "analysis": redact_sensitive_output(analysis if analysis else "No changes to analyze"),
                     "mode": "analysis"
                 }
             else:
@@ -355,130 +474,117 @@ class ToolHandler:
         except Exception as e:
             logger.exception(f"Analysis failed: {e}")
             return {"error": str(e)}
+
+    def _build_review_command(self, args: Dict[str, Any]) -> tuple[list[str], bytes | None]:
+        """Build `codex review` with options before the stdin prompt sentinel."""
+        prompt = str(args.get('prompt') or '')
+        uncommitted = bool(args.get('uncommitted'))
+        base = args.get('base')
+        commit = args.get('commit')
+        if uncommitted and (base or commit):
+            raise ValueError("codex_review accepts either uncommitted=true or base/commit, not both")
+
+        cmd = ['codex', 'review']
+        if uncommitted:
+            cmd.append('--uncommitted')
+        else:
+            if base:
+                cmd.extend(['--base', str(base)])
+            if commit:
+                cmd.extend(['--commit', str(commit)])
+
+        if args.get('title'):
+            cmd.extend(['--title', str(args['title'])])
+        if args.get('model'):
+            cmd.extend(['-c', f'model="{args["model"]}"'])
+
+        for override in self._safe_config_overrides(args.get('config_overrides')):
+            cmd.extend(['-c', override])
+
+        if prompt:
+            cmd.append('-')
+            return cmd, prompt.encode('utf-8')
+        return cmd, None
+
+    async def _codex_list_sessions(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return bounded metadata for resumable Codex sessions known to this wrapper."""
+        repo_filter = None
+        if args.get("repo"):
+            repo_filter = self._repo_from_args(args)
+        max_sessions = max(1, min(int(args.get("max_sessions") or 20), 100))
+
+        by_session: Dict[str, Dict[str, Any]] = {}
+        sorted_jobs = sorted(
+            self.job_manager.jobs.values(),
+            key=lambda job: job.completed_at or job.started_at or 0,
+            reverse=True,
+        )
+        for job in sorted_jobs:
+            if not job.session_id:
+                continue
+            if repo_filter and str(Path(job.repo_path).resolve()) != str(Path(repo_filter).resolve()):
+                continue
+            if job.session_id in by_session:
+                continue
+
+            result = job.result or {}
+            summary = result.get("summary") if isinstance(result, dict) else None
+            files_changed = result.get("files_changed") if isinstance(result, dict) else None
+            workspace_id = "ws_" + hashlib.sha256(str(Path(job.repo_path).resolve()).encode("utf-8")).hexdigest()[:24]
+            by_session[job.session_id] = {
+                "session_id": job.session_id,
+                "last_job_id": job.job_id,
+                "mode": job.mode,
+                "state": job.state.value,
+                "started_at": job.started_at,
+                "completed_at": job.completed_at,
+                "workspace_id": workspace_id,
+                "summary": redact_sensitive_output(summary) if summary else "",
+                "files_changed": redact_sensitive_output(files_changed) if isinstance(files_changed, list) else [],
+            }
+
+        sessions = list(by_session.values())
+        return {
+            "sessions": sessions[:max_sessions],
+            "count": min(len(sessions), max_sessions),
+            "total_known": len(sessions),
+            "truncated": len(sessions) > max_sessions,
+            "transcripts_returned": False,
+            "repo_paths_returned": False,
+        }
+
+    async def _codex_read_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read a bounded Codex transcript only when session-read power mode is enabled."""
+        return self.codex_sessions.read_session(args)
     
     async def _codex_resume(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Continue a previous session using non-interactive codex exec resume"""
+        """Start an async Codex resume job."""
         # Accept both session_id and session_ref
         session_id = args.get('session_id') or args.get('session_ref')
         if not session_id:
             return {"error": "Missing session reference"}
-        
-        # FIX: Use 'or' to handle empty string as not provided
-        repo = self._repo_from_args(args)
+
+        repo = self._repo_for_session(session_id, args.get("repo"))
         prompt = args.get('prompt', '')
-        
-        # FIX: Use `codex exec resume` instead of `codex resume` to avoid TTY requirement
-        cmd = ['codex', 'exec', 'resume', session_id]
-        
-        if prompt:
-            cmd.append(prompt)
-        
-        # FIX: Don't pass --sandbox to codex exec resume (unsupported)
-        # Only add --full-auto and --json for autonomous operation
-        if args.get('full_auto', False):
-            cmd.append('--full-auto')
-        
-        # JSON output for non-interactive
-        cmd.append('--json')
-        
-        if 'model' in args:
-            cmd.extend(['--model', args['model']])
-        if 'images' in args:
-            for image in args['images']:
-                cmd.extend(['--image', image])
-        if 'config_overrides' in args:
-            for override in self._safe_config_overrides(args['config_overrides']):
-                cmd.extend(['-c', override])
-        
-        logger.info(f"Continuing session {session_id}")
-        
+        options = self._extract_options(args)
+        options["resume_session_id"] = session_id
+
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=repo,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1800)
-            
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
-            
-            if process.returncode == 0:
-                return {
-                    "status": "completed",
-                    "session_ref": session_id,
-                    "output": stdout_text
-                }
-            else:
-                return {
-                    "status": "error",
-                    "error": redact_sensitive_output(stderr_text),
-                    "exit_code": process.returncode
-                }
+            job_id = self.job_manager.create_job('resume', prompt, repo, options)
+            asyncio.create_task(self.job_executor.execute_job(job_id))
+            return {
+                "job_id": job_id,
+                "mode": "resume",
+                "session_id": session_id,
+                "status": "Operation initiated successfully",
+                "note": "Use codex_get_status and codex_get_result with job_id to inspect resumed output.",
+            }
         except Exception as e:
             logger.exception(f"Session continuation failed: {e}")
             return {"error": str(e)}
     
-    async def _codex_apply_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply a remote delta to local storage using git apply"""
-        task_id = args['task_id']
-        repo = self._repo_from_args(args)
-        
-        logger.info(f"Applying remote delta {task_id}")
-        
-        try:
-            # First, fetch the diff using codex cloud diff
-            diff_result = await self._codex_cloud_diff({'task_id': task_id})
-            
-            if 'error' in diff_result:
-                return {
-                    "status": "error",
-                    "error": "Failed to fetch remote delta",
-                    "details": diff_result
-                }
-            
-            diff_content = diff_result.get('delta', '')
-            if not diff_content:
-                return {
-                    "status": "error",
-                    "error": "No delta content available for this task"
-                }
-            
-            # Apply the diff using git apply
-            process = await asyncio.create_subprocess_exec(
-                'git', 'apply', '--verbose',
-                cwd=repo,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=diff_content.encode()),
-                timeout=300
-            )
-            
-            if process.returncode == 0:
-                return {
-                    "status": "applied",
-                    "task_ref": task_id,
-                    "output": stdout.decode('utf-8'),
-                    "note": "Delta applied successfully via git apply"
-                }
-            else:
-                return {
-                    "status": "error",
-                    "error": redact_sensitive_output(stderr.decode('utf-8')),
-                    "exit_code": process.returncode
-                }
-        except Exception as e:
-            logger.exception(f"Apply delta failed: {e}")
-            return {"error": str(e)}
-    
     async def _codex_interactive(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Start conversational query session using codex exec"""
+        """Start an async Codex exec session job."""
         prompt = args.get('prompt', '')
         
         # Try to decode if it looks like base64
@@ -486,71 +592,23 @@ class ToolHandler:
             prompt = decode_if_base64(prompt)
         
         repo = self._repo_from_args(args)
-        
-        cmd = ['codex', 'exec']
-        
-        if 'model' in args:
-            cmd.extend(['--model', args['model']])
-        if 'images' in args:
-            for image in args['images']:
-                cmd.extend(['--image', image])
-        if 'sandbox' in args:
-            cmd.extend(['--sandbox', args['sandbox']])
-        else:
-            cmd.extend(['--sandbox', self.config.get('security', {}).get('default_sandbox', 'read-only')])
-        if 'config_overrides' in args:
-            for override in self._safe_config_overrides(args['config_overrides']):
-                cmd.extend(['-c', override])
-        if args.get('full_auto', False):
-            cmd.append('--full-auto')
-        
-        cmd.append('--json')
-        cmd.append(prompt)
-        
-        logger.info(f"Starting conversational query: {prompt[:50]}...")
-        
+        options = self._extract_options(args)
+
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=repo,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1800)
-            
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
-            
-            # FIX: Extract session_id from JSON events in stdout, not stderr regex
-            session_id = extract_thread_id_from_json_events(stdout_text)
-            if not session_id:
-                # Fallback to stderr regex
-                match = re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', stderr_text)
-                session_id = match.group(0) if match else None
-            
-            if session_id:
-                self.conversations[session_id] = {"repo": repo}
-            
-            if process.returncode == 0:
-                return {
-                    "status": "completed",
-                    "session_id": session_id,  # Use session_id for proper mapping
-                    "response": stdout_text,
-                    "note": "Use continue_conversational_query to continue"
-                }
-            else:
-                return {
-                    "status": "error",
-                    "error": redact_sensitive_output(stderr_text),
-                    "exit_code": process.returncode
-                }
+            job_id = self.job_manager.create_job('interactive', prompt, repo, options)
+            asyncio.create_task(self.job_executor.execute_job(job_id))
+            return {
+                "job_id": job_id,
+                "mode": "interactive",
+                "status": "Operation initiated successfully",
+                "note": "Use codex_get_status and codex_get_result. The completed result includes session_ref when Codex returns one.",
+            }
         except Exception as e:
             logger.exception(f"Conversational query failed: {e}")
             return {"error": str(e)}
     
     async def _codex_interactive_reply(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Continue a conversational query session using codex exec resume"""
+        """Start an async continuation job for a Codex session."""
         # FIX: Accept session_id (mapped from session_ref) OR conversation_id for backwards compat
         session_id = args.get('session_id') or args.get('conversation_id')
         if not session_id:
@@ -562,111 +620,73 @@ class ToolHandler:
         if prompt and ' ' not in prompt and len(prompt) > 20:
             prompt = decode_if_base64(prompt)
         
-        conv = self.conversations.get(session_id, {})
-        repo = self._repo_from_args({'repo': args.get('repo', conv.get('repo', self.default_repo))})
-        
-        # FIX: Use `codex exec resume` for non-TTY operation
-        cmd = ['codex', 'exec', 'resume', session_id]
-        if prompt:
-            cmd.append(prompt)
-        cmd.append('--json')
-        if args.get('full_auto', False):
-            cmd.append('--full-auto')
-        
-        logger.info(f"Continuing query session {session_id}")
-        
+        repo = self._repo_for_session(session_id, args.get("repo"))
+        options = self._extract_options(args)
+        options["resume_session_id"] = session_id
+
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=repo,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1800)
-            
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
-            
-            if process.returncode == 0:
-                return {
-                    "status": "continued",
-                    "session_id": session_id,
-                    "response": stdout_text
-                }
-            else:
-                return {
-                    "status": "error",
-                    "error": redact_sensitive_output(stderr_text),
-                    "exit_code": process.returncode
-                }
+            job_id = self.job_manager.create_job('resume', prompt, repo, options)
+            asyncio.create_task(self.job_executor.execute_job(job_id))
+            return {
+                "job_id": job_id,
+                "mode": "resume",
+                "session_id": session_id,
+                "status": "Operation initiated successfully",
+                "note": "Use codex_get_status and codex_get_result with job_id to inspect continued output.",
+            }
         except Exception as e:
             logger.exception(f"Query continuation failed: {e}")
             return {"error": str(e)}
     
-    async def _string_transform(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Real string encoding transform - deterministic, no shell needed.
-        Transforms input text to various encoding formats.
-        """
-        import binascii
-        
-        # Get input string (may have been decoded from base64 already by translate_arguments)
-        input_string = args.get('input_string', '')
-        
-        # Try to decode if it looks like base64 (fallback)
-        if input_string and ' ' not in input_string and len(input_string) > 20:
-            input_string = decode_if_base64(input_string)
-        
-        logger.info(f"Transforming string: {input_string[:50]}...")
-        
-        try:
-            # Encode to UTF-8 bytes
-            b = input_string.encode('utf-8', errors='strict')
-            
-            return {
-                "status": "completed",
-                "input_preview": input_string[:100] + ("..." if len(input_string) > 100 else ""),
-                "length_chars": len(input_string),
-                "length_bytes": len(b),
-                "utf8_hex": binascii.hexlify(b).decode(),
-                "utf8_base64": base64.b64encode(b).decode(),
-                "unicode_codepoints": [hex(ord(c)) for c in input_string[:50]],  # First 50 chars
-                "note": "Use utf8_base64 to safely transfer this content"
-            }
-        except Exception as e:
-            logger.exception(f"String transform failed: {e}")
-            return {"status": "error", "error": str(e)}
-    
     async def _codex_get_config(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get system configuration"""
-        import os
+        """Return safe local Codex/wrapper capability metadata without raw config values."""
+        import shutil
         from pathlib import Path
-        
-        result = {
-            "config_path": "~/.codex/config.toml",
-            "config": {},
-            "capabilities": {},
-            "note": "Raw local Codex config is never returned."
-        }
-        
+
+        security_config = self.config.get("security", {})
+        server_config = self.config.get("server", {})
+        logging_config = self.config.get("logging", {})
+        repo_config = self.config.get("repositories", {})
+        power_config = self.config.get("power_tools", {})
+        auth_policy = build_auth_policy(self.config)
         config_path = Path.home() / ".codex" / "config.toml"
-        if config_path.exists():
-            try:
-                config_text = config_path.read_text()
-                
-                for line in config_text.split('\n'):
-                    line = line.strip()
-                    if '=' in line and not line.startswith('#'):
-                        key, value = line.split('=', 1)
-                        clean_key = key.strip()
-                        clean_value = value.strip().strip('"')
-                        result["config"][clean_key] = redact_config_value(clean_key, clean_value)
-            except Exception as e:
-                result["config_error"] = str(e)
-        else:
-            result["config_error"] = "Configuration not found"
-        
+
+        result = {
+            "codex_cli": {
+                "available": shutil.which("codex") is not None,
+            },
+            "codex_config": {
+                "present": config_path.exists(),
+                "path_hint": "~/.codex/config.toml",
+                "raw_values_returned": False,
+            },
+            "wrapper_config": {
+                "host": server_config.get("host", "127.0.0.1"),
+                "port": server_config.get("port"),
+                "cors_enabled": bool(server_config.get("enable_cors", False)),
+                "access_log_enabled": bool(logging_config.get("access_log", False)),
+                "durable_job_state_enabled": bool(logging_config.get("job_state_dir")),
+                "power_tools": {
+                    "direct_write": bool(power_config.get("direct_write", False)),
+                    "bash_mode": power_config.get("bash_mode", "off"),
+                    "bash_transcript": power_config.get("bash_transcript", "compact"),
+                    "bash_session_configured": bool(power_config.get("bash_session_id")),
+                    "require_bash_session": bool(power_config.get("require_bash_session", False)),
+                    "codex_session_read": bool(power_config.get("codex_session_read", False)),
+                    "codex_home_configured": bool(power_config.get("codex_home")),
+                },
+                "allowed_roots_count": len(repo_config.get("allowed") or []),
+                "default_repository_configured": bool(repo_config.get("default")),
+                "default_sandbox": security_config.get("default_sandbox", "read-only"),
+                "dangerous_bypass_enabled": bool(security_config.get("allow_dangerously_bypass", False)),
+                "config_overrides_enabled": bool(security_config.get("allowed_config_override_prefixes") or []),
+                "allowed_env_keys_count": len(security_config.get("allowed_env_keys") or []),
+                "http_auth": auth_public_metadata(auth_policy),
+            },
+            "capabilities": {},
+            "note": "Raw local Codex config values, local paths, prompts, and secrets are never returned."
+        }
+
         try:
             process = await asyncio.create_subprocess_exec(
                 'codex', 'features', 'list',
@@ -686,190 +706,15 @@ class ToolHandler:
                             "stage": stage,
                             "enabled": enabled
                         }
+            else:
+                result["capabilities_error"] = {
+                    "message": "Unable to list Codex features.",
+                    "exit_code": process.returncode,
+                }
         except Exception as e:
-            result["capabilities_error"] = str(e)
-        
-        return result
-    
-    async def _codex_sandbox(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute string transformation / shell command in sandbox"""
-        if not self.config.get('security', {}).get('expose_codex_sandbox_tool', False):
-            return {"error": "codex_sandbox is experimental and disabled by default"}
+            result["capabilities_error"] = {
+                "message": "Unable to list Codex features.",
+                "error_type": type(e).__name__,
+            }
 
-        command = args.get('command', '')
-        
-        # Try to decode if it looks like base64
-        if command and ' ' not in command and len(command) > 10:
-            command = decode_if_base64(command)
-        
-        cwd = str(validate_allowed_path(args.get('cwd', self.default_repo), self._allowed_roots()))
-        sandbox_type = args.get('sandbox_type', 'macos')
-        
-        cmd = ['codex', 'sandbox', sandbox_type, '--full-auto', '--', 'bash', '-c', command]
-        
-        if 'config_overrides' in args:
-            for override in self._safe_config_overrides(args['config_overrides']):
-                cmd.insert(4, '-c')
-                cmd.insert(5, override)
-        
-        logger.info(f"Executing transformation: {command[:50]}...")
-        
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
-            
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
-            
-            return {
-                "status": "completed" if process.returncode == 0 else "error",
-                "exit_code": process.returncode,
-                "stdout": stdout_text,
-                "stderr": stderr_text,
-                "error": redact_sensitive_output(stderr_text) if process.returncode != 0 else None
-            }
-        except Exception as e:
-            logger.exception(f"Transformation failed: {e}")
-            return {"error": str(e)}
-    
-    async def _codex_cloud_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Submit task to remote processing"""
-        prompt = args.get('prompt', '')
-        
-        # Try to decode if it looks like base64
-        if prompt and ' ' not in prompt and len(prompt) > 20:
-            prompt = decode_if_base64(prompt)
-        
-        # FIX: Use 'or' to handle empty string as not provided
-        repo = args.get('repo') or self.default_repo
-        
-        # FIX: env_id is required by codex cloud exec
-        env_id = args.get('env_id') or self.config.get('cloud', {}).get('default_env_id')
-        if not env_id:
-            return {
-                "status": "error",
-                "error": "Missing env_id (cloud environment ID is required by codex cloud exec)"
-            }
-        
-        cmd = ['codex', 'cloud', 'exec', '--env', env_id, prompt]
-        
-        if 'model' in args:
-            cmd.extend(['-c', f'model="{args["model"]}"'])
-        
-        if 'config_overrides' in args:
-            for override in args['config_overrides']:
-                cmd.extend(['-c', override])
-        
-        logger.info(f"Submitting to remote: {prompt[:50]}...")
-        
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=repo,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-            
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
-            
-            # Try to extract task_id from output
-            match = re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', stdout_text)
-            task_id = match.group(0) if match else None
-            
-            if process.returncode == 0:
-                return {
-                    "status": "submitted",
-                    "task_ref": task_id,
-                    "output": stdout_text,
-                    "note": "Use check_remote_task_status to track progress"
-                }
-            else:
-                return {
-                    "status": "error",
-                    "error": redact_sensitive_output(stderr_text),
-                    "exit_code": process.returncode
-                }
-        except Exception as e:
-            logger.exception(f"Remote submission failed: {e}")
-            return {"error": str(e)}
-    
-    async def _codex_cloud_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get remote task status"""
-        task_id = args['task_id']
-        
-        cmd = ['codex', 'cloud', 'status', task_id]
-        
-        logger.info(f"Getting remote status for {task_id}")
-        
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
-            
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
-            
-            if process.returncode == 0:
-                return {
-                    "task_ref": task_id,
-                    "status": stdout_text
-                }
-            else:
-                return {
-                    "task_ref": task_id,
-                    "status": "error",
-                    "error": redact_sensitive_output(stderr_text),
-                    "exit_code": process.returncode
-                }
-        except Exception as e:
-            logger.exception(f"Remote status check failed: {e}")
-            return {"error": str(e)}
-    
-    async def _codex_cloud_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get delta for remote task"""
-        task_id = args['task_id']
-        
-        cmd = ['codex', 'cloud', 'diff', task_id]
-        
-        logger.info(f"Getting remote delta for {task_id}")
-        
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-            
-            stdout_text = stdout.decode('utf-8')
-            stderr_text = stderr.decode('utf-8')
-            
-            if process.returncode == 0:
-                return {
-                    "task_ref": task_id,
-                    "delta": stdout_text
-                }
-            else:
-                return {
-                    "task_ref": task_id,
-                    "status": "error",
-                    "error": redact_sensitive_output(stderr_text),
-                    "exit_code": process.returncode
-                }
-        except Exception as e:
-            logger.exception(f"Remote delta fetch failed: {e}")
-            return {"error": str(e)}
+        return result

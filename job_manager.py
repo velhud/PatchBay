@@ -10,10 +10,9 @@ from typing import Dict, Optional, Any
 from pathlib import Path
 from enum import Enum
 from dataclasses import dataclass, asdict
-from datetime import datetime
 import git
 
-from security import validate_allowed_path
+from security import redact_sensitive_output, validate_allowed_path
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +52,30 @@ class JobInfo:
         data['state'] = self.state.value
         return data
 
+    def to_persisted_dict(self) -> Dict[str, Any]:
+        """Convert to a redacted durable job record."""
+        data = self.to_dict()
+        prompt = data.pop("prompt", "") or ""
+        data["prompt_preview"] = redact_sensitive_output(prompt[:500])
+        if self.result:
+            data["result"] = {
+                key: redact_sensitive_output(value)
+                for key, value in self.result.items()
+                if not key.startswith("_")
+            }
+        if self.error:
+            data["error"] = redact_sensitive_output(self.error)
+        return data
+
+    @classmethod
+    def from_persisted_dict(cls, data: Dict[str, Any]) -> "JobInfo":
+        """Rehydrate a persisted redacted job record."""
+        values = dict(data)
+        values["state"] = JobState(values.get("state", JobState.FAILED.value))
+        values["prompt"] = ""
+        values.pop("prompt_preview", None)
+        return cls(**{key: value for key, value in values.items() if key in cls.__dataclass_fields__})
+
 
 class JobManager:
     """
@@ -67,9 +90,16 @@ class JobManager:
         self.cleanup_after_hours = config['server'].get('job_cleanup_after_hours', 24)
         self.worktrees_dir = Path(config['repositories']['default']).resolve() / 'worktrees'
         self.worktrees_dir.mkdir(exist_ok=True)
+        self.job_state_dir = Path(
+            config.get('logging', {}).get('job_state_dir')
+            or Path(config.get('logging', {}).get('job_logs_dir', './logs/jobs')) / 'state'
+        )
+        self.job_state_dir.mkdir(parents=True, exist_ok=True)
+        self._load_jobs()
         
         logger.info(f"JobManager initialized: max_concurrent={self.max_concurrent}, "
-                   f"timeout={self.job_timeout}s, worktrees_dir={self.worktrees_dir}")
+                   f"timeout={self.job_timeout}s, worktrees_dir={self.worktrees_dir}, "
+                   f"job_state_dir={self.job_state_dir}")
     
     def create_job(self, mode: str, prompt: str, repo_path: str, options: Optional[Dict] = None) -> str:
         """
@@ -129,6 +159,7 @@ class JobManager:
             job.worktree_path = repo_path
         
         self.jobs[job_id] = job
+        self._persist_job(job)
         logger.info(f"Created job {job_id}: mode={mode}, repo={repo_path}")
         
         return job_id
@@ -182,6 +213,7 @@ class JobManager:
                 setattr(job, key, value)
         
         logger.debug(f"Job {job_id} state updated: {state}")
+        self._persist_job(job)
     
     def get_job(self, job_id: str) -> Optional[JobInfo]:
         """Get job info by ID"""
@@ -208,6 +240,7 @@ class JobManager:
         
         # Remove from tracking
         del self.jobs[job_id]
+        self._delete_job_record(job_id)
         logger.info(f"Cleaned up job {job_id}")
     
     def cleanup_old_jobs(self):
@@ -224,3 +257,42 @@ class JobManager:
         
         if to_remove:
             logger.info(f"Cleaned up {len(to_remove)} old jobs")
+
+    def mark_active_jobs_cancelled(self, reason: str):
+        """Mark non-terminal jobs as cancelled without deleting their durable records."""
+        for job_id, job in list(self.jobs.items()):
+            if job.state in (JobState.PENDING, JobState.RUNNING):
+                self.update_job_state(job_id, JobState.CANCELLED, error=reason)
+
+    def _job_record_path(self, job_id: str) -> Path:
+        return self.job_state_dir / f"{job_id}.json"
+
+    def _persist_job(self, job: JobInfo) -> None:
+        path = self._job_record_path(job.job_id)
+        tmp_path = path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(job.to_persisted_dict(), indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+
+    def _delete_job_record(self, job_id: str) -> None:
+        try:
+            self._job_record_path(job_id).unlink(missing_ok=True)
+        except Exception as error:
+            logger.warning("Failed to delete job record %s: %s", job_id, error)
+
+    def _load_jobs(self) -> None:
+        loaded = 0
+        for path in sorted(self.job_state_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                job = JobInfo.from_persisted_dict(data)
+                if job.state in (JobState.PENDING, JobState.RUNNING):
+                    job.state = JobState.FAILED
+                    job.completed_at = time.time()
+                    job.error = "Job did not finish before the server stopped."
+                self.jobs[job.job_id] = job
+                self._persist_job(job)
+                loaded += 1
+            except Exception as error:
+                logger.warning("Failed to load job record %s: %s", path.name, error)
+        if loaded:
+            logger.info("Loaded %d durable job record(s)", loaded)

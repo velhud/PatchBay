@@ -1,0 +1,17 @@
+codex-mcp-wrapper includes behavior, documentation, tests, and selected
+implementation patterns derived from or inspired by CodexPro.
+
+CodexPro
+Copyright (c) rebel0789 and contributors
+Repository: https://github.com/rebel0789/codexpro
+License: MIT
+
+Thank you to the CodexPro developers for publishing their work openly.
+
+Derived or adapted areas include ChatGPT-facing MCP tool metadata patterns,
+tool-mode concepts, workspace/context/handoff workflows, Pro context bundle/apply
+flows, local handoff execute/watch command behavior, token/tunnel control ideas,
+and connector setup/doctor/start product flows.
+
+This project is not a CodexPro fork, and this notice does not imply CodexPro
+upstream endorsement of codex-mcp-wrapper.
