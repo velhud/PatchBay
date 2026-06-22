@@ -1,13 +1,14 @@
 # OSS Roadmap
 
-This repository is the first public piece of a broader open-source direction around Codex, MCP, repository-context tooling, and safe agentic maintainer workflows.
+This repository is the first public piece of a broader open-source direction around ChatGPT-to-local-Codex bridging, MCP, repository-context tooling, and controlled agentic maintainer workflows.
 
 ## Phase 1 - Codex MCP Wrapper
 
-- Add first-class Codex-specific MCP tool names while preserving compatibility aliases.
+- Add first-class Codex-specific MCP tool names while preserving ChatGPT/CodexPro compatibility aliases.
+- Add ChatGPT-facing workspace context, handoff, and Codex job control flows.
 - Add examples for read-only planning, isolated apply jobs, review flows, and diff inspection.
 - Add CI smoke tests and path/sandbox validation tests.
-- Document safe local deployment assumptions.
+- Document local-control deployment assumptions, token-gated tunnel behavior, and pre-release eval status.
 - Publish a v0.1.x release.
 
 ## Phase 2 - Repository Context Tooling

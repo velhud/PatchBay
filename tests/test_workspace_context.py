@@ -1,0 +1,331 @@
+import json
+import os
+import subprocess
+
+import pytest
+
+from workspace_context import WorkspaceContext
+
+
+def make_config(root):
+    return {
+        "repositories": {"default": str(root), "allowed": [str(root)]},
+        "security": {
+            "max_read_bytes": 10_000,
+            "max_search_results": 10,
+            "max_tree_entries": 100,
+            "blocked_globs": [
+                ".git",
+                ".git/**",
+                "**/.git/**",
+                ".env",
+                ".env.*",
+                "**/.env",
+                "**/.env.*",
+                "**/*secret*",
+            ],
+        },
+    }
+
+
+def init_repo(root):
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=root, check=True)
+
+
+def write_skill(root, name, *, skill_name=None, description=""):
+    skill_dir = root / "skills" / name
+    skill_dir.mkdir(parents=True)
+    declared_name = skill_name or name
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        f"name: {declared_name}\n"
+        f"description: {description}\n\n"
+        f"# {declared_name}\n\n"
+        "Use this skill for focused verification.\n",
+        encoding="utf-8",
+    )
+    return skill_file
+
+
+def test_open_workspace_returns_git_agents_and_bounded_tree(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("needle in readme\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("follow project rules\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("needle in secret file\n", encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.open_summary({"include_tree": True})
+
+    assert result["workspace_id"].startswith("ws_")
+    assert result["git"]["is_git_repo"] is True
+    assert result["agents_files"] == ["AGENTS.md"]
+    assert "README.md" in result["tree"]["text"]
+    assert ".env" not in result["tree"]["text"]
+
+
+def test_read_file_returns_line_slice_and_redacts_secret_like_text(tmp_path):
+    target = tmp_path / "notes.txt"
+    target.write_text("line one\npassword = dummy-secret-for-test\nline three\n", encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.read_file({"file_path": "notes.txt", "start_line": 2, "end_line": 2})
+
+    assert result["path"] == "notes.txt"
+    assert result["start_line"] == 2
+    assert result["end_line"] == 2
+    assert "2 | password = [REDACTED_POSSIBLE_SECRET]" in result["text"]
+    assert "dummy-secret-for-test" not in result["text"]
+
+
+def test_blocked_file_read_is_rejected(tmp_path):
+    (tmp_path / ".env").write_text("hidden secret\n", encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="blocked by safety rules"):
+        context.read_file({"file_path": ".env"})
+
+
+def test_symlink_escape_is_rejected(tmp_path):
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    os.symlink(outside, tmp_path / "outside-link.txt")
+
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="symlink"):
+        context.read_file({"file_path": "outside-link.txt"})
+
+
+def test_search_repo_omits_blocked_files(tmp_path):
+    (tmp_path / "README.md").write_text("needle in readme\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("needle in secret file\n", encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.search_repo({"query": "needle"})
+
+    assert result["matches"]
+    assert any(match["path"] == "README.md" for match in result["matches"])
+    assert all(match["path"] != ".env" for match in result["matches"])
+
+
+def test_read_binary_file_is_rejected(tmp_path):
+    (tmp_path / "data.bin").write_bytes(b"abc\x00def")
+
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="binary"):
+        context.read_file({"file_path": "data.bin"})
+
+
+def test_load_context_includes_agents_and_selected_files(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("root rules\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "AGENTS.md").write_text("src rules\n", encoding="utf-8")
+    (tmp_path / "src" / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("secret\n", encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.load_context({
+        "target_path": "src/app.py",
+        "selected_paths": ["src/app.py", ".env"],
+        "include_ai_bridge": False,
+        "include_git": False,
+    })
+
+    assert result["agents_files"] == ["AGENTS.md", "src/AGENTS.md"]
+    assert result["selected_files"] == ["src/app.py"]
+    assert result["skipped_files"][0]["path"] == ".env"
+    assert "root rules" in result["text"]
+    assert "src rules" in result["text"]
+    assert "print('hello')" in result["text"]
+
+
+def test_skill_inventory_lists_workspace_and_global_without_absolute_paths(tmp_path, monkeypatch):
+    home = tmp_path.parent / f"{tmp_path.name}-home"
+    repo_skill = write_skill(tmp_path, "repo-skill", description="Repository skill")
+    user_skill = home / ".codex" / "skills" / "user-skill" / "SKILL.md"
+    user_skill.parent.mkdir(parents=True)
+    user_skill.write_text("name: user-skill\ndescription: User skill\n\nUse globally.\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.list_skills({"include_global_skills": True})
+    serialized = json.dumps(result)
+
+    assert result["skill_counts"]["workspace"] == 1
+    assert result["skill_counts"]["user"] == 1
+    assert {skill["name"] for skill in result["skill_inventory"]} == {"repo-skill", "user-skill"}
+    assert "$WORKSPACE/skills/repo-skill/SKILL.md" in serialized
+    assert "~/." in serialized
+    assert str(tmp_path) not in serialized
+    assert str(home) not in serialized
+    assert str(repo_skill) not in serialized
+
+
+def test_open_workspace_includes_skill_inventory_by_default(tmp_path):
+    write_skill(tmp_path, "repo-skill", description="Repository skill")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.open_summary({"include_tree": False, "include_global_skills": False})
+
+    assert result["skills"] == ["repo-skill"]
+    assert result["skill_inventory"][0]["path"] == "$WORKSPACE/skills/repo-skill/SKILL.md"
+    assert result["skill_counts"]["workspace"] == 1
+
+
+def test_load_skill_reads_only_discovered_skill_by_name(tmp_path):
+    write_skill(tmp_path, "repo-skill", description="Repository skill")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.load_skill({"name": "repo-skill", "include_global_skills": False})
+
+    assert result["skill"]["name"] == "repo-skill"
+    assert result["skill"]["source"] == "workspace"
+    assert result["skill"]["path"] == "$WORKSPACE/skills/repo-skill/SKILL.md"
+    assert "Use this skill for focused verification." in result["text"]
+    assert result["paths_returned"] == "sanitized"
+
+
+def test_load_skill_requires_disambiguation_for_duplicate_names(tmp_path, monkeypatch):
+    home = tmp_path.parent / f"{tmp_path.name}-home"
+    write_skill(tmp_path, "workspace-shared", skill_name="shared", description="Workspace shared")
+    user_skill = home / ".codex" / "skills" / "user-shared" / "SKILL.md"
+    user_skill.parent.mkdir(parents=True)
+    user_skill.write_text("name: shared\ndescription: User shared\n\nUse globally.\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="Multiple skills named shared"):
+        context.load_skill({"name": "shared", "include_global_skills": True})
+
+    result = context.load_skill({"name": "shared", "source": "workspace", "include_global_skills": True})
+
+    assert result["skill"]["source"] == "workspace"
+
+
+def test_skill_inventory_skips_symlinked_skill_escape(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-skill"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("name: outside-skill\n\nDo not load.\n", encoding="utf-8")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    os.symlink(outside, skills_dir / "outside-skill")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.list_skills({"include_global_skills": False})
+
+    assert result["skill_inventory"] == []
+
+
+def test_export_context_writes_only_ai_bridge_bundle(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("root rules\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("readme context\n", encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.export_context({
+        "title": "Probe Context",
+        "selected_paths": ["README.md"],
+        "include_ai_bridge": False,
+        "include_git": False,
+    })
+
+    bundle = tmp_path / ".ai-bridge" / "pro-context.md"
+    assert result["path"] == ".ai-bridge/pro-context.md"
+    assert bundle.exists()
+    assert "Probe Context" in bundle.read_text(encoding="utf-8")
+    assert "readme context" in bundle.read_text(encoding="utf-8")
+
+
+def test_write_handoff_scaffolds_and_appends(tmp_path):
+    context = WorkspaceContext(make_config(tmp_path))
+
+    first = context.write_handoff({"plan": "Implement the thing.", "title": "Plan One"})
+    second = context.write_handoff({"plan": "Add tests.", "append": True})
+
+    plan = (tmp_path / ".ai-bridge" / "current-plan.md").read_text(encoding="utf-8")
+    assert first["path"] == ".ai-bridge/current-plan.md"
+    assert second["append"] is True
+    assert "Plan One" in plan
+    assert "Implement the thing." in plan
+    assert "Add tests." in plan
+    assert (tmp_path / ".ai-bridge" / "agent-status.md").exists()
+
+
+def test_write_handoff_blocks_secret_like_content(tmp_path):
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="Secret-looking content"):
+        context.write_handoff({"plan": "password = dummy-secret-for-test"})
+
+
+def test_write_handoff_rejects_symlinked_ai_bridge(tmp_path):
+    outside = tmp_path.parent / "outside-bridge"
+    outside.mkdir()
+    os.symlink(outside, tmp_path / ".ai-bridge")
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="parent outside the workspace"):
+        context.write_handoff({"plan": "Implement safely."})
+
+
+def test_read_handoff_status_and_diff(tmp_path):
+    context = WorkspaceContext(make_config(tmp_path))
+    context.write_handoff({"plan": "Implement safely."})
+    (tmp_path / ".ai-bridge" / "implementation-diff.patch").write_text("diff --git a/a b/a\n", encoding="utf-8")
+
+    status = context.read_handoff_status({})
+    diff = context.read_handoff_diff({})
+
+    assert ".ai-bridge/current-plan.md" in status["files"]
+    assert "Implement safely." in status["text"]
+    assert diff["path"] == ".ai-bridge/implementation-diff.patch"
+    assert "diff --git" in diff["text"]
+
+
+def test_write_file_creates_text_file_and_returns_diff(tmp_path):
+    context = WorkspaceContext(make_config(tmp_path))
+
+    result = context.write_file({"file_path": "src/app.py", "content": "print('hello')\n"})
+
+    assert result["path"] == "src/app.py"
+    assert result["existed"] is False
+    assert result["additions"] >= 1
+    assert "+print('hello')" in result["diff"]
+    assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "print('hello')\n"
+
+
+def test_write_file_rejects_blocked_path_and_secret_content(tmp_path):
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="Path is blocked"):
+        context.write_file({"file_path": ".env", "content": "ok"})
+
+    with pytest.raises(ValueError, match="Secret-looking content"):
+        context.write_file({"file_path": "notes.txt", "content": "password = fixture-value"})
+
+
+def test_edit_file_replaces_exact_text_and_returns_diff(tmp_path):
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    context = WorkspaceContext(make_config(tmp_path))
+
+    result = context.edit_file({"file_path": "notes.txt", "old_text": "beta", "new_text": "gamma"})
+
+    assert result["path"] == "notes.txt"
+    assert result["replacements"] == 1
+    assert "-beta" in result["diff"]
+    assert "+gamma" in result["diff"]
+    assert target.read_text(encoding="utf-8") == "alpha\ngamma\n"
+
+
+def test_edit_file_rejects_ambiguous_replacement(tmp_path):
+    target = tmp_path / "notes.txt"
+    target.write_text("same\nsame\n", encoding="utf-8")
+    context = WorkspaceContext(make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="matched 2 times"):
+        context.edit_file({"file_path": "notes.txt", "old_text": "same", "new_text": "other"})

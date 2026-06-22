@@ -1,14 +1,15 @@
 # OSS Pipeline
 
-`codex-mcp-wrapper` is the first public repository in a staged OSS direction around safe Codex/MCP maintainer infrastructure.
+`codex-mcp-wrapper` is the first public repository in a staged OSS direction around ChatGPT-to-local-Codex bridging and controlled Codex/MCP maintainer infrastructure.
 
 ## Current Public Focus
 
-- Streamable HTTP MCP wrapper for Codex CLI workflows.
-- Local-first maintainer automation.
+- Streamable HTTP MCP wrapper for ChatGPT, local workspace context, and Codex CLI workflows.
+- Local-control ChatGPT-to-Codex automation.
 - Read-only repository analysis.
 - Isolated worktree-based apply jobs.
 - Status, result, diff, review, and resume workflows.
+- `.ai-bridge` handoff and Pro-style context pack workflows.
 
 ## Planned Staged Releases
 
@@ -19,11 +20,11 @@ The following categories are being cleaned before public release:
 - MCP connector templates for tools and providers;
 - provider-routing and unified AI access examples;
 - OSS search and repository-discovery workflows;
-- Codex maintainer workflow examples for PR review, issue triage, release notes, and security review.
+- ChatGPT/Codex maintainer workflow examples for PR review, issue triage, release notes, documentation, and security review.
 
 ## API Credit Use
 
-API credits will be used for open-source maintainer workflows only:
+API credits will be used only for open-source ChatGPT/Codex bridge development and maintainer workflows:
 
 - PR review and test generation;
 - release notes and documentation;

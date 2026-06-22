@@ -1,6 +1,6 @@
 # Isolated Apply Job
 
-Goal: ask Codex to stage a change without editing the original checkout directly.
+Goal: ask ChatGPT to delegate a change to local Codex without editing the original checkout directly.
 
 Workflow:
 
@@ -13,6 +13,6 @@ Workflow:
 7. Run tests manually.
 8. Merge manually only after review.
 
-Safe principle:
+Power-control principle:
 
-> Codex proposes and stages changes; the maintainer reviews, tests, and merges.
+> ChatGPT delegates, Codex stages changes, and the maintainer reviews, tests, and merges.

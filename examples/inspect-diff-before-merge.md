@@ -10,3 +10,4 @@ Checklist:
 - Do tests cover the changed behavior?
 - Are mutating actions visible in the result?
 - Did the job use a worktree rather than modifying the original branch directly?
+- If ChatGPT initiated the job, did the result and diff match the user's request before any copy-back or merge?

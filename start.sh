@@ -4,4 +4,4 @@
 cd "$(dirname "$0")"
 
 echo "Starting Codex MCP Server..."
-python3 server.py
+python3 scripts/start.py "$@"

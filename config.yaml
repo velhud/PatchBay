@@ -4,10 +4,38 @@ server:
   max_concurrent_jobs: 1
   job_timeout_seconds: 1800  # 30 minutes
   job_cleanup_after_hours: 24
+  max_request_bytes: 1048576
   enable_cors: false
   allowed_origins:
     - http://127.0.0.1:3000
     - http://localhost:3000
+
+app:
+  widget_domain: https://web-sandbox.oaiusercontent.com
+  tool_mode: full
+
+auth:
+  enabled: false
+  token_env: CODEX_MCP_HTTP_TOKEN
+  allow_query_token: true
+  query_token_names:
+    - codex_mcp_token
+    - codexpro_token
+    - token
+  require_for_non_loopback: true
+  require_for_tunnel: true
+  tunnel_mode: none
+
+tunnel:
+  hostname: ""
+  tunnel_name: ""
+  cloudflared: cloudflared
+  ngrok: ngrok
+  cloudflare_config: ""
+  cloudflare_token_file: ""
+  cloudflare_token_env: CLOUDFLARE_TUNNEL_TOKEN
+  ngrok_config: ""
+  timeout_seconds: 45
 
 repositories:
   projects_base: .
@@ -19,7 +47,6 @@ security:
   require_git_repo: true
   default_sandbox: read-only
   allow_dangerously_bypass: false
-  expose_codex_sandbox_tool: false
   allowed_env_keys:
     - PATH
     - HOME
@@ -28,10 +55,69 @@ security:
     - TMPDIR
     - OPENAI_API_KEY
   allowed_config_override_prefixes: []
+  context_dir: .ai-bridge
+  max_read_bytes: 200000
+  max_write_bytes: 500000
+  max_diff_bytes: 200000
+  max_search_results: 100
+  max_tree_entries: 500
+  max_skill_count: 120
+  max_skill_bytes: 40000
+  blocked_globs:
+    - .git
+    - .git/**
+    - "**/.git/**"
+    - .env
+    - .env.*
+    - "**/.env"
+    - "**/.env.*"
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/*private_key*"
+    - "**/*secret*"
+    - "**/*token*"
+    - node_modules
+    - node_modules/**
+    - __pycache__
+    - __pycache__/**
+    - .pytest_cache
+    - .pytest_cache/**
+    - .venv
+    - .venv/**
+    - venv
+    - venv/**
+    - dist
+    - dist/**
+    - build
+    - build/**
+    - logs
+    - logs/**
+    - worktrees
+    - worktrees/**
+
+power_tools:
+  direct_write: false
+  bash_mode: "off"
+  bash_transcript: compact
+  bash_session_id: ""
+  require_bash_session: false
+  bash_timeout_ms: 30000
+  bash_max_output_bytes: 60000
+  codex_session_read: false
+  codex_home: ""
+  codex_session_max_messages: 80
+  codex_session_max_bytes: 80000
+  codex_session_max_file_bytes: 20000000
+  codex_session_max_scan_files: 3000
+  codex_session_max_scan_depth: 6
 
 logging:
   level: INFO
   audit_file: ./logs/audit.log
   job_logs_dir: ./logs/jobs
+  job_state_dir: ./logs/jobs/state
+  job_log_max_bytes: 200000
+  write_raw_job_logs: false
+  access_log: false
   log_prompt_bodies: false
   log_response_bodies: false

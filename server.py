@@ -10,11 +10,13 @@ This implementation follows the MCP specification for Streamable HTTP transport:
 import asyncio
 import json
 import logging
+import os
 import uuid
 import yaml
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from auth import AuthConfigurationError, auth_public_metadata, build_auth_policy, request_is_authorized
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,9 +34,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Load configuration
-config_path = Path(__file__).parent / 'config.yaml'
+config_path = Path(os.environ.get("CODEX_MCP_CONFIG", Path(__file__).parent / 'config.yaml'))
 with open(config_path) as f:
     config = yaml.safe_load(f)
+
+try:
+    auth_policy = build_auth_policy(config)
+except AuthConfigurationError as exc:
+    raise RuntimeError(str(exc)) from exc
 
 # Setup audit logging
 audit_log_path = Path(config['logging']['audit_file'])
@@ -75,25 +82,87 @@ mcp_protocol = MCPProtocol(config, tool_handler)
 sessions: Dict[str, Dict[str, Any]] = {}
 
 
+class RequestBodyTooLarge(Exception):
+    """Raised when an MCP request body exceeds configured limits."""
+
+
+def _unauthorized_response() -> JSONResponse:
+    return JSONResponse(
+        content={"error": "Unauthorized"},
+        status_code=401,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _unknown_session_response() -> JSONResponse:
+    return JSONResponse(
+        content={
+            "jsonrpc": "2.0",
+            "error": {"code": -32001, "message": "Unknown or expired MCP session"},
+            "id": None,
+        },
+        status_code=404,
+    )
+
+
+def _max_request_bytes() -> int:
+    configured = int(config.get("server", {}).get("max_request_bytes", 1_048_576))
+    return max(1, configured)
+
+
+async def _read_limited_json(request: Request) -> Any:
+    limit = _max_request_bytes()
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > limit:
+                raise RequestBodyTooLarge(f"Request body exceeds max_request_bytes ({limit})")
+        except ValueError as exc:
+            raise json.JSONDecodeError("Invalid Content-Length", content_length, 0) from exc
+
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > limit:
+            raise RequestBodyTooLarge(f"Request body exceeds max_request_bytes ({limit})")
+
+    return json.loads(body.decode("utf-8"))
+
+
+def _authorize_request(request: Request) -> Optional[JSONResponse]:
+    if request_is_authorized(auth_policy, request.headers, request.query_params):
+        return None
+    logger.warning("Unauthorized request rejected: method=%s path=%s", request.method, request.url.path)
+    return _unauthorized_response()
+
+
 @app.get("/")
-async def root():
+async def root(request: Request):
     """Health check endpoint"""
+    unauthorized = _authorize_request(request)
+    if unauthorized:
+        return unauthorized
     return {
         "name": "codex-mcp-wrapper",
         "version": "0.1.0",
         "transport": "streamable-http",
         "status": "running",
         "active_operations": len([j for j in job_manager.jobs.values() if j.state.value == "running"]),
-        "active_sessions": len(sessions)
+        "active_sessions": len(sessions),
+        "auth": auth_public_metadata(auth_policy),
     }
 
 
 @app.get("/status")
-async def status():
+async def status(request: Request):
     """Server status endpoint"""
+    unauthorized = _authorize_request(request)
+    if unauthorized:
+        return unauthorized
     return {
         "server": "healthy",
         "transport": "streamable-http",
+        "auth": auth_public_metadata(auth_policy),
         "jobs": {
             "total": len(job_manager.jobs),
             "pending": len([j for j in job_manager.jobs.values() if j.state.value == "pending"]),
@@ -106,8 +175,11 @@ async def status():
 
 
 @app.get("/mcp")
-async def mcp_get():
+async def mcp_get(request: Request):
     """GET handler for /mcp - stops 405 spam from probing clients"""
+    unauthorized = _authorize_request(request)
+    if unauthorized:
+        return unauthorized
     return JSONResponse(
         content={"transport": "streamable-http", "message": "Use POST /mcp for JSON-RPC"},
         status_code=200,
@@ -124,6 +196,10 @@ async def mcp_endpoint(request: Request):
     - Server returns JSON-RPC responses in HTTP response body
     - Session management via Mcp-Session-Id header
     """
+    unauthorized = _authorize_request(request)
+    if unauthorized:
+        return unauthorized
+
     # Get or create session ID
     session_id = request.headers.get("Mcp-Session-Id")
     is_new_session = False
@@ -138,20 +214,27 @@ async def mcp_endpoint(request: Request):
         }
         logger.info(f"New MCP session created: {session_id}")
     elif session_id not in sessions:
-        # Unknown session ID - create it (be permissive)
-        sessions[session_id] = {
-            "created_at": asyncio.get_event_loop().time(),
-            "last_activity": asyncio.get_event_loop().time()
-        }
-        logger.info(f"Accepted new session ID from client: {session_id}")
+        logger.warning("Rejected unknown MCP session ID: %s", session_id)
+        return _unknown_session_response()
     else:
         # Update last activity
         sessions[session_id]["last_activity"] = asyncio.get_event_loop().time()
     
     # Parse request body
     try:
-        message = await request.json()
-    except json.JSONDecodeError as e:
+        message = await _read_limited_json(request)
+    except RequestBodyTooLarge as e:
+        logger.warning("Request body too large: %s", e)
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "error": {"code": -32000, "message": "Request body too large"},
+                "id": None,
+            },
+            status_code=413,
+            headers={"Mcp-Session-Id": session_id},
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.error(f"Invalid JSON: {e}")
         return JSONResponse(
             content={
@@ -212,6 +295,10 @@ async def mcp_session_delete(request: Request):
     Delete/close an MCP session.
     Per MCP spec, clients can DELETE to close a session.
     """
+    unauthorized = _authorize_request(request)
+    if unauthorized:
+        return unauthorized
+
     session_id = request.headers.get("Mcp-Session-Id")
     
     if session_id and session_id in sessions:
@@ -249,6 +336,7 @@ async def startup_event():
     logger.info("Codex MCP Wrapper starting (Streamable HTTP transport)...")
     logger.info(f"Default repository: {config['repositories']['default']}")
     logger.info(f"Max concurrent jobs: {config['server']['max_concurrent_jobs']}")
+    logger.info("HTTP auth: %s", "enabled" if auth_policy.enabled else "disabled")
     logger.info(f"Endpoint: http://{config['server']['host']}:{config['server']['port']}/mcp")
     
     # Start cleanup task
@@ -260,9 +348,8 @@ async def shutdown_event():
     """Server shutdown tasks"""
     logger.info("Codex MCP Wrapper shutting down...")
     
-    # Clean up all jobs
-    for job_id in list(job_manager.jobs.keys()):
-        job_manager.cleanup_job(job_id)
+    # Preserve durable records for inspection after restart while stopping live subprocesses.
+    await job_executor.cancel_all_running("Server shut down before the job completed.")
     
     # Clear sessions
     sessions.clear()
@@ -300,5 +387,6 @@ if __name__ == "__main__":
         app,
         host=config['server']['host'],
         port=config['server']['port'],
-        log_level="info"
+        log_level="info",
+        access_log=bool(config.get("logging", {}).get("access_log", False)),
     )

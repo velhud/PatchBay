@@ -1,15 +1,12 @@
 # Why This Project Matters
 
-Codex is useful for open-source maintenance, but many maintainers do not work only through one interface. They use local tools, MCP-compatible clients, custom dashboards, scripts, and repository-specific automation.
+Codex and ChatGPT are both useful for software work, but many users move awkwardly between them. They may start in ChatGPT web/Pro, switch to local Codex for execution, then manually copy context, diffs, or session notes back and forth.
 
-`codex-mcp-wrapper` exposes Codex CLI workflows through a local Streamable HTTP MCP server so maintainers can connect Codex to their own tools while keeping repository access explicit and local.
+`codex-mcp-wrapper` exists to remove that manual bridge. It exposes local workspace context and Codex CLI workflows through a local Streamable HTTP MCP server so ChatGPT or another MCP-compatible client can inspect allowed repos, delegate work to local Codex, and review results without importing the whole repository into a chat by hand.
 
-The project focuses on maintainer workflows:
+The project focuses on two combined workflows:
 
-- read-only repository analysis;
-- isolated worktree-based apply jobs;
-- status, result, and diff inspection;
-- review and resume workflows;
-- safer local automation around owned repositories.
+- ChatGPT as a direct workspace coder through bounded read/search/git/context tools;
+- ChatGPT as a controller for local Codex plan/apply/resume jobs.
 
-The long-term goal is not to replace Codex. The goal is to make Codex easier to use inside open maintainer workflows, especially for issue triage, pull request review, release preparation, documentation, test generation, and security hardening.
+The long-term goal is not to replace Codex or ChatGPT. The goal is to make them work together as one local-control development platform for owned or authorized repositories, including issue triage, pull request review, release preparation, documentation, test generation, security hardening, and larger implementation jobs.

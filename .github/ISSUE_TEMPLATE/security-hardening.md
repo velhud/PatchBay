@@ -1,6 +1,6 @@
 ---
 name: Security hardening
-about: Track a local-first security or safety improvement
+about: Track a local-control security or power-boundary improvement
 title: "security: "
 labels: security, maintenance
 ---
@@ -12,7 +12,8 @@ Describe the security improvement.
 ## Scope
 
 - [ ] owned or authorized repositories only
-- [ ] local-first behavior preserved
+- [ ] local-control defaults preserved
+- [ ] public/tunnel behavior requires auth
 - [ ] tests or docs updated
 
 ## Notes
