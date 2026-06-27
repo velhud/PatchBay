@@ -5,11 +5,25 @@ from patchbay.protocol.mcp import (
     PUBLIC_TOOL_DESCRIPTORS,
     PUBLIC_TOOL_NAMES,
     TOOLS,
+    runtime_capability_enabled,
     resolve_public_tool_name,
     tool_descriptors_for_mode,
+    tool_is_available,
+    translate_arguments,
     validate_public_tool_arguments,
 )
 from patchbay.protocol.resources import TOOL_CARD_URI
+
+
+def full_power_config(mode="full"):
+    return {
+        "app": {"tool_mode": mode},
+        "power_tools": {
+            "direct_write": True,
+            "bash_mode": "full",
+            "codex_session_read": True,
+        },
+    }
 
 
 def test_public_tool_names_are_codex_specific():
@@ -97,11 +111,78 @@ def test_compatibility_aliases_are_advertised_and_resolve_to_canonical_tools():
     assert {"read", "edit", "show_changes", "handoff_to_agent"} <= PUBLIC_TOOL_NAMES
 
 
+def test_compatibility_aliases_have_precise_input_schemas():
+    by_name = {tool["name"]: tool for tool in PUBLIC_TOOL_DESCRIPTORS}
+
+    read_schema = by_name["read"]["inputSchema"]
+    assert read_schema["additionalProperties"] is False
+    assert read_schema["required"] == []
+    assert {"required": ["path"]} in read_schema["anyOf"]
+    assert {"required": ["file_path"]} in read_schema["anyOf"]
+    assert {"repo_path", "root", "workspace_root", "path", "file_path", "start_line", "end_line", "max_bytes"} <= set(read_schema["properties"])
+
+    write_schema = by_name["write"]["inputSchema"]
+    assert write_schema["additionalProperties"] is False
+    assert write_schema["required"] == ["content"]
+    assert {"required": ["path"]} in write_schema["anyOf"]
+    assert {"required": ["file_path"]} in write_schema["anyOf"]
+    assert {"create_dirs", "overwrite"} <= set(write_schema["properties"])
+
+    bash_schema = by_name["bash"]["inputSchema"]
+    assert bash_schema["additionalProperties"] is False
+    assert {"command", "cmd", "cwd", "timeout_ms"} <= set(bash_schema["properties"])
+    assert {"required": ["command"]} in bash_schema["anyOf"]
+    assert {"required": ["cmd"]} in bash_schema["anyOf"]
+
+    open_schema = by_name["open_workspace"]["inputSchema"]
+    assert open_schema["additionalProperties"] is False
+    assert {"root", "path", "repo_path", "max_files", "include_skills"} <= set(open_schema["properties"])
+
+
+def test_compatibility_alias_argument_validation_uses_alias_schemas():
+    validate_public_tool_arguments("read", {"path": "README.md"})
+    validate_public_tool_arguments("bash", {"cmd": "pytest -q"})
+    validate_public_tool_arguments("handoff_to_agent", {"task": "Implement the change."})
+
+    with pytest.raises(ValueError, match="Missing required argument 'path'"):
+        validate_public_tool_arguments("read", {})
+
+    validate_public_tool_arguments("read", {"file_path": "README.md"})
+
+    with pytest.raises(ValueError, match="Unknown argument 'unexpected'"):
+        validate_public_tool_arguments("read", {"path": "README.md", "unexpected": True})
+
+    with pytest.raises(ValueError, match="Invalid type for argument 'start_line'"):
+        validate_public_tool_arguments("read", {"path": "README.md", "start_line": "one"})
+
+    with pytest.raises(ValueError, match=r"Missing required argument 'command' or 'cmd'"):
+        validate_public_tool_arguments("bash", {"cwd": "."})
+
+
+def test_compatibility_alias_argument_translation_maps_donor_names():
+    assert translate_arguments({"repo_path": "/repo", "path": "README.md"}, "read") == {
+        "repo": "/repo",
+        "file_path": "README.md",
+    }
+    assert translate_arguments({"path": "/repo", "max_files": 10}, "open_workspace") == {
+        "repo": "/repo",
+        "max_entries": 10,
+    }
+    assert translate_arguments({"cmd": "pytest -q", "root": "/repo"}, "bash") == {
+        "command": "pytest -q",
+        "repo": "/repo",
+    }
+    assert translate_arguments({"path": "README.md", "include_diff": False}, "show_changes") == {
+        "file_path": "README.md",
+        "include_diff": False,
+    }
+
+
 def test_tool_modes_filter_advertised_surface():
-    minimal = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "minimal"}})}
-    standard = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "standard"}})}
-    full = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "full"}})}
-    worker = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "worker"}})}
+    minimal = {tool["name"] for tool in tool_descriptors_for_mode(full_power_config("minimal"))}
+    standard = {tool["name"] for tool in tool_descriptors_for_mode(full_power_config("standard"))}
+    full = {tool["name"] for tool in tool_descriptors_for_mode(full_power_config("full"))}
+    worker = {tool["name"] for tool in tool_descriptors_for_mode(full_power_config("worker"))}
 
     assert {"read", "edit", "show_changes", "codex_read_file", "codex_show_changes"} <= minimal
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= minimal
@@ -117,6 +198,47 @@ def test_tool_modes_filter_advertised_surface():
     assert "codex_get_status" not in worker
     assert "read" not in worker
     assert "show_changes" not in worker
+
+
+def test_tool_surface_hides_runtime_disabled_power_tools_and_aliases():
+    config = {
+        "app": {"tool_mode": "full"},
+        "power_tools": {
+            "direct_write": False,
+            "bash_mode": "off",
+            "codex_session_read": False,
+        },
+    }
+
+    names = {tool["name"] for tool in tool_descriptors_for_mode(config)}
+
+    assert "codex_write_file" not in names
+    assert "codex_edit_file" not in names
+    assert "codex_run_command" not in names
+    assert "codex_read_session" not in names
+    assert "write" not in names
+    assert "edit" not in names
+    assert "bash" not in names
+    assert "read_codex_session" not in names
+
+    assert {"codex_read_file", "read", "codex_show_changes", "show_changes", "codex_write_handoff"} <= names
+    assert tool_is_available(config, "codex_write_file") is False
+    assert tool_is_available(config, "write") is False
+    assert tool_is_available(config, "codex_run_command") is False
+    assert tool_is_available(config, "bash") is False
+    assert tool_is_available(config, "codex_read_session") is False
+    assert tool_is_available(config, "read_codex_session") is False
+
+
+def test_checked_in_full_power_profile_can_expose_power_tools():
+    config = full_power_config("full")
+    names = {tool["name"] for tool in tool_descriptors_for_mode(config)}
+
+    assert {"codex_write_file", "codex_edit_file", "codex_run_command", "codex_read_session"} <= names
+    assert {"write", "edit", "bash", "read_codex_session"} <= names
+    assert runtime_capability_enabled(config, "codex_write_file") is True
+    assert runtime_capability_enabled(config, "codex_run_command") is True
+    assert runtime_capability_enabled(config, "codex_read_session") is True
 
 
 def test_mutating_tools_are_not_readonly():
@@ -288,6 +410,8 @@ def test_public_tool_schema_rejects_wrong_type():
 
 def test_public_tool_schema_accepts_danger_full_access_sandbox():
     validate_public_tool_arguments("codex_plan_job", {"spec": "inspect", "sandbox": "danger-full-access"})
+    validate_public_tool_arguments("codex_resume", {"session_id": "session-123", "spec": "continue", "sandbox": "read-only"})
+    validate_public_tool_arguments("codex_interactive_reply", {"session_id": "session-123", "spec": "continue", "sandbox": "read-only"})
 
 
 def test_public_tool_schema_validates_nested_objects():

@@ -16,6 +16,17 @@ class DummyToolHandler:
         return {"tool_name": tool_name, "arguments": arguments}
 
 
+def full_power_config(mode="full"):
+    return {
+        "app": {"tool_mode": mode},
+        "power_tools": {
+            "direct_write": True,
+            "bash_mode": "full",
+            "codex_session_read": True,
+        },
+    }
+
+
 def test_initialize_includes_server_instructions():
     protocol = MCPProtocol({}, DummyToolHandler())
     result = asyncio.run(protocol._handle_initialize({"protocolVersion": "2025-11-25"}))
@@ -160,7 +171,7 @@ def test_tool_mode_info_is_protocol_handled_and_lists_modes():
 
 def test_tool_mode_switch_changes_process_local_catalog():
     handler = DummyToolHandler()
-    protocol = MCPProtocol({"app": {"tool_mode": "worker"}}, handler)
+    protocol = MCPProtocol(full_power_config("worker"), handler)
 
     before = asyncio.run(protocol._handle_tools_list({}))
     before_names = {tool["name"] for tool in before["tools"]}
@@ -194,7 +205,7 @@ def test_tool_mode_switch_changes_process_local_catalog():
 
 def test_tool_mode_switch_is_session_local_with_request_context():
     handler = DummyToolHandler()
-    config = {"app": {"tool_mode": "worker"}}
+    config = full_power_config("worker")
     protocol = MCPProtocol(config, handler)
     session_a_data = {}
     session_b_data = {}
@@ -383,13 +394,13 @@ def test_resources_list_exposes_tool_card_template():
 
     assert result["resources"] == [
         {
-            "uri": TOOL_CARD_URI,
-            "name": "patchbay-tool-card",
-            "title": "PatchBay Tool Card",
-            "description": "Compact ChatGPT Apps card for PatchBay tool results.",
-            "mimeType": TOOL_CARD_MIME_TYPE,
-        }
-    ]
+                "uri": TOOL_CARD_URI,
+                "name": "patchbay-tool-card",
+                "title": "PatchBay Tool Card",
+                "description": "Rich ChatGPT Apps card for PatchBay worker, artifact, job, diff, and power-tool results.",
+                "mimeType": TOOL_CARD_MIME_TYPE,
+            }
+        ]
 
 
 def test_resources_read_returns_apps_widget_resource():

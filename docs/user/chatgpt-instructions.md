@@ -1,6 +1,6 @@
 # ChatGPT MCP Client Instructions
 
-PatchBay lets ChatGPT turn its conversation context, project memory, generated files, and planning state into local Codex work through MCP Streamable HTTP. Use it when the useful reasoning is already in ChatGPT but the implementation, verification, and diffs need the local repository and local Codex environment.
+PatchBay lets ChatGPT turn its conversation context, project memory, generated files, and planning state into local Codex work through MCP Streamable HTTP. It also exposes stdio for local MCP hosts. Use it when the useful reasoning is already in ChatGPT but the implementation, verification, and diffs need the local repository and local Codex environment.
 
 It supports three primary modes:
 
@@ -16,18 +16,35 @@ Local development endpoint:
 http://127.0.0.1:8000/mcp
 ```
 
+Local stdio MCP hosts can use:
+
+```bash
+patchbay stdio --config config.yaml
+```
+
 Tunnel endpoints must use token auth. Bearer auth is preferred. Query-token URLs are allowed only for copied ChatGPT Server URL flows and must not be logged or shared.
 
 Recommended first ChatGPT launch:
 
 ```bash
-python scripts/start.py --root /absolute/path/to/disposable/repo --tool-mode worker
+patchbay start --root /absolute/path/to/disposable/repo --tool-mode worker
 ```
+
+For a setup preview without starting the server, run:
+
+```bash
+patchbay start --root /absolute/path/to/disposable/repo --tool-mode worker --print-only
+patchbay start --root /absolute/path/to/disposable/repo --tool-mode worker --print-only --json
+```
+
+The text output includes a `ChatGPT setup` section. The JSON output includes
+`setup_guide` with the Server URL, ChatGPT Developer Mode steps, useful
+profile/restart commands, and token/tunnel warnings.
 
 For multi-repository use, the operator must allow every repository when launching the shared server. `--root` sets the default workspace and narrows allowed roots to that workspace unless additional repositories are passed with repeated `--allow-root` flags:
 
 ```bash
-python scripts/start.py \
+patchbay start \
   --root /absolute/path/to/repo-a \
   --allow-root /absolute/path/to/repo-b \
   --tool-mode worker
@@ -59,7 +76,7 @@ Use:
 ```text
 Name: PatchBay
 Description: Route ChatGPT context into local Codex workers
-Connector URL / Server URL: paste the full HTTPS /mcp URL printed by scripts/start.py --reveal-token
+Connector URL / Server URL: paste the full HTTPS /mcp URL printed by patchbay start --reveal-token
 Authentication: No Authentication / None
 ```
 
@@ -209,5 +226,5 @@ Prefer canonical `codex_*` names in persistent instructions and reports. Use ali
 - Async starters return a `job_id`; always poll before fetching final output.
 - `codex_get_result` may include `session_ref`; store it for continuation.
 - `codex_get_diff` is only valid for completed apply jobs and changed files.
-- `codex_list_sessions` returns metadata only.
-- `codex_read_session` is disabled by default because transcripts may contain private prompts, source, or credentials.
+- `codex_list_sessions` returns metadata only from PatchBay job records and configured Codex-home sessions; it does not return transcripts or source paths.
+- `codex_read_session` appears only when the active runtime profile enables transcript reads; otherwise ChatGPT should not see or call it.

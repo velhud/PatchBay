@@ -93,7 +93,10 @@ def test_start_script_supervises_fake_cloudflare_tunnel(tmp_path):
     fake_cloudflared = tmp_path / "fake-cloudflared"
     fake_cloudflared.write_text(
         "#!/usr/bin/env python3\n"
-        "import time\n"
+        "import sys, time\n"
+        "if '--version' in sys.argv:\n"
+        "    print('cloudflared fixture 0.0.0')\n"
+        "    raise SystemExit(0)\n"
         "print('https://unit-test.trycloudflare.com', flush=True)\n"
         "time.sleep(60)\n",
         encoding="utf-8",

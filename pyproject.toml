@@ -45,6 +45,10 @@ test = [
 Homepage = "https://github.com/velhud/PatchBay"
 Issues = "https://github.com/velhud/PatchBay/issues"
 
+[project.scripts]
+patchbay = "patchbay.cli:main"
+patchbay-stdio = "patchbay.stdio:main"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 include-package-data = true
@@ -53,7 +57,19 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-patchbay = ["protocol/schemas/*.json", "py.typed"]
+patchbay = [
+  "protocol/schemas/*.json",
+  "py.typed",
+  "donors/codexpro/**/*.css",
+  "donors/codexpro/**/*.env",
+  "donors/codexpro/**/*.html",
+  "donors/codexpro/**/*.js",
+  "donors/codexpro/**/*.json",
+  "donors/codexpro/**/*.md",
+  "donors/codexpro/**/*.mjs",
+  "donors/codexpro/**/*.svg",
+  "donors/codexpro/**/*.ts"
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

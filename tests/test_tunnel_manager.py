@@ -1,7 +1,10 @@
 import pytest
 
 from patchbay.connector.tunnels import (
+    cloudflared_release_asset,
     ProcessLogTail,
+    resolve_cloudflared,
+    resolve_ngrok,
     TunnelConfigurationError,
     build_tunnel_spec,
     mcp_url_from_public_base,
@@ -44,6 +47,24 @@ def test_build_cloudflare_quick_spec():
     assert spec.command == "cf"
     assert spec.args == ["tunnel", "--url", "http://127.0.0.1:8000"]
     assert spec.discover_cloudflare_url is True
+
+
+def test_resolve_tunnel_binaries_run_version_checks(tmp_path):
+    fake_cloudflared = tmp_path / "cloudflared"
+    fake_cloudflared.write_text("#!/usr/bin/env python3\nimport sys\nprint('cloudflared fixture')\n", encoding="utf-8")
+    fake_cloudflared.chmod(0o700)
+    fake_ngrok = tmp_path / "ngrok"
+    fake_ngrok.write_text("#!/usr/bin/env python3\nprint('ngrok fixture')\n", encoding="utf-8")
+    fake_ngrok.chmod(0o700)
+
+    assert resolve_cloudflared(str(fake_cloudflared)) == str(fake_cloudflared)
+    assert resolve_ngrok(str(fake_ngrok)) == str(fake_ngrok)
+
+
+def test_cloudflared_release_asset_mapping():
+    assert cloudflared_release_asset("Darwin", "arm64").file_name == "cloudflared-darwin-arm64.tgz"
+    assert cloudflared_release_asset("Linux", "x86_64").file_name == "cloudflared-linux-amd64"
+    assert cloudflared_release_asset("Windows", "AMD64").file_name == "cloudflared-windows-amd64.exe"
 
 
 def test_build_ngrok_spec_requires_https_hostname():

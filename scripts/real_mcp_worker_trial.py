@@ -29,7 +29,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v1.html"
+TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v2.html"
 REQUIRED_WORKER_TOOLS = {
     "codex_open_workspace",
     "codex_worker_options",

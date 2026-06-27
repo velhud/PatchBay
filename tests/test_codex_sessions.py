@@ -4,7 +4,7 @@ import pytest
 
 from patchbay.jobs.sessions import CodexSessionReader
 from patchbay.jobs.executor import JobExecutor
-from patchbay.jobs.manager import JobManager
+from patchbay.jobs.manager import JobManager, JobState
 from patchbay.tools.handler import ToolHandler
 
 
@@ -115,6 +115,30 @@ def test_codex_session_read_is_disabled_by_default(tmp_path):
         reader.read_session({"session_id": SESSION_ID})
 
 
+def test_codex_session_list_discovers_codex_home_metadata_without_transcripts_or_paths(tmp_path):
+    config = make_config(tmp_path, enabled=False)
+    write_session(config)
+    reader = CodexSessionReader(config)
+
+    result = reader.list_sessions({"query": "inspect"})
+    serialized = json.dumps(result)
+
+    assert result["count"] == 1
+    assert result["total_found"] == 1
+    assert result["transcripts_returned"] is False
+    assert result["paths_returned"] is False
+    assert result["source_path_returned"] is False
+    session = result["sessions"][0]
+    assert session["session_id"] == SESSION_ID
+    assert session["source"] == "codex_home"
+    assert session["known_to_patchbay"] is False
+    assert session["transcript_available"] is False
+    assert "source_path" not in session
+    assert "_project_dir" not in session
+    assert "/private/path/that/must/not/return" not in serialized
+    assert "fixture-value" not in serialized
+
+
 def test_codex_session_read_returns_bounded_redacted_transcript(tmp_path):
     config = make_config(tmp_path, enabled=True)
     write_session(config)
@@ -134,6 +158,7 @@ def test_codex_session_read_returns_bounded_redacted_transcript(tmp_path):
     assert result["transcript_returned"] is True
     assert result["paths_returned"] is False
     assert result["source_path_returned"] is False
+    assert "_project_dir" not in result["session"]
 
 
 def test_codex_session_read_caps_messages_and_bytes(tmp_path):
@@ -173,3 +198,37 @@ async def test_codex_read_session_tool_uses_power_gate(tmp_path):
 
     assert result["session"]["session_id"] == SESSION_ID
     assert result["transcript_returned"] is True
+
+
+@pytest.mark.asyncio
+async def test_codex_list_sessions_merges_patchbay_and_codex_home_sources(tmp_path):
+    config = make_config(tmp_path, enabled=True)
+    write_session(config)
+    manager = JobManager(config)
+    job_id = manager.create_job("interactive", "prompt must not return", config["repositories"]["default"], {})
+    manager.update_job_state(
+        job_id,
+        JobState.COMPLETED,
+        result={"summary": "job summary"},
+        session_id=SESSION_ID,
+        exit_code=0,
+    )
+    handler = ToolHandler(config, manager, JobExecutor(config, manager))
+
+    result = await handler.handle_tool_call("codex_list_sessions", {"query": "inspect"})
+    serialized = json.dumps(result)
+
+    assert result["count"] == 1
+    assert result["total_known"] == 1
+    assert result["patchbay_known"] == 1
+    assert result["codex_home_known"] == 1
+    session = result["sessions"][0]
+    assert session["session_id"] == SESSION_ID
+    assert session["known_to_patchbay"] is True
+    assert session["sources"] == ["patchbay_job", "codex_home"]
+    assert session["last_job_id"] == job_id
+    assert session["transcript_available"] is True
+    assert "source_path" not in session
+    assert "_project_dir" not in session
+    assert "prompt must not return" not in serialized
+    assert config["repositories"]["default"] not in serialized

@@ -172,7 +172,9 @@ Optional public tunnel process supervision is now implemented for Cloudflare qui
 
 ## Phase 7: Power Modes
 
-Status: implemented as optional server-side power modes, disabled by default, with tests.
+Status: implemented as server-side power modes with runtime descriptor
+truthfulness. The current checked-in profile is intentionally full-power;
+narrower profiles hide disabled tools and aliases from `tools/list`.
 
 Add optional high-power features:
 
@@ -185,10 +187,10 @@ Add optional high-power features:
 
 Each power feature needs:
 
-- default off;
 - explicit config/profile setting;
+- descriptor truthfulness when disabled;
 - descriptor annotations;
-- docs warning;
+- docs that describe operator control boundaries;
 - regression tests;
 - redaction and output caps;
 - clear tool names.
@@ -212,8 +214,10 @@ The first hybrid release is ready when:
 - Raw prompts, tokens, and full outputs are not logged by default.
 - Public descriptors pass mutability and schema tests.
 - Tunnels fail closed without auth.
-- Direct edit/bash/session transcript tools are disabled by default.
-- README and examples describe actual behavior without overstating safety.
+- Direct edit/bash/session transcript descriptors match the active runtime
+  profile.
+- README and examples describe actual behavior without pretending the
+  checked-in profile is reduced-power.
 
 ## Do Not Do
 

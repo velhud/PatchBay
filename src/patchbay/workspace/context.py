@@ -666,10 +666,17 @@ class WorkspaceContext:
     def git_status_text(self, args: Dict[str, Any]) -> Dict[str, Any]:
         workspace = self.open_workspace(args.get("repo"))
         porcelain = bool(args.get("porcelain", False))
+        file_path = args.get("file_path")
+        rel = ""
+        if file_path:
+            _target, rel = self.resolve_path(workspace, str(file_path))
         command = ["status", "--short", "--branch"] if porcelain else ["status", "--short", "--branch"]
+        if rel:
+            command.extend(["--", rel])
         text = self._run_git(workspace, command)
         return {
             "workspace_id": workspace.id,
+            "path": rel,
             "text": text.strip() or "No git changes.",
             "status_short": text.strip().splitlines()[:200],
             "git": self.git_summary(workspace),
@@ -701,8 +708,15 @@ class WorkspaceContext:
         include_diff = bool(args.get("include_diff", True))
         staged = bool(args.get("staged", False))
         max_diff_bytes = min(int(args.get("max_diff_bytes") or 120_000), 500_000)
-        status = self.git_status_text({"repo": str(workspace.root)})
-        diff = self.git_diff(workspace, staged=staged, max_bytes=max_diff_bytes) if include_diff else ""
+        file_path = args.get("file_path") or args.get("path")
+        rel = ""
+        if file_path:
+            _target, rel = self.resolve_path(workspace, str(file_path))
+        status_args = {"repo": str(workspace.root)}
+        if rel:
+            status_args["file_path"] = rel
+        status = self.git_status_text(status_args)
+        diff = self.git_diff(workspace, rel_path=rel or None, staged=staged, max_bytes=max_diff_bytes) if include_diff else ""
         stats = self.diff_stats(diff)
         text_parts = [
             "# Workspace Changes",
@@ -721,6 +735,7 @@ class WorkspaceContext:
             text_parts.extend(["", "## Diff", "", "```diff", diff or "No git diff.", "```"])
         return {
             "workspace_id": workspace.id,
+            "path": rel,
             "git": status["git"],
             "status": status["text"],
             "diff": diff,

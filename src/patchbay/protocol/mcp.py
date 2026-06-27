@@ -588,6 +588,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Owned or authorized repository path under configured allowed roots. Defaults to configured repository.",
                 },
+                "file_path": {"type": "string", "description": "Optional workspace-relative file path to scope the review."},
                 "include_diff": {"type": "boolean", "description": "Include the bounded diff. Default: true."},
                 "staged": {"type": "boolean", "description": "Show staged diff. Default: false."},
                 "max_diff_bytes": {"type": "integer", "description": "Maximum diff bytes. Capped by server policy."},
@@ -863,10 +864,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Owned or authorized repository path under configured allowed roots.",
                 },
-                "model": CODEX_COMMON_PARAMS["model"],
-                "images": CODEX_COMMON_PARAMS["images"],
-                "full_auto": CODEX_COMMON_PARAMS["full_auto"],
-                "config_overrides": CODEX_COMMON_PARAMS["config_overrides"],
+                **CODEX_COMMON_PARAMS,
             },
             "required": ["session_id"],
         },
@@ -886,6 +884,10 @@ TOOLS = [
                 "max_sessions": {
                     "type": "integer",
                     "description": "Maximum sessions to return. Capped at 100. Default: 20.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional case-insensitive search over bounded session metadata.",
                 },
             },
             "required": [],
@@ -956,6 +958,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Owned or authorized repository path under configured allowed roots.",
                 },
+                **CODEX_COMMON_PARAMS,
             },
             "required": ["session_id", "spec"],
         },
@@ -1058,6 +1061,266 @@ COMPATIBILITY_TOOL_ALIASES = {
     "read_codex_session": "codex_read_session",
 }
 
+
+def _string_arg(description: str) -> Dict[str, Any]:
+    return {"type": "string", "description": description}
+
+
+def _boolean_arg(description: str) -> Dict[str, Any]:
+    return {"type": "boolean", "description": description}
+
+
+def _integer_arg(description: str) -> Dict[str, Any]:
+    return {"type": "integer", "description": description}
+
+
+def _string_array_arg(description: str) -> Dict[str, Any]:
+    return {"type": "array", "items": {"type": "string"}, "description": description}
+
+
+def _alias_input_schema(
+    properties: Dict[str, Any],
+    *,
+    required: tuple[str, ...] = (),
+    any_of: tuple[tuple[str, ...], ...] = (),
+) -> Dict[str, Any]:
+    schema: Dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": list(required),
+    }
+    if any_of:
+        schema["anyOf"] = [{"required": list(option)} for option in any_of]
+    return schema
+
+
+def _repo_selector_properties() -> Dict[str, Any]:
+    return {
+        "repo_path": _string_arg("Owned or authorized repository path under configured allowed roots."),
+        "root": _string_arg("Compatibility alias for repo_path."),
+        "workspace_root": _string_arg("Compatibility alias for repo_path."),
+    }
+
+
+def _file_alias_properties(path_description: str) -> Dict[str, Any]:
+    return {
+        **_repo_selector_properties(),
+        "path": _string_arg(path_description),
+        "file_path": _string_arg("Compatibility alias for path."),
+    }
+
+
+ALIAS_INPUT_SCHEMAS = {
+    "server_config": _alias_input_schema({}),
+    "open_current_workspace": _alias_input_schema(
+        {
+            "repo_path": _string_arg("Optional repository path. Defaults to the configured workspace."),
+            "include_tree": _boolean_arg("Include a bounded repository tree. Default: true."),
+            "max_depth": _integer_arg("Maximum tree depth. Capped by server policy."),
+            "max_entries": _integer_arg("Maximum tree entries. Capped by server policy."),
+            "include_hidden": _boolean_arg("Include hidden files when not blocked by safety rules. Default: false."),
+            "include_skills": _boolean_arg("Discover workspace, user, and plugin skills. Default: true."),
+            "include_global_skills": _boolean_arg("Also scan installed user/plugin skill folders. Default: true."),
+            "max_skills": _integer_arg("Maximum skills to inspect. Capped by server policy."),
+        }
+    ),
+    "open_workspace": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "path": _string_arg("Compatibility alias for root/repo_path."),
+            "include_tree": _boolean_arg("Include a bounded repository tree. Default: true."),
+            "max_depth": _integer_arg("Maximum tree depth. Capped by server policy."),
+            "max_files": _integer_arg("Compatibility alias for max_entries."),
+            "max_entries": _integer_arg("Maximum tree entries. Capped by server policy."),
+            "include_hidden": _boolean_arg("Include hidden files when not blocked by safety rules. Default: false."),
+            "include_skills": _boolean_arg("Discover workspace, user, and plugin skills. Default: true."),
+            "include_global_skills": _boolean_arg("Also scan installed user/plugin skill folders. Default: true."),
+            "max_skills": _integer_arg("Maximum skills to inspect. Capped by server policy."),
+            "bootstrap_context": _boolean_arg("Deprecated compatibility flag; ignored by PatchBay."),
+        }
+    ),
+    "list_workspaces": _alias_input_schema({}),
+    "workspace_snapshot": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "path": _string_arg("Workspace-relative directory path for the tree. Default: repository root."),
+            "max_depth": _integer_arg("Maximum tree depth. Default: 3."),
+            "max_files": _integer_arg("Compatibility alias for max_entries."),
+            "max_entries": _integer_arg("Maximum tree entries. Default: 300."),
+            "max_commits": _integer_arg("Maximum recent commits. Default: 8."),
+            "include_hidden": _boolean_arg("Include hidden files when not blocked. Default: false."),
+        }
+    ),
+    "tree": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "path": _string_arg("Workspace-relative directory path. Default: repository root."),
+            "max_depth": _integer_arg("Maximum tree depth. Capped by server policy."),
+            "max_entries": _integer_arg("Maximum tree entries. Capped by server policy."),
+            "include_hidden": _boolean_arg("Include hidden files when not blocked by safety rules. Default: false."),
+        }
+    ),
+    "search": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "query": _string_arg("Search query."),
+            "path": _string_arg("Workspace-relative file or directory to search. Default: repository root."),
+            "glob": _string_arg("Optional file glob, such as **/*.py."),
+            "regex": _boolean_arg("Treat query as a regular expression. Default: false."),
+            "include_hidden": _boolean_arg("Include hidden files when not blocked by safety rules. Default: false."),
+            "max_results": _integer_arg("Maximum search results, capped by server policy."),
+        },
+        required=("query",),
+    ),
+    "read": _alias_input_schema(
+        {
+            **_file_alias_properties("Workspace-relative file path to read."),
+            "start_line": _integer_arg("1-based start line. Default: 1."),
+            "end_line": _integer_arg("1-based inclusive end line. Default: file end."),
+            "max_bytes": _integer_arg("Maximum bytes to read, capped by server policy."),
+        },
+        any_of=(("path",), ("file_path",)),
+    ),
+    "write": _alias_input_schema(
+        {
+            **_file_alias_properties("Workspace-relative file path to create or overwrite."),
+            "content": _string_arg("Complete UTF-8 text content to write."),
+            "create_dirs": _boolean_arg("Create missing parent directories. Default: true."),
+            "overwrite": _boolean_arg("Allow overwriting an existing file. Default: true."),
+        },
+        required=("content",),
+        any_of=(("path",), ("file_path",)),
+    ),
+    "edit": _alias_input_schema(
+        {
+            **_file_alias_properties("Workspace-relative file path to edit."),
+            "old_text": _string_arg("Exact text to replace. Must match once unless replace_all=true."),
+            "new_text": _string_arg("Replacement text."),
+            "replace_all": _boolean_arg("Replace all occurrences. Default: false."),
+            "expected_replacements": _integer_arg("Fail if actual replacement count differs."),
+        },
+        required=("old_text", "new_text"),
+        any_of=(("path",), ("file_path",)),
+    ),
+    "bash": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "command": _string_arg("Command to run."),
+            "cmd": _string_arg("Compatibility alias for command."),
+            "session_id": _string_arg("Optional bash session id when the server requires one."),
+            "cwd": _string_arg("Working directory relative to workspace root. Default: ."),
+            "timeout_ms": _integer_arg("Timeout in milliseconds. Default: configured server timeout."),
+        },
+        any_of=(("command",), ("cmd",)),
+    ),
+    "git_status": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "porcelain": _boolean_arg("Return short porcelain-style status. Default: true."),
+        }
+    ),
+    "git_diff": _alias_input_schema(
+        {
+            **_file_alias_properties("Optional workspace-relative file path."),
+            "staged": _boolean_arg("Show staged diff. Default: false."),
+            "max_bytes": _integer_arg("Maximum diff bytes. Capped by server policy."),
+        }
+    ),
+    "show_changes": _alias_input_schema(
+        {
+            **_file_alias_properties("Optional workspace-relative file path to scope the review."),
+            "staged": _boolean_arg("Show staged diff. Default: false."),
+            "include_diff": _boolean_arg("Include the bounded diff. Default: true."),
+            "max_diff_bytes": _integer_arg("Maximum diff bytes. Capped by server policy."),
+        }
+    ),
+    "read_handoff": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "create_if_missing": _boolean_arg("Create scaffolded .ai-bridge files before reading. Default: false."),
+        }
+    ),
+    "codex_context": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "target_path": _string_arg("Workspace-relative path whose AGENTS instruction chain should be loaded."),
+            "selected_paths": _string_array_arg("Workspace-relative files to include in the context bundle."),
+            "include_ai_bridge": _boolean_arg("Include readable .ai-bridge handoff files. Default: true."),
+            "include_git": _boolean_arg("Include git summary. Default: true."),
+            "include_diff": _boolean_arg("Include current git diff. Default: false."),
+            "max_file_bytes": _integer_arg("Maximum bytes per selected file, capped by server policy."),
+        }
+    ),
+    "export_pro_context": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "title": _string_arg("Context bundle title."),
+            "target_path": _string_arg("Workspace-relative path whose AGENTS instruction chain should be loaded."),
+            "selected_paths": _string_array_arg("Workspace-relative files to include in the context bundle."),
+            "include_ai_bridge": _boolean_arg("Include readable .ai-bridge handoff files. Default: true."),
+            "include_git": _boolean_arg("Include git summary. Default: true."),
+            "include_diff": _boolean_arg("Include current git diff. Default: false."),
+            "max_file_bytes": _integer_arg("Maximum bytes per selected file, capped by server policy."),
+        }
+    ),
+    "load_skill": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "name": _string_arg("Exact skill name from codex_open_workspace or codex_list_skills."),
+            "source": {
+                "type": "string",
+                "enum": ["workspace", "user", "plugin", "other"],
+                "description": "Optional source when multiple skills share a name.",
+            },
+            "path": _string_arg("Exact sanitized path from skill_inventory when name/source are still ambiguous."),
+            "include_global_skills": _boolean_arg("Also scan installed user/plugin skill folders. Default: true."),
+            "max_skills": _integer_arg("Maximum skills to inspect while resolving the name."),
+            "max_bytes": _integer_arg("Maximum bytes to return from SKILL.md. Capped by server policy."),
+        },
+        required=("name",),
+    ),
+    "handoff_to_agent": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "agent": _string_arg("Target local agent name. Default: codex."),
+            "agent_name": _string_arg("Human-readable agent name for custom agents."),
+            "model": _string_arg("Optional model hint to include in the handoff file."),
+            "title": _string_arg("Handoff title."),
+            "plan": _string_arg("Plan for the local implementation agent."),
+            "task": _string_arg("Compatibility alias for plan."),
+            "append": _boolean_arg("Append to current-plan.md instead of overwriting. Default: false."),
+        },
+        any_of=(("plan",), ("task",)),
+    ),
+    "handoff_to_codex": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "title": _string_arg("Handoff title."),
+            "plan": _string_arg("Plan for Codex."),
+            "task": _string_arg("Compatibility alias for plan."),
+            "append": _boolean_arg("Append to current-plan.md instead of overwriting. Default: false."),
+        },
+        any_of=(("plan",), ("task",)),
+    ),
+    "codex_sessions": _alias_input_schema(
+        {
+            **_repo_selector_properties(),
+            "max_sessions": _integer_arg("Maximum sessions to return. Capped by server policy."),
+            "query": _string_arg("Optional case-insensitive search over bounded session metadata."),
+        }
+    ),
+    "read_codex_session": _alias_input_schema(
+        {
+            "session_id": _string_arg("Codex session/thread ID to read."),
+            "max_messages": _integer_arg("Maximum transcript messages to return. Capped by server policy."),
+            "max_total_bytes": _integer_arg("Maximum transcript content bytes to return. Capped by server policy."),
+        },
+        required=("session_id",),
+    ),
+}
+
+
 ALIAS_TOOL_NAMES = set(COMPATIBILITY_TOOL_ALIASES)
 PUBLIC_TOOL_NAMES |= ALIAS_TOOL_NAMES
 
@@ -1155,6 +1418,10 @@ NON_IDEMPOTENT_TOOLS = {
 NON_IDEMPOTENT_TOOLS |= {
     alias for alias, canonical in COMPATIBILITY_TOOL_ALIASES.items() if canonical in NON_IDEMPOTENT_TOOLS
 }
+
+DIRECT_WRITE_TOOLS = {"codex_write_file", "codex_edit_file"}
+BASH_POWER_TOOLS = {"codex_run_command"}
+SESSION_READ_POWER_TOOLS = {"codex_read_session"}
 
 TOOL_INVOCATION_STATUS = {
     "codex_open_workspace": ("Opening workspace", "Workspace opened"),
@@ -1691,17 +1958,13 @@ def _alias_title(alias_name: str) -> str:
 def alias_tool_descriptor(alias_name: str, canonical_name: str) -> Dict[str, Any]:
     """Expose compatibility names without making them the internal architecture."""
     canonical = TOOLS_BY_NAME[canonical_name]
+    input_schema = ALIAS_INPUT_SCHEMAS.get(alias_name, canonical["inputSchema"])
     descriptor = enrich_tool_descriptor(
         {
             "name": alias_name,
             "title": _alias_title(alias_name),
-            "description": f"Compatibility alias for {canonical_name}: {canonical['description']}",
-            "inputSchema": {
-                "type": "object",
-                "additionalProperties": True,
-                "properties": {},
-                "required": [],
-            },
+            "description": f"Compatibility alias for {canonical_name}, with CodexPro-derived argument names adapted to PatchBay.",
+            "inputSchema": copy.deepcopy(input_schema),
             "readOnlyHint": canonical["readOnlyHint"],
         }
     )
@@ -1845,10 +2108,35 @@ def _validate_value_against_schema(name: str, value: Any, schema: Dict[str, Any]
             if child_schema:
                 _validate_value_against_schema(f"{name}.{child_name}", child_value, child_schema)
 
+        _validate_any_of_required(value, schema.get("anyOf", []), prefix=name)
+
+
+def _required_option_label(required_names: list[str], *, prefix: str = "") -> str:
+    labels = []
+    for required_name in required_names:
+        labels.append(f"'{prefix}.{required_name}'" if prefix else f"'{required_name}'")
+    return " and ".join(labels)
+
+
+def _validate_any_of_required(value: Dict[str, Any], any_of: list[Dict[str, Any]], *, prefix: str = "") -> None:
+    """Validate the small anyOf/required subset used by compatibility alias schemas."""
+    if not any_of:
+        return
+
+    required_options = [option.get("required", []) for option in any_of if option.get("required")]
+    if not required_options:
+        return
+
+    if any(all(required_name in value for required_name in required_names) for required_names in required_options):
+        return
+
+    labels = [_required_option_label(list(required_names), prefix=prefix) for required_names in required_options]
+    raise ValueError(f"Missing required argument {' or '.join(labels)}")
+
 
 def validate_public_tool_arguments(tool_name: str, external_args: Dict[str, Any]) -> None:
     """Validate advertised public tool arguments before internal name translation."""
-    tool = TOOLS_BY_NAME.get(tool_name)
+    tool = PUBLIC_TOOL_DESCRIPTORS_BY_NAME.get(tool_name) or TOOLS_BY_NAME.get(tool_name)
     if not tool:
         raise ValueError(f"Unknown or unavailable tool: {tool_name}")
 
@@ -1870,6 +2158,8 @@ def validate_public_tool_arguments(tool_name: str, external_args: Dict[str, Any]
         arg_schema = properties.get(arg_name)
         if arg_schema:
             _validate_value_against_schema(arg_name, value, arg_schema)
+
+    _validate_any_of_required(external_args, schema.get("anyOf", []))
 
 
 def redact_sensitive_output(data: Any) -> Any:
@@ -1913,7 +2203,12 @@ def _alias_argument_mapping(external_tool_name: str | None) -> Dict[str, str]:
         "workspace_root": "repo",
         "repo_path": "repo",
     }
-    if external_tool_name in {"read", "write", "edit", "git_diff"}:
+    if external_tool_name == "open_workspace":
+        mapping["path"] = "repo"
+        mapping["bootstrap_context"] = "_ignored_bootstrap_context"
+    if external_tool_name in {"open_workspace", "workspace_snapshot"}:
+        mapping["max_files"] = "max_entries"
+    if external_tool_name in {"read", "write", "edit", "git_diff", "show_changes"}:
         mapping["path"] = "file_path"
     if external_tool_name in {"bash"}:
         mapping["cmd"] = "command"
@@ -1997,7 +2292,24 @@ def tool_is_available(config: Dict[str, Any], external_tool_name: str, *, mode: 
     if mode == "worker" and external_tool_name in COMPATIBILITY_TOOL_ALIASES:
         return False
     canonical = COMPATIBILITY_TOOL_ALIASES.get(external_tool_name, external_tool_name)
-    return canonical in TOOL_MODE_CANONICAL[mode]
+    return canonical in TOOL_MODE_CANONICAL[mode] and runtime_capability_enabled(config, canonical)
+
+
+def runtime_capability_enabled(config: Dict[str, Any], canonical_tool_name: str) -> bool:
+    """Return whether runtime config can actually execute this canonical tool."""
+    power = config.get("power_tools")
+    power_tools = power if isinstance(power, dict) else {}
+
+    if canonical_tool_name in DIRECT_WRITE_TOOLS:
+        return bool(power_tools.get("direct_write", False))
+
+    if canonical_tool_name in BASH_POWER_TOOLS:
+        return str(power_tools.get("bash_mode", "off")).strip().lower() in {"safe", "full"}
+
+    if canonical_tool_name in SESSION_READ_POWER_TOOLS:
+        return bool(power_tools.get("codex_session_read", False))
+
+    return True
 
 
 def tool_descriptors_for_mode(config: Dict[str, Any], *, mode: Optional[str] = None) -> list[Dict[str, Any]]:
@@ -2220,8 +2532,8 @@ class MCPProtocol:
             raise ValueError(f"Tool is unavailable in {current_mode} mode: {external_tool_name}")
 
         internal_tool_name = resolve_public_tool_name(external_tool_name)
-        if external_tool_name == internal_tool_name:
-            validate_public_tool_arguments(internal_tool_name, external_arguments)
+        if external_tool_name in PUBLIC_TOOL_DESCRIPTORS_BY_NAME:
+            validate_public_tool_arguments(external_tool_name, external_arguments)
         internal_arguments = {
             key: value
             for key, value in translate_arguments(external_arguments, external_tool_name).items()

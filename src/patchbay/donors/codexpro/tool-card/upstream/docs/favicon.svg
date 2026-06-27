@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="CodexPro mark">
+  <rect width="64" height="64" rx="14" fill="#0b1220"/>
+  <path d="M20 19h24v7H27v12h17v7H20V19Z" fill="#67e8f9"/>
+  <path d="M32 26h12v12H32v-6h6v-1h-6v-5Z" fill="#34d399"/>
+</svg>

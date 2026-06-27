@@ -25,12 +25,14 @@ This project is intended for authorized local use on repositories the operator o
 - using Codex Security against systems or repositories the operator does not own or maintain
 - storing or processing private customer code without authorization
 
-## Default Security Posture
+## Runtime Boundary Posture
 
 - bind to `127.0.0.1`
 - require token auth for non-loopback and tunnel modes
 - require configured repository roots
 - require git repositories
-- read-only sandbox by default
-- dangerous bypass disabled
+- treat the checked-in local profile as intentionally full-power
+- make sandbox and dangerous-bypass behavior explicit in runtime config and
+  diagnostics
+- hide disabled power tools from `tools/list` in narrowed profiles
 - review diffs before merging generated changes

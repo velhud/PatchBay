@@ -801,6 +801,7 @@ class ToolHandler:
         if args.get("repo"):
             repo_filter = self._repo_from_args(args)
         max_sessions = max(1, min(int(args.get("max_sessions") or 20), 100))
+        query = str(args.get("query") or "").strip().lower()
 
         by_session: Dict[str, Dict[str, Any]] = {}
         sorted_jobs = sorted(
@@ -818,6 +819,7 @@ class ToolHandler:
 
             result = job.result or {}
             summary = result.get("summary") if isinstance(result, dict) else None
+            title = result.get("title") if isinstance(result, dict) else None
             files_changed = result.get("files_changed") if isinstance(result, dict) else None
             workspace_id = "ws_" + hashlib.sha256(str(Path(job.repo_path).resolve()).encode("utf-8")).hexdigest()[:24]
             by_session[job.session_id] = {
@@ -828,11 +830,51 @@ class ToolHandler:
                 "started_at": job.started_at,
                 "completed_at": job.completed_at,
                 "workspace_id": workspace_id,
+                "source": "patchbay_job",
+                "sources": ["patchbay_job"],
+                "known_to_patchbay": True,
                 "summary": redact_sensitive_output(summary) if summary else "",
                 "files_changed": redact_sensitive_output(files_changed) if isinstance(files_changed, list) else [],
             }
+            if title:
+                by_session[job.session_id]["title"] = redact_sensitive_output(title)
 
-        sessions = list(by_session.values())
+        discovered = self.codex_sessions.list_sessions(
+            {
+                "repo": repo_filter,
+                "max_sessions": max(200, max_sessions),
+            }
+        )
+        for session in discovered["sessions"]:
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                continue
+            existing = by_session.get(session_id)
+            if existing:
+                sources = list(dict.fromkeys([*(existing.get("sources") or [existing.get("source", "patchbay_job")]), "codex_home"]))
+                existing["sources"] = sources
+                existing["source"] = "+".join(sources)
+                existing["known_to_patchbay"] = True
+                existing["transcript_available"] = session.get("transcript_available", False)
+                for field in ["title", "summary", "created_at", "last_active_at", "resume_command", "project"]:
+                    if not existing.get(field) and session.get(field):
+                        existing[field] = session[field]
+                continue
+            by_session[session_id] = dict(session)
+
+        sessions = sorted(
+            by_session.values(),
+            key=lambda item: item.get("completed_at")
+            or item.get("last_active_at")
+            or item.get("started_at")
+            or item.get("created_at")
+            or 0,
+            reverse=True,
+        )
+        if query:
+            sessions = [session for session in sessions if self._session_matches_query(session, query)]
+        patchbay_known = sum(1 for session in sessions if "patchbay_job" in (session.get("sources") or [session.get("source")]))
+        codex_home_known = sum(1 for session in sessions if "codex_home" in (session.get("sources") or [session.get("source")]))
         return {
             "sessions": sessions[:max_sessions],
             "count": min(len(sessions), max_sessions),
@@ -840,7 +882,24 @@ class ToolHandler:
             "truncated": len(sessions) > max_sessions,
             "transcripts_returned": False,
             "repo_paths_returned": False,
+            "paths_returned": False,
+            "source_path_returned": False,
+            "patchbay_known": patchbay_known,
+            "codex_home_known": codex_home_known,
         }
+
+    def _session_matches_query(self, session: Dict[str, Any], query: str) -> bool:
+        haystack = "\n".join(
+            str(value or "")
+            for value in [
+                session.get("session_id"),
+                session.get("title"),
+                session.get("summary"),
+                session.get("project"),
+                session.get("mode"),
+            ]
+        ).lower()
+        return query in haystack
 
     async def _codex_read_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read a bounded Codex transcript only when session-read power mode is enabled."""

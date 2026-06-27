@@ -6,7 +6,7 @@
 
 <p align="center">
   <img alt="Status: pre-release verified" src="https://img.shields.io/badge/status-pre--release%20verified-orange">
-  <img alt="MCP: Streamable HTTP" src="https://img.shields.io/badge/MCP-Streamable%20HTTP-blue">
+  <img alt="MCP: Streamable HTTP and stdio" src="https://img.shields.io/badge/MCP-HTTP%20%2B%20stdio-blue">
   <img alt="Runtime: Python and FastAPI" src="https://img.shields.io/badge/runtime-Python%20%2B%20FastAPI-3776AB">
   <img alt="Codex CLI baseline: 0.142.2" src="https://img.shields.io/badge/Codex%20CLI-0.142.2-black">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
@@ -43,7 +43,7 @@ This branch is **pre-release verified**, not public-release complete.
 | --- | --- |
 | Codex CLI baseline | Verified with `codex-cli 0.142.2` |
 | Python checks | `compileall` passes |
-| Test suite | `238` tests pass |
+| Test suite | `259` tests pass |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |
 | Isolated writing worker eval | `scripts/worker_phase2_eval.py --timeout 900` passes real Codex isolated write/restart/continue/diff/cleanup |
@@ -51,7 +51,7 @@ This branch is **pre-release verified**, not public-release complete.
 | Worker integration eval | `scripts/worker_phase4_eval.py --timeout 900` passes real Codex integration preview/apply |
 | Real MCP worker negative-case trial | `scripts/real_mcp_worker_trial.py --include-safety-cases` passes direct MCP worker lifecycle and negative cases |
 | Direct multi-client MCP trial | `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker` passes two-session tool-mode, ownership, takeover, preview, and integration checks |
-| Public tunnel MCP probe | Tokenized ngrok MCP simulator passed health, `initialize`, worker-mode `tools/list`, artifact inbox import/list/inspect, isolated worker artifact attachment/read, integration exclusion, and cleanup |
+| Public tunnel MCP probe | Earlier tokenized ngrok MCP simulator passed health, `initialize`, worker-mode `tools/list`, artifact inbox import/list/inspect, isolated worker artifact attachment/read, integration exclusion, and cleanup; current run blocked only because no validation ngrok hostname was provided |
 | Real Codex through MCP | `codex_plan_job` completes through PatchBay |
 | Current Codex JSONL parsing | `agent_message` results parse into structured output |
 | Real ChatGPT Developer Mode | Pending; latest local validation lacked browser automation for URL entry and trace capture |
@@ -63,15 +63,16 @@ This branch is **pre-release verified**, not public-release complete.
 | Capability | Included |
 | --- | --- |
 | Streamable HTTP MCP endpoint | `/mcp` |
+| Stdio MCP transport | `patchbay stdio` or `patchbay-stdio` for local MCP hosts |
 | ChatGPT-ready descriptors | tool annotations, `_meta`, security schemes, invocation labels |
-| Apps-style result card | passive `text/html;profile=mcp-app` resource |
+| Apps-style result card | rich passive `text/html;profile=mcp-app` resource for workers, artifacts, jobs, diffs, and power tools |
 | Workspace context | tree, read, search, git status/diff, AGENTS, skills, context packs |
 | Codex orchestration | plan, apply, status, result, diff, cancel, review, interactive, resume |
 | Durable worker facade | discover worker model/reasoning options, import generated artifact context, start/message/list/inspect/stop named Codex colleagues, use isolated writing worktrees by default, and include bounded peer-worker context |
 | Repository boundary | allowed roots, path guard, blocked globs, worktree apply jobs |
 | Handoff | `.ai-bridge` plan/status/diff and local execute/watch scripts |
 | Power modes | direct write, exact edit, safe/full bash, bounded transcript reads |
-| Connector UX | doctor, start, profiles, redacted runtime metadata, token-gated tunnels |
+| Connector UX | installable `patchbay` CLI, doctor, setup, start, settings, stdio, guided setup output, profiles, redacted runtime metadata, token-gated tunnels |
 
 ## Architecture
 
@@ -83,7 +84,7 @@ flowchart TD
     B --> C["Transport boundary<br/>auth, request caps, MCP sessions, client_ref"]
     C --> D["MCP protocol surface<br/>initialize, tools/list, resources/read, schemas, annotations"]
     D --> E["Session-local tool modes<br/>worker, standard, full, minimal + aliases"]
-    D --> R["Passive Apps card<br/>ui://widget/patchbay-tool-card-v1.html"]
+    D --> R["Rich passive Apps card<br/>ui://widget/patchbay-tool-card-v2.html"]
 
     E --> H["Tool handler"]
     H --> W["Workspace context<br/>allowed roots, path guard, tree/read/search, git, AGENTS, skills"]
@@ -127,9 +128,9 @@ pip install -r requirements.txt
 pip install -e ".[test]"  # needed for local test runs
 ```
 
-`requirements.txt` holds the conservative runtime dependency set.
-`pyproject.toml` holds package metadata and the `test` extra used by CI and
-local verification.
+`requirements.txt` holds the minimal runtime dependency set.
+`pyproject.toml` holds package metadata, console entry points (`patchbay` and
+`patchbay-stdio`), and the `test` extra used by CI and local verification.
 
 ## Quick Start
 
@@ -148,14 +149,22 @@ git -c user.name='Eval User' -c user.email='eval@example.invalid' commit -m init
 Check connector readiness without opening a public tunnel:
 
 ```bash
-python scripts/doctor.py
-python scripts/start.py --root "$tmpdir/repo" --print-only
+patchbay doctor
+patchbay start --root "$tmpdir/repo" --tool-mode worker --print-only
+patchbay start --root "$tmpdir/repo" --tool-mode worker --print-only --json
 ```
+
+`patchbay start --print-only` prints a ChatGPT setup guide with the Server URL,
+authentication choice, tool mode, tunnel mode, exact ChatGPT Developer Mode
+steps, useful restart/profile commands, and token/tunnel warnings. The JSON
+form returns the same data under `setup_guide`, so local wrappers can display
+the connector steps without scraping terminal text. `python scripts/start.py`
+and `python scripts/doctor.py` remain compatibility wrappers.
 
 For local MCP clients, start the local MCP server:
 
 ```bash
-python scripts/start.py --root "$tmpdir/repo" --save-profile
+patchbay start --root "$tmpdir/repo" --tool-mode worker --save-profile
 ```
 
 The local endpoint is:
@@ -164,11 +173,19 @@ The local endpoint is:
 http://127.0.0.1:8000/mcp
 ```
 
+For local MCP hosts that prefer stdio instead of HTTP:
+
+```bash
+patchbay stdio --config config.yaml
+# or, after package installation:
+patchbay-stdio --config config.yaml
+```
+
 For ChatGPT web, start PatchBay with an HTTPS tunnel and worker-first tool surface. Tunnel startup fails closed without a token:
 
 ```bash
 export PATCHBAY_HTTP_TOKEN='<long-random-token>'
-python scripts/start.py \
+patchbay start \
   --root "$tmpdir/repo" \
   --tunnel-mode cloudflare \
   --tool-mode worker \
@@ -176,7 +193,12 @@ python scripts/start.py \
   --reveal-token
 ```
 
-Copy the full tokenized Server URL printed by `--reveal-token`. It should look like `https://.../mcp?patchbay_token=...`. The launcher does not install `cloudflared` or `ngrok`; install and verify your tunnel provider separately. Tokenized ChatGPT Server URLs are redacted unless you ask to reveal them.
+Copy the full tokenized Server URL printed by `--reveal-token`. It should look like `https://.../mcp?patchbay_token=...`. Tokenized ChatGPT Server URLs are redacted unless you ask to reveal them. To install Cloudflare Tunnel into PatchBay's local bin directory, run `patchbay install-cloudflared` explicitly. PatchBay also exposes tunnel shortcuts:
+
+```bash
+patchbay ngrok --root "$tmpdir/repo" --hostname your-domain.ngrok-free.dev --tool-mode worker --reveal-token
+patchbay stable --root "$tmpdir/repo" --hostname patchbay.example.com --tunnel-name patchbay --tool-mode worker --reveal-token
+```
 
 OpenAI's Apps SDK docs describe the same connector shape: enable Developer Mode, create a connector, paste an HTTPS `/mcp` URL, then open a new chat and add the connector from the `+` / More menu. See [OpenAI Apps SDK quickstart](https://developers.openai.com/apps-sdk/quickstart#add-your-app-to-chatgpt) and [Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt#create-a-connector).
 
@@ -187,7 +209,7 @@ One copied Server URL points to one shared local server. Multiple ChatGPT conver
 For multi-repository validation, include every repository at launch time. `--root` sets the default workspace and narrows `repositories.allowed` to that root unless extra roots are supplied:
 
 ```bash
-python scripts/start.py \
+patchbay start \
   --root "$repo_a" \
   --allow-root "$repo_b" \
   --tunnel-mode cloudflare \
@@ -209,7 +231,7 @@ Settings -> Connectors -> Create
 
 Name: PatchBay
 Description: Route ChatGPT context into local Codex workers
-Connector URL / Server URL: paste the full HTTPS /mcp URL printed by scripts/start.py --reveal-token
+Connector URL / Server URL: paste the full HTTPS /mcp URL printed by patchbay start --reveal-token
 Authentication: No Authentication / None
 ```
 
@@ -225,7 +247,7 @@ See [QUICKSTART.md](QUICKSTART.md) for the full disposable-repo flow.
 
 ## Configuration
 
-Edit `config.yaml` or use `scripts/start.py --root ...` to generate a private runtime config.
+Edit `config.yaml` or use `patchbay start --root ...` to generate a private runtime config.
 
 Important defaults:
 
@@ -302,7 +324,7 @@ Never commit or share a real tokenized URL.
 
 ## Public MCP Tool Tiers
 
-The canonical public names are `codex_*`. In `full` tool mode, compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` can also be advertised. Aliases resolve to the canonical handlers. Use `--tool-mode worker` for a worker-first surface that hides low-level job/session controls and compatibility aliases while keeping worker tools plus the context tools needed to brief them. All modes expose `codex_tool_mode_info` and `codex_tool_mode_switch` so ChatGPT can compare surfaces and request temporary session-local broadening when the host refreshes the tool list.
+The canonical public names are `codex_*`. In `full` tool mode, compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` can also be advertised. Aliases resolve to the canonical handlers and now expose precise CodexPro-derived input schemas adapted to PatchBay argument names. Use `--tool-mode worker` for a worker-first surface that hides low-level job/session controls and compatibility aliases while keeping worker tools plus the context tools needed to brief them. All modes expose `codex_tool_mode_info` and `codex_tool_mode_switch` so ChatGPT can compare surfaces and request temporary session-local broadening when the host refreshes the tool list.
 
 ### Natural-language workers
 
@@ -337,6 +359,7 @@ If multiple ChatGPT conversations share one Server URL, worker and artifact view
 | `codex_interactive` | Start an async Codex exec session job | no |
 | `codex_interactive_reply` | Continue a Codex session through an async job | no |
 | `codex_resume` | Resume a prior Codex session through an async job | no |
+| `codex_list_sessions` | List bounded PatchBay-known and configured Codex-home session metadata without transcripts or source paths | yes |
 
 ### Workspace context
 
@@ -352,7 +375,7 @@ If multiple ChatGPT conversations share one Server URL, worker and artifact view
 | `codex_search_repo` | Search the repo with bounded, redacted results | yes |
 | `codex_git_status` | Show branch and changed files without bash | yes |
 | `codex_git_diff` | Show bounded git diff without bash | yes |
-| `codex_show_changes` | Return review-oriented status and optional diff | yes |
+| `codex_show_changes` | Return review-oriented status and optional diff, optionally scoped to one file | yes |
 | `codex_load_context` | Load AGENTS, selected files, git, and `.ai-bridge` context | yes |
 | `codex_list_skills` | List discovered skills with sanitized paths | yes |
 | `codex_load_skill` | Load a bounded discovered `SKILL.md` | yes |
@@ -386,17 +409,23 @@ These are public capabilities and the current full-power profile enables them by
 | `codex_run_command` | `power_tools.bash_mode: safe` or `full` |
 | `codex_read_session` | `power_tools.codex_session_read: true` |
 
+`tools/list` is runtime-aware for these capabilities: if a profile disables
+direct write, bash, or session transcript reads, the corresponding canonical
+tools and compatibility aliases are not advertised and calls to them are
+rejected. The checked-in profile remains intentionally full-power and continues
+to expose the full catalog.
+
 ## ChatGPT Metadata And Tool Card
 
 `tools/list` includes ChatGPT/App metadata for every public tool: `title`, read/write/open-world annotations, top-level `securitySchemes`, `_meta.securitySchemes`, `_meta.ui.resourceUri`, `openai/outputTemplate`, `openai/fileParams` where a tool receives ChatGPT files, and short invocation labels.
 
-The server exposes a passive Apps card resource:
+The server exposes a rich passive Apps card resource:
 
 ```text
-ui://widget/patchbay-tool-card-v1.html
+ui://widget/patchbay-tool-card-v2.html
 ```
 
-Clients can fetch it with `resources/list` and `resources/read`. The MIME type is `text/html;profile=mcp-app`. The current card renders bounded tool results and does not initiate tool calls.
+Clients can fetch it with `resources/list` and `resources/read`. The MIME type is `text/html;profile=mcp-app`. The current card is derived from the copied CodexPro widget subsystem and renders bounded worker reports, artifact inbox summaries, job status, diffs, direct command/write results, integration previews, ownership/takeover states, and `repo_busy` lock states. It remains passive: it does not initiate tool calls. The legacy `ui://widget/patchbay-tool-card-v1.html` URI remains readable for compatibility, while descriptors advertise v2.
 
 ## Power Boundary And Controls
 

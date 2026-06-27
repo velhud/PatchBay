@@ -10,7 +10,7 @@ If this project receives API credits through the Codex for Open Source program, 
 4. Documentation generation and verification.
 5. Release-note preparation.
 6. Security review of owned code only.
-7. Public examples showing safe Codex workflows for OSS maintainers.
+7. Public examples showing reviewable Codex workflows for OSS maintainers.
 8. Evaluation of MCP tool descriptions, ChatGPT tool-selection behavior, and local bridge flows.
 9. Evaluation of planner, worker, and verifier flows on synthetic or owned repositories.
 10. Maintenance of staged cleaned OSS releases related to Codex/MCP workflows.
@@ -23,5 +23,5 @@ Credits will not be used for:
 - unrelated commercial workloads;
 - unauthorized third-party repository scanning;
 - third-party systems without permission;
-- confidential private code that is not being prepared for safe public release;
+- confidential private code that is not being prepared for sanitized public release;
 - fake traffic, fake stars, or artificial adoption signals.

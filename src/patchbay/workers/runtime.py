@@ -1727,6 +1727,7 @@ class WorkerRuntime:
             safe = str(safe)
         safe = PRIVATE_BRANCH_PATTERN.sub("[worker-branch]", safe)
         safe = UUID_PATTERN.sub("[id]", safe)
+        safe = safe.replace(ARTIFACT_CONTEXT_DIR, "[imported-artifact-context]")
         candidates = set()
         for path in private_paths:
             candidates.add(path)

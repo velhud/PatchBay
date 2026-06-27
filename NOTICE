@@ -11,7 +11,14 @@ Thank you to the CodexPro developers for publishing their work openly.
 Derived or adapted areas include ChatGPT-facing MCP tool metadata patterns,
 tool-mode concepts, workspace/context/handoff workflows, Pro context bundle/apply
 flows, local handoff execute/watch command behavior, token/tunnel control ideas,
-and connector setup/doctor/start product flows.
+connector setup/doctor/start product flows, installable command packaging,
+stdio transport entry points, settings/setup UX, and tunnel binary helper
+patterns.
+
+Copied CodexPro donor subsystem files may be preserved under
+`src/patchbay/donors/codexpro/` with per-track manifests. Those files remain
+MIT-licensed CodexPro source material and are kept identifiable as provenance
+and behavior authority for PatchBay adaptations.
 
 This project is not a CodexPro fork, and this notice does not imply CodexPro
 upstream endorsement of PatchBay.

@@ -114,6 +114,34 @@ def read_workspace_profile(root: str | Path, environ: Mapping[str, str] | None =
     return {**payload, "profile_path": str(path)}
 
 
+def list_workspace_profiles(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    """Return saved workspace profiles, newest first, without sensitive keys."""
+    root = profile_dir(environ)
+    if not root.exists():
+        return []
+    profiles: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        cleaned = sanitize_workspace_profile(payload)
+        cleaned["profile_path"] = str(path)
+        profiles.append(cleaned)
+    return sorted(profiles, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
+
+def delete_workspace_profile(root: str | Path, environ: Mapping[str, str] | None = None) -> bool:
+    """Delete a saved workspace profile for root. Returns true when a file was removed."""
+    path = profile_path_for_root(root, environ)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def save_workspace_profile(
     root: str | Path,
     profile: Mapping[str, Any],

@@ -155,7 +155,7 @@ worktree_owner: "job" | "worker" | "none"
 
 Worker-owned worktrees must not be deleted by ordinary job cleanup.
 
-Old persisted jobs without these fields must load with safe defaults.
+Old persisted jobs without these fields must load with compatible defaults.
 
 ## Public Worker View
 

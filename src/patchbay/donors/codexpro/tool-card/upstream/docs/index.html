@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodexPro - Use ChatGPT like your local coding agent</title>
+    <meta
+      name="description"
+      content="CodexPro connects ChatGPT Developer Mode to one local workspace through MCP so ChatGPT can inspect, edit, verify, and hand off code safely."
+    />
+    <meta property="og:title" content="CodexPro" />
+    <meta property="og:description" content="Use ChatGPT like your local coding agent for one token-protected workspace." />
+    <meta property="og:image" content="https://rebel0789.github.io/codexpro/og.svg" />
+    <meta name="theme-color" content="#0b1220" />
+    <link rel="alternate" hreflang="zh-CN" href="https://rebel0789.github.io/codexpro/zh.html" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#quickstart">Skip to setup</a>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="CodexPro home">
+        <img class="brand-mark" src="./favicon.svg" width="34" height="34" alt="" aria-hidden="true" />
+        <span>CodexPro</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#quickstart">Start</a>
+        <a href="#modes">Modes</a>
+        <a href="#reference">Tools</a>
+        <a href="#faq">FAQ</a>
+        <a href="#stop">Stop</a>
+        <a href="./zh.html">中文</a>
+        <a class="nav-star" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="launch-pill"><img src="./star.svg" alt="" aria-hidden="true" />Local MCP bridge</p>
+          <p class="eyebrow">Install in your repo</p>
+          <h1>Use ChatGPT like your local coding agent.</h1>
+          <p class="hero-lede">
+            Install the CLI, run setup inside one project, then paste the copied Server URL into ChatGPT Developer Mode. ChatGPT gets bounded tools for that workspace: context, search, exact edits, git review, safe verification, and handoff files.
+          </p>
+          <div class="install-line" role="group" aria-label="Install command">
+            <code>npm install -g codexpro
+codexpro setup</code>
+            <button class="copy-button" data-copy="npm install -g codexpro&#10;codexpro setup">Copy</button>
+          </div>
+          <div class="hero-proof" aria-label="Core capabilities">
+            <span>one workspace</span>
+            <span>token-protected URL</span>
+            <span>safe bash default</span>
+            <span>repo-backed context</span>
+          </div>
+          <div class="hero-actions">
+            <a class="button primary" href="#quickstart">Install CodexPro</a>
+            <a class="button secondary star-button" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
+            <a class="button secondary" href="https://www.npmjs.com/package/codexpro">View npm package</a>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-label="CodexPro connection model">
+          <div class="workspace-demo blueprint">
+            <div class="demo-status">
+              <span class="status-dot" aria-hidden="true"></span>
+              <div class="status-label">
+                <strong>One local workspace</strong>
+                <small>your repo · your ChatGPT session · your machine</small>
+              </div>
+              <span class="status-badge">bounded</span>
+            </div>
+            <div class="connection-map" aria-label="Connection flow">
+              <div>
+                <span>01</span>
+                <strong>Local repo</strong>
+                <p>AGENTS.md, git state, selected files, and .ai-bridge plans.</p>
+              </div>
+              <div>
+                <span>02</span>
+                <strong>CodexPro</strong>
+                <p>Token-protected MCP server with workspace, bash, write, and tool modes.</p>
+              </div>
+              <div>
+                <span>03</span>
+                <strong>ChatGPT app</strong>
+                <p>Read, search, edit, review, verify, or hand off through Developer Mode.</p>
+              </div>
+            </div>
+            <div class="trust-row">
+              <div><span>Not a model proxy</span><strong>uses your own ChatGPT account</strong></div>
+              <div><span>Not a quota bypass</span><strong>product limits still apply</strong></div>
+              <div><span>Not an OS sandbox</span><strong>keep roots scoped to the repo</strong></div>
+            </div>
+          </div>
+          <div class="floating-note">
+            <span>After setup</span>
+            <strong>codexpro start</strong>
+            <small>Run this from the same repo when you want ChatGPT connected again.</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="strip" aria-label="Core workflow">
+        <div>
+          <span>01</span>
+          <strong>Install</strong>
+          <p>Run <code>npm install -g codexpro</code> once.</p>
+        </div>
+        <div>
+          <span>02</span>
+          <strong>Setup</strong>
+          <p>Run <code>codexpro setup</code> inside your project.</p>
+        </div>
+        <div>
+          <span>03</span>
+          <strong>Paste</strong>
+          <p>Paste the copied Server URL into ChatGPT Create app.</p>
+        </div>
+      </section>
+
+      <section class="section value-section">
+        <div>
+          <p class="eyebrow">Use the account you already have</p>
+          <h2>Give ChatGPT a real local workspace, not another paste buffer.</h2>
+          <p>
+            CodexPro is for builders who already pay for ChatGPT and want that subscription to do more than answer questions. It gives ChatGPT a local workspace bridge: file reads, exact edits, source writes, search, git status, git diff, and allowlisted verification commands.
+          </p>
+          <p>
+            Codex and ChatGPT are different product surfaces. If one workflow is unavailable and another surface you already have access to is still available, CodexPro lets you work against the same local repo without changing either product's limits.
+          </p>
+          <p>
+            If your ChatGPT account exposes a stronger model in the web app, and that model surface can call Developer Mode apps, CodexPro lets it work against your local repo through MCP. Some model surfaces cannot call connectors or MCP tools directly. CodexPro does not provide, proxy, resell, or unlock models; it gives compatible ChatGPT sessions local coding tools and repo context.
+          </p>
+        </div>
+        <div class="value-matrix">
+          <div>
+            <small>ChatGPT web can see</small>
+            <strong>AGENTS.md, .ai-bridge, git state, source files, and selected Codex-style context</strong>
+          </div>
+          <div>
+            <small>Normal coding mode can</small>
+            <strong>read, write, edit, search, and verify directly in the workspace</strong>
+          </div>
+          <div>
+            <small>Pro planning mode can</small>
+            <strong>export a durable context bundle for sessions where MCP tools are unavailable</strong>
+          </div>
+          <div>
+            <small>Best account fit</small>
+            <strong>ChatGPT Plus or Pro with Apps / Developer Mode access. Free and Go accounts do not expose this app flow in current testing.</strong>
+          </div>
+        </div>
+      </section>
+
+      <section id="execute" class="section two-col">
+        <div>
+          <p class="eyebrow">Planner to executor</p>
+          <h2>Let ChatGPT plan, then run a local agent on your machine.</h2>
+          <p>
+            Handoff mode keeps ChatGPT planning-only. ChatGPT writes <code>.ai-bridge/current-plan.md</code>, then you decide whether to run a local implementation agent from your terminal.
+          </p>
+          <p>
+            <code>codexpro execute-handoff</code> runs the saved plan through OpenCode, Pi, Codex, or a custom command, then collects status, stdout/stderr excerpts, and the final git diff back into <code>.ai-bridge</code> for ChatGPT review.
+          </p>
+        </div>
+        <div class="command-stack">
+          <div>
+            <small>Preview first</small>
+            <pre><code>codexpro execute-handoff --agent opencode --model provider/model --dry-run</code></pre>
+          </div>
+          <div>
+            <small>Run locally</small>
+            <pre><code>codexpro execute-handoff --agent opencode --model provider/model</code></pre>
+          </div>
+          <div>
+            <small>Custom agent</small>
+            <pre><code>codexpro execute-handoff --agent custom --command "my-agent --task-file {{plan_file}}"</code></pre>
+          </div>
+          <div>
+            <small>Result files</small>
+            <pre><code>.ai-bridge/agent-status.md
+.ai-bridge/implementation-diff.patch
+.ai-bridge/execution-log.jsonl</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="section two-col">
+        <div>
+          <p class="eyebrow">Compared with generic workspace bridges</p>
+          <h2>CodexPro is the ChatGPT-first local coding loop.</h2>
+          <p>
+            The transport can look similar: local MCP server, workspace root, and a tunnel. CodexPro is more opinionated. It is built for one job: make ChatGPT Developer Mode useful against one local repo without widening the trust boundary.
+          </p>
+          <p>
+            That means setup first, explicit safety modes, repo-backed context files, reviewable diffs, compact cards, and no model proxying, account pooling, quota bypassing, third-party Pro scraping, or OS sandbox claims.
+          </p>
+        </div>
+        <div class="value-matrix">
+          <div>
+            <small>Product loop</small>
+            <strong>Install, setup in one repo, paste Server URL, then let ChatGPT inspect/edit/verify.</strong>
+          </div>
+          <div>
+            <small>Control surface</small>
+            <strong>Bash, write/edit, tool mode, Codex session reads, and handoff execution are separate switches.</strong>
+          </div>
+          <div>
+            <small>Context model</small>
+            <strong>AGENTS.md and .ai-bridge keep durable project memory in files you can review.</strong>
+          </div>
+          <div>
+            <small>Trust model</small>
+            <strong>Your ChatGPT account, your local repo, your explicit tunnel and token.</strong>
+          </div>
+        </div>
+      </section>
+
+      <section id="quickstart" class="section two-col">
+        <div>
+          <p class="eyebrow">Quick start</p>
+          <h2>Install once, then run setup in your repo.</h2>
+          <p>
+            The default path uses normal coding mode, workspace writes, safe bash, and a tunnel you choose during setup. After setup, daily startup is just <code>codexpro start</code>.
+          </p>
+        </div>
+        <div class="steps">
+          <div class="step">
+            <span>1</span>
+            <div>
+              <strong>Install globally</strong>
+              <pre><code>npm install -g codexpro</code></pre>
+            </div>
+          </div>
+          <div class="step">
+            <span>2</span>
+            <div>
+              <strong>Run guided setup</strong>
+              <pre><code>codexpro setup</code></pre>
+            </div>
+          </div>
+          <div class="step">
+            <span>3</span>
+            <div>
+              <strong>Turn on Developer Mode</strong>
+              <p>In ChatGPT, open Settings -> Apps -> Advanced settings. Turn on Developer mode and keep Enforce CSP in developer mode enabled, then click Create app.</p>
+            </div>
+          </div>
+          <div class="step">
+            <span>4</span>
+            <div>
+              <strong>Create a ChatGPT app</strong>
+              <p>Name it CodexPro. Use Connection: Server URL. Paste the copied URL. Set Authentication to No Authentication / None.</p>
+            </div>
+          </div>
+          <div class="step">
+            <span>5</span>
+            <div>
+              <strong>Use CodexPro in chat</strong>
+              <p>Ask ChatGPT to inspect files, make scoped edits, and verify with search, read, bash, and git tools.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Tunnel choices</p>
+          <h2>Pick the URL strategy that matches your workflow.</h2>
+        </div>
+        <div class="compare-grid">
+          <article>
+            <span class="tag">Fastest</span>
+            <h3>Cloudflare quick tunnel</h3>
+            <p>No account flow. Good for demos. The URL changes every restart, so you must update the ChatGPT app Server URL each time.</p>
+            <pre><code>codexpro start</code></pre>
+          </article>
+          <article>
+            <span class="tag">Recommended</span>
+            <h3>ngrok free dev domain</h3>
+            <p>Best simple stable URL. Create a free ngrok account, use the assigned dev domain, and keep the same ChatGPT app URL across restarts.</p>
+            <pre><code>codexpro ngrok --hostname your-name.ngrok-free.dev</code></pre>
+          </article>
+          <article>
+            <span class="tag">Custom</span>
+            <h3>Cloudflare named tunnel</h3>
+            <p>Use your own domain, such as <code>codexpro.example.com</code>, and keep one ChatGPT URL.</p>
+            <pre><code>codexpro stable --hostname codexpro.example.com --tunnel-name codexpro</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="ngrok" class="section two-col">
+        <div>
+          <p class="eyebrow">ngrok setup</p>
+          <h2>Use ngrok's free dev domain for a fixed ChatGPT connector URL.</h2>
+          <p>
+            ngrok free accounts include a dev domain. Find it in the ngrok dashboard under Universal Gateway -> Domains, save it once in CodexPro, and future starts from the same repo are just <code>codexpro start</code>.
+          </p>
+          <p>
+            That means users do not need to change ChatGPT settings every time they restart CodexPro.
+          </p>
+        </div>
+        <div class="command-stack">
+          <div>
+            <small>One-time ngrok auth</small>
+            <pre><code>ngrok config add-authtoken YOUR_NGROK_TOKEN</code></pre>
+          </div>
+          <div>
+            <small>Save the CodexPro workspace profile</small>
+            <pre><code>codexpro settings set --tunnel ngrok --hostname your-name.ngrok-free.dev</code></pre>
+          </div>
+          <div>
+            <small>Daily start</small>
+            <pre><code>codexpro start</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="cloudflare" class="section two-col reverse">
+        <div class="command-stack">
+          <div>
+            <small>Quick tunnel</small>
+            <pre><code>codexpro start --tunnel cloudflare</code></pre>
+          </div>
+          <div>
+            <small>Named tunnel with your domain</small>
+            <pre><code>cloudflared tunnel login
+cloudflared tunnel create codexpro
+cloudflared tunnel route dns codexpro codexpro.example.com</code></pre>
+          </div>
+          <div>
+            <small>Daily stable start</small>
+            <pre><code>codexpro stable --hostname codexpro.example.com --tunnel-name codexpro</code></pre>
+          </div>
+        </div>
+        <div>
+          <p class="eyebrow">Cloudflare setup</p>
+          <h2>Start instantly with quick tunnels or keep a custom domain with named tunnels.</h2>
+          <p>
+            CodexPro can install <code>cloudflared</code> into <code>~/.codexpro/bin</code> when it is missing. No sudo, Homebrew, apt, or winget step is required for the default path.
+          </p>
+          <p>
+            Quick tunnels are disposable. If you own a domain, use a Cloudflare named tunnel and route DNS to a hostname such as <code>codexpro.example.com</code>. The hostname stays the same across restarts, so the ChatGPT app Server URL does not need to change.
+          </p>
+        </div>
+      </section>
+
+      <section id="modes" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Modes</p>
+          <h2>Use the right level of control for the task.</h2>
+        </div>
+        <div class="mode-row">
+          <div>
+            <strong>Normal coding</strong>
+            <p>Default. ChatGPT can inspect, write, edit, search, and verify inside the workspace.</p>
+          </div>
+          <div>
+            <strong>Handoff</strong>
+            <p>Planning-only. ChatGPT writes <code>.ai-bridge/current-plan.md</code> and Codex executes locally.</p>
+          </div>
+          <div>
+            <strong>Pro planning</strong>
+            <p>Exports a durable context file for models or surfaces that cannot call connectors or MCP tools directly.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="reference" class="section reference-section">
+        <div class="section-heading">
+          <p class="eyebrow">Complete setup data</p>
+          <h2>Everything needed to install, connect, use, and stop CodexPro.</h2>
+          <p>
+            This page keeps the high-signal details in one place: commands, ChatGPT app fields, tunnel choices, tools, saved settings, safety defaults, and useful links.
+          </p>
+        </div>
+
+        <div class="reference-grid">
+          <article>
+            <small>Install</small>
+            <h3>Install globally once</h3>
+            <pre><code>npm install -g codexpro</code></pre>
+            <p>This gives users the simple <code>codexpro</code> command everywhere.</p>
+          </article>
+          <article>
+            <small>First run</small>
+            <h3>Guided setup</h3>
+            <pre><code>codexpro setup</code></pre>
+            <p>Setup saves the tunnel provider, hostname, port, mode, and token for the current workspace.</p>
+          </article>
+          <article>
+            <small>Daily start</small>
+            <h3>Reuse saved profile</h3>
+            <pre><code>codexpro start</code></pre>
+            <p>After setup, future starts from the same repo reuse the saved profile automatically.</p>
+          </article>
+          <article>
+            <small>ChatGPT settings path</small>
+            <h3>Enable apps once</h3>
+            <dl>
+              <div><dt>Open</dt><dd>ChatGPT Settings</dd></div>
+              <div><dt>Go to</dt><dd>Apps -> Advanced settings</dd></div>
+              <div><dt>Enable</dt><dd>Developer mode</dd></div>
+              <div><dt>Keep on</dt><dd>Enforce CSP in developer mode</dd></div>
+              <div><dt>Then</dt><dd>Create app</dd></div>
+            </dl>
+            <p>This is a one-time ChatGPT setting. CodexPro widgets work with CSP enabled.</p>
+          </article>
+          <article>
+            <small>Create App fields</small>
+            <h3>Paste the copied URL</h3>
+            <dl>
+              <div><dt>Name</dt><dd>CodexPro</dd></div>
+              <div><dt>Description</dt><dd>Local workspace bridge for ChatGPT coding</dd></div>
+              <div><dt>Connection</dt><dd>Server URL</dd></div>
+              <div><dt>Server URL</dt><dd>Paste copied CodexPro URL</dd></div>
+              <div><dt>Authentication</dt><dd>No Authentication / None</dd></div>
+            </dl>
+            <p>The copied Server URL already includes the private CodexPro token. Do not paste the token separately unless your ChatGPT UI supports custom headers.</p>
+          </article>
+          <article>
+            <small>Doctor</small>
+            <h3>Preflight checks</h3>
+            <pre><code>codexpro doctor</code></pre>
+            <p>Checks Node, build output, saved profile, port availability, tunnel prerequisites, clipboard support, and browser-open support.</p>
+          </article>
+          <article>
+            <small>Settings</small>
+            <h3>Manage saved profiles</h3>
+            <pre><code>codexpro settings
+codexpro settings set --tunnel ngrok --hostname your-name.ngrok-free.dev
+codexpro settings delete --yes</code></pre>
+            <p>Use settings to switch providers, reuse another repo setup, or delete a workspace preference.</p>
+          </article>
+          <article>
+            <small>Controls</small>
+            <h3>Terminal keys</h3>
+            <dl>
+              <div><dt>Enter</dt><dd>Open ChatGPT connector settings</dd></div>
+              <div><dt>c</dt><dd>Copy Server URL again</dd></div>
+              <div><dt>o</dt><dd>Open local admin dashboard</dd></div>
+              <div><dt>q</dt><dd>Stop CodexPro</dd></div>
+            </dl>
+          </article>
+          <article>
+            <small>Local admin</small>
+            <h3>Setup, profile, and status</h3>
+            <p>Press <code>o</code> to open the token-protected admin dashboard. It shows install/start commands, ChatGPT connection steps, saved profile settings, modes, allowed roots, and advanced restart shortcuts.</p>
+          </article>
+        </div>
+
+        <div class="tool-reference">
+          <div>
+            <p class="eyebrow">Default standard tools</p>
+            <h3>Focused local repo actions exposed through MCP.</h3>
+          </div>
+          <div class="tool-list">
+            <span>server_config</span>
+            <span>codexpro_self_test</span>
+            <span>open_current_workspace</span>
+            <span>open_workspace</span>
+            <span>tree</span>
+            <span>search</span>
+            <span>read</span>
+            <span>write</span>
+            <span>edit</span>
+            <span>bash</span>
+            <span>show_changes</span>
+            <span>read_handoff</span>
+            <span>export_pro_context</span>
+            <span>handoff_to_agent</span>
+          </div>
+        </div>
+
+        <div class="reference-grid compact">
+          <article>
+            <small>Safety defaults</small>
+            <h3>Blocked paths</h3>
+            <p><code>.env</code>, private keys, <code>.git</code>, <code>node_modules</code>, generated build/cache folders, paths outside the workspace, and symlink escapes are refused.</p>
+          </article>
+          <article>
+            <small>Safe bash</small>
+            <h3>Verification without full shell</h3>
+            <p>Safe mode allows common repo inspection, git, tests, lint, typecheck, and build commands. Use full bash only for trusted local repos.</p>
+          </article>
+          <article>
+            <small>No surprise shell</small>
+            <h3>Disable or target bash</h3>
+            <p>Use <code>codexpro start --no-bash</code>, or keep bash enabled with <code>--bash-session main --require-bash-session</code>. Session labels target this local CodexPro server, not a Codex app chat.</p>
+          </article>
+          <article>
+            <small>Codex sessions</small>
+            <h3>Opt-in local history browser</h3>
+            <p><code>--codex-sessions metadata</code> lists local Codex session ids, titles, cwd paths, and resume commands. <code>read</code> mode adds bounded transcript reads; neither mode attaches to a live Codex chat.</p>
+          </article>
+          <article>
+            <small>Visual widgets</small>
+            <h3>Compact cards for every tool</h3>
+            <p>Every CodexPro tool can render a compact v9 card. Skills, git, tree, context, terminal output, and raw diffs stay folded or bounded until opened; <code>load_skill</code> loads bounded instructions on demand.</p>
+          </article>
+          <article>
+            <small>Stable URL rule</small>
+            <h3>One URL needs one reserved hostname</h3>
+            <p>Cloudflare quick tunnels change on restart. Use an ngrok free dev domain or Cloudflare named tunnel when you want one ChatGPT app URL.</p>
+          </article>
+          <article>
+            <small>Local web admin</small>
+            <h3>Edit next-run profile defaults</h3>
+            <p>The token-protected local page can save tunnel, hostname, port, mode, bash, Codex sessions, write/tool mode, widget origin, and tunnel config paths for the next <code>codexpro start</code>. Raw tunnel tokens, account switching, and background services stay out of the browser.</p>
+          </article>
+          <article>
+            <small>Local executor</small>
+            <h3>Execution stays on your machine</h3>
+            <p><code>execute-handoff</code> is a terminal command, not a remote MCP tool. Use <code>--dry-run</code> before running unfamiliar agents or custom commands.</p>
+          </article>
+        </div>
+
+        <div class="link-row" aria-label="Documentation links">
+          <a class="star-link" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star the GitHub repo</a>
+          <a href="https://www.npmjs.com/package/codexpro">npm package</a>
+          <a href="https://github.com/rebel0789/codexpro/blob/main/DOMAIN_SETUP.md">Stable URL guide</a>
+          <a href="https://github.com/rebel0789/codexpro/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/rebel0789/codexpro/blob/main/SECURITY.md">Security notes</a>
+        </div>
+      </section>
+
+      <section id="faq" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">FAQ</p>
+          <h2>The questions users will ask before installing.</h2>
+          <p>Short answers for account requirements, setup, URLs, safety, and what ChatGPT can actually access.</p>
+        </div>
+        <div class="faq-grid">
+          <article>
+            <h3>Which ChatGPT account should I use?</h3>
+            <p>Use ChatGPT Plus or Pro with Apps / Developer Mode access. Current testing shows free and Go accounts do not expose the app flow needed for CodexPro. A specific model surface may still be unable to call connectors; use Pro context fallback for those sessions.</p>
+          </article>
+          <article>
+            <h3>Does CodexPro bypass rate limits?</h3>
+            <p>No. It does not bypass, avoid, increase, pool, resell, or modify ChatGPT, Codex, OpenAI, or third-party model limits. Every request still runs through your own ChatGPT session and whatever limits that account has.</p>
+          </article>
+          <article>
+            <h3>Why install globally?</h3>
+            <p>Global install gives users one command: <code>codexpro setup</code>. It avoids long <code>npx</code> commands and makes daily startup simply <code>codexpro start</code>.</p>
+          </article>
+          <article>
+            <h3>What URL should I use?</h3>
+            <p>Use Cloudflare quick tunnel for demos. Use an ngrok free dev domain or Cloudflare named tunnel when you want one ChatGPT app URL that survives restarts.</p>
+          </article>
+          <article>
+            <h3>Can ChatGPT see my Codex context?</h3>
+            <p>It can read explicit context files such as <code>AGENTS.md</code>, <code>.ai-bridge</code>, git status/diff, and selected source files. It cannot read hidden Codex runtime memory.</p>
+          </article>
+          <article>
+            <h3>Should CSP stay enabled?</h3>
+            <p>Yes. In Settings -> Apps -> Advanced settings, turn on Developer mode and keep Enforce CSP in developer mode enabled. CodexPro widgets are built for that path.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="stop" class="section two-col">
+        <div>
+          <p class="eyebrow">Start and stop</p>
+          <h2>Keep the terminal running while ChatGPT uses the connector.</h2>
+          <p>
+            CodexPro owns the local MCP server and the tunnel process. Stop it when the session is over.
+          </p>
+        </div>
+        <div class="rules">
+          <div>
+            <strong>Start</strong>
+            <p>Run <code>codexpro start</code> in the target repo. The Server URL is copied automatically.</p>
+          </div>
+          <div>
+            <strong>Open</strong>
+            <p>Press Enter in the terminal to open ChatGPT connector settings.</p>
+          </div>
+          <div>
+            <strong>End</strong>
+            <p>Press <code>q</code> or Ctrl+C. Quick tunnel URLs stop working. Stable hostnames stay reserved.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section safety">
+        <div>
+          <p class="eyebrow">Safety boundary</p>
+          <h2>This is a local developer bridge, not an OS sandbox.</h2>
+        </div>
+        <ul>
+          <li>Public tunnels are token-protected by default.</li>
+          <li><code>.env</code>, private keys, <code>.git</code>, <code>node_modules</code>, and symlink escapes are blocked.</li>
+          <li>Safe bash allows common inspection and test commands, not arbitrary shell control.</li>
+          <li><code>--no-bash</code> disables all ChatGPT-triggered shell commands.</li>
+          <li><code>--bash-session</code> with <code>--require-bash-session</code> requires explicit session targeting before bash runs.</li>
+          <li>Use handoff mode when you want ChatGPT to plan and Codex to edit.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>CodexPro</span>
+      <a class="star-link" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
+      <a href="https://www.npmjs.com/package/codexpro">npm</a>
+      <a href="./zh.html">中文</a>
+      <a href="https://github.com/rebel0789/codexpro/blob/main/SECURITY.md">Security</a>
+    </footer>
+
+    <script src="./script.js"></script>
+  </body>
+</html>

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from patchbay.connector.status import connector_status
+from patchbay.connector.status import connector_setup_guide, connector_status
 from patchbay.connector.profiles import (
     normalize_logging_paths,
     normalize_root,
@@ -125,6 +125,11 @@ def prepare_start(
 def launcher_json_payload(prepared: Mapping[str, Any]) -> dict[str, Any]:
     """Return a bounded JSON payload suitable for CLI output."""
     status = dict(prepared["status"])
+    guide = connector_setup_guide(
+        prepared["runtime_config"],
+        status,
+        profile=prepared.get("profile", {}),
+    )
     return {
         "name": "patchbay",
         "ready": status.get("ready"),
@@ -133,6 +138,7 @@ def launcher_json_payload(prepared: Mapping[str, Any]) -> dict[str, Any]:
         "connection": status.get("connection", {}),
         "auth": status.get("auth", {}),
         "power_tools": status.get("power_tools", {}),
+        "setup_guide": guide,
         "checks": status.get("checks", []),
     }
 
