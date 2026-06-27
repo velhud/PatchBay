@@ -19,7 +19,7 @@ Run:
 
 ```bash
 codex --version
-PYTHONDONTWRITEBYTECODE=1 python -m compileall -q .
+PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests
 PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q
 ```
 
@@ -37,19 +37,22 @@ Update docs in the same change when modifying:
 
 - public tool names, schemas, aliases, or metadata;
 - connector auth, tunnel, profile, or launch behavior;
+- shared-server behavior, session-local tool mode, worker/artifact ownership, takeover, repository locks, or multi-repository launch setup;
 - power-mode behavior;
 - path guards, blocked globs, redaction, or logging;
 - Codex CLI command generation or result parsing;
 - release-readiness claims.
 
-At minimum, check `README.md`, `QUICKSTART.md`, `CHATGPT_INSTRUCTIONS.md`, `PUBLIC_TOOL_SURFACE.md`, `SECURITY_PRODUCT_BOUNDARY.md`, and `TESTING.md`.
+At minimum, check `README.md`, `QUICKSTART.md`, `docs/user/chatgpt-instructions.md`, `docs/reference/public-tool-surface.md`, `docs/security/product-boundary.md`, and `TESTING.md`.
 
 ## Release Readiness Claims
 
 Do not claim the project is release-ready unless disposable-repo evals cover:
 
 - real ChatGPT Developer Mode connection;
-- token-gated public tunnel connection;
+- real ChatGPT natural tool selection;
+- ChatGPT-originated worker flow through a token-gated public tunnel when tunnel use is advertised;
+- ChatGPT-hosted file-parameter artifact import when artifact transfer is advertised;
 - real plan and apply jobs;
 - diff inspection;
 - resume or interactive continuation;

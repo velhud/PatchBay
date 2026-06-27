@@ -17,12 +17,13 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-from job_executor import JobExecutor
-from job_manager import JobManager
-from worker_runtime import WORKER_ID_OPTION, WorkerRuntime
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager
+from patchbay.workers.runtime import WORKER_ID_OPTION, WorkerRuntime
 
 
 def build_config(root: Path, state_root: Path, timeout: int) -> dict:
@@ -114,7 +115,7 @@ async def run_eval(timeout: int) -> dict:
             raise RuntimeError(f"First turn did not produce a resumable worker: {first}")
         first_session = worker_session(manager, started["worker_id"])
 
-        # Simulate a complete wrapper restart by reconstructing all runtime objects.
+        # Simulate a complete PatchBay restart by reconstructing all runtime objects.
         manager2 = JobManager(config)
         executor2 = JobExecutor(config, manager2)
         runtime2 = WorkerRuntime(config, manager2, executor2)

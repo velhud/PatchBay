@@ -8,7 +8,7 @@ Phase 1 adds one complete user-visible loop:
 start a named Codex worker
 → let it complete a read-only turn
 → read its engineering report
-→ restart the wrapper
+→ restart PatchBay
 → continue the same Codex conversation by worker name
 → stop an active turn when necessary
 ```

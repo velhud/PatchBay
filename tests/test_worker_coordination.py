@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from job_manager import JobManager, JobState
-from worker_runtime import WORKER_ID_OPTION, WorkerRuntime
+from patchbay.jobs.manager import JobManager, JobState
+from patchbay.workers.runtime import WORKER_ID_OPTION, WorkerRuntime
 
 
 def make_config(tmp_path):
@@ -38,6 +38,7 @@ def make_config(tmp_path):
             "job_state_dir": str(tmp_path / "logs" / "jobs" / "state"),
         },
         "workers": {"worktree_root": str(tmp_path / "worker-worktrees")},
+        "locks": {"root": str(tmp_path / "locks")},
     }
 
 

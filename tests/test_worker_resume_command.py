@@ -1,4 +1,4 @@
-from job_executor import JobExecutor
+from patchbay.jobs.executor import JobExecutor
 
 
 class DummyJobManager:

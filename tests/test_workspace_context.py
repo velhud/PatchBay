@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from workspace_context import WorkspaceContext
+from patchbay.workspace.context import WorkspaceContext
 
 
 def make_config(root):

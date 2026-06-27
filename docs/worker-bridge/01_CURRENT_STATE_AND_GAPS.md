@@ -83,7 +83,7 @@ Phase 1 tags durable job records with private worker id/name fields so several j
 
 Session listing remains useful metadata, but the worker facade now provides identity, assignment continuity, natural-language addressing, and isolated worker worktree ownership.
 
-### Minimal Wrapper-Level Conversation State
+### Minimal PatchBay-Level Conversation State
 
 Durable continuation still depends on job records and Codex session IDs, but the public surface can now address a worker by name and hide those backend references.
 
@@ -93,7 +93,7 @@ The existing apply-job worktree is owned by one apply job. A writing worker now 
 
 ### No Worker-Level Integration Path
 
-The wrapper can expose a job diff. It cannot yet compare a worker worktree against the target workspace, check whether a patch applies cleanly, explain overlapping changes, or apply accepted work.
+PatchBay can expose a job diff. It cannot yet compare a worker worktree against the target workspace, check whether a patch applies cleanly, explain overlapping changes, or apply accepted work.
 
 ### Broad Default Tool Catalog
 

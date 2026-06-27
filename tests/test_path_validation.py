@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from security import validate_allowed_path
+from patchbay.security import validate_allowed_path
 
 
 def test_allowed_path_inside_root(tmp_path):

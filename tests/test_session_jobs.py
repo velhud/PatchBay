@@ -2,9 +2,11 @@ import asyncio
 
 import pytest
 
-from job_executor import JobExecutor
-from job_manager import JobManager, JobState
-from tools import ToolHandler
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager, JobState
+from patchbay.ownership import OWNER_CLIENT_REF_OPTION, OWNER_SESSION_HASH_OPTION
+from patchbay.protocol.context import RequestContext
+from patchbay.tools.handler import ToolHandler
 
 
 def make_config(tmp_path):
@@ -37,6 +39,7 @@ def make_config(tmp_path):
             "job_logs_dir": str(tmp_path / "logs" / "jobs"),
             "job_state_dir": str(tmp_path / "logs" / "jobs" / "state"),
         },
+        "locks": {"root": str(tmp_path / "locks")},
     }
 
 
@@ -65,6 +68,60 @@ async def test_interactive_starts_durable_async_job(tmp_path):
     assert job.prompt == "inspect"
     assert job.options["sandbox"] == "workspace-write"
     assert executor.started == [result["job_id"]]
+
+
+@pytest.mark.asyncio
+async def test_low_level_job_stores_private_owner_metadata_when_context_is_available(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    handler = ToolHandler(config, manager, executor)
+    context = RequestContext(transport_session_id="session-a", client_ref="client_a", client_label="Chat A")
+
+    result = await handler.handle_tool_call(
+        "codex_interactive",
+        {"prompt": "inspect"},
+        context=context,
+    )
+    await asyncio.sleep(0)
+
+    job = manager.get_job(result["job_id"])
+    assert job.options[OWNER_SESSION_HASH_OPTION] == "client_a"
+    assert job.options[OWNER_CLIENT_REF_OPTION] == "client_a"
+    assert OWNER_SESSION_HASH_OPTION not in str(result)
+    assert "client_a" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_low_level_base_writing_job_holds_repo_mutation_lock_until_cancelled(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    handler = ToolHandler(config, manager, executor)
+
+    first = await handler.handle_tool_call(
+        "codex_interactive",
+        {"prompt": "write directly", "sandbox": "workspace-write"},
+    )
+    second = await handler.handle_tool_call(
+        "codex_interactive",
+        {"prompt": "write directly too", "sandbox": "workspace-write"},
+    )
+
+    assert first["job_id"]
+    assert second["repo_busy"] is True
+    job = manager.get_job(first["job_id"])
+    assert job.options["_repo_mutation_lock"] is True
+    assert job.options["_repo_mutation_lock_operation"] == "codex_interactive"
+
+    cancelled = await handler.handle_tool_call("codex_cancel_job", {"job_id": first["job_id"]})
+    assert cancelled["cancelled"] is True
+
+    third = await handler.handle_tool_call(
+        "codex_interactive",
+        {"prompt": "write after cancel", "sandbox": "workspace-write"},
+    )
+    assert third["job_id"]
 
 
 @pytest.mark.asyncio

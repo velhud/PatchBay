@@ -1,6 +1,6 @@
 import pytest
 
-from job_executor import JobExecutor
+from patchbay.jobs.executor import JobExecutor
 
 
 class DummyJobManager:
@@ -181,8 +181,8 @@ def test_dangerous_bypass_requires_config_opt_in(tmp_path):
 def test_star_allowed_env_inherits_full_environment(monkeypatch, tmp_path):
     executor = make_executor(tmp_path)
     executor.config["security"]["allowed_env_keys"] = ["*"]
-    monkeypatch.setenv("CODEX_MCP_WRAPPER_TEST_ENV", "visible")
+    monkeypatch.setenv("PATCHBAY_WRAPPER_TEST_ENV", "visible")
 
     env = executor._build_env()
 
-    assert env["CODEX_MCP_WRAPPER_TEST_ENV"] == "visible"
+    assert env["PATCHBAY_WRAPPER_TEST_ENV"] == "visible"

@@ -1,8 +1,8 @@
 import pytest
 
-from job_executor import JobExecutor
-from job_manager import JobManager
-from tools import ToolHandler
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager
+from patchbay.tools.handler import ToolHandler
 
 
 def make_config(tmp_path, security=None):

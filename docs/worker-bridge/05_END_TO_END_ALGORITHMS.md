@@ -58,7 +58,7 @@ No event bus, scheduler, database, or startup reconciliation loop is required. T
 Input: worker name/id, natural-language message
 
 1. Resolve worker and reconcile it.
-2. If the latest turn is pending/running, return `accepted: false`; the wrapper does not queue or steer.
+2. If the latest turn is pending/running, return `accepted: false`; PatchBay does not queue or steer.
 3. If target worker is idle with a session id, create a durable `resume` job with that session id.
 4. Reassert the worker workspace and sandbox before the Codex `resume` subcommand.
 5. If an isolated worker worktree is missing or discarded, return `accepted: false` and do not fall back to the base checkout.

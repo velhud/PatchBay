@@ -1,8 +1,9 @@
-from mcp_protocol import PUBLIC_TOOL_DESCRIPTORS, tool_descriptors_for_mode
+from patchbay.protocol.mcp import PUBLIC_TOOL_DESCRIPTORS, tool_descriptors_for_mode
 
 
 WORKER_TOOLS = {
     "codex_worker_options",
+    "codex_worker_inbox",
     "codex_worker_start",
     "codex_worker_message",
     "codex_worker_list",
@@ -18,19 +19,31 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert by_name["codex_worker_options"]["readOnlyHint"] is True
     assert "models" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "reasoning_efforts" in by_name["codex_worker_options"]["outputSchema"]["properties"]
+    assert by_name["codex_worker_inbox"]["readOnlyHint"] is False
+    assert by_name["codex_worker_inbox"]["_meta"]["openai/fileParams"] == ["artifact_file"]
+    assert "artifact_file" in by_name["codex_worker_inbox"]["inputSchema"]["properties"]
+    assert "takeover" in by_name["codex_worker_inbox"]["inputSchema"]["properties"]
+    assert "artifact_id" in by_name["codex_worker_inbox"]["outputSchema"]["properties"]
+    assert "owned_by_current_client" in by_name["codex_worker_inbox"]["outputSchema"]["properties"]
+    assert "takeover_required" in by_name["codex_worker_inbox"]["outputSchema"]["properties"]
     assert by_name["codex_worker_start"]["inputSchema"]["required"] == ["name", "brief"]
     assert "workspace_mode" in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "context_from_workers" in by_name["codex_worker_start"]["inputSchema"]["properties"]
+    assert "context_from_artifacts" in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "model" in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "reasoning_effort" in by_name["codex_worker_start"]["inputSchema"]["properties"]
+    assert "takeover" not in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "durable named Codex colleague" in by_name["codex_worker_start"]["description"]
     assert "workspace_mode=read_only" in by_name["codex_worker_start"]["description"]
     assert by_name["codex_worker_message"]["inputSchema"]["required"] == ["worker", "message"]
     assert "context_detail" in by_name["codex_worker_message"]["inputSchema"]["properties"]
+    assert "context_from_artifacts" in by_name["codex_worker_message"]["inputSchema"]["properties"]
     assert "model" in by_name["codex_worker_message"]["inputSchema"]["properties"]
     assert "reasoning_effort" in by_name["codex_worker_message"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_message"]["inputSchema"]["properties"]
+    assert "takeover" in by_name["codex_worker_message"]["inputSchema"]["properties"]
     assert "not for a new independent colleague" in by_name["codex_worker_message"]["description"]
+    assert "takeover=true" in by_name["codex_worker_message"]["description"]
     assert "workers" in by_name["codex_worker_list"]["outputSchema"]["properties"]
     assert "team_report" in by_name["codex_worker_list"]["outputSchema"]["properties"]
     assert "report" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
@@ -44,11 +57,14 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "codex_worker_integrate" in by_name
     assert "allow_dirty_base" in by_name["codex_worker_integrate"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_integrate"]["inputSchema"]["properties"]
+    assert "takeover" in by_name["codex_worker_integrate"]["inputSchema"]["properties"]
     assert "can_apply" in by_name["codex_worker_integrate"]["outputSchema"]["properties"]
+    assert "takeover_required" in by_name["codex_worker_integrate"]["outputSchema"]["properties"]
     assert "explicitly accepted" in by_name["codex_worker_integrate"]["description"]
     assert "does not commit" in by_name["codex_worker_integrate"]["description"]
     assert "cleanup_workspace" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
+    assert "takeover" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "discard" in by_name["codex_worker_stop"]["description"]
 
 
@@ -68,6 +84,12 @@ def test_worker_tool_annotations_match_real_effects():
     }
     assert by_name["codex_worker_list"]["annotations"]["readOnlyHint"] is True
     assert by_name["codex_worker_options"]["annotations"]["readOnlyHint"] is True
+    assert by_name["codex_worker_inbox"]["annotations"] == {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "openWorldHint": True,
+        "idempotentHint": False,
+    }
     assert by_name["codex_worker_inspect"]["annotations"]["readOnlyHint"] is True
     assert by_name["codex_worker_integrate"]["annotations"] == {
         "readOnlyHint": False,
@@ -95,7 +117,7 @@ def test_worker_mode_hides_low_level_job_controls():
 
 
 def test_worker_peer_context_arguments_validate():
-    from mcp_protocol import validate_public_tool_arguments
+    from patchbay.protocol.mcp import validate_public_tool_arguments
 
     validate_public_tool_arguments(
         "codex_worker_message",
@@ -103,10 +125,18 @@ def test_worker_peer_context_arguments_validate():
             "worker": "Implementer",
             "message": "Review the peer context.",
             "context_from_workers": ["Reviewer"],
+            "context_from_artifacts": ["art_abc123"],
             "context_detail": "diff",
             "model": "gpt-5.5",
             "reasoning_effort": "high",
+            "takeover": True,
+            "takeover_reason": "User asked this chat to continue the worker.",
         },
+    )
+
+    validate_public_tool_arguments(
+        "codex_worker_integrate",
+        {"worker": "Implementer", "takeover": True, "takeover_reason": "User accepted this worker."},
     )
 
     import pytest

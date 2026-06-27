@@ -2,10 +2,13 @@ from pathlib import Path
 
 import yaml
 
-from profile_store import (
+from patchbay.connector.profiles import (
+    normalize_logging_paths,
     profile_id_for_root,
     profile_path_for_root,
     read_workspace_profile,
+    resolve_runtime_path,
+    runtime_path,
     runtime_config_path_for_root,
     runtime_status_path_for_root,
     save_workspace_profile,
@@ -15,7 +18,7 @@ from profile_store import (
 
 
 def test_profile_paths_are_deterministic_and_home_scoped(tmp_path):
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
     root = tmp_path / "repo"
 
     assert profile_id_for_root(root) == profile_id_for_root(root)
@@ -24,8 +27,43 @@ def test_profile_paths_are_deterministic_and_home_scoped(tmp_path):
     assert runtime_status_path_for_root(root, env).parent == tmp_path / "home" / "runtime"
 
 
+def test_runtime_path_respects_patchbay_home(tmp_path):
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
+
+    assert runtime_path("logs", "jobs", environ=env) == tmp_path / "home" / "runtime" / "logs" / "jobs"
+    assert resolve_runtime_path(None, "logs", "audit.log", environ=env) == tmp_path / "home" / "runtime" / "logs" / "audit.log"
+
+
+def test_normalize_logging_paths_defaults_to_runtime_home(tmp_path):
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
+    config = {
+        "logging": {
+            "audit_file": None,
+            "job_logs_dir": "",
+            "job_state_dir": None,
+        }
+    }
+
+    normalized = normalize_logging_paths(config, env)
+
+    assert normalized["logging"]["audit_file"] == str(tmp_path / "home" / "runtime" / "logs" / "audit.log")
+    assert normalized["logging"]["job_logs_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs")
+    assert normalized["logging"]["job_state_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs" / "state")
+    assert normalized["logging"]["worktrees_dir"] == str(tmp_path / "home" / "runtime" / "worktrees" / "jobs")
+
+
+def test_normalize_logging_paths_preserves_explicit_job_log_root(tmp_path):
+    job_logs = tmp_path / "custom-logs"
+    config = {"logging": {"job_logs_dir": str(job_logs), "job_state_dir": None}}
+
+    normalized = normalize_logging_paths(config, {})
+
+    assert normalized["logging"]["job_logs_dir"] == str(job_logs)
+    assert normalized["logging"]["job_state_dir"] == str(job_logs / "state")
+
+
 def test_workspace_profile_round_trip_redacts_sensitive_keys(tmp_path):
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
     root = tmp_path / "repo"
     root.mkdir()
     token_value = "fixture-" + "token-value"
@@ -55,7 +93,7 @@ def test_workspace_profile_round_trip_redacts_sensitive_keys(tmp_path):
 
 
 def test_runtime_config_is_private_yaml(tmp_path):
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
     root = tmp_path / "repo"
     root.mkdir()
 
@@ -66,7 +104,7 @@ def test_runtime_config_is_private_yaml(tmp_path):
 
 
 def test_runtime_status_round_trip_strips_token_like_keys(tmp_path):
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
     root = tmp_path / "repo"
     root.mkdir()
     token_value = "fixture-runtime-" + "token"

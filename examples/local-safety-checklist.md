@@ -3,7 +3,7 @@
 Before running:
 
 - Server binds to `127.0.0.1`.
-- Public tunnel mode has `CODEX_MCP_HTTP_TOKEN` set.
+- Public tunnel mode has `PATCHBAY_HTTP_TOKEN` set.
 - CORS is disabled or restricted to a trusted local UI.
 - Repository roots are explicit.
 - Dangerous bypass is disabled.

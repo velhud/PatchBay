@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 
-from connector import connector_status
+from patchbay.connector.status import connector_status
 
 
 def base_config(auth=None):
@@ -11,9 +11,9 @@ def base_config(auth=None):
         "server": {"host": "127.0.0.1", "port": 8000, "enable_cors": False},
         "auth": {
             "enabled": False,
-            "token_env": "CODEX_MCP_HTTP_TOKEN",
+            "token_env": "PATCHBAY_HTTP_TOKEN",
             "allow_query_token": True,
-            "query_token_names": ["codex_mcp_token", "codexpro_token", "token"],
+            "query_token_names": ["patchbay_token", "token"],
             "require_for_non_loopback": True,
             "require_for_tunnel": True,
             "tunnel_mode": "none",
@@ -38,10 +38,10 @@ def test_connector_status_local_ready_without_token():
 
 
 def test_connector_status_redacts_query_token_url():
-    query_token_name = "codex_mcp_" + "token"
+    query_token_name = "patchbay_" + "token"
     status = connector_status(
         base_config(),
-        environ={"CODEX_MCP_HTTP_TOKEN": "auth-fixture-value"},
+        environ={"PATCHBAY_HTTP_TOKEN": "auth-fixture-value"},
         public_base_url="https://bridge.example",
     )
 
@@ -52,11 +52,11 @@ def test_connector_status_redacts_query_token_url():
 
 
 def test_connector_status_reveals_query_token_only_when_requested():
-    query_token_name = "codex_mcp_" + "token"
+    query_token_name = "patchbay_" + "token"
     token_value = "auth-fixture-value"
     status = connector_status(
         base_config(),
-        environ={"CODEX_MCP_HTTP_TOKEN": token_value},
+        environ={"PATCHBAY_HTTP_TOKEN": token_value},
         public_base_url="https://bridge.example",
         reveal_token=True,
     )
@@ -75,7 +75,7 @@ def test_connector_status_reports_fail_closed_tunnel_without_token():
 
 def test_doctor_script_json_output():
     env = dict(os.environ)
-    for name in ["CODEX_MCP_HTTP_TOKEN", "CODEX_WRAPPER_HTTP_TOKEN", "CODEXPRO_HTTP_TOKEN", "CODEBASE_BRIDGE_HTTP_TOKEN"]:
+    for name in ["PATCHBAY_HTTP_TOKEN", "PATCHBAY_TOKEN"]:
         env.pop(name, None)
     completed = subprocess.run(
         [sys.executable, "scripts/doctor.py", "--json"],
@@ -88,6 +88,6 @@ def test_doctor_script_json_output():
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
-    assert payload["name"] == "codex-mcp-wrapper"
+    assert payload["name"] == "patchbay"
     assert payload["ready"] is True
     assert payload["connection"]["server_url"] == "http://127.0.0.1:8000/mcp"

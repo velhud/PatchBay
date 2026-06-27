@@ -1,6 +1,6 @@
 # Implementation Phases
 
-Status: Phase 4 integration preview and accepted-result application implemented; app-server backend phase not implemented yet.
+Status: Phase 4 integration preview, accepted-result application, artifact inbox transfer, and shared-server multi-client coordination implemented; app-server backend phase not implemented yet.
 
 ## Delivery Strategy
 
@@ -35,7 +35,7 @@ Goal:
 start worker
 -> complete first Codex turn
 -> persist identity/session/report
--> restart wrapper
+-> restart PatchBay
 -> message worker by name
 -> continue same Codex conversation
 ```
@@ -54,11 +54,11 @@ No integration tool yet.
 
 Added:
 
-- `worker_runtime.py`;
+- `src/patchbay/workers/runtime.py`;
 - `tests/test_worker_runtime.py`;
 - `tests/test_worker_tools.py`.
 - `tests/test_worker_tool_surface.py`;
-- `worker_tool_surface.py`;
+- `src/patchbay/workers/tool_surface.py`;
 - `scripts/worker_phase1_eval.py`;
 - `docs/worker-bridge/PHASE1_DURABLE_WORKERS.md`.
 
@@ -173,6 +173,8 @@ Exit criteria:
 
 ## Phase 4: Integration Preview And Accepted-Result Application
 
+Status: implemented.
+
 Goal:
 
 - inspect and compare worker results;
@@ -192,13 +194,66 @@ Exit criteria:
 - conflicts are reported without target mutation;
 - rejected work remains available.
 
+## Post-Phase 4: Artifact Inbox Transfer
+
+Status: implemented.
+
+Goal:
+
+- let ChatGPT transfer generated files or zip packages to local PatchBay runtime storage;
+- attach selected artifact ids to isolated workers as source material;
+- support repeated imports in one conversation;
+- keep imported artifacts out of base-checkout changes, worker diffs, integration previews, and applies.
+
+Public changes:
+
+- `codex_worker_inbox`;
+- `context_from_artifacts` on `codex_worker_start`;
+- `context_from_artifacts` on `codex_worker_message`.
+
+Exit criteria:
+
+- imports do not edit the repo;
+- direct `file://` imports are rejected by default;
+- archive traversal and link/device entries are rejected;
+- attached artifacts are materialized only inside `.ai-bridge/imported-artifacts/` in isolated worker worktrees;
+- direct tokenized public-tunnel MCP simulation proves import, worker read, exclusion, and cleanup.
+
+## Post-Phase 4: Shared-Server Multi-Client Coordination
+
+Status: implemented.
+
+Goal:
+
+- let multiple ChatGPT conversations or MCP clients connect to one local Server URL without accidentally broadening each other's tool surface or mutating each other's workers/artifacts;
+- keep read/list/inspect shared, because this is a local operator tool rather than a multi-tenant SaaS boundary;
+- require explicit takeover for cross-owner worker/artifact mutation;
+- serialize base-checkout mutation per repository without adding a hidden queue.
+
+Public changes:
+
+- `codex_self_test` returns safe shared-server coordination metadata such as `client_ref` and active session count;
+- `codex_tool_mode_switch` applies to the current MCP session rather than every connected session;
+- worker and artifact views expose safe session-relative ownership fields without raw MCP session ids;
+- mutating worker/artifact calls can return `takeover_required` and accept explicit `takeover: true`;
+- base-checkout mutation paths can return `repo_busy: true` when another write is active.
+
+Exit criteria:
+
+- direct multi-client MCP trial passes with two logical sessions;
+- session A switching tool mode does not change session B's catalog;
+- cross-owner mutation refuses until explicit takeover;
+- same-repo base mutation conflicts fail fast, while unrelated repo work can continue;
+- public outputs do not include raw MCP session ids, private paths, or backend worker/job identifiers.
+
 ## Phase 5: App-Server Backend And Real ChatGPT Release Validation
 
 Goal:
 
 - evaluate official Codex app-server behind the same public worker contract;
-- complete real ChatGPT Developer Mode worker flows;
-- complete token-gated tunnel eval if needed;
+- complete real ChatGPT Developer Mode worker and artifact flows from the actual UI;
+- complete ChatGPT-originated token-gated tunnel eval if needed;
+- keep the direct tokenized public-tunnel MCP simulator as a regression check;
 - update readiness statements based on evidence.
 
 Do not change the public worker contract for this backend migration.
@@ -211,6 +266,7 @@ Phase 0 docs
     -> Phase 2 persistent worker worktrees
       -> Phase 3 multi-worker UX
         -> Phase 4 integration
+          -> artifact inbox transfer
           -> Phase 5 app-server optimization + release evidence
 ```
 

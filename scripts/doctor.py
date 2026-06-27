@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Doctor command for codex-mcp-wrapper connector readiness."""
+"""Doctor command for patchbay connector readiness."""
 from __future__ import annotations
 
 import argparse
@@ -9,14 +9,15 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-from connector import connector_status, format_doctor_json, format_doctor_text  # noqa: E402
+from patchbay.connector.status import connector_status, format_doctor_json, format_doctor_text  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check codex-mcp-wrapper connector readiness.")
+    parser = argparse.ArgumentParser(description="Check patchbay connector readiness.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--config", default=str(ROOT / "config.yaml"), help="Path to config.yaml.")
     parser.add_argument("--public-base-url", help="Optional public tunnel base URL for Server URL preview.")

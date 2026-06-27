@@ -1,4 +1,4 @@
-from tool_resources import (
+from patchbay.protocol.resources import (
     DEFAULT_WIDGET_DOMAIN,
     TOOL_CARD_HTML,
     TOOL_CARD_MIME_TYPE,
@@ -15,9 +15,9 @@ def test_tool_card_resource_contract():
     assert resources == [
         {
             "uri": TOOL_CARD_URI,
-            "name": "codex-mcp-wrapper-tool-card",
-            "title": "Codex MCP Wrapper Tool Card",
-            "description": "Compact ChatGPT Apps card for Codex MCP Wrapper tool results.",
+            "name": "patchbay-tool-card",
+            "title": "PatchBay Tool Card",
+            "description": "Compact ChatGPT Apps card for PatchBay tool results.",
             "mimeType": TOOL_CARD_MIME_TYPE,
         }
     ]

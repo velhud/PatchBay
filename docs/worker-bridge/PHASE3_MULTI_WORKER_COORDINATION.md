@@ -17,7 +17,7 @@ Send Worker C's concern back to Worker B.
 List the team.
 ```
 
-ChatGPT still manages the conversation in natural language. The wrapper only
+ChatGPT still manages the conversation in natural language. PatchBay only
 performs the mechanical work needed to include bounded peer-worker context in a
 new worker turn.
 

@@ -1,0 +1,54 @@
+# Documentation
+
+This directory holds the detailed public documentation for `patchbay`.
+The repository root keeps the practical entrypoints: `README.md`,
+`QUICKSTART.md`, `TESTING.md`, and `SECURITY.md`.
+
+## User Docs
+
+- [ChatGPT MCP client instructions](user/chatgpt-instructions.md)
+- [Worker bridge guide](worker-bridge/README.md)
+- [Multi-chat concurrency model](worker-bridge/MULTI_CHAT_CONCURRENCY_PLAN.md)
+
+## Architecture
+
+- [Architecture overview](architecture/overview.md)
+- [Runtime decision](architecture/runtime-decision.md)
+
+## Reference
+
+- [Public tool surface](reference/public-tool-surface.md)
+- [Context and handoff specification](reference/context-and-handoff.md)
+
+## Security
+
+- [Security model](security/model.md)
+- [Security and product boundary](security/product-boundary.md)
+- [Security review scope](security/review-scope.md)
+- [Threat model](security/threat-model.md)
+
+## Testing
+
+- [Release eval matrix](testing/evals.md)
+
+## Maintainer Workflows
+
+- [Docs refresh](maintainer/workflows/docs-refresh.md)
+- [Issue triage](maintainer/workflows/issue-triage.md)
+- [Owned-repo security review](maintainer/workflows/owned-repo-security-review.md)
+- [PR review](maintainer/workflows/pr-review.md)
+- [Release notes](maintainer/workflows/release-notes.md)
+- [Test generation](maintainer/workflows/test-generation.md)
+
+## Project Notes
+
+- [Why this project matters](project/why-this-matters.md)
+- [OSS roadmap](project/roadmap.md)
+- [OSS pipeline](project/oss-pipeline.md)
+- [API credits plan](project/api-credits-plan.md)
+
+## History
+
+- [Architectural workplan](history/architectural-workplan.md)
+- [CodexPro subsystem inventory](history/codexpro-subsystem-inventory.md)
+- [Hybrid migration plan](history/hybrid-migration-plan.md)

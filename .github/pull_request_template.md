@@ -14,7 +14,7 @@
 ## Verification
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python -m compileall -q .
+PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests
 PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q
 ```
 

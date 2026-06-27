@@ -1,7 +1,7 @@
 #!/bin/bash
-# Start the Codex MCP Server
+# Start PatchBay Server
 
 cd "$(dirname "$0")"
 
-echo "Starting Codex MCP Server..."
+echo "Starting PatchBay Server..."
 python3 scripts/start.py "$@"

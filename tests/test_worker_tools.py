@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from job_manager import JobManager, JobState
-from job_executor import JobExecutor
-from tools import ToolHandler
+from patchbay.jobs.manager import JobManager, JobState
+from patchbay.jobs.executor import JobExecutor
+from patchbay.tools.handler import ToolHandler
 
 
 def make_config(tmp_path):
@@ -88,7 +88,7 @@ async def test_tool_handler_exposes_worker_option_menu(monkeypatch, tmp_path):
             "next_step": "Use codex_worker_start.",
         }
 
-    monkeypatch.setattr("tools.worker_option_menu", fake_menu)
+    monkeypatch.setattr("patchbay.tools.handler.worker_option_menu", fake_menu)
 
     result = await handler.handle_tool_call("codex_worker_options", {"model": "gpt-5.5"})
 

@@ -1,7 +1,10 @@
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 
-from job_manager import JobManager, JobState
+import pytest
+
+from patchbay.jobs.manager import JobManager, JobState
 
 
 def make_config(tmp_path):
@@ -48,9 +51,11 @@ def test_job_manager_persists_redacted_completed_job(tmp_path):
     persisted = json.loads(record_path.read_text(encoding="utf-8"))
     serialized = json.dumps(persisted)
     assert persisted["state"] == "completed"
-    assert persisted["prompt_preview"] == "inspect with password = [REDACTED_POSSIBLE_SECRET]"
+    assert "prompt" not in persisted
+    assert "prompt_preview" not in persisted
     assert persisted["result"]["summary"] == "done with token=[REDACTED_POSSIBLE_SECRET]"
     assert "_raw_stdout" not in persisted["result"]
+    assert "inspect with password" not in serialized
     assert "fixture-value" not in serialized
     assert "raw output should not persist" not in serialized
 
@@ -77,6 +82,42 @@ def test_job_manager_marks_interrupted_running_jobs_failed_on_reload(tmp_path):
     assert job.state == JobState.FAILED
     assert job.completed_at is not None
     assert "server stopped" in job.error
+
+
+def test_pending_jobs_count_against_concurrency_limit(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    first = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
+
+    assert manager.active_job_count() == 1
+    with pytest.raises(RuntimeError, match="active includes pending and running jobs"):
+        manager.create_job("plan", "inspect again", config["repositories"]["default"], {})
+
+    manager.update_job_state(first, JobState.COMPLETED, result={"summary": "done"})
+    assert manager.active_job_count() == 0
+    second = manager.create_job("plan", "inspect after completion", config["repositories"]["default"], {})
+    assert second
+
+
+def test_job_creation_admission_is_thread_safe(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+
+    def create(index: int) -> tuple[str, str]:
+        try:
+            return ("ok", manager.create_job("plan", f"inspect {index}", config["repositories"]["default"], {}))
+        except RuntimeError as error:
+            return ("error", str(error))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(create, [1, 2]))
+
+    successes = [value for status, value in results if status == "ok"]
+    errors = [value for status, value in results if status == "error"]
+    assert len(successes) == 1
+    assert len(errors) == 1
+    assert "active includes pending and running jobs" in errors[0]
+    assert len(manager.jobs) == 1
 
 
 def test_cleanup_old_jobs_removes_persisted_record(tmp_path):

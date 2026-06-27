@@ -9,8 +9,8 @@ Extend current modules around their existing responsibilities. Do not replace th
 ## Phase 1 New Files
 
 ```text
-worker_runtime.py
-worker_tool_surface.py
+src/patchbay/workers/runtime.py
+src/patchbay/workers/tool_surface.py
 scripts/worker_phase1_eval.py
 tests/test_worker_runtime.py
 tests/test_worker_tools.py
@@ -51,7 +51,7 @@ tests/test_worker_integration.py
 tests/test_codex_app_server.py  # conditional
 ```
 
-`worker_runtime.py` currently contains worker resolution, workspace-mode handling, dispatch, report projection, change/diff views, peer-context construction, team-report projection, and public view logic without a separate worker store/mailbox/status/artifact module.
+`src/patchbay/workers/runtime.py` currently contains worker resolution, workspace-mode handling, dispatch, report projection, change/diff views, peer-context construction, team-report projection, and public view logic without a separate worker store/mailbox/status/artifact module.
 
 ## Existing Files Expected To Change Later
 
@@ -121,7 +121,7 @@ These are complementary surfaces.
 ## Suggested Dependency Shape
 
 ```text
-server.py
+src/patchbay/server.py
   -> JobManager
   -> JobExecutor
   -> WorkerRuntime

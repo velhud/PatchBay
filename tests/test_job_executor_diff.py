@@ -1,7 +1,7 @@
 import subprocess
 
-from job_executor import JobExecutor
-from job_manager import JobInfo, JobState
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobInfo, JobState
 
 
 class DummyJobManager:

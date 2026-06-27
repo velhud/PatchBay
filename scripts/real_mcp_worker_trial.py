@@ -29,7 +29,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL_CARD_URI = "ui://widget/codex-mcp-wrapper-tool-card-v1.html"
+TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v1.html"
 REQUIRED_WORKER_TOOLS = {
     "codex_open_workspace",
     "codex_worker_options",
@@ -133,6 +133,7 @@ class TrialRecorder:
             self.call_sequence.append(
                 {
                     "index": safe.get("index"),
+                    "client": safe.get("client"),
                     "method": safe.get("method"),
                     "tool": safe.get("tool"),
                     "mcp_id": safe.get("mcp_id"),
@@ -210,11 +211,13 @@ class McpClient:
         base_url: str,
         recorder: TrialRecorder,
         *,
+        client_label: str = "client-a",
         simulate_interrupt_after_calls: int = 0,
         timeout: float = 60.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.recorder = recorder
+        self.client_label = client_label
         self.session_id: str | None = None
         self.timeout = timeout
         self.index = 0
@@ -229,6 +232,7 @@ class McpClient:
             {
                 "at": utc_now(),
                 "index": index,
+                "client": self.client_label,
                 "phase": "request",
                 "transport": "http",
                 "method": "GET",
@@ -265,6 +269,7 @@ class McpClient:
             {
                 "at": utc_now(),
                 "index": index,
+                "client": self.client_label,
                 "phase": "request",
                 "transport": "mcp-http",
                 "method": method,
@@ -319,6 +324,7 @@ class McpClient:
             {
                 "at": utc_now(),
                 "index": index,
+                "client": self.client_label,
                 "phase": "response",
                 "method": method,
                 "tool": tool or None,
@@ -337,9 +343,13 @@ class McpClient:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a real MCP-over-HTTP worker lifecycle trial against a disposable repo.")
-    parser.add_argument("--output-dir", default="validation-reports/real_mcp_trial", help="Parent directory for timestamped evidence.")
+    parser.add_argument(
+        "--output-dir",
+        default=".local/validation/real_mcp_trial",
+        help="Parent directory for timestamped evidence. Defaults to ignored local state.",
+    )
     parser.add_argument("--port", type=int, help="Local port. Defaults to a free loopback port.")
-    parser.add_argument("--tool-mode", default="worker", choices=["worker", "full", "standard"], help="Wrapper tool mode to launch.")
+    parser.add_argument("--tool-mode", default="worker", choices=["worker", "full", "standard"], help="PatchBay tool mode to launch.")
     parser.add_argument("--startup-timeout", type=float, default=25.0)
     parser.add_argument("--request-timeout", type=float, default=60.0)
     parser.add_argument("--worker-timeout", type=float, default=600.0)
@@ -348,6 +358,11 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--simulate-interrupt-after-calls", type=int, default=0)
     parser.add_argument("--include-safety-cases", action="store_true", help="Run real-MCP worker safety negative cases.")
+    parser.add_argument(
+        "--multi-client",
+        action="store_true",
+        help="Run an additional two-session MCP scenario covering session-local modes, shared inspection, refusal, and takeover.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir) / timestamp()
@@ -360,7 +375,7 @@ def main() -> int:
             str(temp_dir): "<trial-temp>",
             str(repo): "<trial-repo>",
             str(runtime): "<trial-runtime>",
-            str(ROOT): "<wrapper-repo>",
+            str(ROOT): "<PatchBay-repo>",
         },
     )
     process: subprocess.Popen[str] | None = None
@@ -372,7 +387,7 @@ def main() -> int:
         server_url = f"http://127.0.0.1:{port}/mcp"
         trial_config = write_trial_config(repo, runtime, tool_mode=args.tool_mode)
         env = dict(os.environ)
-        env["CODEX_MCP_HOME"] = str(runtime)
+        env["PATCHBAY_HOME"] = str(runtime)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         command = [
             sys.executable,
@@ -398,6 +413,7 @@ def main() -> int:
             server_url=server_url,
             server_command=command,
             tool_mode=args.tool_mode,
+            multi_client=args.multi_client,
             python_version=sys.version.split()[0],
             codex_version=codex_version(),
             codex_user_config_policy="worker_jobs_use_--ignore-user-config; Codex auth still uses CODEX_HOME",
@@ -417,11 +433,20 @@ def main() -> int:
         client = McpClient(
             f"http://127.0.0.1:{port}",
             recorder,
+            client_label="client-a",
             simulate_interrupt_after_calls=args.simulate_interrupt_after_calls,
             timeout=args.request_timeout,
         )
 
-        run_trial(client, recorder, repo, runtime, worker_timeout=args.worker_timeout, include_safety_cases=args.include_safety_cases)
+        run_trial(
+            client,
+            recorder,
+            repo,
+            runtime,
+            worker_timeout=args.worker_timeout,
+            include_safety_cases=args.include_safety_cases,
+            multi_client=args.multi_client,
+        )
         recorder.mark_status("passed", classification="direct_evidence")
         print_result(recorder.sanitize(recorder.report), args.json)
         return 0
@@ -461,6 +486,7 @@ def run_trial(
     *,
     worker_timeout: float,
     include_safety_cases: bool,
+    multi_client: bool,
 ) -> None:
     health = client.get("/", label="health")
     recorder.check(
@@ -485,7 +511,7 @@ def run_trial(
     client.session_id = session_id
     recorder.check(
         "initialize",
-        bool(session_id) and initialize.get("result", {}).get("serverInfo", {}).get("name") == "codex-mcp-wrapper",
+        bool(session_id) and initialize.get("result", {}).get("serverInfo", {}).get("name") == "patchbay",
         classification="direct_evidence",
         evidence="MCP initialize returned serverInfo and session header.",
     )
@@ -498,6 +524,10 @@ def run_trial(
         classification="direct_evidence",
         evidence="Worker mode exposed worker/context tools and hid low-level job status tools.",
     )
+
+    secondary_client: McpClient | None = None
+    if multi_client:
+        secondary_client = run_multi_client_session_probe(client, recorder)
 
     resources = client.rpc(3, "resources/list")
     resource_uris = {resource["uri"] for resource in resources.get("result", {}).get("resources", [])}
@@ -570,7 +600,17 @@ def run_trial(
         evidence=f"Worker completed with state={finished.get('state')} and resumable session={finished.get('has_session')}.",
     )
 
-    changes = structured(client.call_tool(1001, "codex_worker_inspect", {"worker": worker_name, "view": "changes"}))
+    integration_client = client
+    if secondary_client is not None:
+        integration_client = run_multi_client_worker_takeover(
+            secondary_client,
+            client,
+            recorder,
+            worker_name,
+            worker_timeout=worker_timeout,
+        )
+
+    changes = structured(integration_client.call_tool(1001, "codex_worker_inspect", {"worker": worker_name, "view": "changes"}))
     changed_files = set(changes.get("changed_files") or [])
     recorder.check(
         "changes_view",
@@ -580,7 +620,7 @@ def run_trial(
     )
 
     worker_file = structured(
-        client.call_tool(
+        integration_client.call_tool(
             1006,
             "codex_worker_inspect",
             {"worker": worker_name, "view": "file", "file_path": "docs/worker-note.md"},
@@ -595,7 +635,7 @@ def run_trial(
         evidence="Worker-side file view returned the new file before base integration.",
     )
 
-    diff = structured(client.call_tool(1002, "codex_worker_inspect", {"worker": worker_name, "view": "diff", "file_path": "src/example.py"}))
+    diff = structured(integration_client.call_tool(1002, "codex_worker_inspect", {"worker": worker_name, "view": "diff", "file_path": "src/example.py"}))
     recorder.check(
         "one_file_diff",
         "+    return \"worker-result\"" in diff.get("diff", "") or "+return \"worker-result\"" in diff.get("diff", ""),
@@ -611,7 +651,7 @@ def run_trial(
         evidence="Base checkout stayed clean while the worker worked in an isolated worktree.",
     )
 
-    preview = structured(client.call_tool(1003, "codex_worker_inspect", {"worker": worker_name, "view": "integration_preview"}))
+    preview = structured(integration_client.call_tool(1003, "codex_worker_inspect", {"worker": worker_name, "view": "integration_preview"}))
     recorder.check(
         "integration_preview",
         preview.get("can_apply") is True and preview.get("applied") is False,
@@ -619,7 +659,7 @@ def run_trial(
         evidence="Read-only integration preview reported a clean applicable patch.",
     )
 
-    integrated = structured(client.call_tool(1004, "codex_worker_integrate", {"worker": worker_name}))
+    integrated = structured(integration_client.call_tool(1004, "codex_worker_integrate", {"worker": worker_name}))
     commit_count_after = git_commit_count(repo)
     recorder.check(
         "integration_applied",
@@ -640,7 +680,7 @@ def run_trial(
         evidence="Base checkout is dirty after integration, proving the result was applied without committing.",
     )
 
-    listed = structured(client.call_tool(1005, "codex_worker_list", {}))
+    listed = structured(integration_client.call_tool(1005, "codex_worker_list", {}))
     recorder.check(
         "worker_list_after_integration",
         "applied_to_checkout" in json.dumps(listed),
@@ -684,6 +724,163 @@ def run_trial(
             f"private branch names, UUID-like session ids, or obvious token patterns. pattern_leaks={pattern_leaks}."
         ),
     )
+
+
+def run_multi_client_session_probe(primary: McpClient, recorder: TrialRecorder) -> McpClient:
+    secondary = McpClient(primary.base_url, recorder, client_label="client-b", timeout=primary.timeout)
+    session_id, initialize = secondary.post(
+        {
+            "jsonrpc": "2.0",
+            "id": 4001,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "real-mcp-worker-trial-client-b", "version": "1.0.0"},
+            },
+        }
+    )
+    secondary.session_id = session_id
+    recorder.check(
+        "multi_client_initialize",
+        bool(session_id)
+        and session_id != primary.session_id
+        and initialize.get("result", {}).get("serverInfo", {}).get("name") == "patchbay",
+        classification="direct_evidence",
+        evidence="A second logical MCP client initialized with a separate transport session.",
+    )
+
+    before_primary_names = tool_names(primary.rpc(4002, "tools/list"))
+    before_secondary_names = tool_names(secondary.rpc(4003, "tools/list"))
+    recorder.check(
+        "multi_client_initial_worker_modes",
+        "codex_resume" not in before_primary_names and "codex_resume" not in before_secondary_names,
+        classification="direct_evidence",
+        evidence="Both MCP sessions started in worker mode and hid low-level resume tools.",
+    )
+
+    switched = structured(
+        primary.call_tool(
+            4004,
+            "codex_tool_mode_switch",
+            {"mode": "full", "reason": "Multi-client trial verifies session-local mode switching."},
+        )
+    )
+    primary_full_names = tool_names(primary.rpc(4005, "tools/list"))
+    secondary_worker_names = tool_names(secondary.rpc(4006, "tools/list"))
+    recorder.check(
+        "multi_client_session_local_tool_modes",
+        switched.get("switch_scope") == "session"
+        and "codex_resume" in primary_full_names
+        and "codex_resume" not in secondary_worker_names,
+        classification="direct_evidence",
+        evidence="Switching client A to full mode did not expand client B's tool catalog.",
+    )
+
+    self_test = structured(secondary.call_tool(4007, "codex_self_test", {}))
+    coordination = self_test.get("coordination") or {}
+    recorder.check(
+        "multi_client_coordination_metadata",
+        coordination.get("shared_server") is True
+        and coordination.get("active_mcp_sessions", 0) >= 2
+        and coordination.get("raw_session_ids_returned") is False
+        and str(primary.session_id) not in json.dumps(coordination),
+        classification="direct_evidence",
+        evidence="Self-test reported shared-server coordination metadata without raw session ids.",
+    )
+
+    switched_back = structured(
+        primary.call_tool(
+            4008,
+            "codex_tool_mode_switch",
+            {"mode": "worker", "reason": "Return the primary trial client to the recommended worker catalog."},
+        )
+    )
+    primary_worker_names = tool_names(primary.rpc(4009, "tools/list"))
+    recorder.check(
+        "multi_client_primary_mode_restored",
+        switched_back.get("current_mode") == "worker" and "codex_resume" not in primary_worker_names,
+        classification="direct_evidence",
+        evidence="Client A returned to worker mode before worker lifecycle checks continued.",
+    )
+    return secondary
+
+
+def run_multi_client_worker_takeover(
+    secondary: McpClient,
+    primary: McpClient,
+    recorder: TrialRecorder,
+    worker_name: str,
+    *,
+    worker_timeout: float,
+) -> McpClient:
+    visible = structured(secondary.call_tool(5001, "codex_worker_inspect", {"worker": worker_name, "view": "report"}))
+    recorder.check(
+        "multi_client_other_owner_inspect_allowed",
+        visible.get("owned_by_current_client") is False and visible.get("ownership_status") == "other_connection",
+        classification="direct_evidence",
+        evidence="Client B could inspect a worker created by client A and saw safe other-owner metadata.",
+    )
+
+    refused = structured(
+        secondary.call_tool(
+            5002,
+            "codex_worker_message",
+            {
+                "worker": worker_name,
+                "message": "Do not edit files. This message should be refused unless takeover is explicit.",
+            },
+        )
+    )
+    recorder.check(
+        "multi_client_other_owner_message_refused",
+        refused.get("accepted") is False and refused.get("takeover_required") is True,
+        classification="direct_evidence",
+        evidence="Client B could not mutate client A's worker without explicit takeover.",
+    )
+
+    accepted = structured(
+        secondary.call_tool(
+            5003,
+            "codex_worker_message",
+            {
+                "worker": worker_name,
+                "takeover": True,
+                "takeover_reason": "User confirmed client B should continue this disposable trial worker.",
+                "message": (
+                    "Do not edit files and do not commit. Reply that takeover was acknowledged and that the "
+                    "existing worker changes remain ready for integration."
+                ),
+            },
+        )
+    )
+    recorder.check(
+        "multi_client_takeover_message_accepted",
+        accepted.get("accepted") is True and accepted.get("takeover_performed") is True,
+        classification="direct_evidence",
+        evidence="Client B explicitly took over the worker and delivered a continuation message.",
+    )
+
+    takeover_finished = wait_for_worker(secondary, worker_name, worker_timeout)
+    recorder.check(
+        "multi_client_takeover_turn_completed",
+        takeover_finished.get("state") == "idle" and takeover_finished.get("owned_by_current_client") is True,
+        classification="direct_evidence",
+        evidence="The takeover continuation completed and client B became the current owner.",
+    )
+
+    primary_view = structured(primary.call_tool(5004, "codex_worker_inspect", {"worker": worker_name, "view": "report"}))
+    secondary_view = structured(secondary.call_tool(5005, "codex_worker_inspect", {"worker": worker_name, "view": "report"}))
+    recorder.check(
+        "multi_client_ownership_transferred",
+        primary_view.get("owned_by_current_client") is False
+        and primary_view.get("ownership_status") == "other_connection"
+        and secondary_view.get("owned_by_current_client") is True
+        and secondary_view.get("ownership_status") == "current_client",
+        classification="direct_evidence",
+        evidence="After explicit takeover, ownership flags flipped for the two MCP sessions.",
+    )
+    return secondary
 
 
 def run_safety_cases(client: McpClient, recorder: TrialRecorder, repo: Path, runtime: Path, *, worker_timeout: float) -> None:
@@ -868,6 +1065,13 @@ def structured(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(content, dict):
         raise TrialFailure(f"MCP response did not include structuredContent: {payload}")
     return content
+
+
+def tool_names(payload: dict[str, Any]) -> set[str]:
+    if "error" in payload:
+        raise TrialFailure(f"MCP error response: {payload['error']}")
+    tools = payload.get("result", {}).get("tools", [])
+    return {str(tool.get("name")) for tool in tools if isinstance(tool, dict)}
 
 
 def init_repo(path: Path) -> None:
@@ -1072,8 +1276,9 @@ def render_summary(report: dict[str, Any]) -> str:
     lines.extend(["", "## MCP Call Sequence", ""])
     for event in report.get("mcp_call_sequence") or []:
         tool = f" tool={event.get('tool')}" if event.get("tool") else ""
+        client = f" client={event.get('client')}" if event.get("client") else ""
         lines.append(
-            f"- #{event.get('index')} `{event.get('method')}`{tool} id={event.get('mcp_id')} "
+            f"- #{event.get('index')} `{event.get('method')}`{client}{tool} id={event.get('mcp_id')} "
             f"ok={event.get('ok')} duration={event.get('duration_seconds')}s"
         )
     if report.get("error"):

@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from job_executor import JobExecutor, STALE_RUNNING_JOB_ERROR
-from job_manager import JobManager, JobState
-from worker_runtime import (
+from patchbay.jobs.executor import JobExecutor, STALE_RUNNING_JOB_ERROR
+from patchbay.jobs.manager import JobManager, JobState
+from patchbay.ownership import (
+    OWNER_CLIENT_REF_OPTION,
+    OWNER_CREATED_AT_OPTION,
+    OWNER_LABEL_OPTION,
+    OWNER_LAST_SEEN_AT_OPTION,
+    OWNER_SESSION_HASH_OPTION,
+)
+from patchbay.protocol.context import RequestContext
+from patchbay.workers.runtime import (
     WORKER_BASE_REPO_OPTION,
     WORKER_ID_OPTION,
     WORKER_MODE_OPTION,
@@ -47,6 +55,7 @@ def make_config(tmp_path):
             "job_state_dir": str(tmp_path / "logs" / "jobs" / "state"),
         },
         "workers": {"worktree_root": str(tmp_path / "worker-worktrees")},
+        "locks": {"root": str(tmp_path / "locks")},
     }
 
 
@@ -84,6 +93,10 @@ class FailingCreateJobManager(JobManager):
         raise RuntimeError("forced job creation failure")
 
 
+def request_context(client_ref: str, label: str = "") -> RequestContext:
+    return RequestContext(transport_session_id=f"session-{client_ref}", client_ref=client_ref, client_label=label)
+
+
 @pytest.mark.asyncio
 async def test_start_worker_defaults_to_isolated_worktree_and_hides_backend_ids(tmp_path):
     config = make_config(tmp_path)
@@ -118,6 +131,138 @@ async def test_start_worker_defaults_to_isolated_worktree_and_hides_backend_ids(
     assert job.options[WORKER_ID_OPTION] == result["worker_id"]
     assert "report back like an engineer" in job.prompt
     assert executor.started == [job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_worker_owner_metadata_is_private_and_public_flags_are_session_relative(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    client_a = request_context("client_a", "Chat A")
+    client_b = request_context("client_b", "Chat B")
+
+    result = await runtime.start_worker(
+        name="Owned Worker",
+        brief="Inspect ownership.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=client_a,
+    )
+    await asyncio.sleep(0)
+
+    assert result["owned_by_current_client"] is True
+    assert result["ownership_status"] == "current_client"
+    assert result["owner_label"] == "Chat A"
+    assert OWNER_SESSION_HASH_OPTION not in str(result)
+    assert OWNER_CLIENT_REF_OPTION not in str(result)
+
+    job = manager.get_job(executor.started[0])
+    assert job.options[OWNER_SESSION_HASH_OPTION] == "client_a"
+    assert job.options[OWNER_CLIENT_REF_OPTION] == "client_a"
+    assert job.options[OWNER_LABEL_OPTION] == "Chat A"
+    assert isinstance(job.options[OWNER_CREATED_AT_OPTION], float)
+    assert isinstance(job.options[OWNER_LAST_SEEN_AT_OPTION], float)
+
+    same_client = await runtime.list_workers(request_context=client_a)
+    other_client = await runtime.list_workers(request_context=client_b)
+    assert same_client["workers"][0]["owned_by_current_client"] is True
+    assert other_client["workers"][0]["owned_by_current_client"] is False
+    assert other_client["workers"][0]["ownership_status"] == "other_connection"
+    assert "takeover=true" in other_client["workers"][0]["ownership_note"]
+    assert OWNER_SESSION_HASH_OPTION not in str(other_client)
+    assert "client_a" not in str(other_client)
+
+    reloaded_manager = JobManager(config)
+    reloaded_runtime = WorkerRuntime(config, reloaded_manager, RecordingExecutor(reloaded_manager))
+    reloaded = await reloaded_runtime.list_workers(request_context=client_b)
+    assert reloaded["workers"][0]["owned_by_current_client"] is False
+    assert reloaded["workers"][0]["ownership_status"] == "other_connection"
+
+
+@pytest.mark.asyncio
+async def test_worker_message_requires_takeover_for_other_owner_and_transfers_control(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    client_a = request_context("client_a", "Chat A")
+    client_b = request_context("client_b", "Chat B")
+
+    started = await runtime.start_worker(
+        name="Takeover Worker",
+        brief="Start work.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=client_a,
+    )
+    await asyncio.sleep(0)
+    first_job = manager.get_job(executor.started[0])
+    manager.update_job_state(first_job.job_id, JobState.COMPLETED, result={"summary": "ready"}, session_id="session-a")
+
+    refused = await runtime.message_worker(
+        worker=started["worker_id"],
+        message="Continue from another chat.",
+        request_context=client_b,
+    )
+
+    assert refused["accepted"] is False
+    assert refused["takeover_required"] is True
+    assert refused["owned_by_current_client"] is False
+    assert refused["required_action"] == "call again with takeover=true after user confirms this is intentional"
+    assert executor.started == [first_job.job_id]
+    assert "client_a" not in str(refused)
+
+    accepted = await runtime.message_worker(
+        worker=started["worker_id"],
+        message="Continue from another chat.",
+        request_context=client_b,
+        takeover=True,
+        takeover_reason="User asked this chat to continue it.",
+    )
+    await asyncio.sleep(0)
+
+    assert accepted["accepted"] is True
+    assert accepted["takeover_performed"] is True
+    resume_job = manager.get_job(executor.started[-1])
+    assert resume_job.options[OWNER_SESSION_HASH_OPTION] == "client_b"
+    assert resume_job.options[OWNER_CLIENT_REF_OPTION] == "client_b"
+    assert resume_job.options["_mcp_takeover_reason"] == "User asked this chat to continue it."
+
+    seen_by_a = await runtime.list_workers(request_context=client_a)
+    assert seen_by_a["workers"][0]["owned_by_current_client"] is False
+    assert seen_by_a["workers"][0]["ownership_status"] == "other_connection"
+
+
+@pytest.mark.asyncio
+async def test_worker_stop_requires_takeover_for_other_owner(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    client_a = request_context("client_a", "Chat A")
+    client_b = request_context("client_b", "Chat B")
+
+    started = await runtime.start_worker(
+        name="Stop Protected Worker",
+        brief="Keep running.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=client_a,
+    )
+    await asyncio.sleep(0)
+    first_job = manager.get_job(executor.started[0])
+
+    refused = await runtime.stop_worker(worker=started["worker_id"], request_context=client_b)
+    assert refused["stopped"] is False
+    assert refused["takeover_required"] is True
+    assert first_job.job_id not in executor.cancelled
+    assert manager.get_job(first_job.job_id).state == JobState.PENDING
+
+    stopped = await runtime.stop_worker(worker=started["worker_id"], request_context=client_b, takeover=True)
+    assert stopped["takeover_performed"] is True
+    assert first_job.job_id in executor.cancelled
+    assert manager.get_job(first_job.job_id).options[OWNER_CLIENT_REF_OPTION] == "client_b"
 
 
 @pytest.mark.asyncio
@@ -290,7 +435,7 @@ async def test_start_worker_rolls_back_worktree_when_concurrency_limit_rejects_j
     active_job_id = manager.create_job("interactive", "already running", config["repositories"]["default"], {})
     manager.update_job_state(active_job_id, JobState.RUNNING)
 
-    with pytest.raises(RuntimeError, match="Maximum concurrent jobs"):
+    with pytest.raises(RuntimeError, match="Maximum active jobs"):
         await runtime.start_worker(
             name="Rejected Parallel Implementer",
             brief="Create work.",
@@ -593,11 +738,13 @@ async def test_isolated_worker_continues_in_same_worktree_and_reports_changes(tm
     manager = JobManager(config)
     executor = RecordingExecutor(manager)
     runtime = WorkerRuntime(config, manager, executor)
+    client_a = request_context("client_a", "Chat A")
 
     started = await runtime.start_worker(
         name="Implementer",
         brief="Create a file.",
         repo_path=config["repositories"]["default"],
+        request_context=client_a,
     )
     await asyncio.sleep(0)
     first_job = manager.get_job(executor.started[0])
@@ -627,7 +774,11 @@ async def test_isolated_worker_continues_in_same_worktree_and_reports_changes(tm
     reloaded_manager = JobManager(config)
     reloaded_executor = RecordingExecutor(reloaded_manager)
     reloaded_runtime = WorkerRuntime(config, reloaded_manager, reloaded_executor)
-    continued = await reloaded_runtime.message_worker(worker="Implementer", message="Revise the same file.")
+    continued = await reloaded_runtime.message_worker(
+        worker="Implementer",
+        message="Revise the same file.",
+        request_context=client_a,
+    )
     await asyncio.sleep(0)
 
     assert continued["accepted"] is True
@@ -638,6 +789,8 @@ async def test_isolated_worker_continues_in_same_worktree_and_reports_changes(tm
     assert resume_job.options["_worker_worktree_path"] == worker_path
     assert resume_job.options["_codex_cwd"] == worker_path
     assert resume_job.options["sandbox"] == "workspace-write"
+    assert resume_job.options[OWNER_SESSION_HASH_OPTION] == "client_a"
+    assert resume_job.options[OWNER_CLIENT_REF_OPTION] == "client_a"
 
 
 @pytest.mark.asyncio

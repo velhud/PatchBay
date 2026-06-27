@@ -18,12 +18,13 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-from job_executor import JobExecutor
-from job_manager import JobManager
-from worker_runtime import WORKER_ID_OPTION, WORKER_WORKTREE_OPTION, WorkerRuntime
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager
+from patchbay.workers.runtime import WORKER_ID_OPTION, WORKER_WORKTREE_OPTION, WorkerRuntime
 
 
 TARGET_FILE = "phase4_worker_result.txt"

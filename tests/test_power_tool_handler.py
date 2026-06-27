@@ -1,8 +1,11 @@
+import json
+
 import pytest
 
-from job_executor import JobExecutor
-from job_manager import JobManager
-from tools import ToolHandler
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager
+from patchbay.protocol.context import RequestContext
+from patchbay.tools.handler import ToolHandler
 
 
 def make_config(tmp_path, power=None):
@@ -33,6 +36,7 @@ def make_config(tmp_path, power=None):
             "job_logs_dir": str(tmp_path / "logs" / "jobs"),
             "job_state_dir": str(tmp_path / "logs" / "jobs" / "state"),
         },
+        "locks": {"root": str(tmp_path / "locks")},
     }
 
 
@@ -62,3 +66,46 @@ async def test_public_power_tools_work_when_enabled(tmp_path):
     assert written["path"] == "x.txt"
     assert edited["replacements"] == 1
     assert command["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_direct_write_and_command_refuse_when_repo_mutation_lock_is_busy(tmp_path):
+    config = make_config(tmp_path, {"direct_write": True, "bash_mode": "safe"})
+    manager = JobManager(config)
+    handler = ToolHandler(config, manager, JobExecutor(config, manager))
+    lease = await handler.repo_locks.acquire(str(tmp_path), operation="test_holder")
+    try:
+        written = await handler.handle_tool_call("codex_write_file", {"file_path": "x.txt", "content": "hello\n"})
+        command = await handler.handle_tool_call("codex_run_command", {"command": "pwd"})
+    finally:
+        lease.release()
+
+    assert written["repo_busy"] is True
+    assert command["repo_busy"] is True
+    assert not (tmp_path / "x.txt").exists()
+    assert str(tmp_path) not in str(written)
+    assert str(tmp_path) not in str(command)
+
+
+@pytest.mark.asyncio
+async def test_self_test_includes_shared_server_coordination_without_raw_session(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    handler = ToolHandler(config, manager, JobExecutor(config, manager))
+    context = RequestContext.from_session(
+        "private-session-id",
+        {"tool_mode": "worker", "client_label": "planning"},
+        salt="test-salt",
+        active_mcp_sessions=2,
+    )
+
+    result = await handler.handle_tool_call("codex_self_test", {}, context=context)
+
+    coordination = result["coordination"]
+    assert coordination["shared_server"] is True
+    assert coordination["client_ref"].startswith("client_")
+    assert coordination["client"]["tool_mode"] == "worker"
+    assert coordination["client"]["client_label"] == "planning"
+    assert coordination["active_mcp_sessions"] == 2
+    assert coordination["raw_session_ids_returned"] is False
+    assert "private-session-id" not in json.dumps(result)
