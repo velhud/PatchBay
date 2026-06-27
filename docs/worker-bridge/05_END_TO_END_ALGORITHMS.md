@@ -1,6 +1,6 @@
 # End-To-End Algorithms
 
-Status: Phase 4 worker algorithms implemented; app-server backend pending.
+Status: current worker algorithms implemented; app-server backend pending.
 
 ## Start Worker
 
@@ -122,7 +122,7 @@ App-server backend V2 may use a real thread fork after it is verified.
 
 ## Integration Preview
 
-Implemented in Phase 4:
+Implemented:
 
 ```text
 1. Reconcile worker and ensure no active write is running.
@@ -139,7 +139,7 @@ The preview must be read-only with respect to the user's target workspace.
 
 ## Integrate Worker
 
-Implemented in Phase 4:
+Implemented:
 
 ```text
 1. Run integration preview and require a clean result.

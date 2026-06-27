@@ -42,8 +42,8 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/velhud/patchbay"
-Issues = "https://github.com/velhud/patchbay/issues"
+Homepage = "https://github.com/velhud/PatchBay"
+Issues = "https://github.com/velhud/PatchBay/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -368,9 +368,9 @@ Current implementation provides this as `scripts/live_mcp_eval.py`. It starts th
 `scripts/live_mcp_eval.py` is necessary but not sufficient for public release because it intentionally does not attach to ChatGPT and does not open a real public tunnel.
 
 
-## Phase 4 Worker Integration Eval
+## Worker Integration Eval
 
-Run after Phase 4 changes:
+Run after worker integration changes:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase4_eval.py --timeout 900

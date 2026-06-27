@@ -1,6 +1,6 @@
 # Target Architecture
 
-Status: Phase 4 isolated writing worker integration and artifact inbox architecture implemented; app-server backend architecture pending.
+Status: isolated writing worker integration and artifact inbox architecture are implemented; app-server backend architecture remains pending.
 
 ## Top-Level Shape
 

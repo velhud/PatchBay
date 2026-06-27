@@ -179,7 +179,7 @@ Power tools are not "unsafe illusions"; they are product power. They must be con
 
 ## Worker Facade
 
-The current product includes a natural-language worker facade over the existing runtime. It is documented in [../worker-bridge/PHASE1_DURABLE_WORKERS.md](../worker-bridge/PHASE1_DURABLE_WORKERS.md), [../worker-bridge/PHASE2_WRITING_WORKERS.md](../worker-bridge/PHASE2_WRITING_WORKERS.md), [../worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md](../worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md), and [../worker-bridge/PHASE4_INTEGRATION.md](../worker-bridge/PHASE4_INTEGRATION.md).
+The current product includes a natural-language worker facade over the existing runtime. Current behavior is summarized in [../worker-bridge/README.md](../worker-bridge/README.md), while the older package files in that directory remain implementation history.
 
 The worker facade lets ChatGPT manage named local Codex workers through natural-language briefs and concise reports while PatchBay keeps exact runtime mechanics internal. A worker is derived from private metadata on durable job records, plus the Codex session reference already captured by the job runtime.
 
@@ -294,6 +294,6 @@ Remaining work is additive:
 - OpenAI Apps SDK security/privacy docs: https://developers.openai.com/apps-sdk/guides/security-privacy
 
 
-## Phase 4 Worker Integration
+## Worker Integration
 
-Phase 4 adds explicit integration preview and accepted-result application for isolated writing workers. `codex_worker_inspect(view="integration_preview")` is read-only and reports whether a worker patch can apply to the base checkout. `codex_worker_integrate` is the explicit mutating act that applies the accepted worker result without committing and without deleting the worker worktree.
+PatchBay supports explicit integration preview and accepted-result application for isolated writing workers. `codex_worker_inspect(view="integration_preview")` is read-only and reports whether a worker patch can apply to the base checkout. `codex_worker_integrate` is the explicit mutating act that applies the accepted worker result without committing and without deleting the worker worktree.
