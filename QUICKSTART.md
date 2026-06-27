@@ -8,6 +8,7 @@ This quick start is centered on connecting ChatGPT to PatchBay. Use a disposable
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e ".[test]"
 codex login
 codex --version
 ```
@@ -33,17 +34,22 @@ git -c user.name='Eval User' -c user.email='eval@example.invalid' commit -m init
 From PatchBay repo:
 
 ```bash
-python scripts/doctor.py
-python scripts/start.py --root "$tmpdir/repo" --print-only
+patchbay doctor
+patchbay start --root "$tmpdir/repo" --tool-mode worker --print-only
+patchbay start --root "$tmpdir/repo" --tool-mode worker --print-only --json
 ```
 
-The output should show `name: patchbay`, `ready: true`, a local MCP URL, and no raw token unless you explicitly ask for one.
+The output should show `name: patchbay`, `ready: true`, a local MCP URL, a
+`ChatGPT setup` section, and no raw token unless you explicitly ask for one.
+The JSON output includes `setup_guide` with the Server URL, authentication
+setting, Developer Mode steps, useful profile/restart commands, and
+token/tunnel notes.
 
 ## 4. Start PatchBay For ChatGPT
 
 ```bash
 export PATCHBAY_HTTP_TOKEN='<long-random-token>'
-python scripts/start.py \
+patchbay start \
   --root "$tmpdir/repo" \
   --tunnel-mode cloudflare \
   --tool-mode worker \
@@ -59,9 +65,15 @@ The local endpoint still exists for local MCP clients:
 http://127.0.0.1:8000/mcp
 ```
 
+For MCP hosts that prefer stdio, use:
+
+```bash
+patchbay stdio --config config.yaml
+```
+
 For local-only MCP clients, no token is required by default. If `PATCHBAY_HTTP_TOKEN` is set, the same endpoint requires Bearer or query-token auth. ChatGPT web normally needs a public HTTPS URL, so use a tunnel for the first real ChatGPT connector run.
 
-The launcher supervises the local server and tunnel process together. It does not install `cloudflared` or `ngrok`; install the provider CLI yourself. Use `--tool-mode worker` first so ChatGPT sees the worker-first surface instead of the full power-user catalog.
+The launcher supervises the local server and tunnel process together. It validates tunnel binaries before use. Install Cloudflare Tunnel explicitly with `patchbay install-cloudflared`, or install/configure `ngrok` yourself and use `patchbay ngrok --hostname <reserved-domain>`. Use `--tool-mode worker` first so ChatGPT sees the worker-first surface instead of the full power-user catalog.
 
 OpenAI's Apps SDK docs describe the ChatGPT connector flow as: enable Developer Mode, create a connector, paste an HTTPS `/mcp` URL, then open a new chat and add the connector from the `+` / More menu. References:
 
@@ -71,7 +83,7 @@ OpenAI's Apps SDK docs describe the ChatGPT connector flow as: enable Developer 
 For multi-repository testing, include every repository when starting PatchBay. `--root` is the default workspace and resets allowed roots to that workspace unless extra roots are supplied:
 
 ```bash
-python scripts/start.py \
+patchbay start \
   --root "$repo_a" \
   --allow-root "$repo_b" \
   --tunnel-mode cloudflare \
@@ -99,7 +111,7 @@ Use these settings:
 ```text
 Name: PatchBay
 Description: Route ChatGPT context into local Codex workers
-Connector URL / Server URL: paste the full HTTPS /mcp URL printed by scripts/start.py --reveal-token
+Connector URL / Server URL: paste the full HTTPS /mcp URL printed by patchbay start --reveal-token
 Authentication: No Authentication / None
 ```
 
@@ -215,7 +227,7 @@ Artifact import is local context only: it does not edit the repo. Multiple files
 For local worker-first testing without a tunnel, start PatchBay with:
 
 ```bash
-python scripts/start.py --root "$tmpdir/repo" --tool-mode worker
+patchbay start --root "$tmpdir/repo" --tool-mode worker
 ```
 
 This hides low-level job/session controls and compatibility aliases while keeping worker tools and the read-only context tools needed to brief them.

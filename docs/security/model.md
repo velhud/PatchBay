@@ -19,17 +19,17 @@ This project is intended for repositories the operator owns, maintains, administ
 
 ## Security Goals
 
-- Bind locally by default.
+- Bind locally unless the operator deliberately configures tunnel/public access.
 - Treat repository paths as explicit trusted roots.
 - Avoid exposing arbitrary filesystem access.
 - Avoid logging secrets.
-- Keep read-only analysis as the default first mode.
+- Keep tool mutability and open-world behavior explicit in descriptors.
 - Run apply jobs in isolated git worktrees.
 - Make generated diffs visible before integration.
 - Require explicit user control for risky operations.
-- Require explicit server-side config for direct edit, bash, transcript-read, and public tunnel power modes.
-- Keep dangerous bypass disabled by default.
-- Keep public examples conservative.
+- Make disabled runtime capabilities absent from `tools/list` instead of
+  advertising tools that will reject every call.
+- Require auth/token controls for public or tunneled access.
 
 ## Main Risks
 
@@ -48,16 +48,17 @@ This project is intended for repositories the operator owns, maintains, administ
 
 - Bind to `127.0.0.1` by default.
 - Require configured repository roots.
-- Require git repositories by default.
-- Default to read-only sandbox.
-- Disable dangerous bypass by default.
+- The checked-in local profile is intentionally full-power; narrow roots,
+  sandbox, environment, bash, direct-write, transcript, and bypass settings for
+  shared or public runs.
 - Use isolated git worktrees for apply jobs.
 - Disable CORS by default.
 - Redact audit logs.
 - Do not return raw local Codex config.
 - Validate extra paths against allowed roots.
 - Mark mutating tools as non-read-only.
-- Return MCP instructions that describe safe workflow constraints.
+- Return MCP instructions that describe state, ownership, preview, integration,
+  and validation boundaries.
 
 ## Non-goals
 

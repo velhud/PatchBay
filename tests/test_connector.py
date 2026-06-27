@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 
-from patchbay.connector.status import connector_status
+from patchbay.connector.status import connector_setup_guide, connector_status, format_setup_guide_text
 
 
 def base_config(auth=None):
@@ -35,6 +35,23 @@ def test_connector_status_local_ready_without_token():
     assert status["power_tools"]["direct_write"] is False
     assert status["power_tools"]["bash_mode"] == "off"
     assert status["power_tools"]["codex_session_read"] is False
+
+
+def test_connector_setup_guide_describes_chatgpt_connection_without_secret():
+    token_value = "auth-fixture-value"
+    config = base_config({"tunnel_mode": "custom"})
+    status = connector_status(config, environ={"PATCHBAY_HTTP_TOKEN": token_value}, public_base_url="https://bridge.example")
+
+    guide = connector_setup_guide(config, status, profile={"used": True, "profile_path": "/tmp/profile.json"})
+    text = format_setup_guide_text(guide)
+
+    assert guide["server_url"] == "https://bridge.example/mcp?patchbay_token=%3Credacted%3E"
+    assert guide["profile"]["used"] is True
+    assert any("Developer mode" in step for step in guide["chatgpt_steps"])
+    assert any("token protected" in warning for warning in guide["warnings"])
+    assert token_value not in json.dumps(guide)
+    assert "ChatGPT setup" in text
+    assert "Server URL: https://bridge.example/mcp?patchbay_token=%3Credacted%3E" in text
 
 
 def test_connector_status_redacts_query_token_url():

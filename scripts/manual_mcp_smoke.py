@@ -36,7 +36,7 @@ PUBLIC_TOOLS = [
     "codex_get_config",
 ]
 
-TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v1.html"
+TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v2.html"
 
 
 def health_check():

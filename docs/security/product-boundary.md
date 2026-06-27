@@ -41,7 +41,7 @@ Minimum policy:
 - public tunnel startup fails closed without auth;
 - `--no-auth` is rejected for public tunnel mode;
 - launcher-managed tunnel processes are terminated together with the local MCP server;
-- tunnel binaries are not auto-installed by this PatchBay;
+- tunnel binaries are installed only by explicit operator commands, never as a silent side effect of starting a public tunnel;
 - CORS stays disabled unless a trusted local UI requires it.
 
 Future app-store or multi-user use should implement OAuth 2.1 rather than treating a URL token as an enterprise auth boundary.
@@ -189,6 +189,7 @@ Verified so far:
 - real Codex CLI `0.142.2` plan job through MCP;
 - current Codex JSONL `agent_message` result parsing;
 - token-gated local server behavior in automated tests;
+- installable CLI, stdio transport, settings profiles, and explicit tunnel binary resolution in automated tests;
 - power tools denied by default;
 - Phase 2 named worker descriptors, job-derived identity, isolated worktree ownership, privacy behavior, and worker-only tool mode in automated tests;
 - worker model/reasoning option discovery, sanitized output, and inherited worker execution settings in automated tests;

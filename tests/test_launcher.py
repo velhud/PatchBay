@@ -219,6 +219,33 @@ def test_launcher_json_payload_is_bounded(tmp_path):
     assert payload["ready"] is True
     assert "runtime_config" not in payload
     assert payload["connection"]["local_mcp_url"].endswith("/mcp")
+    assert payload["setup_guide"]["server_url"] == payload["connection"]["server_url"]
+    assert payload["setup_guide"]["tool_mode"] == "full"
+    assert any("Developer mode" in step for step in payload["setup_guide"]["chatgpt_steps"])
+    assert any("--save-profile" in control for control in payload["setup_guide"]["controls"])
+
+
+def test_launcher_setup_guide_keeps_token_redacted(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    token_value = "fixture-" + "token-value"
+    env = {"PATCHBAY_HOME": str(tmp_path / "home"), "PATCHBAY_HTTP_TOKEN": token_value}
+
+    prepared = prepare_start(
+        base_config(root),
+        root=str(root),
+        public_base_url="https://bridge.example",
+        tool_mode="worker",
+        use_profile=False,
+        environ=env,
+    )
+
+    payload = launcher_json_payload(prepared)
+
+    assert payload["setup_guide"]["tool_mode"] == "worker"
+    assert "%3Credacted%3E" in payload["setup_guide"]["server_url"]
+    assert token_value not in json.dumps(payload)
+    assert any("--reveal-token" in warning for warning in payload["setup_guide"]["warnings"])
 
 
 def test_start_script_print_only_json(tmp_path):
@@ -295,6 +322,42 @@ def test_start_script_print_only_json_includes_extra_allowed_roots(tmp_path):
     runtime_config = yaml.safe_load(Path(payload["runtime_config_path"]).read_text(encoding="utf-8"))
     assert runtime_config["repositories"]["default"] == str(root.resolve())
     assert runtime_config["repositories"]["allowed"] == [str(root.resolve()), str(extra.resolve())]
+
+
+def test_start_script_print_only_text_includes_chatgpt_setup_guide(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
+    env = dict(os.environ)
+    env["PATCHBAY_HOME"] = str(tmp_path / "home")
+    env.pop("PATCHBAY_HTTP_TOKEN", None)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/start.py",
+            "--config",
+            str(config_path),
+            "--root",
+            str(root),
+            "--tool-mode",
+            "worker",
+            "--print-only",
+            "--no-profile",
+        ],
+        cwd=".",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0
+    assert "ChatGPT setup" in completed.stdout
+    assert "Developer mode" in completed.stdout
+    assert "Tool mode: worker" in completed.stdout
+    assert "patchbay start --root <repo> --tool-mode worker --save-profile" in completed.stdout
 
 
 def test_start_script_accepts_worker_tool_mode(tmp_path):

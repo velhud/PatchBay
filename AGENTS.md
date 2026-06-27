@@ -23,6 +23,12 @@ The repo still supports local maintainer workflows, but do not describe the app 
 - Keep the app self-describing enough that a future coding agent can update configuration, docs, tool metadata, and examples from repository context without needing private oral history.
 - Do not replace concrete setup steps with vague philosophy. Add the rationale, then keep the exact command, ChatGPT connector step, expected tool result, and verification command.
 
+## Private Campaign Routing
+
+- When the user invokes a campaign workflow, read `.architect/README.md` and `.architect/indexes/active_campaigns.md` before acting.
+- Treat exactly one active campaign as operational truth. Completed campaigns are reference evidence only unless the user explicitly reopens them.
+- The onboarding/transport campaign is complete. Treat `.architect/campaigns/patchbay-onboarding-transport-2026-06-27/` and its repo-local skills as reference unless the user explicitly starts a new continuation campaign.
+
 ## Rules For Agents
 
 - Do not add secrets, tokens, local paths, or private machine identifiers.

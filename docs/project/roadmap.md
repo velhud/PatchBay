@@ -9,7 +9,18 @@ This repository is the first public piece of a broader open-source direction aro
 - Add examples for read-only planning, isolated apply jobs, review flows, and diff inspection.
 - Add CI smoke tests and path/sandbox validation tests.
 - Document local-control deployment assumptions, token-gated tunnel behavior, and pre-release eval status.
+- Finish CodexPro-derived onboarding and transport polish without replacing PatchBay's worker-first architecture:
+  - public Python CLI entry points for `patchbay setup/start/doctor/settings/ngrok/stable/stdio`;
+  - interactive first-run setup and saved profile management;
+  - stdio MCP transport for local MCP hosts that do not use Streamable HTTP;
+  - stronger Cloudflare/ngrok binary checks, stable-domain guidance, copy/open ChatGPT controls, and tunnel-specific failure hints;
+  - optional localhost setup/status helper after the terminal flow is solid.
 - Publish a v0.1.x release.
+
+Parked after v0.1.x unless explicitly pulled forward:
+
+- CodexPro-style `loop-handoff`; if implemented, make it PatchBay-native around workers, review, tests, and integration preview instead of copying the CLI loop as the main product path.
+- A pure direct-edit simplicity profile; direct write/edit tools already exist, but a later `patchbay start --mode direct` or setup preset can expose the smallest direct coding surface for users who want that workflow.
 
 ## Phase 2 - Repository Context Tooling
 
@@ -30,7 +41,7 @@ Release cleaned components for provenance-aware agent memory:
 - hybrid retrieval;
 - evidence bundles;
 - synthetic fixtures;
-- privacy-safe examples;
+- sanitized examples;
 - memory update and verification patterns.
 
 ## Phase 4 - OSS Search And Evaluation
@@ -50,7 +61,7 @@ Release documentation and reusable patterns for controlled multi-agent developme
 - verification evidence;
 - handoff packets;
 - durable traces;
-- safe resumability;
+- reliable resumability;
 - release and security review workflows.
 
 ## Security Principles

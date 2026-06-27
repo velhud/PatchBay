@@ -40,12 +40,14 @@ A temporary Node sidecar is acceptable only for a fast ChatGPT Apps widget proto
 flowchart TD
     ChatGPT["ChatGPT web/Pro<br/>Developer Mode connector"] -->|"HTTPS /mcp<br/>tokenized Server URL"| Server["FastAPI Streamable HTTP server"]
     LocalClient["Local MCP client"] -->|"loopback /mcp"| Server
+    StdioClient["Local MCP host"] -->|"patchbay stdio"| Stdio["Stdio transport"]
+    Stdio --> Protocol
 
     Server --> Auth["Auth and transport<br/>Bearer/query token, request size cap, MCP sessions"]
     Auth --> Context["RequestContext<br/>client_ref, active sessions, session-local tool_mode"]
     Context --> Protocol["MCP protocol<br/>initialize, tools/list, tools/call, resources/list/read"]
     Protocol --> Registry["Tool registry and descriptors<br/>schemas, aliases, annotations, Apps metadata"]
-    Protocol --> Card["Passive Apps tool card<br/>ui://widget/patchbay-tool-card-v1.html"]
+    Protocol --> Card["Rich passive Apps tool card<br/>ui://widget/patchbay-tool-card-v2.html"]
 
     Registry --> Handler["ToolHandler service graph"]
     Handler --> Workspace["WorkspaceContext<br/>allowed roots, path guard, tree/read/search, git, AGENTS, skills, .ai-bridge"]
@@ -120,9 +122,9 @@ These remain available for compatibility and power-user control. The normal Chat
 
 `codex_resume`, `codex_interactive`, and `codex_interactive_reply` are async job starters classified as mutating/open-world in the public descriptors because they can continue sessions that write locally or call Codex externally. `codex_plan_job` remains locally read-only, but is not idempotent because it creates job state and can invoke Codex.
 
-`codex_list_sessions` is metadata-only: it returns bounded known session ids from durable job records and explicitly does not read transcript bodies or return repo paths.
+`codex_list_sessions` is metadata-only: it returns bounded known session ids from durable PatchBay job records plus configured Codex-home session roots. It merges and deduplicates those sources by session id, does not read transcript bodies, and does not return repo paths or session source paths.
 
-`codex_read_session` is the explicit transcript power mode. It is advertised as read-only but remains disabled by default; when enabled it reads only bounded Codex session JSONL messages, redacts likely secrets, and does not return local session source paths.
+`codex_read_session` is the explicit transcript power mode. It is advertised only when the active runtime profile enables transcript reads; when enabled it reads only bounded Codex session JSONL messages, redacts likely secrets, and does not return local session source paths.
 
 ### Tier 2: Worker-First Delegation
 
@@ -257,6 +259,18 @@ Verified:
 - real Codex CLI `0.142.2` `codex_plan_job` through MCP;
 - current Codex JSONL structured result parsing;
 - token-gated auth and tunnel fail-closed behavior in automated tests;
+- installable CLI entry points for `patchbay` and `patchbay-stdio`, with
+  compatibility wrappers for legacy scripts;
+- stdio MCP transport over the same protocol/tool runtime as Streamable HTTP;
+- guided terminal setup output and JSON `setup_guide` for ChatGPT connector
+  steps, profile reuse, token handling, and tunnel warnings;
+- interactive setup, saved profile settings, explicit cloudflared install,
+  ngrok/stable tunnel shortcuts, URL copy/open controls, and bounded tunnel
+  failure hints;
+- precise CodexPro-derived compatibility alias schemas with canonical handler
+  translation and path-scoped `show_changes`;
+- runtime-aware descriptor truthfulness for disabled direct write, bash, and
+  transcript-read profiles while preserving the full-power catalog;
 - direct tokenized public-tunnel MCP health, `initialize`, worker-mode `tools/list`, artifact inbox transfer, isolated worker artifact read, integration exclusion, and cleanup through ngrok;
 - direct two-client MCP trial for session-local tool modes, shared worker inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, and accepted-result integration;
 - workspace path guards, blocked globs, symlink escape rejection, and default power-tool denial.
@@ -270,14 +284,14 @@ Not yet verified for release:
 
 ## Remaining Architecture Work
 
-The current hybrid implementation has the core ChatGPT-facing connector, workspace context, skill discovery/loading, `.ai-bridge` handoff, durable Codex jobs, resume/interactive job starters, public tool metadata, token-gated tunnel startup, and reusable live MCP evals in place.
+The current hybrid implementation has the core ChatGPT-facing connector, installable CLI, stdio transport, guided setup output, workspace context, skill discovery/loading, `.ai-bridge` handoff, durable Codex jobs, resume/interactive job starters, precise compatibility alias metadata, runtime-aware descriptor filtering, token-gated tunnel startup, and reusable live MCP evals in place.
 
 Remaining work is additive:
 
 - complete the real ChatGPT UI release evals, including ChatGPT-originated token-gated tunnel paths when advertised;
 - richer auth modes beyond tokenized local/tunnel use if this becomes multi-user;
 - deeper schema coverage for future tools as they are added;
-- richer interactive ChatGPT card actions beyond the passive result card;
+- interactive ChatGPT card actions beyond the current rich passive result card, if real ChatGPT evidence shows they are useful;
 - broader Codex CLI compatibility probes across installed versions;
 - CORS policy only if a trusted standalone local UI is added.
 

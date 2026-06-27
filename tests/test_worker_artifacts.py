@@ -287,7 +287,12 @@ async def test_artifact_context_materializes_into_worker_and_is_excluded_from_in
     assert str(tmp_path) not in job.prompt
 
     (worker_root / "worker-note.txt").write_text("from worker\n", encoding="utf-8")
-    manager.update_job_state(job.job_id, JobState.COMPLETED, result={"summary": "Created note"}, session_id="session-1")
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Created note after reading .ai-bridge/imported-artifacts/ARTIFACTS.md"},
+        session_id="session-1",
+    )
 
     preview = await handler.handle_tool_call(
         "codex_worker_inspect",
@@ -296,6 +301,8 @@ async def test_artifact_context_materializes_into_worker_and_is_excluded_from_in
     assert preview["can_apply"] is True
     assert preview["changed_files"] == ["worker-note.txt"]
     assert all(not path.startswith(".ai-bridge/imported-artifacts") for path in preview["changed_files"])
+    assert ".ai-bridge/imported-artifacts" not in preview["report"]
+    assert "[imported-artifact-context]" in preview["report"]
 
 
 @pytest.mark.asyncio

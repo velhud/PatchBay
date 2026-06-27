@@ -45,6 +45,7 @@ class CodexSessionReader:
             raise ValueError(f"Codex session file is too large ({stat.st_size} bytes)")
 
         meta = self._parse_session_meta(source, expected_session_id=session_id)
+        meta.pop("_project_dir", None)
         messages, truncated = self._load_messages(source, max_messages=max_messages, max_total_bytes=max_total_bytes)
         text = self._format_transcript(meta, messages, truncated)
         return {
@@ -61,6 +62,64 @@ class CodexSessionReader:
     def power_config(self) -> dict[str, Any]:
         value = self.config.get("power_tools")
         return value if isinstance(value, dict) else {}
+
+    def list_sessions(self, args: dict[str, Any]) -> dict[str, Any]:
+        """List bounded metadata for Codex-home sessions without returning transcript bodies or source paths."""
+        max_sessions = self._bounded_int(args.get("max_sessions"), default=30, minimum=1, maximum=200)
+        if not str(self.power_config().get("codex_home") or "").strip():
+            return {
+                "sessions": [],
+                "count": 0,
+                "total_found": 0,
+                "truncated": False,
+                "source": "codex_home",
+                "transcripts_returned": False,
+                "paths_returned": False,
+                "source_path_returned": False,
+            }
+        query = str(args.get("query") or "").strip().lower()
+        repo = str(args.get("repo") or args.get("repo_path") or "").strip()
+        repo_root = Path(repo).expanduser().resolve() if repo else None
+
+        sessions: list[dict[str, Any]] = []
+        total_found = 0
+        for file_path in self._iter_session_files():
+            try:
+                meta = self._parse_session_meta(file_path, expected_session_id=None)
+            except Exception:
+                continue
+            project_dir = str(meta.pop("_project_dir", "") or "")
+            if repo_root and not self._project_matches_repo(project_dir, repo_root):
+                continue
+            if query and not self._matches_query(meta, query, project_dir):
+                continue
+            total_found += 1
+            meta.update(
+                {
+                    "source": "codex_home",
+                    "known_to_patchbay": False,
+                    "transcript_available": bool(self.power_config().get("codex_session_read", False)),
+                    "paths_returned": False,
+                    "source_path_returned": False,
+                }
+            )
+            if project_dir:
+                project_name = Path(project_dir).name
+                if project_name:
+                    meta["project"] = redact_text(project_name)
+            sessions.append(meta)
+
+        sessions.sort(key=lambda item: item.get("last_active_at") or item.get("created_at") or 0, reverse=True)
+        return {
+            "sessions": sessions[:max_sessions],
+            "count": min(len(sessions), max_sessions),
+            "total_found": total_found,
+            "truncated": len(sessions) > max_sessions,
+            "source": "codex_home",
+            "transcripts_returned": False,
+            "paths_returned": False,
+            "source_path_returned": False,
+        }
 
     def _require_enabled(self) -> None:
         if not bool(self.power_config().get("codex_session_read", False)):
@@ -109,6 +168,7 @@ class CodexSessionReader:
         session_id = self._infer_session_id_from_filename(file_path)
         title = ""
         summary = ""
+        project_dir = ""
         created_at = None
         last_active_at = None
 
@@ -122,6 +182,7 @@ class CodexSessionReader:
                 session_id = str(
                     payload.get("id") or payload.get("session_id") or payload.get("sessionId") or session_id or ""
                 ).strip()
+                project_dir = str(payload.get("cwd") or payload.get("project_dir") or payload.get("projectDir") or project_dir or "").strip()
 
             if value.get("type") == "response_item" and isinstance(value.get("payload"), dict):
                 payload = value["payload"]
@@ -146,7 +207,29 @@ class CodexSessionReader:
             "last_active_at": last_active_at,
             "resume_command": f"codex exec resume {session_id}",
             "source_path_returned": False,
+            "_project_dir": project_dir,
         }
+
+    def _project_matches_repo(self, project_dir: str, repo_root: Path) -> bool:
+        if not project_dir:
+            return False
+        try:
+            return Path(project_dir).expanduser().resolve() == repo_root
+        except OSError:
+            return False
+
+    def _matches_query(self, meta: dict[str, Any], query: str, project_dir: str) -> bool:
+        project_name = Path(project_dir).name if project_dir else ""
+        haystack = "\n".join(
+            str(value or "")
+            for value in [
+                meta.get("session_id"),
+                meta.get("title"),
+                meta.get("summary"),
+                project_name,
+            ]
+        ).lower()
+        return query in haystack
 
     def _load_messages(self, file_path: Path, *, max_messages: int, max_total_bytes: int) -> tuple[list[dict[str, Any]], bool]:
         messages: list[dict[str, Any]] = []

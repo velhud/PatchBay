@@ -4,7 +4,9 @@
 
 PatchBay should expose tools as product capabilities, not implementation conveniences. ChatGPT should see narrow, intentional tools that explain when to use them and what control boundary they cross.
 
-Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps canonical `codex_*` names as the durable API, while `app.tool_mode` can advertise compatibility aliases for ChatGPT live use. Aliases are tool-selection aids, not separate or safer execution paths; they resolve to canonical handlers.
+The same public tool surface is served through Streamable HTTP `/mcp` and the stdio entry point (`patchbay stdio` / `patchbay-stdio`). Stdio is a transport compatibility layer; it must not fork tool policy, hidden-tool filtering, schema validation, or session-local tool mode behavior.
+
+Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps canonical `codex_*` names as the durable API, while `app.tool_mode` can advertise compatibility aliases for ChatGPT live use. Aliases are tool-selection aids, not separate or safer execution paths; they resolve to canonical handlers and use precise alias-specific schemas instead of open generic argument bags.
 
 ## Current Stable Tools
 
@@ -16,7 +18,7 @@ Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps
 | `codex_get_result` | Fetch completed output | keep | Return summary by default, raw logs only opt-in. |
 | `codex_get_diff` | Inspect file diff | keep | Requires completed apply job and changed file membership. |
 | `codex_review` | Run Codex review | keep | Clarify whether it is read-only or can trigger writes through options. |
-| `codex_list_sessions` | List metadata-only session ids | keep | Read-only, no transcript bodies, no repo paths by default. |
+| `codex_list_sessions` | List metadata-only session ids | keep | Read-only merge of PatchBay-known job sessions and configured Codex-home session metadata; no transcript bodies, repo paths, or source paths. |
 | `codex_resume` | Start async Codex resume job | keep, strengthen | Marked mutating/open-world because resumed sessions may write locally; returns a durable `job_id`. |
 | `codex_interactive` | Start async interactive Codex exec job | keep, strengthen | Marked mutating/open-world; completed result includes `session_ref` when Codex reports one. |
 | `codex_interactive_reply` | Start async Codex continuation job | keep, strengthen | Marked mutating/open-world; uses session repo metadata when available. |
@@ -83,7 +85,7 @@ Worker artifact inbox:
 | `codex_inventory` | read-only | Return tool modes, skill inventory, git state, and power-mode settings. |
 | `codex_git_status` | read-only | Show branch and changed files without bash. |
 | `codex_git_diff` | read-only | Show bounded unstaged or staged git diff without bash. |
-| `codex_show_changes` | read-only | Return review-oriented status, diff stats, and optional diff. |
+| `codex_show_changes` | read-only | Return review-oriented status, diff stats, and optional diff, optionally scoped to one file. |
 | `codex_list_skills` | read-only | List skill names/descriptions without exposing local install paths. |
 | `codex_load_skill` | read-only | Load a bounded `SKILL.md` by known skill name. |
 
@@ -128,6 +130,15 @@ These tools are part of the public surface in full tool mode. The current full-p
 | `codex_run_command` | open-world/mutating risk | Safe/full command mode, timeout, optional session gate, and output caps. |
 | `codex_read_session` | read-only but highly sensitive | Bounded transcript, redaction, explicit config. |
 
+Descriptor truthfulness is runtime-aware. When `power_tools.direct_write` is
+false, `codex_write_file`, `codex_edit_file`, `write`, and `edit` are not
+advertised and cannot be called through the public protocol. When
+`power_tools.bash_mode` is `off`, `codex_run_command` and `bash` are not
+advertised. When `power_tools.codex_session_read` is false,
+`codex_read_session` and `read_codex_session` are not advertised. This is not a
+tool catalog reduction policy; it prevents ChatGPT from seeing tools the
+current runtime will reject.
+
 ## Tool Descriptor Requirements
 
 Every public descriptor must include:
@@ -155,25 +166,26 @@ These descriptors are not only API documentation; they are part of the model pro
 - what validation or blocked-state behavior ChatGPT should report after the tool result.
 - when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool.
 
-The canonical names remain `codex_*`. Compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` may be advertised depending on `app.tool_mode`, but they must resolve to canonical handlers rather than duplicate execution paths.
+The canonical names remain `codex_*`. Compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` may be advertised depending on `app.tool_mode`, but they must resolve to canonical handlers rather than duplicate execution paths. Their descriptors should advertise the alias names ChatGPT can actually call, such as `path` for `read`/`write`/`edit` and `cmd` or `command` for `bash`, then translate those names into the canonical handler arguments.
 
-Current implementation returns these descriptor fields from `tools/list`, including conservative object output schemas for structured results. It also exposes `ui://widget/patchbay-tool-card-v1.html` through `resources/list` and `resources/read` as a `text/html;profile=mcp-app` resource. The first card is intentionally passive: it renders tool results and does not initiate tool calls. The test suite should snapshot public descriptors and fail if:
+Current implementation returns these descriptor fields from `tools/list`, including bounded object output schemas for structured results. It advertises `ui://widget/patchbay-tool-card-v2.html` through `resources/list` and `resources/read` as a `text/html;profile=mcp-app` resource; the legacy v1 URI remains readable for compatibility. The current card is intentionally passive but no longer generic: it renders worker reports, artifact inbox summaries, job status, diffs, command/write results, integration previews, ownership/takeover state, and `repo_busy` lock state. The test suite should snapshot public descriptors and fail if:
 
 - a mutating tool is marked read-only;
 - a read-only tool lacks `readOnlyHint`;
 - an internal tool appears in `tools/list`;
 - a schema advertises fields that handlers do not accept;
+- an advertised alias falls back to an open generic schema instead of a precise translated schema;
 - aliases are advertised in the wrong tool mode or point to duplicate execution paths instead of canonical handlers.
 - descriptor resource URIs drift from the registered resource.
 - prompt-critical workflow guidance such as stateful workers, preview-before-integrate, no-commit integration, or validation expectations disappears from `initialize.instructions` or worker descriptors.
 
 ## Schema Compatibility
 
-Current PatchBay schemas advertise `spec` and `repo_path`, while internal handlers consume `prompt` and `repo` through translation. That bridge should be made explicit:
+Current PatchBay schemas advertise `spec` and `repo_path`, while internal handlers consume `prompt` and `repo` through translation. Compatibility aliases use CodexPro-derived names where PatchBay supports them, then translate into the same canonical handlers. That bridge should be made explicit:
 
 - public schemas keep stable names for existing users;
 - handlers receive one normalized internal request object;
-- translation is tested for every public tool;
+- translation is tested for every public tool and advertised alias;
 - new tools should avoid public/internal name drift.
 
 ## Compatibility Aliases
@@ -194,8 +206,11 @@ Alias policy:
 
 - aliases are a ChatGPT selection aid, not the stable API;
 - durable docs and client integrations should prefer canonical `codex_*` names;
-- aliases must share the same schemas, validation, mutability, and power controls as the canonical tools they resolve to;
+- aliases must use precise schemas for their advertised argument names and share validation, mutability, and power controls with the canonical tools they resolve to;
 - disabling a canonical power tool also disables its alias behavior at execution time.
+- disabled canonical power tools and their aliases should be absent from
+  `tools/list`, while the checked-in full-power profile continues to expose the
+  full intended catalog.
 
 Use `worker` mode for first real ChatGPT Developer Mode validation. It keeps the visible tool surface small enough for natural tool selection while still exposing the context tools needed to orient and brief workers. Use `codex_tool_mode_info` before broadening the surface, and `codex_tool_mode_switch` only when current tools are insufficient. Use `full` mode when testing or operating low-level job/session controls and power tools deliberately.
 
@@ -238,4 +253,4 @@ Required product behavior:
 - tool cards should show concise job/workspace/diff state;
 - JSON payloads should remain understandable when a user expands them in ChatGPT.
 
-The current resource card is a small Python-served resource that matches PatchBay's `codex_*` structured outputs. The card is intentionally passive in this phase.
+The current resource card is a Python-served, CodexPro-derived widget adapted to PatchBay's `codex_*` structured outputs. It is intentionally passive in this phase: it renders bounded result state but does not initiate tool calls.

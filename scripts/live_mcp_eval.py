@@ -18,7 +18,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v1.html"
+TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v2.html"
 
 
 def main() -> int:
@@ -91,6 +91,17 @@ def main() -> int:
             "show_changes",
         }
         _check(report, "tools_list", required_tools <= set(tools))
+        _check(
+            report,
+            "alias_tool_descriptors",
+            tools["read"]["inputSchema"]["additionalProperties"] is False
+            and {"required": ["path"]} in tools["read"]["inputSchema"].get("anyOf", [])
+            and {"required": ["file_path"]} in tools["read"]["inputSchema"].get("anyOf", [])
+            and "path" in tools["read"]["inputSchema"]["properties"]
+            and tools["bash"]["inputSchema"]["additionalProperties"] is False
+            and {"required": ["command"]} in tools["bash"]["inputSchema"].get("anyOf", [])
+            and {"required": ["cmd"]} in tools["bash"]["inputSchema"].get("anyOf", []),
+        )
         _check(report, "tool_card_metadata", all(tools[name]["_meta"]["openai/outputTemplate"] == TOOL_CARD_URI for name in required_tools))
         _check(
             report,
@@ -146,6 +157,19 @@ def main() -> int:
 
         direct_write = client.call_tool(11, "codex_write_file", {"repo_path": str(repo), "file_path": "new.txt", "content": "hello\n"})
         _check(report, "direct_write_enabled", direct_write["result"]["structuredContent"]["changed"] is True)
+
+        tracked_write = client.call_tool(112, "codex_write_file", {"repo_path": str(repo), "file_path": "README.md", "content": "# Probe Repo\n\ntracked change\n"})
+        _check(report, "tracked_write_for_alias_scope", tracked_write["result"]["structuredContent"]["changed"] is True)
+
+        alias_scoped_changes = client.call_tool(113, "show_changes", {"repo_path": str(repo), "path": "README.md", "include_diff": True})
+        alias_scoped_data = alias_scoped_changes["result"]["structuredContent"]
+        _check(
+            report,
+            "alias_show_changes_path_scope",
+            alias_scoped_data["path"] == "README.md"
+            and "README.md" in alias_scoped_data["diff"]
+            and "new.txt" not in alias_scoped_data["diff"],
+        )
 
         full_bash = client.call_tool(111, "codex_run_command", {"repo_path": str(repo), "command": "cat new.txt"})
         _check(report, "full_bash_enabled", full_bash["result"]["structuredContent"]["stdout"] == "hello\n")

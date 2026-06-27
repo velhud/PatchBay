@@ -43,7 +43,7 @@ A TypeScript rewrite would provide faster access to CodexPro code but would crea
 - reimplement PatchBay job engine, worktree lifecycle, and Codex CLI parsing;
 - recreate existing Python tests;
 - move project packaging and installation model;
-- double-check every safety invariant from scratch;
+- double-check every power-boundary invariant from scratch;
 - increase risk of inheriting CodexPro's direct-local-editor assumptions as defaults.
 
 The user goal is the strongest final app in PatchBay repo, not preservation of CodexPro's architecture.
@@ -100,13 +100,21 @@ Scrutinize:
 
 Preferred strategy:
 
-1. Copy CodexPro behavior into docs and tests.
-2. Implement Python services behind PatchBay interfaces.
-3. Keep public `codex_*` tool naming.
-4. Add CodexPro-style UX after core policies pass.
-5. Preserve MIT attribution where code is directly copied or closely ported.
+1. Copy each approved CodexPro subsystem into
+   `src/patchbay/donors/codexpro/<track>/upstream/` as full source material.
+2. Record donor commit, source paths, destination paths, and sha256 hashes in a
+   track `MANIFEST.md`.
+3. Implement Python services, generated resources, adapters, or shims behind
+   PatchBay interfaces using the copied donor subsystem as the behavior
+   authority.
+4. Keep public `codex_*` tool naming.
+5. Add CodexPro-style UX only where it strengthens PatchBay's
+   ChatGPT-to-local-Codex control plane.
+6. Preserve MIT attribution where code is directly copied or closely ported.
 
-Use direct file copy only when it accelerates implementation without importing a second runtime into production.
+The copy-first rule preserves donor fidelity; it does not change the runtime
+decision. PatchBay remains Python/FastAPI first unless a later explicit
+architecture decision introduces a temporary sidecar.
 
 ## Current Status
 

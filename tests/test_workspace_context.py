@@ -298,6 +298,25 @@ def test_write_file_creates_text_file_and_returns_diff(tmp_path):
     assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "print('hello')\n"
 
 
+def test_show_changes_can_scope_status_and_diff_to_path(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "a.txt").write_text("old a\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("old b\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.txt", "b.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "a.txt").write_text("new a\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("new b\n", encoding="utf-8")
+    context = WorkspaceContext(make_config(tmp_path))
+
+    result = context.show_changes({"file_path": "a.txt", "include_diff": True})
+
+    assert result["path"] == "a.txt"
+    assert "a.txt" in result["status"]
+    assert "b.txt" not in result["status"]
+    assert "a.txt" in result["diff"]
+    assert "b.txt" not in result["diff"]
+
+
 def test_write_file_rejects_blocked_path_and_secret_content(tmp_path):
     context = WorkspaceContext(make_config(tmp_path))
 

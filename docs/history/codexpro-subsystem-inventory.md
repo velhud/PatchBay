@@ -5,11 +5,18 @@
 CodexPro source evaluated:
 
 - Git URL: `https://github.com/rebel0789/codexpro`
-- Commit: `03556103b3dc6de2e67e6e64835a72363c3a71a1`
+- Current donor-integration commit:
+  `3062500409ba1b587d87935fb70f3a9b5f481025`
+- Earlier migration-baseline commit:
+  `03556103b3dc6de2e67e6e64835a72363c3a71a1`
 - npm package: `codexpro@0.28.5`
 - License: MIT
 
-The final product remains `patchbay`. CodexPro code can be copied, ported, or rewritten inside PatchBay as long as MIT attribution is preserved.
+The final product remains `patchbay`. Current donor-integration work uses a
+copy-first rule: copy each complete relevant CodexPro subsystem into
+`src/patchbay/donors/codexpro/<track>/upstream/`, record provenance and hashes
+in a track `MANIFEST.md`, then adapt or port it into PatchBay runtime code.
+MIT attribution must be preserved.
 
 ## Classification Rules
 
@@ -37,24 +44,26 @@ The final product remains `patchbay`. CodexPro code can be copied, ported, or re
 
 | CodexPro area | Source | Change required | PatchBay target |
 | --- | --- | --- | --- |
-| Setup/start/doctor CLI | `scripts/codexpro.mjs` | Ported to Python scripts; keep no-auth tunnel rejection | `scripts/start.py`, `scripts/doctor.py` |
+| Setup/start/doctor CLI | `scripts/codexpro.mjs`, `src/profileStore.ts`, `src/http.ts`, `src/config.ts`, setup smokes and docs | Full donor setup subsystem copied in `src/patchbay/donors/codexpro/setup-ux/`; terminal setup guide and JSON `setup_guide` adapted into Python launcher while preserving no-auto-install tunnel behavior | `scripts/start.py`, `scripts/doctor.py`, connector profiles/status |
 | Token auth | `src/http.ts`, `src/config.ts` | Integrated with FastAPI; bearer first and query token for copied ChatGPT URL flow | Auth layer |
 | Tunnel handling | `scripts/codexpro.mjs` | Implemented after auth gates; no auto-public default | Optional launcher mode |
 | Profile store | `src/profileStore.ts`, `src/http.ts` | Redact secrets; align with PatchBay config; avoid repo-committed profiles | User profile store |
 | MCP annotations | `src/server.ts` | Convert to Python descriptors; enforce with tests | Tool registry |
-| Tool-card resource | `src/toolCardWidget.ts` | Passive Python-served card implemented; richer widget remains future work | ChatGPT tool card |
+| Compatibility alias schemas | `src/server.ts`, `src/fsOps.ts`, `src/bashOps.ts`, `src/gitOps.ts`, `src/workspaceOps.ts`, `src/capabilitiesOps.ts`, `src/proContext.ts`, smoke scripts | Full donor schema/handler source graph copied in `src/patchbay/donors/codexpro/alias-schemas/`; alias schemas and argument translation adapted into Python without reducing the tool catalog | `tools/list` descriptors, alias validation, canonical handler translation |
+| Runtime-aware descriptor truthfulness | `src/server.ts`, `src/config.ts`, `config.example.env`, setup/settings/smoke scripts | Full donor mode/config registration subsystem copied in `src/patchbay/donors/codexpro/descriptor-truth/`; disabled runtime capabilities hide only the corresponding tools and aliases | `tool_descriptors_for_mode`, `tool_is_available` |
+| Tool-card resource | `src/toolCardWidget.ts`, `src/server.ts`, CodexPro README/docs card sections | Full donor subsystem copied in `src/patchbay/donors/codexpro/tool-card/`; v2 widget adapted to PatchBay worker/job/artifact/diff/power-tool outputs | ChatGPT tool card |
 | Skill inventory | `src/capabilitiesOps.ts` | Hide local paths by default; load by name with byte caps | `codex_list_skills`, `codex_load_skill` |
 | Handoff/watch CLI | `scripts/codexpro.mjs` | Keep local terminal execution explicit; dry-run and confirmation defaults | `.ai-bridge` handoff commands |
 | Redaction helpers | `src/redact.ts` | Merge with existing `security.py` patterns and tests | Shared redaction service |
-| Safe bash policy | `src/bashOps.ts` | Do not expose by default; make policy explicit and tested | Optional power tool |
+| Safe bash policy | `src/bashOps.ts` | Expose only when the runtime bash mode enables command execution; hide descriptors when disabled | Optional power tool |
 
 ## Defer
 
 | CodexPro area | Source | Reason |
 | --- | --- | --- |
-| Codex session metadata | `src/codexSessions.ts` | Useful for continuity, but privacy-sensitive. Add after core connector and jobs are stable. |
-| Codex session transcript reads | `src/codexSessions.ts` | Can expose private conversation history. Default must be off. |
-| Full ChatGPT Apps widget | `src/toolCardWidget.ts` | Passive card is implemented. Interactive card remains high product value after real ChatGPT evals. |
+| Codex session metadata | `src/codexSessions.ts` | Implemented in CPI-005 by copying the donor session subsystem and merging configured Codex-home metadata with PatchBay-known job sessions. |
+| Codex session transcript reads | `src/codexSessions.ts` | Can expose private conversation history. Must remain runtime-gated and descriptor-truthful. |
+| Interactive ChatGPT Apps actions | `src/toolCardWidget.ts` | v2 passive rich card is implemented. Interactive actions remain deferred until real ChatGPT evals prove they improve reliability. |
 | ngrok/named Cloudflare UX | `scripts/codexpro.mjs` | Useful after bearer/OAuth-style auth, token rotation, and docs exist. |
 | Browser/control panel UI | `src/http.ts` | Nice setup feature, but not required for the first connector release. |
 
@@ -62,8 +71,8 @@ The final product remains `patchbay`. CodexPro code can be copied, ported, or re
 
 | CodexPro area | Source | Reason |
 | --- | --- | --- |
-| Generic public `read`/`write`/`edit` names | `src/server.ts`, `src/fsOps.ts` | PatchBay should expose Codex-specific intent, not generic file-system verbs. |
-| Direct source write as default | `src/fsOps.ts` | Keep default changes through Codex jobs or `.ai-bridge`. Direct write can be a disabled power mode. |
+| Generic public `read`/`write`/`edit` names as the primary API | `src/server.ts`, `src/fsOps.ts` | PatchBay should expose Codex-specific intent as the canonical API. Compatibility aliases may still be advertised in full/minimal modes with precise schemas and canonical handler translation. |
+| Direct source write as a hidden mismatch | `src/fsOps.ts` | PatchBay's checked-in profile is intentionally full-power. Narrower profiles must hide disabled direct-write descriptors instead of advertising tools that will reject every call. |
 | Public arbitrary bash | `src/bashOps.ts` | Even "safe" bash can execute project scripts. Keep optional and clearly mutating/open-world. |
 | Auto-downloaded tunnel binary as default | `scripts/codexpro.mjs` | Supply-chain and exposure risk. Prefer explicit install or disabled default. |
 | Permanent TypeScript sidecar | all TS modules | Doubles runtime and policy surface. Use only if widget prototyping demands it. |
@@ -76,6 +85,10 @@ When copying or porting CodexPro code:
 - add CodexPro provenance to a root `NOTICE` or attribution section;
 - keep copied code identifiable in commit history;
 - document major copied modules in this inventory;
+- keep full copied donor subsystem files under
+  `src/patchbay/donors/codexpro/<track>/upstream/` before adapting them;
+- record donor commit, copied paths, destination paths, and sha256 hashes in
+  each track manifest;
 - do not imply CodexPro upstream owns or endorses PatchBay release.
 
 ## Tests Required Per Adopted Subsystem

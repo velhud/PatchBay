@@ -42,11 +42,13 @@
 - Public tool surface must be explicit.
 - Unknown tools must be rejected.
 - Mutating tools must be non-read-only.
-- Dangerous bypass must be disabled by default.
+- Dangerous bypass, when enabled, must be explicit in runtime configuration and
+  surfaced through diagnostics rather than hidden behind misleading names.
 - CORS must be disabled or restricted by default.
 - Logs must not include full prompts/responses by default.
 - Paths must be validated against allowed roots.
 - Apply jobs must use worktrees or explicit diffs.
 - Human review happens before merge.
 - Public tunnel modes must require auth.
-- Power tools must be disabled by default and clearly described.
+- Power tools must be clearly described; disabled runtime profiles must hide
+  disabled tools and aliases from `tools/list`.

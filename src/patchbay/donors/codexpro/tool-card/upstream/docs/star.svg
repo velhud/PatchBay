@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="Star">
+  <defs>
+    <linearGradient id="gold" x1="4" y1="2" x2="20" y2="22">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset="0.48" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#b45309"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#gold)" d="M12 2.7 14.9 8.6l6.5.9-4.7 4.6 1.1 6.5L12 17.5l-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.7Z"/>
+  <path fill="none" stroke="#fff7ed" stroke-opacity=".65" stroke-width="1" d="m12 4.95 2.1 4.25.24.49.54.08 4.69.68-3.4 3.31-.39.38.1.54.8 4.67-4.2-2.21-.48-.25-.48.25-4.2 2.21.8-4.67.1-.54-.39-.38-3.4-3.31 4.69-.68.54-.08.24-.49L12 4.95Z"/>
+</svg>

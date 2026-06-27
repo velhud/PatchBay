@@ -128,6 +128,108 @@ def connector_status(
     }
 
 
+def connector_setup_guide(
+    config: Mapping[str, Any],
+    status: Mapping[str, Any],
+    *,
+    profile: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return structured first-run guidance for ChatGPT connector setup."""
+    repo_config = _mapping(config.get("repositories"))
+    auth_config = _mapping(config.get("auth"))
+    tunnel_config = _mapping(config.get("tunnel"))
+    app_config = _mapping(config.get("app"))
+    connection = _mapping(status.get("connection"))
+    auth = _mapping(status.get("auth"))
+    profile = _mapping(profile)
+
+    server_url = str(connection.get("server_url") or "")
+    query_redacted = bool(connection.get("query_token_url_redacted"))
+    token_note = (
+        "Use --reveal-token only when privately copying the Server URL into ChatGPT; keep logs redacted."
+        if query_redacted
+        else "Use the displayed Server URL exactly as shown for this run."
+    )
+    tunnel_mode = str(auth_config.get("tunnel_mode") or "none")
+    default_root = str(repo_config.get("default") or "")
+    allowed_roots = [str(path) for path in repo_config.get("allowed") or []]
+
+    return {
+        "purpose": "Connect ChatGPT Developer Mode to this local PatchBay server.",
+        "server_url": server_url,
+        "local_mcp_url": connection.get("local_mcp_url"),
+        "authentication": connection.get("chatgpt_authentication"),
+        "tool_mode": app_config.get("tool_mode", connection.get("tool_mode", "full")),
+        "tunnel_mode": tunnel_mode,
+        "default_root": default_root,
+        "allowed_roots": allowed_roots,
+        "profile": {
+            "used": bool(profile.get("used")),
+            "saved": bool(profile.get("saved")),
+            "profile_path": profile.get("profile_path"),
+            "public_base_url": profile.get("public_base_url"),
+        },
+        "chatgpt_steps": [
+            "Open ChatGPT Settings -> Apps & Connectors -> Advanced settings.",
+            "Enable Developer mode and keep Enforce CSP in developer mode enabled.",
+            "Create a connector/app named PatchBay.",
+            "Paste the Server URL from this guide.",
+            "Use No Authentication / None for a query-token Server URL, or Bearer token only when your ChatGPT UI supports custom headers.",
+            "Open a new chat, add the PatchBay connector, then start with codex_self_test and codex_open_workspace.",
+        ],
+        "operator_commands": [
+            "patchbay doctor --json",
+            "patchbay start --root <repo> --tool-mode worker --print-only --json",
+            "patchbay setup",
+            "patchbay start --root <repo> --tool-mode worker --save-profile",
+            "patchbay start --root <repo> --public-base-url https://your-tunnel.example --reveal-token --print-only",
+            "python scripts/start.py --root <repo> --tool-mode worker --print-only --json",
+        ],
+        "controls": [
+            "--tool-mode worker is the recommended first ChatGPT validation surface.",
+            "--allow-root must be repeated for every additional repository ChatGPT may access.",
+            "--save-profile stores reusable non-secret launch settings for this workspace.",
+            "--no-profile ignores saved settings for a deliberate one-off run.",
+            "--tunnel-mode none/local/custom/ngrok/cloudflare/cloudflare-named selects how ChatGPT reaches /mcp.",
+            "--reveal-token is explicit because tokenized Server URLs are private copy/paste material.",
+        ],
+        "warnings": [
+            token_note,
+            "Public or tunnel URLs must be token protected.",
+            "Quick tunnel URLs can change on restart; stable hostnames avoid repeated ChatGPT connector edits.",
+            "Tunnel binaries are installed only by explicit commands such as patchbay install-cloudflared.",
+        ],
+        "runtime": {
+            "ready": bool(status.get("ready")),
+            "checks": status.get("checks", []),
+            "auth_enabled": bool(auth.get("enabled")),
+            "query_token_url_redacted": query_redacted,
+            "hostname": tunnel_config.get("hostname"),
+        },
+    }
+
+
+def format_setup_guide_text(guide: Mapping[str, Any]) -> str:
+    """Render structured setup guidance as concise terminal text."""
+    lines = [
+        "ChatGPT setup",
+        f"Server URL: {guide.get('server_url')}",
+        f"Authentication: {guide.get('authentication')}",
+        f"Tool mode: {guide.get('tool_mode')}",
+        f"Tunnel mode: {guide.get('tunnel_mode')}",
+        "",
+        "Steps:",
+    ]
+    lines.extend(f"{index}. {step}" for index, step in enumerate(guide.get("chatgpt_steps", []), start=1))
+    lines.extend(["", "Useful commands:"])
+    lines.extend(f"- {command}" for command in guide.get("operator_commands", []))
+    warnings = list(guide.get("warnings", []))
+    if warnings:
+        lines.extend(["", "Notes:"])
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines)
+
+
 def mcp_server_url(
     config: Mapping[str, Any],
     policy: AuthPolicy,
@@ -155,6 +257,8 @@ def format_doctor_text(status: Mapping[str, Any]) -> str:
             f"Local MCP URL: {status['connection']['local_mcp_url']}",
             f"ChatGPT Server URL: {status['connection']['server_url']}",
             f"Authentication: {status['connection']['chatgpt_authentication']}",
+            "",
+            "Next: run patchbay start --root <repo> --tool-mode worker --print-only for a ChatGPT setup guide.",
         ]
     )
     return "\n".join(lines)
