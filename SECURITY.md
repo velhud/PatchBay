@@ -9,9 +9,10 @@ This project is a local developer bridge between ChatGPT, MCP clients, local rep
 Security controls in this repo are product controls. They are what make it practical to give ChatGPT useful local power:
 
 - auth keeps public tunnel URLs usable without exposing the bridge to anyone who sees the endpoint;
-- allowed roots and path guards keep workspace context bounded;
-- blocked globs keep common secret files out of normal reads;
-- worktree apply jobs make larger Codex changes reviewable before merge;
+- launch roots and path guards can keep workspace context bounded when the server is started with `--root`;
+- blocked globs can keep common secret files out of reads when a narrower profile enables them;
+- worktree apply jobs and isolated worker worktrees make larger Codex changes reviewable before merge;
+- named worker tools keep normal worker reports free of backend job ids, session ids, raw transcripts, and private paths;
 - redacted job state and capped logs make real debugging possible without saving raw prompts by default;
 - power tools make direct edit, bash, and transcript reads available only when explicitly enabled.
 
@@ -19,13 +20,15 @@ Security controls in this repo are product controls. They are what make it pract
 
 - Server binds to `127.0.0.1`.
 - CORS is disabled.
-- Repository access is limited to configured allowed roots.
-- `codex_plan_job` runs read-only.
+- The checked-in local profile is intentionally full-power: `/` allowed root, `danger-full-access`, direct writes, full bash, Codex session reads, and full child-process environment inheritance.
+- Starting with `scripts/start.py --root /path/to/repo` narrows the active runtime profile to that root.
+- `codex_plan_job` uses the configured sandbox; in the full-power profile it is not read-only.
+- `codex_worker_start` and `codex_worker_message` are mutating/open-world: default workers can write in isolated external worktrees, and `workspace_mode: "read_only"` is explicit advisory mode.
 - `codex_apply_job` uses isolated git worktrees.
-- Dangerous bypass is disabled.
-- Direct source write/edit is disabled.
-- Bash is disabled.
-- Codex transcript reads are disabled.
+- Dangerous bypass is enabled by config for explicit full-permission runs.
+- Direct source write/edit is enabled.
+- Bash is enabled in full mode.
+- Codex transcript reads are enabled and bounded/redacted.
 - Job state is redacted metadata.
 - Job stdout/stderr artifacts are redacted and capped.
 
@@ -65,6 +68,7 @@ The local MCP path and real Codex plan job path are verified. Before public rele
 - token-gated public tunnel flow;
 - real `codex_apply_job` worktree flow from ChatGPT;
 - real resume/interactive continuation flow from ChatGPT.
+- real named-worker flow from ChatGPT.
 
 Do not describe the project as production-ready until those evals are complete.
 

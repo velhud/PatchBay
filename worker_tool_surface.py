@@ -1,0 +1,430 @@
+"""Public MCP descriptors for the natural-language worker facade."""
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Dict
+
+
+WORKER_VIEW_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "worker_id": {"type": "string"},
+        "name": {"type": "string"},
+        "workspace_id": {"type": "string"},
+        "workspace_name": {"type": "string"},
+        "workspace_mode": {"type": "string"},
+        "workspace_available": {"type": "boolean"},
+        "state": {"type": "string"},
+        "report": {"type": "string"},
+        "has_changes": {"type": "boolean"},
+        "changed_files": {"type": "array", "items": {"type": "string"}},
+        "change_count": {"type": "integer"},
+        "file_path": {"type": "string"},
+        "source": {"type": "string"},
+        "exists": {"type": "boolean"},
+        "text": {"type": "string"},
+        "start_line": {"type": "integer"},
+        "end_line": {"type": "integer"},
+        "total_lines": {"type": "integer"},
+        "bytes": {"type": "integer"},
+        "sha256": {"type": "string"},
+        "diff": {"type": "string"},
+        "truncated": {"type": "boolean"},
+        "has_session": {"type": "boolean"},
+        "can_message": {"type": "boolean"},
+        "last_activity_at": {"type": "number"},
+        "accepted": {"type": "boolean"},
+        "stopped": {"type": "boolean"},
+        "workspace_cleaned": {"type": "boolean"},
+        "note": {"type": "string"},
+        "context_sources": {"type": "array", "items": {"type": "string"}},
+        "context_detail": {"type": "string"},
+        "context_truncated": {"type": "boolean"},
+        "integration_state": {"type": "string"},
+        "can_apply": {"type": "boolean"},
+        "applied": {"type": "boolean"},
+        "apply_check": {"type": "string"},
+        "base_dirty": {"type": "boolean"},
+        "base_moved": {"type": "boolean"},
+        "base_changed_files": {"type": "array", "items": {"type": "string"}},
+        "main_changed_files": {"type": "array", "items": {"type": "string"}},
+        "blocked_files": {"type": "array", "items": {"type": "string"}},
+        "skipped_files": {"type": "array", "items": {"type": "string"}},
+        "conflict_summary": {"type": "string"},
+        "patch_sha256": {"type": "string"},
+        "patch_bytes": {"type": "integer"},
+        "patch_truncated": {"type": "boolean"},
+        "base_revision": {"type": "string"},
+        "worker_base_revision": {"type": "string"},
+        "model": {"type": "string"},
+        "reasoning_effort": {"type": "string"},
+    },
+}
+
+WORKER_LIST_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "workers": {"type": "array", "items": WORKER_VIEW_SCHEMA},
+        "count": {"type": "integer"},
+        "active": {"type": "integer"},
+        "team_report": {"type": "string"},
+    },
+}
+
+WORKER_OPTIONS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "source": {"type": "string"},
+        "codex_version": {"type": "string"},
+        "default_model": {"type": "string"},
+        "default_reasoning_effort": {"type": "string"},
+        "selected_model": {"type": "object", "additionalProperties": True},
+        "selected_reasoning_effort": {"type": "string"},
+        "reasoning_efforts": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "models": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "model_count": {"type": "integer"},
+        "models_truncated": {"type": "boolean"},
+        "allows_custom_model_string": {"type": "boolean"},
+        "worker_start_fields": {"type": "object", "additionalProperties": True},
+        "next_step": {"type": "string"},
+        "note": {"type": "string"},
+    },
+}
+
+WORKER_EXECUTION_OPTION_PROPERTIES: Dict[str, Any] = {
+    "model": {
+        "type": "string",
+        "description": (
+            "Optional Codex model id for this worker, such as a model returned by codex_worker_options. "
+            "Omit to use the configured Codex default."
+        ),
+    },
+    "reasoning_effort": {
+        "type": "string",
+        "enum": ["minimal", "low", "medium", "high", "xhigh"],
+        "description": (
+            "Optional Codex reasoning effort for supported models. Omit to use the selected model or Codex default."
+        ),
+    },
+}
+
+WORKER_TOOLS = [
+    {
+        "name": "codex_worker_options",
+        "description": (
+            "Read-only progressive setup menu for worker execution choices. Call this when ChatGPT needs to "
+            "choose a Codex model or reasoning effort before starting or continuing a worker. It loads bounded "
+            "model metadata from the installed Codex runtime/catalog and explains which fields to pass to "
+            "codex_worker_start or codex_worker_message."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "Optional model id to focus the returned reasoning options.",
+                },
+                "max_models": {
+                    "type": "integer",
+                    "description": "Maximum model menu entries to return. Default 12; capped by server policy.",
+                },
+                "include_model_details": {
+                    "type": "boolean",
+                    "description": "When true, include extra bounded service-tier details if Codex exposes them.",
+                },
+            },
+            "required": [],
+        },
+        "readOnlyHint": True,
+    },
+    {
+        "name": "codex_worker_start",
+        "description": (
+            "Appoint a durable named Codex colleague for work that may take time, need review, or continue "
+            "later. Give goals, context, constraints, and expected report in the natural-language brief. "
+            "Defaults to an isolated writing worktree; choose workspace_mode=read_only for advisory work. "
+            "Can include bounded context from other workers for review, alternatives, or handoff. When a "
+            "specific model or reasoning depth matters, call codex_worker_options first, then pass model and/or "
+            "reasoning_effort here. Worker names are scoped to the target workspace, so the same name can be reused "
+            "safely in another repo."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Human-readable worker name, such as Connector Investigator.",
+                },
+                "brief": {
+                    "type": "string",
+                    "description": "Natural-language assignment. Put goals, context, and expected report here.",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional owned or authorized repository path. Defaults to the configured workspace.",
+                },
+                "workspace_mode": {
+                    "type": "string",
+                    "enum": ["isolated_write", "read_only", "shared_write"],
+                    "description": "Worker workspace mode. Default: isolated_write.",
+                },
+                "context_from_workers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional worker names or ids whose reports/changes/diffs should be included as "
+                        "natural-language peer context for this worker turn. Capped by server policy."
+                    ),
+                },
+                "context_detail": {
+                    "type": "string",
+                    "enum": ["report", "changes", "diff"],
+                    "description": "How much peer-worker context to include. Default: report.",
+                },
+                **WORKER_EXECUTION_OPTION_PROPERTIES,
+            },
+            "required": ["name", "brief"],
+        },
+        "readOnlyHint": False,
+    },
+    {
+        "name": "codex_worker_message",
+        "description": (
+            "Continue or redirect an existing named Codex worker in natural language, preserving its session "
+            "and worker worktree when available. Use this for follow-up, review feedback, or revision of the "
+            "same worker's task, not for a new independent colleague. Can include bounded peer report/change/diff "
+            "context without exposing backend ids. By default the worker keeps its prior model/reasoning choices; "
+            "pass model or reasoning_effort only to intentionally change them for this continuation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "worker": {"type": "string", "description": "Worker name or worker id."},
+                "message": {"type": "string", "description": "Natural-language follow-up or correction."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional authorized repository path used to resolve a worker name in that workspace. Worker ids are globally unique.",
+                },
+                "context_from_workers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional worker names or ids whose reports/changes/diffs should be included as "
+                        "natural-language peer context for this worker turn. Capped by server policy."
+                    ),
+                },
+                "context_detail": {
+                    "type": "string",
+                    "enum": ["report", "changes", "diff"],
+                    "description": "How much peer-worker context to include. Default: report.",
+                },
+                **WORKER_EXECUTION_OPTION_PROPERTIES,
+            },
+            "required": ["worker", "message"],
+        },
+        "readOnlyHint": False,
+    },
+    {
+        "name": "codex_worker_list",
+        "description": (
+            "List durable Codex workers as an engineering lead would want to see them: names, human-readable "
+            "state, latest report, team summary, and whether each worker can receive a follow-up. Use this after "
+            "restart or before choosing which worker to inspect, message, stop, or integrate. By default ChatGPT "
+            "sees workers for the current workspace, so old workers from other repos do not steal the same name."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional authorized repository path used to filter workers.",
+                }
+            },
+            "required": [],
+        },
+        "readOnlyHint": True,
+    },
+    {
+        "name": "codex_worker_inspect",
+        "description": (
+            "Read one worker's current state and latest natural-language report. Optionally wait briefly for the "
+            "current turn; this does not expose private repo paths, job ids, session ids, or raw transcripts. "
+            "Use view=changes, view=diff with file_path, view=file with file_path for worker-created files before "
+            "integration, or view=integration_preview before accepting a worker result. codex_read_file reads the "
+            "base checkout, not an isolated worker worktree."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "worker": {"type": "string", "description": "Worker name or worker id."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional authorized repository path used to resolve a worker name in that workspace. Worker ids are globally unique.",
+                },
+                "wait_seconds": {
+                    "type": "integer",
+                    "description": "Optional brief wait for completion, capped at 30 seconds.",
+                },
+                "view": {
+                    "type": "string",
+                    "enum": ["report", "status", "changes", "diff", "file", "integration_preview"],
+                    "description": "Report/status by default. Use changes for file inventory, diff with file_path, file with file_path for worker-created file content, or integration_preview before accepting a worker result.",
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Workspace-relative path required for view=diff or view=file.",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "1-based start line for view=file. Default: 1.",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "1-based inclusive end line for view=file. Default: file end.",
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "description": "Maximum bytes for view=file, capped by server policy.",
+                },
+            },
+            "required": ["worker"],
+        },
+        "readOnlyHint": True,
+    },
+    {
+        "name": "codex_worker_integrate",
+        "description": (
+            "Apply an explicitly accepted isolated writing worker result to the base checkout after inspecting "
+            "the report/diff and preferably view=integration_preview. This is the human-level act: use this "
+            "colleague's result. It does not commit, does not delete the worker worktree, and refuses dirty-base "
+            "or conflicted application unless an expert override is supplied."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "worker": {"type": "string", "description": "Worker name or worker id."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional authorized repository path used to resolve a worker name in that workspace. Worker ids are globally unique.",
+                },
+                "allow_dirty_base": {
+                    "type": "boolean",
+                    "description": "Expert override allowing integration into a dirty base checkout when git apply still succeeds. Default: false.",
+                },
+            },
+            "required": ["worker"],
+        },
+        "readOnlyHint": False,
+    },
+    {
+        "name": "codex_worker_stop",
+        "description": (
+            "Stop a named worker's active Codex turn. The durable worker identity and Codex conversation are "
+            "preserved so ChatGPT can continue the colleague later. Set cleanup_workspace=true only when the "
+            "user intentionally wants to discard that worker's isolated worktree."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "worker": {"type": "string", "description": "Worker name or worker id."},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional authorized repository path used to resolve a worker name in that workspace. Worker ids are globally unique.",
+                },
+                "cleanup_workspace": {
+                    "type": "boolean",
+                    "description": "When true, discard the isolated worker worktree after stopping active work.",
+                },
+            },
+            "required": ["worker"],
+        },
+        "readOnlyHint": False,
+    },
+]
+
+WORKER_TOOL_NAMES = {tool["name"] for tool in WORKER_TOOLS}
+WORKER_NON_IDEMPOTENT_TOOLS = {"codex_worker_start", "codex_worker_message", "codex_worker_integrate", "codex_worker_stop"}
+WORKER_OPEN_WORLD_TOOLS = {"codex_worker_start", "codex_worker_message"}
+WORKER_DESTRUCTIVE_TOOLS = {"codex_worker_integrate", "codex_worker_stop"}
+
+WORKER_MODE_TOOLS = {
+    "codex_get_config",
+    "codex_tool_mode_info",
+    "codex_tool_mode_switch",
+    "codex_self_test",
+    "codex_open_workspace",
+    "codex_repo_tree",
+    "codex_read_file",
+    "codex_search_repo",
+    "codex_load_context",
+    "codex_list_skills",
+    "codex_load_skill",
+    "codex_git_status",
+    "codex_git_diff",
+    "codex_show_changes",
+    *WORKER_TOOL_NAMES,
+}
+
+
+def install_worker_tool_surface(
+    *,
+    tools: list[Dict[str, Any]],
+    tools_by_name: Dict[str, Dict[str, Any]],
+    public_tool_names: set[str],
+    tool_modes: Dict[str, set[str]],
+    destructive_tools: set[str],
+    open_world_tools: set[str],
+    non_idempotent_tools: set[str],
+    invocation_status: Dict[str, tuple[str, str]],
+    output_schemas: Dict[str, Dict[str, Any]],
+) -> None:
+    """Install worker descriptors before public descriptors are materialized."""
+    for descriptor in WORKER_TOOLS:
+        name = descriptor["name"]
+        if name not in tools_by_name:
+            copied = deepcopy(descriptor)
+            tools.append(copied)
+            tools_by_name[name] = copied
+            public_tool_names.add(name)
+
+    tool_modes.setdefault("standard", set()).update(WORKER_TOOL_NAMES)
+    tool_modes.setdefault("full", set()).update(WORKER_TOOL_NAMES)
+    tool_modes["worker"] = set(WORKER_MODE_TOOLS)
+
+    destructive_tools.update(WORKER_DESTRUCTIVE_TOOLS)
+    open_world_tools.update(WORKER_OPEN_WORLD_TOOLS)
+    non_idempotent_tools.update(WORKER_NON_IDEMPOTENT_TOOLS)
+
+    invocation_status.update(
+        {
+            "codex_worker_start": ("Starting worker", "Worker started"),
+            "codex_worker_options": ("Loading worker options", "Worker options ready"),
+            "codex_worker_message": ("Messaging worker", "Message delivered"),
+            "codex_worker_list": ("Listing workers", "Workers ready"),
+            "codex_worker_inspect": ("Checking worker", "Worker report ready"),
+            "codex_worker_integrate": ("Integrating worker", "Worker result applied"),
+            "codex_worker_stop": ("Stopping worker", "Worker stopped"),
+        }
+    )
+
+    output_schemas.update(
+        {
+            "codex_worker_options": deepcopy(WORKER_OPTIONS_SCHEMA),
+            "codex_worker_start": deepcopy(WORKER_VIEW_SCHEMA),
+            "codex_worker_message": deepcopy(WORKER_VIEW_SCHEMA),
+            "codex_worker_list": deepcopy(WORKER_LIST_SCHEMA),
+            "codex_worker_inspect": deepcopy(WORKER_VIEW_SCHEMA),
+            "codex_worker_integrate": deepcopy(WORKER_VIEW_SCHEMA),
+            "codex_worker_stop": deepcopy(WORKER_VIEW_SCHEMA),
+        }
+    )

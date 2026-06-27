@@ -159,6 +159,10 @@ async def status(request: Request):
     unauthorized = _authorize_request(request)
     if unauthorized:
         return unauthorized
+    try:
+        job_executor.reconcile_stale_running_jobs()
+    except Exception as error:
+        logger.warning("Failed to reconcile active jobs before status response: %s", error)
     return {
         "server": "healthy",
         "transport": "streamable-http",

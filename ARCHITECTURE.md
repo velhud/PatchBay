@@ -10,10 +10,11 @@ The intended user experience is:
 2. Connect ChatGPT web/Pro through Developer Mode or an Apps-compatible MCP connector.
 3. Open an allowed local workspace.
 4. Load repository context, AGENTS instructions, selected files, skills, git status, and diffs.
-5. Delegate larger work to local Codex jobs.
-6. Inspect job status, results, changed files, and diffs from ChatGPT.
-7. Resume prior Codex work when useful.
-8. Optionally enable direct workspace tools such as edit, bash, or session transcript reads behind explicit power-mode controls.
+5. Delegate investigations or isolated implementation work to named Codex workers and continue them by human name after restart.
+6. Delegate lower-level Codex jobs when explicit job/session control is useful.
+7. Inspect job status, results, changed files, and diffs from ChatGPT.
+8. Resume prior Codex work when useful.
+9. Optionally enable direct workspace tools such as edit, bash, or session transcript reads behind explicit power-mode controls.
 
 The product is not trying to preserve either current architecture for its own sake. The wrapper repository remains the final application because that is the desired release target.
 
@@ -42,6 +43,9 @@ Connector layer
    v
 Policy and tool registry
    | public allowlist, tool tiers, schema validation, mutability hints
+   v
+Worker facade
+   | named Codex colleagues, isolated worker worktrees, report/change/diff views, stop active turn
    v
 Workspace context layer
    | allowed roots, path guard, AGENTS, skills, tree, search, read, context packs
@@ -93,7 +97,7 @@ Default tools for serious work:
 - `codex_interactive_reply`
 - `codex_get_config`
 
-These are the current wrapper surface and should remain stable. Current Codex CLI `0.141.0` JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
+These are the current wrapper surface and should remain stable. Current Codex CLI `0.142.2` JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
 
 `codex_resume`, `codex_interactive`, and `codex_interactive_reply` are async job starters classified as mutating/open-world in the public descriptors because they can continue sessions that write locally or call Codex externally. `codex_plan_job` remains locally read-only, but is not idempotent because it creates job state and can invoke Codex.
 
@@ -138,6 +142,25 @@ Disabled by default, but designed as first-class optional capabilities:
 - public tunnel mode, implemented as optional launcher-supervised child processes with token-gated HTTP.
 
 Power tools are not "unsafe illusions"; they are product power. They must be controlled because broken control makes the tool less useful for real work.
+
+## Worker Facade
+
+The current product includes a natural-language worker facade over the existing runtime. It is documented in [docs/worker-bridge/PHASE1_DURABLE_WORKERS.md](docs/worker-bridge/PHASE1_DURABLE_WORKERS.md), [docs/worker-bridge/PHASE2_WRITING_WORKERS.md](docs/worker-bridge/PHASE2_WRITING_WORKERS.md), [docs/worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md](docs/worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md), and [docs/worker-bridge/PHASE4_INTEGRATION.md](docs/worker-bridge/PHASE4_INTEGRATION.md).
+
+The worker facade lets ChatGPT manage named local Codex workers through natural-language briefs and concise reports while the wrapper keeps exact runtime mechanics internal. A worker is derived from private metadata on durable job records, plus the Codex session reference already captured by the job runtime.
+
+The worker facade provides:
+
+- `codex_worker_start`;
+- `codex_worker_message`;
+- `codex_worker_list`;
+- `codex_worker_inspect`;
+- `codex_worker_integrate`;
+- `codex_worker_stop`.
+
+Phase 2 adds durable external worker worktrees for default `isolated_write` workers, same-session/same-worktree continuation after wrapper restart, on-demand changed-file inspection, one-file worker diffs, and explicit isolated workspace cleanup. Phase 3 adds bounded peer-worker report/change/diff context on worker start/message plus a `team_report` from worker list. Phase 4 adds read-only integration preview and explicit accepted-result application into the base checkout. Current lifecycle handling reconciles stale durable `running` jobs that no longer have a tracked Codex subprocess into a redacted failed report before public worker/status views. No separate worker database, queue, mailbox, transcript copy, role system, automatic reviewer chain, automatic commit, or automatic merge/promotion flow exists in this phase. Later phases can add optional app-server backend evaluation.
+
+The worker bridge does not replace the security boundary. It should reuse the same typed registry, path guard, power-mode controls, auth policy, artifact caps, and redaction rules used by the current public surface.
 
 ## Codex Execution Boundary
 
@@ -187,15 +210,16 @@ Raw prompts, secrets, auth files, full Codex outputs, and local session transcri
 Verified:
 
 - local Streamable HTTP MCP startup and probing against disposable repos;
-- real Codex CLI `0.141.0` `codex_plan_job` through MCP;
+- real Codex CLI `0.142.2` `codex_plan_job` through MCP;
 - current Codex JSONL structured result parsing;
 - token-gated auth and tunnel fail-closed behavior in automated tests;
+- direct tokenized public-tunnel MCP health, `initialize`, and worker-mode `tools/list` through ngrok;
 - workspace path guards, blocked globs, symlink escape rejection, and default power-tool denial.
 
 Not yet verified for release:
 
-- real ChatGPT Developer Mode connection;
-- real public tunnel connection with token auth;
+- real ChatGPT Developer Mode connection and natural tool selection;
+- real ChatGPT-originated worker flows through a public tunnel;
 - real ChatGPT-originated apply-job diff review;
 - real ChatGPT-originated resume/interactive continuation.
 
@@ -205,7 +229,7 @@ The current hybrid implementation has the core ChatGPT-facing connector, workspa
 
 Remaining work is additive:
 
-- complete the real ChatGPT and tunnel release evals;
+- complete the real ChatGPT UI release evals, including the token-gated tunnel path when advertised;
 - richer auth modes beyond tokenized local/tunnel use if this becomes multi-user;
 - deeper schema coverage for future tools as they are added;
 - richer interactive ChatGPT card actions beyond the passive result card;
@@ -221,3 +245,8 @@ Remaining work is additive:
 - OpenAI Apps SDK reference: https://developers.openai.com/apps-sdk/reference
 - OpenAI Apps SDK auth docs: https://developers.openai.com/apps-sdk/build/auth
 - OpenAI Apps SDK security/privacy docs: https://developers.openai.com/apps-sdk/guides/security-privacy
+
+
+## Phase 4 Worker Integration
+
+Phase 4 adds explicit integration preview and accepted-result application for isolated writing workers. `codex_worker_inspect(view="integration_preview")` is read-only and reports whether a worker patch can apply to the base checkout. `codex_worker_integrate` is the explicit mutating act that applies the accepted worker result without committing and without deleting the worker worktree.

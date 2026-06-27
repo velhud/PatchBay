@@ -51,6 +51,20 @@ def test_connector_status_redacts_query_token_url():
     assert "auth-fixture-value" not in json.dumps(status)
 
 
+def test_connector_status_reveals_query_token_only_when_requested():
+    query_token_name = "codex_mcp_" + "token"
+    token_value = "auth-fixture-value"
+    status = connector_status(
+        base_config(),
+        environ={"CODEX_MCP_HTTP_TOKEN": token_value},
+        public_base_url="https://bridge.example",
+        reveal_token=True,
+    )
+
+    assert status["connection"]["server_url"] == f"https://bridge.example/mcp?{query_token_name}={token_value}"
+    assert status["auth"]["token_returned"] is True
+
+
 def test_connector_status_reports_fail_closed_tunnel_without_token():
     status = connector_status(base_config(auth={"tunnel_mode": "cloudflare"}), environ={})
 

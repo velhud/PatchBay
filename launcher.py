@@ -21,7 +21,7 @@ from profile_store import (
 
 BASH_MODES = {"off", "safe", "full"}
 TUNNEL_MODES = {"none", "local", "custom", "cloudflare", "cloudflare-named", "ngrok"}
-TOOL_MODES = {"minimal", "standard", "full"}
+TOOL_MODES = {"minimal", "standard", "full", "worker"}
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -133,6 +133,19 @@ def launcher_json_payload(prepared: Mapping[str, Any]) -> dict[str, Any]:
         "power_tools": status.get("power_tools", {}),
         "checks": status.get("checks", []),
     }
+
+
+def prepared_with_revealed_token(prepared: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Return launch metadata with an explicitly tokenized Server URL for private copy/paste."""
+    updated = deepcopy(dict(prepared))
+    profile = updated.get("profile") if isinstance(updated.get("profile"), Mapping) else {}
+    updated["status"] = connector_status(
+        updated["runtime_config"],
+        environ=environ,
+        public_base_url=profile.get("public_base_url"),
+        reveal_token=True,
+    )
+    return updated
 
 
 def _default_root(config: Mapping[str, Any]) -> str:

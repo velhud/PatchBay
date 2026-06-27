@@ -20,6 +20,11 @@ def test_initialize_includes_server_instructions():
     assert result["serverInfo"]["name"] == "codex-mcp-wrapper"
     assert result["serverInfo"]["version"] == "0.1.0"
     assert "instructions" in result
+    assert "codex_self_test" in result["instructions"]
+    assert "codex_open_workspace" in result["instructions"]
+    assert "Workers are stateful by name" in result["instructions"]
+    assert "integration_preview" in result["instructions"]
+    assert "does not commit" in result["instructions"]
     assert "allowed roots" in result["instructions"]
     assert result["capabilities"]["resources"]["listChanged"] is False
 
@@ -66,6 +71,85 @@ def test_public_tool_call_translates_schema_valid_arguments():
         "arguments": {"job_id": "job-123"},
     }
     assert "job-123" in result["content"][0]["text"]
+
+
+def test_tool_mode_info_is_protocol_handled_and_lists_modes():
+    handler = DummyToolHandler()
+    protocol = MCPProtocol({"app": {"tool_mode": "worker"}}, handler)
+
+    result = asyncio.run(
+        protocol._handle_tools_call(
+            {
+                "name": "codex_tool_mode_info",
+                "arguments": {},
+            }
+        )
+    )
+
+    payload = result["structuredContent"]
+    assert payload["current_mode"] == "worker"
+    assert payload["recommended_default"] == "worker"
+    assert {"worker", "standard", "full", "minimal"} <= set(payload["available_modes"])
+    modes = {mode["mode"]: mode for mode in payload["modes"]}
+    assert "codex_worker_start" in modes["worker"]["tool_names"]
+    assert "codex_resume" not in modes["worker"]["tool_names"]
+    assert "codex_resume" in modes["full"]["tool_names"]
+    assert "Refresh" in payload["chatgpt_refresh_note"]
+    assert handler.calls == []
+
+
+def test_tool_mode_switch_changes_process_local_catalog():
+    handler = DummyToolHandler()
+    protocol = MCPProtocol({"app": {"tool_mode": "worker"}}, handler)
+
+    before = asyncio.run(protocol._handle_tools_list({}))
+    before_names = {tool["name"] for tool in before["tools"]}
+    assert "codex_resume" not in before_names
+    assert "codex_tool_mode_switch" in before_names
+
+    result = asyncio.run(
+        protocol._handle_tools_call(
+            {
+                "name": "codex_tool_mode_switch",
+                "arguments": {"mode": "full", "reason": "Need raw session continuation."},
+            }
+        )
+    )
+
+    payload = result["structuredContent"]
+    assert payload["previous_mode"] == "worker"
+    assert payload["current_mode"] == "full"
+    assert payload["changed"] is True
+    assert payload["persisted_to_config"] is False
+    assert "config files were not modified" in payload["note"]
+    assert "Refresh" in payload["chatgpt_refresh_note"]
+    assert handler.calls == []
+
+    after = asyncio.run(protocol._handle_tools_list({}))
+    after_names = {tool["name"] for tool in after["tools"]}
+    assert "codex_resume" in after_names
+    assert "read_codex_session" in after_names
+
+
+def test_tool_mode_switch_rejects_invalid_mode():
+    protocol = MCPProtocol({"app": {"tool_mode": "worker"}}, DummyToolHandler())
+
+    response = asyncio.run(
+        protocol.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "codex_tool_mode_switch",
+                    "arguments": {"mode": "everything"},
+                },
+            }
+        )
+    )
+
+    assert response["error"]["code"] == -32602
+    assert "Invalid value for argument 'mode'" in response["error"]["message"]
 
 
 def test_tool_call_returns_redacted_structured_content():
@@ -165,3 +249,56 @@ def test_resources_read_rejects_unknown_or_missing_uri():
             )
         )
         assert response["error"]["code"] == -32602
+
+
+def test_initialize_can_complete_while_worker_inspect_tool_call_is_waiting():
+    async def scenario():
+        class SlowWorkerHandler:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def handle_tool_call(self, tool_name, arguments):
+                assert tool_name == "codex_worker_inspect"
+                self.started.set()
+                await self.release.wait()
+                return {"state": "working", "worker": arguments["worker"]}
+
+        handler = SlowWorkerHandler()
+        protocol = MCPProtocol({"app": {"tool_mode": "worker"}}, handler)
+        inspect_task = asyncio.create_task(
+            protocol.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "codex_worker_inspect",
+                        "arguments": {"worker": "Slow Worker", "wait_seconds": 30},
+                    },
+                }
+            )
+        )
+        await asyncio.wait_for(handler.started.wait(), timeout=0.2)
+
+        initialize_response = await asyncio.wait_for(
+            protocol.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2025-11-25"},
+                }
+            ),
+            timeout=0.2,
+        )
+
+        assert initialize_response["id"] == 2
+        assert initialize_response["result"]["serverInfo"]["name"] == "codex-mcp-wrapper"
+
+        handler.release.set()
+        inspect_response = await asyncio.wait_for(inspect_task, timeout=0.2)
+        assert inspect_response["id"] == 1
+        assert inspect_response["result"]["structuredContent"]["state"] == "working"
+
+    asyncio.run(scenario())

@@ -9,7 +9,19 @@ codex --version
 PYTHONDONTWRITEBYTECODE=1 python -m compileall -q .
 PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q
 PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
+PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase1_eval.py --timeout 600
+PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase2_eval.py --timeout 900
+PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase3_eval.py --timeout 900
+PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase4_eval.py --timeout 900
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --output-dir validation-reports/real_mcp_trial
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safety-cases --output-dir validation-reports/real_mcp_trial
 ```
+
+## Worker Bridge Gates
+
+Phase 4 implements durable named workers with default isolated writing worktrees, bounded peer-worker context for natural multi-worker coordination, and explicit accepted-result integration. The worker release gates are tracked in [docs/worker-bridge/08_TESTING_AND_RELEASE.md](docs/worker-bridge/08_TESTING_AND_RELEASE.md).
+
+Worker bridge verification must distinguish targeted unit tests, live local MCP regression, real-Codex read-only continuity, real-Codex isolated writing continuity, integration preview/apply, real ChatGPT Developer Mode, and public tunnel coverage. Phase 4 adds real `codex_worker_*` descriptors, handlers, state behavior, external worker worktrees, peer-context relay, accepted-result integration, and eval coverage.
 
 CodexPro source-material checks:
 
@@ -27,9 +39,17 @@ These confirm the source material remains buildable if more behavior is ported.
 Verification performed for the current hybrid implementation:
 
 - Wrapper `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q .`: passed.
-- Wrapper `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 148 tests at the time this section was updated.
+- Wrapper `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 196 tests at the time this section was updated.
 - Wrapper `python scripts/live_mcp_eval.py --json`: passed against a disposable local repo with no ChatGPT and no public tunnel.
-- Codex CLI `0.141.0`: verified locally.
+- Codex CLI `0.142.2`: verified locally.
+- Real read-only worker continuity eval `scripts/worker_phase1_eval.py --timeout 600`: passed.
+- Real isolated writing worker continuity eval `scripts/worker_phase2_eval.py --timeout 900`: passed.
+- Real multi-worker peer-context eval `scripts/worker_phase3_eval.py --timeout 900`: passed.
+- Real worker integration eval `scripts/worker_phase4_eval.py --timeout 900`: passed.
+- Real MCP worker lifecycle trial `scripts/real_mcp_worker_trial.py --output-dir validation-reports/real_mcp_trial`: passed and wrote progressive `calls.jsonl`, `results.json`, and `summary.md`.
+- Real MCP worker safety trial `scripts/real_mcp_worker_trial.py --include-safety-cases --output-dir validation-reports/real_mcp_trial`: passed for active/read-only/dirty-base/blocked-path/binary/conflict/cleanup negative cases, connector/OAuth stderr noise scan, and public artifact leak scan.
+- Real worker validation configs run Codex worker subprocesses with `--ignore-user-config`, preserving `CODEX_HOME` auth while suppressing unrelated user-level MCP connector config in trial workers.
+- Tokenized public-tunnel MCP probe through ngrok: passed for health, initialize, and worker-mode `tools/list` through a query-token URL. Real ChatGPT Developer Mode UI/tool-selection remains blocked in this session.
 - Real `codex_plan_job` through the MCP server: passed against a disposable repo.
 - Current Codex JSONL `item.completed` / `agent_message` result parsing: passed.
 - CodexPro `npm_config_cache=/tmp/codexpro-npm-cache npm ci`: passed, 0 vulnerabilities.
@@ -37,7 +57,7 @@ Verification performed for the current hybrid implementation:
 - CodexPro `npm run smoke`: passed all upstream smoke checks.
 - CodexPro `npm audit --package-lock-only --json`: passed, 0 vulnerabilities.
 
-These checks prove both source trees were analyzable before migration and that the current wrapper implementation has a live MCP regression path for the ChatGPT-facing surface. They do not yet prove real ChatGPT Developer Mode, public tunnel, apply-job, or resume workflows.
+These checks prove both source trees were analyzable before migration, that the current wrapper implementation has a live MCP regression path for the ChatGPT-facing surface, and that tokenized public-tunnel MCP reachability works at the health/initialize/tools-list level. They do not yet prove real ChatGPT Developer Mode, ChatGPT-originated public-tunnel worker flows, ChatGPT-originated apply-job, or ChatGPT-originated resume workflows.
 
 ## Unit Tests
 
@@ -60,6 +80,16 @@ Required test groups:
 - log redaction;
 - artifact retention;
 - diff membership validation.
+- durable worker identity and name resolution;
+- worker continuation through persisted Codex sessions;
+- busy-worker rejection without queueing;
+- worker output privacy;
+- worker-mode descriptor filtering.
+- isolated worker worktree creation/reuse/cleanup;
+- worker changed-file and one-file diff views;
+- worker resume command ordering with `--sandbox` and `--cd` before `resume`.
+- peer-worker context relay using reports, changed files, or bounded diffs;
+- team-report output from `codex_worker_list`.
 
 ## MCP Protocol Smoke Tests
 
@@ -113,7 +143,7 @@ Status: pending real ChatGPT Developer Mode verification.
 
 Acceptance:
 
-- plan job is read-only;
+- plan job uses the configured sandbox and can be narrowed to read-only for restricted evals;
 - apply job uses isolated worktree;
 - diff API only returns changed-file diffs;
 - output is summarized and redacted by default.
@@ -133,6 +163,44 @@ Acceptance:
 - raw transcript exposure is not required.
 
 Status: pending real resume/interactive continuation verification.
+
+### Scenario 3A: Named Read-Only Worker
+
+1. Start `codex_worker_start` with a human name and natural-language brief.
+2. Inspect the report with `codex_worker_inspect`.
+3. Restart/reconstruct wrapper runtime.
+4. List workers and find the same human name.
+5. Continue with `codex_worker_message`.
+
+Acceptance:
+
+- ChatGPT does not need low-level job/session ids;
+- worker output omits private repo paths, job ids, session ids, raw transcripts, and raw logs;
+- busy-worker follow-up returns `accepted: false` instead of silently queueing;
+- same Codex session is used for continuation after restart.
+
+Status: targeted unit tests and `scripts/worker_phase1_eval.py` coverage exist; real-Codex and real ChatGPT status must be recorded per integration run.
+
+### Scenario 3B: Named Isolated Writing Worker
+
+1. Start `codex_worker_start` with a human name and no `workspace_mode`.
+2. Confirm the worker defaults to `isolated_write`.
+3. Ask it to create or revise a small file.
+4. Inspect changed files with `codex_worker_inspect(view="changes")`.
+5. Inspect worker-side file content with `codex_worker_inspect(view="file", file_path="...")`.
+6. Inspect one file's patch with `codex_worker_inspect(view="diff", file_path="...")`.
+7. Restart/reconstruct wrapper runtime.
+8. Continue the same worker by name and verify the same worktree/session are reused.
+
+Acceptance:
+
+- base checkout remains unchanged;
+- worker worktree is external to the repo;
+- same Codex session and worktree are reused after restart;
+- public output omits private paths, backend job ids, branch names, and session ids;
+- cleanup is explicit.
+
+Status: targeted unit tests and `scripts/worker_phase2_eval.py` coverage exist; real ChatGPT status must be recorded per integration run.
 
 ### Scenario 4: Handoff
 
@@ -165,6 +233,25 @@ Acceptance:
 - returned diffs are clear.
 
 Status: automated default-denial and enabled-mode tests exist; real ChatGPT power-mode eval remains pending.
+
+
+### Scenario 8: Multi-Worker Coordination
+
+1. Start a writing implementer.
+2. Inspect its changed files or diff.
+3. Start a read-only reviewer with `context_from_workers` pointing at the implementer and `context_detail="diff"`.
+4. Send the reviewer report back to the implementer with `codex_worker_message`.
+5. List workers and inspect `team_report`.
+
+Acceptance:
+
+- peer context is bounded and redacted;
+- public outputs do not include job ids, session ids, branch names, or private paths;
+- the implementer keeps the same session and worktree after receiving reviewer context;
+- no message bus, mailbox, or role engine is introduced;
+- base checkout remains unchanged.
+
+Status: targeted unit tests and `scripts/worker_phase3_eval.py` coverage exist; real ChatGPT status must be recorded per integration run.
 
 ## Failure Mode Tests
 
@@ -228,3 +315,14 @@ The eval should produce a short report suitable for release notes.
 Current implementation provides this as `scripts/live_mcp_eval.py`. It starts the real launcher/server in a temporary workspace, probes MCP initialize/tools/resources/context/skills, verifies blocked `.env` and symlink reads, confirms direct writes deny by default, and emits a compact JSON report.
 
 `scripts/live_mcp_eval.py` is necessary but not sufficient for public release because it intentionally does not attach to ChatGPT and does not open a real public tunnel.
+
+
+## Phase 4 Worker Integration Eval
+
+Run after Phase 4 changes:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase4_eval.py --timeout 900
+```
+
+This proves that a real isolated writing worker result can be previewed, explicitly applied to the base checkout, and preserved in the worker worktree without exposing private paths.

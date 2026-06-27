@@ -6,6 +6,7 @@ import uuid
 import time
 import json
 import logging
+import os
 from typing import Dict, Optional, Any
 from pathlib import Path
 from enum import Enum
@@ -88,11 +89,15 @@ class JobManager:
         self.max_concurrent = config['server']['max_concurrent_jobs']
         self.job_timeout = config['server']['job_timeout_seconds']
         self.cleanup_after_hours = config['server'].get('job_cleanup_after_hours', 24)
-        self.worktrees_dir = Path(config['repositories']['default']).resolve() / 'worktrees'
-        self.worktrees_dir.mkdir(exist_ok=True)
+        logging_config = config.get('logging', {})
+        self.worktrees_dir = Path(
+            logging_config.get('worktrees_dir')
+            or Path(logging_config.get('job_logs_dir', './logs/jobs')) / 'worktrees'
+        ).expanduser().resolve()
+        self.worktrees_dir.mkdir(parents=True, exist_ok=True)
         self.job_state_dir = Path(
-            config.get('logging', {}).get('job_state_dir')
-            or Path(config.get('logging', {}).get('job_logs_dir', './logs/jobs')) / 'state'
+            logging_config.get('job_state_dir')
+            or Path(logging_config.get('job_logs_dir', './logs/jobs')) / 'state'
         )
         self.job_state_dir.mkdir(parents=True, exist_ok=True)
         self._load_jobs()
@@ -144,7 +149,7 @@ class JobManager:
             options=options or {}
         )
         
-        # Create worktree for this job
+        # Create or assign worktree for this job
         if mode == "apply":  # Only apply mode needs writable worktree
             try:
                 worktree_path, branch_name = self._create_worktree(job_id, repo_path)
@@ -155,8 +160,15 @@ class JobManager:
                 logger.error(f"Failed to create worktree for job {job_id}: {e}")
                 raise
         else:
-            # Plan mode can use the main repo (read-only sandbox)
-            job.worktree_path = repo_path
+            options = job.options or {}
+            worker_worktree = options.get("_worker_worktree_path")
+            if worker_worktree:
+                job.worktree_path = str(self._validate_worker_worktree_path(str(worker_worktree)))
+                if options.get("_worker_branch_name"):
+                    job.branch_name = str(options["_worker_branch_name"])
+            else:
+                # Plan/read-only/shared modes can use the main repo.
+                job.worktree_path = repo_path
         
         self.jobs[job_id] = job
         self._persist_job(job)
@@ -192,6 +204,65 @@ class JobManager:
         repo.git.worktree('add', str(worktree_path), '-b', branch_name)
         
         return worktree_path, branch_name
+
+    def worker_worktrees_dir(self) -> Path:
+        """Return the external root for durable named worker worktrees."""
+        workers_config = self.config.get("workers", {})
+        configured = workers_config.get("worktree_root") or workers_config.get("worktrees_dir")
+        if configured:
+            root = Path(configured).expanduser()
+        elif os.environ.get("CODEX_MCP_HOME"):
+            root = Path(os.environ["CODEX_MCP_HOME"]).expanduser() / "worktrees"
+        else:
+            root = Path.home() / ".codex-mcp-wrapper" / "worktrees"
+        root = root.resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def create_worker_worktree(self, worker_id: str, repo_path: str) -> tuple[Path, str, str]:
+        """Create one external durable worktree for a named worker."""
+        repo_path = str(Path(repo_path).expanduser().resolve())
+        self._validate_repo_allowed(repo_path)
+        repo = git.Repo(repo_path)
+        base_revision = repo.head.commit.hexsha
+        suffix = "".join(ch if ch.isalnum() else "-" for ch in worker_id.lower()).strip("-")[:32]
+        branch_name = f"codex/worker-{suffix}"
+        worktree_path = self.worker_worktrees_dir() / f"worker-{suffix}"
+        if worktree_path.exists():
+            raise ValueError(f"Worker worktree already exists: {worktree_path}")
+        repo.git.worktree("add", str(worktree_path), "-b", branch_name)
+        logger.info("Created worker worktree: %s (branch: %s)", worktree_path, branch_name)
+        return worktree_path.resolve(), branch_name, base_revision
+
+    def remove_worker_worktree(self, repo_path: str, worktree_path: str, branch_name: Optional[str] = None) -> None:
+        """Remove an external durable worker worktree and its private branch."""
+        repo_path = str(Path(repo_path).expanduser().resolve())
+        self._validate_repo_allowed(repo_path)
+        path = self._validate_worker_worktree_path(worktree_path)
+        repo = git.Repo(repo_path)
+        if path.exists():
+            repo.git.worktree("remove", str(path), "--force")
+            logger.info("Removed worker worktree: %s", path)
+        if branch_name:
+            try:
+                repo.git.branch("-D", branch_name)
+                logger.info("Deleted worker branch: %s", branch_name)
+            except Exception as error:
+                logger.warning("Failed to delete worker branch %s: %s", branch_name, error)
+
+    def update_job_options(self, job_id: str, options: Dict[str, Any]) -> None:
+        """Replace a job's private options and persist the durable record."""
+        if job_id not in self.jobs:
+            raise ValueError(f"Unknown job: {job_id}")
+        self.jobs[job_id].options = dict(options)
+        self._persist_job(self.jobs[job_id])
+
+    def _validate_worker_worktree_path(self, worktree_path: str) -> Path:
+        path = Path(worktree_path).expanduser().resolve()
+        root = self.worker_worktrees_dir()
+        if path != root and root not in path.parents:
+            raise ValueError(f"Worker worktree path is outside worker root: {worktree_path}")
+        return path
     
     def update_job_state(self, job_id: str, state: JobState, **kwargs):
         """Update job state and metadata"""
@@ -249,6 +320,10 @@ class JobManager:
         
         to_remove = []
         for job_id, job in self.jobs.items():
+            # Workers are derived from worker-tagged durable job records.
+            # Ordinary age cleanup must not delete their identity/session index.
+            if (job.options or {}).get("_worker_id"):
+                continue
             if job.completed_at and job.completed_at < cleanup_threshold:
                 to_remove.append(job_id)
         

@@ -5,6 +5,7 @@ import logging
 import subprocess
 import re
 import os
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -12,6 +13,11 @@ from job_manager import JobManager, JobState
 from security import redact_sensitive_output, redact_text, validate_allowed_path
 
 logger = logging.getLogger(__name__)
+
+STALE_RUNNING_JOB_ERROR = (
+    "Job was marked running, but no live Codex process is tracked. "
+    "The wrapper marked it failed so it can be inspected or restarted."
+)
 
 
 class JobExecutor:
@@ -26,6 +32,51 @@ class JobExecutor:
         self.job_logs_dir = Path(config['logging']['job_logs_dir'])
         self.job_logs_dir.mkdir(parents=True, exist_ok=True)
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
+
+    def reconcile_stale_running_jobs(
+        self,
+        *,
+        grace_seconds: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Fail durable running jobs that no longer have a tracked subprocess."""
+        grace = self._stale_running_grace_seconds(grace_seconds)
+        current_time = time.time() if now is None else float(now)
+        checked = 0
+        reconciled: list[str] = []
+
+        for job_id, job in list(self.job_manager.jobs.items()):
+            if job.state != JobState.RUNNING:
+                continue
+            checked += 1
+            if job_id in self.processes:
+                continue
+            if job.started_at is not None and current_time - float(job.started_at) < grace:
+                continue
+
+            self.job_manager.update_job_state(
+                job_id,
+                JobState.FAILED,
+                error=STALE_RUNNING_JOB_ERROR,
+            )
+            reconciled.append(job_id)
+            logger.warning("Reconciled stale running job %s with no tracked process", job_id)
+
+        return {
+            "checked": checked,
+            "reconciled": len(reconciled),
+            "job_ids": reconciled,
+            "grace_seconds": grace,
+        }
+
+    def _stale_running_grace_seconds(self, override: Optional[float] = None) -> float:
+        if override is not None:
+            return max(0.0, float(override))
+        try:
+            configured = float(self.config.get("server", {}).get("stale_running_job_grace_seconds", 5))
+        except (TypeError, ValueError):
+            configured = 5.0
+        return max(0.0, configured)
         
     async def execute_job(self, job_id: str):
         """Execute a Codex job asynchronously."""
@@ -151,7 +202,7 @@ class JobExecutor:
         
         security = self.config.get('security', {})
         if mode == "plan":
-            sandbox = "read-only"
+            sandbox = options.get('sandbox') or security.get('default_sandbox', 'read-only')
         elif mode == "apply":
             sandbox = options.get('sandbox') or "workspace-write"
         else:
@@ -170,6 +221,13 @@ class JobExecutor:
             # Current Codex CLI versions no longer expose the historical
             # --full-auto flag. Keep accepting the option for older clients,
             # but do not emit a stale CLI argument.
+
+        if options.get("ignore_user_config"):
+            cmd.append("--ignore-user-config")
+
+        exec_cwd = options.get("_codex_cwd")
+        if exec_cwd:
+            cmd.extend(['--cd', str(exec_cwd)])
         
         # Structured output
         if options.get('structured_output', True):
@@ -228,17 +286,31 @@ class JobExecutor:
         if not session_id:
             raise ValueError("resume_session_id is required for resume jobs")
 
-        cmd = ['codex', 'exec', 'resume']
+        cmd = ['codex', 'exec']
+        sandbox = options.get('sandbox') or security.get('default_sandbox', 'read-only')
 
         if options.get('dangerously_bypass'):
             if not security.get('allow_dangerously_bypass', False):
                 raise PermissionError("dangerously_bypass is disabled by config.yaml")
             cmd.append('--dangerously-bypass-approvals-and-sandbox')
-        elif options.get('full_auto', False):
+        else:
+            cmd.extend(['--sandbox', sandbox])
+
+        exec_cwd = options.get("_codex_cwd")
+        if exec_cwd:
+            cmd.extend(['--cd', str(exec_cwd)])
+
+        if options.get('full_auto', False):
             # Current Codex CLI versions no longer expose the historical
             # --full-auto flag. Keep accepting the option for compatibility,
             # but do not emit a stale CLI argument.
             pass
+
+        if options.get("ignore_user_config"):
+            cmd.append("--ignore-user-config")
+
+        if options.get('structured_output', True):
+            cmd.extend(['--output-schema', str(self.schema_path)])
 
         if options.get('json_events', True):
             cmd.append('--json')
@@ -262,6 +334,7 @@ class JobExecutor:
             for override in options['config_overrides']:
                 cmd.extend(['-c', override])
 
+        cmd.append('resume')
         cmd.append(session_id)
         if prompt:
             cmd.append("-")
@@ -285,6 +358,8 @@ class JobExecutor:
             "OPENAI_API_KEY",
         ]
         allowed_set = set(allowed)
+        if "*" in allowed_set:
+            return dict(os.environ)
         return {k: v for k, v in os.environ.items() if k in allowed_set}
 
     def _job_log_max_bytes(self) -> int:

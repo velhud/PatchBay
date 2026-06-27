@@ -44,6 +44,7 @@ async def test_codex_get_config_never_returns_raw_local_config(monkeypatch, tmp_
     handler = ToolHandler(
         {
             "server": {"host": "127.0.0.1", "port": 8000, "enable_cors": False},
+            "app": {"tool_mode": "worker"},
             "repositories": {"default": ".", "allowed": ["."]},
             "security": {
                 "default_sandbox": "read-only",
@@ -65,6 +66,7 @@ async def test_codex_get_config_never_returns_raw_local_config(monkeypatch, tmp_
     assert "dummy-secret-value-that-should-not-return" not in serialized
     assert "/example/project/path" not in serialized
     assert result["wrapper_config"]["power_tools"]["direct_write"] is False
+    assert result["wrapper_config"]["tool_mode"] == "worker"
     assert result["wrapper_config"]["power_tools"]["bash_mode"] == "off"
     assert result["wrapper_config"]["power_tools"]["codex_session_read"] is False
     assert result["wrapper_config"]["power_tools"]["codex_home_configured"] is False

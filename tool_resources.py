@@ -159,6 +159,21 @@ TOOL_CARD_HTML = r"""
   const root = document.getElementById("root");
   const MAX_TEXT = 3600;
   const LABELS = {
+    worker_id: "Worker",
+    name: "Name",
+    workspace_name: "Workspace",
+    workspace_mode: "Mode",
+    workspace_available: "Workspace Ready",
+    has_changes: "Changes",
+    change_count: "Changed Files",
+    context_sources: "Context",
+    context_detail: "Context Detail",
+    integration_state: "Integration",
+    can_apply: "Can apply",
+    applied: "Applied",
+    apply_check: "Apply check",
+    team_report: "Team",
+    file_path: "File",
     workspace_id: "Workspace",
     job_id: "Job",
     session_id: "Session",
@@ -197,6 +212,8 @@ TOOL_CARD_HTML = r"""
   }
 
   function subtitleFor(data) {
+    if (data.report) return data.report;
+    if (data.latest_report) return data.latest_report;
     if (data.note) return data.note;
     if (data.summary) return data.summary;
     if (data.error) return data.error;
@@ -271,7 +288,7 @@ def tool_resource_meta(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
             "csp": csp,
         },
         "openai/widgetDescription": (
-            "Renders codex-mcp-wrapper workspace orientation, Codex job status, diffs, "
+            "Renders named Codex worker reports, workspace orientation, low-level job status, diffs, "
             "handoffs, power-tool results, and connector diagnostics as compact developer cards."
         ),
         "openai/widgetPrefersBorder": True,

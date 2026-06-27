@@ -12,7 +12,7 @@ codex login
 codex --version
 ```
 
-The current verified baseline is `codex-cli 0.141.0`.
+The current verified baseline is `codex-cli 0.142.2`.
 
 ## 2. Create A Disposable Repo
 
@@ -62,6 +62,7 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
 ```
 
 This does not use ChatGPT and does not open a public tunnel. It starts a temporary server and probes MCP initialize, tool listing, resources, workspace context, aliases, path guards, and default power-tool denial.
+In the current full-power profile it also verifies direct write and full bash on the disposable repo.
 
 ## 6. First ChatGPT Connection Prep
 
@@ -72,10 +73,13 @@ export CODEX_MCP_HTTP_TOKEN='<long-random-token>'
 python scripts/start.py \
   --root "$tmpdir/repo" \
   --tunnel-mode cloudflare \
+  --tool-mode worker \
   --save-profile
 ```
 
-The launcher supervises the local server and tunnel process together. It does not install `cloudflared` or `ngrok`; install the provider CLI yourself.
+The launcher supervises the local server and tunnel process together. It does not install `cloudflared` or `ngrok`; install the provider CLI yourself. Start real ChatGPT validation with `--tool-mode worker` so ChatGPT sees the worker-first surface instead of the full power-user catalog.
+
+During a run, `codex_tool_mode_info` can compare `worker`, `standard`, `full`, and `minimal`; `codex_tool_mode_switch` can request a process-local mode change. Direct MCP clients that re-run `tools/list` see the new catalog. ChatGPT Developer Mode may still require refreshing or reconnecting the connector before newly exposed tools appear.
 
 For a stable provider hostname:
 
@@ -83,18 +87,46 @@ For a stable provider hostname:
 python scripts/start.py \
   --root "$tmpdir/repo" \
   --tunnel-mode ngrok \
+  --tool-mode worker \
   --hostname your-domain.ngrok-free.app
 ```
 
 Use Bearer auth where the MCP client supports headers. For copied ChatGPT Server URLs, reveal the tokenized URL only when you are ready to paste it into ChatGPT:
 
 ```bash
-python scripts/start.py --root "$tmpdir/repo" --tunnel-mode cloudflare --reveal-token
+python scripts/start.py --root "$tmpdir/repo" --tunnel-mode cloudflare --tool-mode worker --reveal-token
 ```
 
 Never commit, screenshot, or share the full tokenized URL.
 
-## 7. Try ChatGPT As Workspace Coder
+## 7. Create The ChatGPT App
+
+In ChatGPT, open:
+
+```text
+Settings
+-> Apps
+-> Advanced settings
+-> Developer mode: on
+-> Enforce CSP in developer mode: on
+-> Create app
+```
+
+Use these Create App settings:
+
+```text
+Name: Codex MCP Wrapper
+Description: Local workspace and Codex bridge for ChatGPT coding
+Connection: Server URL
+Server URL: paste the full URL printed by scripts/start.py --reveal-token
+Authentication: No Authentication / None
+```
+
+Choose `No Authentication / None` inside ChatGPT because the copied Server URL already carries the wrapper token as a query parameter. Do not configure OAuth or an API key in ChatGPT for this local bridge.
+
+Keep `Enforce CSP in developer mode` enabled. The tool card resource is designed for the CSP-enabled path.
+
+## 8. Try ChatGPT As Workspace Coder
 
 Ask the MCP client to use:
 
@@ -105,9 +137,60 @@ Ask the MCP client to use:
 5. `codex_search_repo`
 6. `codex_show_changes`
 
-This path lets ChatGPT inspect and reason about the repo directly. Source writes remain disabled unless `power_tools.direct_write` is explicitly enabled.
+This path lets ChatGPT inspect and reason about the repo directly. The checked-in profile enables direct writes and full bash; using `--root "$tmpdir/repo"` keeps that power scoped to the disposable repo for this first run.
 
-## 8. Try ChatGPT As Codex Controller
+## 9. Try ChatGPT With A Named Worker
+
+Use this for durable isolated implementation:
+
+First, if the task needs a specific Codex model or reasoning depth, call `codex_worker_options`:
+
+```json
+{
+  "model": "gpt-5.5"
+}
+```
+
+Then pass the selected values only when they matter:
+
+```json
+{
+  "name": "Repository Implementer",
+  "brief": "Create a tiny note file named worker-note.txt, run the smallest useful verification, and report what changed.",
+  "repo_path": "/absolute/path/to/disposable/repo",
+  "model": "gpt-5.5",
+  "reasoning_effort": "high"
+}
+```
+
+`codex_worker_start` defaults to `workspace_mode: "isolated_write"`, so the worker writes in an external private worktree. Omit `model` and `reasoning_effort` to use Codex defaults. Follow-up `codex_worker_message` calls keep the worker's prior model/reasoning unless you intentionally override them. For advisory work, ask for read-only mode explicitly:
+
+```json
+{
+  "name": "Repository Investigator",
+  "brief": "Inspect the repository layout and report the main architecture boundary. Do not edit files.",
+  "repo_path": "/absolute/path/to/disposable/repo",
+  "workspace_mode": "read_only"
+}
+```
+
+Call `codex_worker_start`, then inspect with:
+
+```json
+{"worker": "Repository Investigator", "wait_seconds": 10}
+```
+
+using `codex_worker_inspect`. Use `{"worker": "Repository Implementer", "view": "changes"}` to list worker changes, `{"worker": "Repository Implementer", "view": "file", "file_path": "worker-note.txt"}` to read worker-side file content before integration, and `{"worker": "Repository Implementer", "view": "diff", "file_path": "worker-note.txt"}` to inspect one file's patch. `codex_read_file` reads the base checkout, so it will not see worker-created files until after explicit integration. After restarting the wrapper, `codex_worker_list` should still show same-workspace workers, and `codex_worker_message` should continue the same Codex conversation by name when the worker has a session.
+
+For local worker-first testing without a tunnel, start the wrapper with:
+
+```bash
+python scripts/start.py --root "$tmpdir/repo" --tool-mode worker
+```
+
+This hides low-level job/session controls and compatibility aliases while keeping worker tools and the read-only context tools needed to brief them.
+
+## 10. Try ChatGPT As Codex Controller
 
 Call `codex_plan_job`:
 
@@ -128,7 +211,7 @@ with `codex_get_status` and `codex_get_result`.
 
 For an implementation test, call `codex_apply_job` only on the disposable repo and inspect diffs with `codex_get_diff` before copying or merging anything.
 
-## 9. Resume Flow
+## 11. Resume Flow
 
 When `codex_get_result` returns `session_ref`, keep it. Continue later with:
 
@@ -136,4 +219,4 @@ When `codex_get_result` returns `session_ref`, keep it. Continue later with:
 - `codex_interactive_reply` for a continuation job;
 - `codex_list_sessions` to find known metadata-only session ids.
 
-Transcript bodies remain unavailable unless `power_tools.codex_session_read` is explicitly enabled.
+Transcript bodies are available in the current full-power profile through `codex_read_session`, bounded and redacted. Disable `power_tools.codex_session_read` when you do not want ChatGPT to inspect local Codex transcripts.

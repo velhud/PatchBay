@@ -82,6 +82,23 @@ def test_prepare_start_applies_cli_overrides_and_writes_runtime_config(tmp_path)
     assert prepared["status"]["ready"] is True
 
 
+def test_prepare_start_accepts_worker_tool_mode(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+
+    prepared = prepare_start(
+        base_config(root),
+        root=str(root),
+        tool_mode="worker",
+        use_profile=False,
+        environ=env,
+    )
+
+    assert prepared["runtime_config"]["app"]["tool_mode"] == "worker"
+    assert prepared["status"]["ready"] is True
+
+
 def test_prepare_start_public_url_requires_token(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
@@ -222,3 +239,107 @@ def test_start_script_print_only_json(tmp_path):
     assert payload["ready"] is True
     assert payload["connection"]["local_mcp_url"] == "http://127.0.0.1:8124/mcp"
     assert Path(payload["runtime_config_path"]).exists()
+
+
+def test_start_script_accepts_worker_tool_mode(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
+    env = dict(os.environ)
+    env["CODEX_MCP_HOME"] = str(tmp_path / "home")
+    env.pop("CODEX_MCP_HTTP_TOKEN", None)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/start.py",
+            "--config",
+            str(config_path),
+            "--root",
+            str(root),
+            "--tool-mode",
+            "worker",
+            "--print-only",
+            "--json",
+            "--no-profile",
+        ],
+        cwd=".",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["ready"] is True
+    runtime_config = yaml.safe_load(Path(payload["runtime_config_path"]).read_text(encoding="utf-8"))
+    assert runtime_config["app"]["tool_mode"] == "worker"
+
+
+def test_start_script_print_only_reveal_token_is_explicit(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
+    token_value = "fixture-token-value"
+    env = dict(os.environ)
+    env["CODEX_MCP_HOME"] = str(tmp_path / "home")
+    env["CODEX_MCP_HTTP_TOKEN"] = token_value
+
+    redacted = subprocess.run(
+        [
+            sys.executable,
+            "scripts/start.py",
+            "--config",
+            str(config_path),
+            "--root",
+            str(root),
+            "--public-base-url",
+            "https://bridge.example",
+            "--tool-mode",
+            "worker",
+            "--print-only",
+            "--json",
+            "--no-profile",
+        ],
+        cwd=".",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    revealed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/start.py",
+            "--config",
+            str(config_path),
+            "--root",
+            str(root),
+            "--public-base-url",
+            "https://bridge.example",
+            "--tool-mode",
+            "worker",
+            "--print-only",
+            "--json",
+            "--reveal-token",
+            "--no-profile",
+        ],
+        cwd=".",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert redacted.returncode == 0
+    assert token_value not in redacted.stdout
+    assert "%3Credacted%3E" in redacted.stdout
+
+    assert revealed.returncode == 0
+    assert token_value in revealed.stdout
+    assert "WARNING: printing a private tokenized ChatGPT Server URL" in revealed.stderr
+    payload = json.loads(revealed.stdout)
+    assert payload["auth"]["token_returned"] is True
