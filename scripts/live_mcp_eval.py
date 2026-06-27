@@ -80,12 +80,30 @@ def main() -> int:
             "codex_show_changes",
             "codex_git_status",
             "codex_write_file",
+            "codex_worker_options",
+            "codex_worker_start",
+            "codex_worker_message",
+            "codex_worker_list",
+            "codex_worker_inspect",
+            "codex_worker_stop",
             "codex_self_test",
             "read",
             "show_changes",
         }
         _check(report, "tools_list", required_tools <= set(tools))
         _check(report, "tool_card_metadata", all(tools[name]["_meta"]["openai/outputTemplate"] == TOOL_CARD_URI for name in required_tools))
+        _check(
+            report,
+            "worker_tool_descriptors",
+            tools["codex_worker_options"]["readOnlyHint"] is True
+            and "models" in tools["codex_worker_options"]["outputSchema"]["properties"]
+            and tools["codex_worker_start"]["readOnlyHint"] is False
+            and "workspace_mode" in tools["codex_worker_start"]["inputSchema"]["properties"]
+            and "model" in tools["codex_worker_start"]["inputSchema"]["properties"]
+            and "reasoning_effort" in tools["codex_worker_start"]["inputSchema"]["properties"]
+            and "view" in tools["codex_worker_inspect"]["inputSchema"]["properties"]
+            and "cleanup_workspace" in tools["codex_worker_stop"]["inputSchema"]["properties"],
+        )
 
         resources = client.rpc(3, "resources/list")
         resource_uris = {resource["uri"] for resource in resources["result"]["resources"]}
@@ -120,14 +138,17 @@ def main() -> int:
         show_changes = client.call_tool(84, "show_changes", {"repo_path": str(repo), "include_diff": True})
         _check(report, "alias_show_changes", "Workspace Changes" in show_changes["result"]["structuredContent"]["text"])
 
-        blocked_env = client.call_tool(9, "codex_read_file", {"repo_path": str(repo), "file_path": ".env"})
-        _check(report, "blocked_env_read", "error" in blocked_env and "blocked" in blocked_env["error"]["message"])
+        env_read = client.call_tool(9, "codex_read_file", {"repo_path": str(repo), "file_path": ".env"})
+        _check(report, "env_read_allowed", "TOKEN=" in env_read["result"]["structuredContent"]["text"])
 
         symlink = client.call_tool(10, "codex_read_file", {"repo_path": str(repo), "file_path": "outside-link.txt"})
         _check(report, "blocked_symlink_read", "error" in symlink and "symlink" in symlink["error"]["message"])
 
-        disabled_write = client.call_tool(11, "codex_write_file", {"repo_path": str(repo), "file_path": "new.txt", "content": "hello\n"})
-        _check(report, "direct_write_disabled", "error" in disabled_write and "disabled" in disabled_write["error"]["message"])
+        direct_write = client.call_tool(11, "codex_write_file", {"repo_path": str(repo), "file_path": "new.txt", "content": "hello\n"})
+        _check(report, "direct_write_enabled", direct_write["result"]["structuredContent"]["changed"] is True)
+
+        full_bash = client.call_tool(111, "codex_run_command", {"repo_path": str(repo), "command": "cat new.txt"})
+        _check(report, "full_bash_enabled", full_bash["result"]["structuredContent"]["stdout"] == "hello\n")
 
         self_test = client.call_tool(12, "codex_self_test", {})
         _check(report, "self_test", self_test["result"]["structuredContent"]["ready"] is True)

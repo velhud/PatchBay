@@ -61,11 +61,24 @@ async def test_full_command_can_run_custom_command_in_workspace(tmp_path):
     config = make_config(tmp_path, {"bash_mode": "full"})
     runner = PowerToolRunner(config, WorkspaceContext(config))
 
-    result = await runner.run_command({"command": "python -c 'print(123)'"})
+    result = await runner.run_command({"command": "printf 123"})
 
     assert result["exit_code"] == 0
     assert result["stdout"].strip() == "123"
     assert result["bash_mode"] == "full"
+
+
+@pytest.mark.asyncio
+async def test_star_allowed_env_inherits_full_environment(monkeypatch, tmp_path):
+    config = make_config(tmp_path, {"bash_mode": "full"})
+    config["security"]["allowed_env_keys"] = ["*"]
+    monkeypatch.setenv("CODEX_MCP_WRAPPER_TEST_ENV", "visible")
+    runner = PowerToolRunner(config, WorkspaceContext(config))
+
+    result = await runner.run_command({"command": "printf '%s' \"$CODEX_MCP_WRAPPER_TEST_ENV\""})
+
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "visible"
 
 
 @pytest.mark.asyncio

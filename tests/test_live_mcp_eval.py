@@ -22,7 +22,9 @@ def test_disposable_live_mcp_eval_passes():
         "open_workspace",
         "list_skills",
         "load_skill",
-        "blocked_env_read",
+        "worker_tool_descriptors",
+        "env_read_allowed",
         "blocked_symlink_read",
-        "direct_write_disabled",
+        "direct_write_enabled",
+        "full_bash_enabled",
     }

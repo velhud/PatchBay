@@ -1,9 +1,10 @@
 import asyncio
 import sys
+import time
 
 import pytest
 
-from job_executor import JobExecutor
+from job_executor import JobExecutor, STALE_RUNNING_JOB_ERROR
 from job_manager import JobManager, JobState
 
 
@@ -68,3 +69,43 @@ async def test_cancel_unknown_job_returns_false(tmp_path):
 
     assert result["cancelled"] is False
     assert "Unknown job" in result["reason"]
+
+
+def test_reconcile_stale_running_job_marks_failed(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.RUNNING)
+    manager.jobs[job_id].started_at = time.time() - 60
+    manager._persist_job(manager.jobs[job_id])
+
+    result = executor.reconcile_stale_running_jobs(grace_seconds=0)
+
+    job = manager.get_job(job_id)
+    assert result["checked"] == 1
+    assert result["reconciled"] == 1
+    assert result["job_ids"] == [job_id]
+    assert job.state == JobState.FAILED
+    assert job.completed_at is not None
+    assert job.error == STALE_RUNNING_JOB_ERROR
+
+
+def test_reconcile_stale_running_job_honors_process_tracking_and_grace(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    tracked_job_id = manager.create_job("plan", "tracked", config["repositories"]["default"], {})
+    grace_job_id = manager.create_job("plan", "launching", config["repositories"]["default"], {})
+    manager.update_job_state(tracked_job_id, JobState.RUNNING)
+    manager.update_job_state(grace_job_id, JobState.RUNNING)
+    manager.jobs[tracked_job_id].started_at = 100.0
+    manager.jobs[grace_job_id].started_at = 198.0
+    executor.processes[tracked_job_id] = object()
+
+    result = executor.reconcile_stale_running_jobs(grace_seconds=5, now=200.0)
+
+    assert result["checked"] == 2
+    assert result["reconciled"] == 0
+    assert manager.get_job(tracked_job_id).state == JobState.RUNNING
+    assert manager.get_job(grace_job_id).state == JobState.RUNNING

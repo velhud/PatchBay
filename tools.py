@@ -9,12 +9,14 @@ from pathlib import Path
 
 from auth import auth_public_metadata, build_auth_policy
 from codex_sessions import CodexSessionReader
+from codex_model_options import worker_option_menu
 from connector import connector_status
 from job_manager import JobManager, JobState
 from job_executor import JobExecutor
 from power_tools import PowerToolRunner
 from security import redact_sensitive_output, validate_allowed_path
 from workspace_context import WorkspaceContext
+from worker_runtime import WorkerRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +65,14 @@ class ToolHandler:
         self.workspace_context = WorkspaceContext(config)
         self.power_tools = PowerToolRunner(config, self.workspace_context)
         self.codex_sessions = CodexSessionReader(config)
+        self.worker_runtime = WorkerRuntime(config, job_manager, job_executor)
         # Track interactive conversations
         self.conversations: Dict[str, Dict[str, Any]] = {}
     
     async def handle_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Route tool calls to appropriate handlers."""
         logger.info(f"Handling tool: {tool_name}")
+        self._reconcile_active_jobs()
         
         handlers = {
             "codex_open_workspace": self._codex_open_workspace,
@@ -103,6 +107,13 @@ class ToolHandler:
             "codex_resume": self._codex_resume,
             "codex_interactive": self._codex_interactive,
             "codex_interactive_reply": self._codex_interactive_reply,
+            "codex_worker_options": self._codex_worker_options,
+            "codex_worker_start": self._codex_worker_start,
+            "codex_worker_message": self._codex_worker_message,
+            "codex_worker_list": self._codex_worker_list,
+            "codex_worker_inspect": self._codex_worker_inspect,
+            "codex_worker_integrate": self._codex_worker_integrate,
+            "codex_worker_stop": self._codex_worker_stop,
             "codex_self_test": self._codex_self_test,
             "codex_get_config": self._codex_get_config,
         }
@@ -112,12 +123,87 @@ class ToolHandler:
         
         return await handler(arguments)
 
+    def _reconcile_active_jobs(self) -> None:
+        try:
+            self.job_executor.reconcile_stale_running_jobs()
+        except Exception as error:
+            logger.warning("Failed to reconcile active jobs before tool call: %s", error)
+
     async def _codex_self_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return connector readiness checks and ChatGPT connection metadata."""
         return connector_status(
             self.config,
             public_base_url=args.get("public_base_url"),
             reveal_token=False,
+        )
+
+    async def _codex_worker_options(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a bounded menu of Codex worker model/reasoning choices."""
+        return worker_option_menu(
+            self.config,
+            model=args.get("model"),
+            max_models=args.get("max_models", 12),
+            include_model_details=bool(args.get("include_model_details", False)),
+        )
+
+    async def _codex_worker_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Start one durable named Codex colleague."""
+        repo = self._repo_from_args(args)
+        return await self.worker_runtime.start_worker(
+            name=args["name"],
+            brief=args["brief"],
+            repo_path=repo,
+            workspace_mode=args.get("workspace_mode", "isolated_write"),
+            context_from_workers=args.get("context_from_workers"),
+            context_detail=args.get("context_detail", "report"),
+            model=args.get("model"),
+            reasoning_effort=args.get("reasoning_effort"),
+        )
+
+    async def _codex_worker_message(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Continue or redirect an existing worker by human name or id."""
+        return await self.worker_runtime.message_worker(
+            worker=args["worker"],
+            message=args["message"],
+            repo_path=self._repo_from_args(args),
+            context_from_workers=args.get("context_from_workers"),
+            context_detail=args.get("context_detail", "report"),
+            model=args.get("model"),
+            reasoning_effort=args.get("reasoning_effort"),
+        )
+
+    async def _codex_worker_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List durable workers without exposing backend ids or private paths."""
+        repo = self._repo_from_args(args)
+        return await self.worker_runtime.list_workers(repo_path=repo)
+
+    async def _codex_worker_inspect(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read one worker's current human-oriented report."""
+        return await self.worker_runtime.inspect_worker(
+            worker=args["worker"],
+            wait_seconds=args.get("wait_seconds", 0),
+            view=args.get("view", "report"),
+            file_path=args.get("file_path"),
+            repo_path=self._repo_from_args(args),
+            start_line=args.get("start_line"),
+            end_line=args.get("end_line"),
+            max_bytes=args.get("max_bytes"),
+        )
+
+    async def _codex_worker_integrate(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply an accepted isolated worker result to the base checkout."""
+        return await self.worker_runtime.integrate_worker(
+            worker=args["worker"],
+            repo_path=self._repo_from_args(args),
+            allow_dirty_base=bool(args.get("allow_dirty_base", False)),
+        )
+
+    async def _codex_worker_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Stop only the current turn while preserving conversation continuity."""
+        return await self.worker_runtime.stop_worker(
+            worker=args["worker"],
+            repo_path=self._repo_from_args(args),
+            cleanup_workspace=bool(args.get("cleanup_workspace", False)),
         )
 
     async def _codex_open_workspace(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -130,7 +216,13 @@ class ToolHandler:
 
     async def _codex_read_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read a bounded workspace file slice."""
-        return self.workspace_context.read_file(args)
+        try:
+            return self.workspace_context.read_file(args)
+        except ValueError as error:
+            hint = self._worker_file_hint(args)
+            if hint:
+                raise ValueError(f"{error}. {hint}") from error
+            raise
 
     async def _codex_search_repo(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Search an allowed workspace."""
@@ -211,7 +303,7 @@ class ToolHandler:
         # Core parameters
         for key in ['model', 'images', 'search', 'features', 'profile', 'add_dirs',
                     'sandbox', 'approval_policy', 'network',
-                    'config_overrides', 'full_auto',
+                    'config_overrides', 'full_auto', 'dangerously_bypass',
                     'structured_output', 'json_events']:
             if key in args:
                 if key == 'config_overrides':
@@ -225,8 +317,26 @@ class ToolHandler:
         return self.config.get('repositories', {}).get('allowed') or []
 
     def _repo_from_args(self, args: Dict[str, Any]) -> str:
-        repo = args.get('repo') or self.default_repo
+        repo = args.get('repo') or args.get('repo_path') or self.default_repo
         return str(validate_allowed_path(repo, self._allowed_roots()))
+
+    def _worker_file_hint(self, args: Dict[str, Any]) -> str:
+        file_path = str(args.get("file_path") or "").strip()
+        if not file_path:
+            return ""
+        try:
+            repo = self._repo_from_args(args)
+            locations = self.worker_runtime.worker_file_locations(repo_path=repo, file_path=file_path)
+        except Exception:
+            return ""
+        if not locations:
+            return ""
+        names = ", ".join(location["worker"] for location in locations[:5])
+        return (
+            "This path exists in isolated worker output for "
+            f"{names}. Before integration, read it with codex_worker_inspect using "
+            f'view="file" and file_path="{locations[0]["file_path"]}". codex_read_file reads only the base checkout.'
+        )
 
     def _safe_config_overrides(self, overrides: Any) -> list[str]:
         if not overrides:
@@ -275,8 +385,10 @@ class ToolHandler:
         # FIX: Use 'or' to handle empty string as not provided
         repo = self._repo_from_args(args)
         options = self._extract_options(args)
-        options["sandbox"] = "read-only"
-        options["full_auto"] = False
+        options.setdefault(
+            "sandbox",
+            self.config.get("security", {}).get("default_sandbox", "read-only"),
+        )
         
         logger.info(f"Creating analytics query: {prompt[:50]}...")
         
@@ -644,6 +756,8 @@ class ToolHandler:
         from pathlib import Path
 
         security_config = self.config.get("security", {})
+        app_config = self.config.get("app", {})
+        mcp_config = self.config.get("mcp", {})
         server_config = self.config.get("server", {})
         logging_config = self.config.get("logging", {})
         repo_config = self.config.get("repositories", {})
@@ -663,6 +777,7 @@ class ToolHandler:
             "wrapper_config": {
                 "host": server_config.get("host", "127.0.0.1"),
                 "port": server_config.get("port"),
+                "tool_mode": app_config.get("tool_mode") or mcp_config.get("tool_mode") or server_config.get("tool_mode") or "full",
                 "cors_enabled": bool(server_config.get("enable_cors", False)),
                 "access_log_enabled": bool(logging_config.get("access_log", False)),
                 "durable_job_state_enabled": bool(logging_config.get("job_state_dir")),

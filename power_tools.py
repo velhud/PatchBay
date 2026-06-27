@@ -242,7 +242,7 @@ class PowerToolRunner:
             self.config.get("security", {}).get("allowed_env_keys")
             or ["PATH", "HOME", "USER", "SHELL", "TMPDIR"]
         )
-        env = {key: value for key, value in os.environ.items() if key in allowed}
+        env = dict(os.environ) if "*" in allowed else {key: value for key, value in os.environ.items() if key in allowed}
         env.setdefault("PATH", os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
         env["TERM"] = "dumb"
         env["NO_COLOR"] = "1"

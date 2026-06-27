@@ -1,0 +1,670 @@
+import asyncio
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+from job_executor import JobExecutor, STALE_RUNNING_JOB_ERROR
+from job_manager import JobManager, JobState
+from worker_runtime import (
+    WORKER_BASE_REPO_OPTION,
+    WORKER_ID_OPTION,
+    WORKER_MODE_OPTION,
+    WORKER_MODEL_OPTION,
+    WORKER_NAME_OPTION,
+    WORKER_REASONING_EFFORT_OPTION,
+    WorkerRuntime,
+)
+
+
+def make_config(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("# worker test\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Worker Test", "-c", "user.email=worker-test@example.invalid", "commit", "-m", "init"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return {
+        "server": {
+            "max_concurrent_jobs": 3,
+            "job_timeout_seconds": 30,
+            "job_cleanup_after_hours": 24,
+        },
+        "repositories": {"default": str(repo), "allowed": [str(repo)]},
+        "security": {
+            "require_git_repo": False,
+            "default_sandbox": "read-only",
+            "allowed_env_keys": ["PATH"],
+        },
+        "logging": {
+            "job_logs_dir": str(tmp_path / "logs" / "jobs"),
+            "job_state_dir": str(tmp_path / "logs" / "jobs" / "state"),
+        },
+        "workers": {"worktree_root": str(tmp_path / "worker-worktrees")},
+    }
+
+
+def init_extra_repo(path: Path, name: str = "extra") -> Path:
+    path.mkdir()
+    (path / "README.md").write_text(f"# {name}\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Worker Test", "-c", "user.email=worker-test@example.invalid", "commit", "-m", "init"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+class RecordingExecutor:
+    def __init__(self, manager):
+        self.manager = manager
+        self.started = []
+        self.cancelled = []
+
+    async def execute_job(self, job_id):
+        self.started.append(job_id)
+
+    async def cancel_job(self, job_id, reason="Cancelled by request"):
+        self.cancelled.append(job_id)
+        self.manager.update_job_state(job_id, JobState.CANCELLED, error=reason)
+        return {"cancelled": True, "job_id": job_id, "state": "cancelled"}
+
+
+class FailingCreateJobManager(JobManager):
+    def create_job(self, *args, **kwargs):
+        raise RuntimeError("forced job creation failure")
+
+
+@pytest.mark.asyncio
+async def test_start_worker_defaults_to_isolated_worktree_and_hides_backend_ids(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    result = await runtime.start_worker(
+        name="Repository Investigator",
+        brief="Inspect the repository architecture.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+
+    assert result["name"] == "Repository Investigator"
+    assert result["state"] == "starting"
+    assert result["workspace_mode"] == "isolated_write"
+    assert result["workspace_available"] is True
+    assert result["accepted"] is True
+    assert "job_id" not in result
+    assert "session_id" not in result
+    assert config["repositories"]["default"] not in str(result)
+
+    job = next(iter(manager.jobs.values()))
+    assert job.mode == "interactive"
+    assert job.repo_path == config["repositories"]["default"]
+    assert job.worktree_path != config["repositories"]["default"]
+    assert job.options["sandbox"] == "workspace-write"
+    assert job.options["_worker_workspace_mode"] == "isolated_write"
+    assert job.options["_worker_worktree_path"] == job.worktree_path
+    assert job.options[WORKER_NAME_OPTION] == "Repository Investigator"
+    assert job.options[WORKER_ID_OPTION] == result["worker_id"]
+    assert "report back like an engineer" in job.prompt
+    assert executor.started == [job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_start_worker_accepts_model_and_reasoning_effort(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    result = await runtime.start_worker(
+        name="Deep Worker",
+        brief="Inspect the repository architecture.",
+        repo_path=config["repositories"]["default"],
+        model="gpt-5.5",
+        reasoning_effort="high",
+    )
+    await asyncio.sleep(0)
+
+    job = next(iter(manager.jobs.values()))
+    assert result["model"] == "gpt-5.5"
+    assert result["reasoning_effort"] == "high"
+    assert job.options["model"] == "gpt-5.5"
+    assert job.options[WORKER_MODEL_OPTION] == "gpt-5.5"
+    assert job.options[WORKER_REASONING_EFFORT_OPTION] == "high"
+    assert job.options["config_overrides"] == ['model_reasoning_effort="high"']
+
+
+@pytest.mark.asyncio
+async def test_worker_message_inherits_or_overrides_execution_options(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    await runtime.start_worker(
+        name="Continuity Worker",
+        brief="Inspect the repository architecture.",
+        repo_path=config["repositories"]["default"],
+        model="gpt-5.5",
+        reasoning_effort="medium",
+    )
+    await asyncio.sleep(0)
+    first_job = next(iter(manager.jobs.values()))
+    manager.update_job_state(
+        first_job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Ready.", "files_changed": []},
+        session_id="session-abc",
+        exit_code=0,
+    )
+
+    inherited = await runtime.message_worker(worker="Continuity Worker", message="Continue.")
+    await asyncio.sleep(0)
+    inherited_job = manager.get_job(executor.started[-1])
+    assert inherited["model"] == "gpt-5.5"
+    assert inherited["reasoning_effort"] == "medium"
+    assert inherited_job.options["model"] == "gpt-5.5"
+    assert inherited_job.options[WORKER_REASONING_EFFORT_OPTION] == "medium"
+
+    manager.update_job_state(
+        inherited_job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Ready again.", "files_changed": []},
+        session_id="session-abc",
+        exit_code=0,
+    )
+    overridden = await runtime.message_worker(
+        worker="Continuity Worker",
+        message="Continue with deeper reasoning.",
+        reasoning_effort="xhigh",
+    )
+    await asyncio.sleep(0)
+    override_job = manager.get_job(executor.started[-1])
+    assert overridden["reasoning_effort"] == "xhigh"
+    assert override_job.options["model"] == "gpt-5.5"
+    assert override_job.options[WORKER_REASONING_EFFORT_OPTION] == "xhigh"
+
+
+@pytest.mark.asyncio
+async def test_worker_options_can_ignore_user_config_for_isolated_trials(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["ignore_user_config"] = True
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    await runtime.start_worker(
+        name="Isolated Config Worker",
+        brief="Inspect the repository architecture.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+
+    job = next(iter(manager.jobs.values()))
+    assert job.options["ignore_user_config"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_report_redacts_private_branch_and_uuid_values(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Redaction Worker",
+        brief="Inspect the repository architecture.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+    job = next(iter(manager.jobs.values()))
+    branch_name = job.options["_worker_branch_name"]
+    raw_uuid = "dc82f84c-13d1-4a7f-8076-6236c33ac4c2"
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={
+            "summary": f"Git remained clean on branch {branch_name}; session {raw_uuid}; path {job.worktree_path}",
+            "files_changed": [],
+        },
+        session_id="session-redacted",
+        exit_code=0,
+    )
+
+    report = await runtime.inspect_worker(worker=started["worker_id"])
+    assert "codex/worker-" not in report["report"]
+    assert raw_uuid not in report["report"]
+    assert str(job.worktree_path) not in report["report"]
+    assert "[worker-branch]" in report["report"]
+    assert "[id]" in report["report"]
+
+
+@pytest.mark.asyncio
+async def test_start_worker_rolls_back_isolated_worktree_when_job_creation_fails(tmp_path):
+    config = make_config(tmp_path)
+    manager = FailingCreateJobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    with pytest.raises(RuntimeError, match="forced job creation failure"):
+        await runtime.start_worker(
+            name="Rollback Implementer",
+            brief="Create work.",
+            repo_path=config["repositories"]["default"],
+        )
+
+    worker_root = Path(config["workers"]["worktree_root"])
+    assert worker_root.exists()
+    assert list(worker_root.iterdir()) == []
+    assert manager.jobs == {}
+    assert executor.started == []
+    branches = subprocess.run(
+        ["git", "branch", "--list", "codex/worker-*"],
+        cwd=config["repositories"]["default"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert branches.stdout.strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_start_worker_rolls_back_worktree_when_concurrency_limit_rejects_job(tmp_path):
+    config = make_config(tmp_path)
+    config["server"]["max_concurrent_jobs"] = 1
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    active_job_id = manager.create_job("interactive", "already running", config["repositories"]["default"], {})
+    manager.update_job_state(active_job_id, JobState.RUNNING)
+
+    with pytest.raises(RuntimeError, match="Maximum concurrent jobs"):
+        await runtime.start_worker(
+            name="Rejected Parallel Implementer",
+            brief="Create work.",
+            repo_path=config["repositories"]["default"],
+        )
+
+    worker_root = Path(config["workers"]["worktree_root"])
+    assert worker_root.exists()
+    assert list(worker_root.iterdir()) == []
+    assert len(manager.jobs) == 1
+    assert executor.started == []
+    branches = subprocess.run(
+        ["git", "branch", "--list", "codex/worker-*"],
+        cwd=config["repositories"]["default"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert branches.stdout.strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_completed_worker_survives_restart_and_continues_same_session(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Session Investigator",
+        brief="Inspect session continuity.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    await asyncio.sleep(0)
+    first_job = next(iter(manager.jobs.values()))
+    manager.update_job_state(
+        first_job.job_id,
+        JobState.COMPLETED,
+        result={
+            "summary": "I found the existing continuation path.",
+            "notes": "No code was changed.",
+            "next_steps": ["Continue the same thread after restart."],
+            "files_changed": [],
+        },
+        session_id="session-123",
+        exit_code=0,
+    )
+
+    report = await runtime.inspect_worker(worker=started["worker_id"])
+    assert report["state"] == "idle"
+    assert report["workspace_mode"] == "read_only"
+    assert report["has_session"] is True
+    assert "existing continuation path" in report["report"]
+
+    reloaded_manager = JobManager(config)
+    reloaded_executor = RecordingExecutor(reloaded_manager)
+    reloaded_runtime = WorkerRuntime(config, reloaded_manager, reloaded_executor)
+
+    listed = await reloaded_runtime.list_workers()
+    assert listed["count"] == 1
+    assert listed["workers"][0]["name"] == "Session Investigator"
+
+    continued = await reloaded_runtime.message_worker(
+        worker="Session Investigator",
+        message="Continue and explain the restart behavior.",
+    )
+    await asyncio.sleep(0)
+
+    assert continued["accepted"] is True
+    jobs = list(reloaded_manager.jobs.values())
+    resume_job = next(job for job in jobs if job.mode == "resume")
+    assert resume_job.options["resume_session_id"] == "session-123"
+    assert resume_job.options["sandbox"] == "read-only"
+    assert resume_job.options[WORKER_ID_OPTION] == started["worker_id"]
+    assert reloaded_executor.started == [resume_job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_message_does_not_create_a_queue_while_worker_is_busy(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Busy Worker",
+        brief="Inspect slowly.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    before = len(manager.jobs)
+
+    result = await runtime.message_worker(worker=started["worker_id"], message="Change direction.")
+
+    assert result["accepted"] is False
+    assert result["state"] == "starting"
+    assert "does not add a message queue" in result["note"]
+    assert len(manager.jobs) == before
+
+
+@pytest.mark.asyncio
+async def test_inspect_reconciles_stale_running_worker_without_waiting(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    job_id = manager.create_job(
+        "interactive",
+        "inspect",
+        config["repositories"]["default"],
+        {
+            WORKER_ID_OPTION: "wrk_stale",
+            WORKER_NAME_OPTION: "Stale Worker",
+            WORKER_MODE_OPTION: "read_only",
+            WORKER_BASE_REPO_OPTION: config["repositories"]["default"],
+            "sandbox": "read-only",
+        },
+    )
+    manager.update_job_state(job_id, JobState.RUNNING)
+    manager.jobs[job_id].started_at = time.time() - 60
+    manager._persist_job(manager.jobs[job_id])
+
+    started = time.monotonic()
+    result = await runtime.inspect_worker(worker="Stale Worker", wait_seconds=30)
+
+    assert time.monotonic() - started < 1
+    assert result["state"] == "failed"
+    assert "no live Codex process is tracked" in result["report"]
+    assert config["repositories"]["default"] not in str(result)
+    assert manager.get_job(job_id).state == JobState.FAILED
+    assert manager.get_job(job_id).error == STALE_RUNNING_JOB_ERROR
+
+
+@pytest.mark.asyncio
+async def test_list_workers_reconciles_stale_running_worker(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    job_id = manager.create_job(
+        "interactive",
+        "inspect",
+        config["repositories"]["default"],
+        {
+            WORKER_ID_OPTION: "wrk_list_stale",
+            WORKER_NAME_OPTION: "List Stale Worker",
+            WORKER_MODE_OPTION: "read_only",
+            WORKER_BASE_REPO_OPTION: config["repositories"]["default"],
+            "sandbox": "read-only",
+        },
+    )
+    manager.update_job_state(job_id, JobState.RUNNING)
+    manager.jobs[job_id].started_at = time.time() - 60
+    manager._persist_job(manager.jobs[job_id])
+
+    result = await runtime.list_workers()
+
+    assert result["count"] == 1
+    assert result["active"] == 0
+    assert result["workers"][0]["state"] == "failed"
+    assert manager.get_job(job_id).state == JobState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_duplicate_worker_names_are_rejected_case_insensitively(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    await runtime.start_worker(
+        name="Reviewer",
+        brief="Review the design.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        await runtime.start_worker(
+            name=" reviewer ",
+            brief="Review again.",
+            repo_path=config["repositories"]["default"],
+            workspace_mode="read_only",
+        )
+
+
+@pytest.mark.asyncio
+async def test_same_worker_name_is_allowed_in_different_workspaces_and_scoped_on_lookup(tmp_path):
+    config = make_config(tmp_path)
+    other_repo = init_extra_repo(tmp_path / "other-repo", name="other")
+    config["repositories"]["allowed"].append(str(other_repo))
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    first = await runtime.start_worker(
+        name="Reviewer",
+        brief="Review the default repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    second = await runtime.start_worker(
+        name="reviewer",
+        brief="Review the other repo.",
+        repo_path=str(other_repo),
+        workspace_mode="read_only",
+    )
+
+    assert first["accepted"] is True
+    assert second["accepted"] is True
+    assert first["worker_id"] != second["worker_id"]
+
+    default_view = await runtime.inspect_worker(worker="Reviewer", repo_path=config["repositories"]["default"])
+    other_view = await runtime.inspect_worker(worker="Reviewer", repo_path=str(other_repo))
+    assert default_view["worker_id"] == first["worker_id"]
+    assert other_view["worker_id"] == second["worker_id"]
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        await runtime.inspect_worker(worker="Reviewer")
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_active_turn_but_preserves_worker(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Stopping Worker",
+        brief="Inspect the project.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = next(iter(manager.jobs.values()))
+    manager.update_job_state(job.job_id, JobState.RUNNING)
+
+    result = await runtime.stop_worker(worker=started["worker_id"])
+
+    assert result["stopped"] is True
+    assert result["state"] == "stopped"
+    assert executor.cancelled == [job.job_id]
+    listed = await runtime.list_workers()
+    assert listed["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_message_rechecks_current_allowed_roots(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Scoped Worker",
+        brief="Inspect the repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = next(iter(manager.jobs.values()))
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "done"},
+        session_id="session-scoped",
+        exit_code=0,
+    )
+    config["repositories"]["allowed"] = []
+
+    with pytest.raises(ValueError, match="No allowed repository roots configured"):
+        await runtime.message_worker(worker=started["worker_id"], message="Continue.")
+
+
+def test_cleanup_keeps_worker_jobs_as_durable_worker_identity(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job(
+        "interactive",
+        "inspect",
+        config["repositories"]["default"],
+        {
+            WORKER_ID_OPTION: "wrk_fixture",
+            WORKER_NAME_OPTION: "Fixture Worker",
+            "sandbox": "read-only",
+        },
+    )
+    manager.update_job_state(job_id, JobState.COMPLETED, result={"summary": "done"}, session_id="session-1")
+    manager.jobs[job_id].completed_at = time.time() - (48 * 3600)
+    manager._persist_job(manager.jobs[job_id])
+
+    manager.cleanup_old_jobs()
+
+    assert manager.get_job(job_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_isolated_worker_continues_in_same_worktree_and_reports_changes(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Implementer",
+        brief="Create a file.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+    first_job = manager.get_job(executor.started[0])
+    worker_path = first_job.worktree_path
+    assert worker_path
+    worker_file = Path(worker_path) / "worker.txt"
+    worker_file.write_text("first turn\n", encoding="utf-8")
+    manager.update_job_state(
+        first_job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Created worker.txt"},
+        session_id="session-write",
+        exit_code=0,
+    )
+
+    changes = await runtime.inspect_worker(worker="Implementer", view="changes")
+    assert changes["has_changes"] is True
+    assert changes["changed_files"] == ["worker.txt"]
+    assert "worker.txt" in changes["report"]
+    assert str(worker_path) not in str(changes)
+
+    diff = await runtime.inspect_worker(worker="Implementer", view="diff", file_path="worker.txt")
+    assert "+first turn" in diff["diff"]
+    assert str(worker_path) not in diff["diff"]
+    assert not (Path(config["repositories"]["default"]) / "worker.txt").exists()
+
+    reloaded_manager = JobManager(config)
+    reloaded_executor = RecordingExecutor(reloaded_manager)
+    reloaded_runtime = WorkerRuntime(config, reloaded_manager, reloaded_executor)
+    continued = await reloaded_runtime.message_worker(worker="Implementer", message="Revise the same file.")
+    await asyncio.sleep(0)
+
+    assert continued["accepted"] is True
+    resume_job = reloaded_manager.get_job(reloaded_executor.started[-1])
+    assert resume_job.mode == "resume"
+    assert resume_job.worktree_path == worker_path
+    assert resume_job.options["resume_session_id"] == "session-write"
+    assert resume_job.options["_worker_worktree_path"] == worker_path
+    assert resume_job.options["_codex_cwd"] == worker_path
+    assert resume_job.options["sandbox"] == "workspace-write"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_workspace_discards_isolated_worktree_without_deleting_worker(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Disposable Implementer",
+        brief="Create work.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+    job = manager.get_job(executor.started[0])
+    worktree_path = Path(job.worktree_path)
+    manager.update_job_state(job.job_id, JobState.COMPLETED, result={"summary": "done"}, session_id="session-clean")
+
+    result = await runtime.stop_worker(worker=started["worker_id"], cleanup_workspace=True)
+
+    assert result["workspace_cleaned"] is True
+    assert result["workspace_available"] is False
+    assert worktree_path.exists() is False
+    listed = await runtime.list_workers()
+    assert listed["count"] == 1
+
+    rejected = await runtime.message_worker(worker=started["worker_id"], message="Continue.")
+    assert rejected["accepted"] is False
+    assert "will not fall back" in rejected["note"]

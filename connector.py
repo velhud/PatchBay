@@ -98,6 +98,10 @@ def connector_status(
     local_base = f"http://{host}:{int(server_config.get('port') or 8000)}"
     server_url = mcp_server_url(config, policy, public_base_url=public_base_url, reveal_token=reveal_token)
 
+    auth_metadata = auth_public_metadata(policy)
+    if reveal_token and policy.enabled and policy.allow_query_token and policy.token:
+        auth_metadata["token_returned"] = True
+
     return {
         "name": "codex-mcp-wrapper",
         "ready": not any(check["status"] == "fail" for check in checks),
@@ -110,7 +114,7 @@ def connector_status(
             "query_token_url_redacted": policy.enabled and policy.allow_query_token and not reveal_token,
             "tool_mode": app_config.get("tool_mode", "full"),
         },
-        "auth": auth_public_metadata(policy),
+        "auth": auth_metadata,
         "power_tools": {
             "direct_write": bool(power_config.get("direct_write", False)),
             "bash_mode": bash_mode,

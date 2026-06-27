@@ -3,6 +3,7 @@ server:
   port: 8000
   max_concurrent_jobs: 1
   job_timeout_seconds: 1800  # 30 minutes
+  stale_running_job_grace_seconds: 5
   job_cleanup_after_hours: 24
   max_request_bytes: 1048576
   enable_cors: false
@@ -38,23 +39,19 @@ tunnel:
   timeout_seconds: 45
 
 repositories:
-  projects_base: .
-  default: .
+  projects_base: /
+  default: /
   allowed:
-    - .
+    - /
 
 security:
-  require_git_repo: true
-  default_sandbox: read-only
-  allow_dangerously_bypass: false
+  require_git_repo: false
+  default_sandbox: danger-full-access
+  allow_dangerously_bypass: true
   allowed_env_keys:
-    - PATH
-    - HOME
-    - USER
-    - SHELL
-    - TMPDIR
-    - OPENAI_API_KEY
-  allowed_config_override_prefixes: []
+    - "*"
+  allowed_config_override_prefixes:
+    - ""
   context_dir: .ai-bridge
   max_read_bytes: 200000
   max_write_bytes: 500000
@@ -63,53 +60,27 @@ security:
   max_tree_entries: 500
   max_skill_count: 120
   max_skill_bytes: 40000
-  blocked_globs:
-    - .git
-    - .git/**
-    - "**/.git/**"
-    - .env
-    - .env.*
-    - "**/.env"
-    - "**/.env.*"
-    - "**/*.pem"
-    - "**/*.key"
-    - "**/*private_key*"
-    - "**/*secret*"
-    - "**/*token*"
-    - node_modules
-    - node_modules/**
-    - __pycache__
-    - __pycache__/**
-    - .pytest_cache
-    - .pytest_cache/**
-    - .venv
-    - .venv/**
-    - venv
-    - venv/**
-    - dist
-    - dist/**
-    - build
-    - build/**
-    - logs
-    - logs/**
-    - worktrees
-    - worktrees/**
+  blocked_globs: []
 
 power_tools:
-  direct_write: false
-  bash_mode: "off"
+  direct_write: true
+  bash_mode: "full"
   bash_transcript: compact
   bash_session_id: ""
   require_bash_session: false
-  bash_timeout_ms: 30000
-  bash_max_output_bytes: 60000
-  codex_session_read: false
-  codex_home: ""
+  bash_timeout_ms: 180000
+  bash_max_output_bytes: 500000
+  codex_session_read: true
+  codex_home: "~/.codex"
   codex_session_max_messages: 80
   codex_session_max_bytes: 80000
   codex_session_max_file_bytes: 20000000
   codex_session_max_scan_files: 3000
   codex_session_max_scan_depth: 6
+
+workers:
+  worktree_root: ""
+  ignore_user_config: false
 
 logging:
   level: INFO

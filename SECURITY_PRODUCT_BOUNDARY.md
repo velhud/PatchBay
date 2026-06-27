@@ -56,6 +56,10 @@ Tool metadata must match behavior.
 
 Every tool descriptor should include `readOnlyHint`, `destructiveHint`, and `openWorldHint` once supported by the protocol layer.
 
+Worker start/message tools can create durable local job state and, by default, run Codex in an isolated writing worktree. Their descriptors therefore use `readOnlyHint: false`, `openWorldHint: true`, and non-idempotent metadata. Advisory workers are still available with `workspace_mode: "read_only"`, but descriptor metadata must represent the tool's default and possible effects.
+
+`codex_worker_options` is read-only, but it reads local Codex model metadata. It must return only bounded public fields such as model ids, display names, concise descriptions, and reasoning options. It must not expose raw Codex config paths, auth/provider details, prompts, model base instructions, or full catalog blobs.
+
 ## Path Guard Policy
 
 Path decisions should use resolved real paths, not string prefix checks alone.
@@ -156,10 +160,12 @@ The current implementation has addressed the original high-risk connector gaps: 
 Verified so far:
 
 - local MCP probe against a disposable repo;
-- real Codex CLI `0.141.0` plan job through MCP;
+- real Codex CLI `0.142.2` plan job through MCP;
 - current Codex JSONL `agent_message` result parsing;
 - token-gated local server behavior in automated tests;
 - power tools denied by default.
+- Phase 2 named worker descriptors, job-derived identity, isolated worktree ownership, privacy behavior, and worker-only tool mode in automated tests.
+- worker model/reasoning option discovery, sanitized output, and inherited worker execution settings in automated tests.
 
 Remaining hardening is future-facing rather than a known boundary break:
 
@@ -167,6 +173,7 @@ Remaining hardening is future-facing rather than a known boundary break:
 - real token-gated public tunnel eval;
 - real apply-job worktree eval from ChatGPT;
 - real resume/interactive continuation eval from ChatGPT;
+- real named-worker flow from ChatGPT;
 - stricter or richer ChatGPT tool-card resources;
 - CORS policy if a trusted standalone local UI is added;
 - OAuth 2.1 if this becomes a multi-user or app-store connector;

@@ -46,8 +46,17 @@ def test_public_tool_names_are_codex_specific():
         "codex_resume",
         "codex_interactive",
         "codex_interactive_reply",
+        "codex_worker_options",
+        "codex_worker_start",
+        "codex_worker_message",
+        "codex_worker_list",
+        "codex_worker_inspect",
+        "codex_worker_integrate",
+        "codex_worker_stop",
         "codex_self_test",
         "codex_get_config",
+        "codex_tool_mode_info",
+        "codex_tool_mode_switch",
     }
 
     assert expected <= PUBLIC_TOOL_NAMES
@@ -91,16 +100,27 @@ def test_tool_modes_filter_advertised_surface():
     minimal = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "minimal"}})}
     standard = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "standard"}})}
     full = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "full"}})}
+    worker = {tool["name"] for tool in tool_descriptors_for_mode({"app": {"tool_mode": "worker"}})}
 
     assert {"read", "edit", "show_changes", "codex_read_file", "codex_show_changes"} <= minimal
+    assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= minimal
     assert "codex_plan_job" not in minimal
-    assert {"codex_plan_job", "codex_workspace_snapshot", "handoff_to_agent"} <= standard
+    assert {"codex_plan_job", "codex_workspace_snapshot", "handoff_to_agent", "codex_worker_start"} <= standard
+    assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= standard
     assert "codex_read_session" not in standard
     assert {"codex_read_session", "read_codex_session"} <= full
+    assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= full
+    assert {"codex_worker_options", "codex_worker_start", "codex_worker_message", "codex_worker_list", "codex_worker_inspect", "codex_worker_stop"} <= worker
+    assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= worker
+    assert "codex_plan_job" not in worker
+    assert "codex_get_status" not in worker
+    assert "read" not in worker
+    assert "show_changes" not in worker
 
 
 def test_mutating_tools_are_not_readonly():
     by_name = {tool["name"]: tool for tool in TOOLS}
+    assert by_name["codex_plan_job"]["readOnlyHint"] is False
     assert by_name["codex_apply_job"]["readOnlyHint"] is False
     assert by_name["codex_cancel_job"]["readOnlyHint"] is False
     assert by_name["codex_write_file"]["readOnlyHint"] is False
@@ -111,10 +131,16 @@ def test_mutating_tools_are_not_readonly():
     assert by_name["codex_resume"]["readOnlyHint"] is False
     assert by_name["codex_interactive"]["readOnlyHint"] is False
     assert by_name["codex_interactive_reply"]["readOnlyHint"] is False
+    assert by_name["codex_worker_start"]["readOnlyHint"] is False
+    assert by_name["codex_worker_message"]["readOnlyHint"] is False
+    assert by_name["codex_worker_stop"]["readOnlyHint"] is False
+    assert by_name["codex_tool_mode_switch"]["readOnlyHint"] is False
+    assert by_name["codex_tool_mode_info"]["readOnlyHint"] is True
 
 
 def test_readonly_tools_are_marked_readonly():
     readonly = PUBLIC_TOOL_NAMES - {
+        "codex_plan_job",
         "codex_apply_job",
         "codex_cancel_job",
         "codex_export_context",
@@ -125,6 +151,11 @@ def test_readonly_tools_are_marked_readonly():
         "codex_resume",
         "codex_interactive",
         "codex_interactive_reply",
+        "codex_worker_start",
+        "codex_worker_message",
+        "codex_worker_integrate",
+        "codex_worker_stop",
+        "codex_tool_mode_switch",
         "write",
         "edit",
         "bash",
@@ -179,8 +210,15 @@ def test_high_value_output_schemas_describe_structured_results():
     assert "messages" in by_name["codex_read_session"]["outputSchema"]["properties"]
     assert "job_id" in by_name["codex_resume"]["outputSchema"]["properties"]
     assert "job_id" in by_name["codex_interactive_reply"]["outputSchema"]["properties"]
+    assert "models" in by_name["codex_worker_options"]["outputSchema"]["properties"]
+    assert "report" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "workers" in by_name["codex_worker_list"]["outputSchema"]["properties"]
+    assert "diff" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "can_apply" in by_name["codex_worker_integrate"]["outputSchema"]["properties"]
     assert "connection" in by_name["codex_self_test"]["outputSchema"]["properties"]
     assert "wrapper_config" in by_name["codex_get_config"]["outputSchema"]["properties"]
+    assert "modes" in by_name["codex_tool_mode_info"]["outputSchema"]["properties"]
+    assert "current_mode" in by_name["codex_tool_mode_switch"]["outputSchema"]["properties"]
 
 
 def test_public_tool_descriptor_power_classifications_are_explicit():
@@ -205,8 +243,8 @@ def test_public_tool_descriptor_power_classifications_are_explicit():
         "idempotentHint": False,
     }
     assert by_name["codex_plan_job"]["annotations"] == {
-        "readOnlyHint": True,
-        "destructiveHint": False,
+        "readOnlyHint": False,
+        "destructiveHint": True,
         "openWorldHint": True,
         "idempotentHint": False,
     }
@@ -245,9 +283,8 @@ def test_public_tool_schema_rejects_wrong_type():
         validate_public_tool_arguments("codex_plan_job", {"spec": 123})
 
 
-def test_public_tool_schema_rejects_bad_enum_value():
-    with pytest.raises(ValueError, match="Invalid value for argument 'sandbox'"):
-        validate_public_tool_arguments("codex_plan_job", {"spec": "inspect", "sandbox": "danger-full-access"})
+def test_public_tool_schema_accepts_danger_full_access_sandbox():
+    validate_public_tool_arguments("codex_plan_job", {"spec": "inspect", "sandbox": "danger-full-access"})
 
 
 def test_public_tool_schema_validates_nested_objects():

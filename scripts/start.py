@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 
 from auth import build_auth_policy  # noqa: E402
 from connector import format_doctor_text  # noqa: E402
-from launcher import launcher_json_payload, load_config, prepare_start  # noqa: E402
+from launcher import launcher_json_payload, load_config, prepare_start, prepared_with_revealed_token  # noqa: E402
 from profile_store import write_runtime_status  # noqa: E402
 from tunnel_manager import (  # noqa: E402
     TunnelLaunchError,
@@ -57,7 +57,7 @@ def main() -> int:
     parser.add_argument("--require-bash-session", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--codex-session-read", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--widget-domain", help="HTTPS origin for ChatGPT widget metadata.")
-    parser.add_argument("--tool-mode", choices=["minimal", "standard", "full"], help="MCP tool surface exposed to ChatGPT.")
+    parser.add_argument("--tool-mode", choices=["minimal", "standard", "full", "worker"], help="MCP tool surface exposed to ChatGPT.")
     parser.add_argument("--print-only", action="store_true", help="Print launch metadata without starting the server.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable launch metadata.")
     parser.add_argument("--reveal-token", action="store_true", help="Print a tokenized Server URL. Keep this local and private.")
@@ -94,13 +94,21 @@ def main() -> int:
         tool_mode=args.tool_mode,
     )
 
-    payload = launcher_json_payload(prepared)
+    output_prepared = (
+        prepared_with_revealed_token(prepared, os.environ)
+        if args.print_only and args.reveal_token
+        else prepared
+    )
+    if args.print_only and output_prepared["status"].get("auth", {}).get("token_returned"):
+        print("WARNING: printing a private tokenized ChatGPT Server URL. Do not paste it into logs or commits.", file=sys.stderr)
+
+    payload = launcher_json_payload(output_prepared)
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(format_doctor_text(prepared["status"]))
-        print(f"Runtime config: {prepared['runtime_config_path']}")
-        profile = prepared["profile"]
+        print(format_doctor_text(output_prepared["status"]))
+        print(f"Runtime config: {output_prepared['runtime_config_path']}")
+        profile = output_prepared["profile"]
         if profile.get("saved"):
             print(f"Profile saved: {profile['profile_path']}")
         elif profile.get("used"):

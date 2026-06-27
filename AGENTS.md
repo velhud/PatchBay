@@ -7,8 +7,9 @@ This repository provides a hybrid ChatGPT-to-local-Codex bridge.
 The product exposes a local Streamable HTTP MCP server so ChatGPT web/Pro or another MCP-compatible client can:
 
 - inspect allowed local workspaces through bounded context tools;
+- manage durable named Codex workers through natural-language briefs, reports, isolated worktrees, and bounded peer-worker context;
 - delegate larger work to local Codex CLI jobs;
-- inspect async job status, structured results, session refs, and worktree diffs;
+- inspect async job status, structured results, session refs, worker reports, peer-worker context, and worktree diffs;
 - use `.ai-bridge` handoff artifacts;
 - optionally use direct edit, bash, or transcript-read power tools when explicitly enabled.
 
@@ -25,9 +26,11 @@ The repo still supports local maintainer workflows, but do not describe the app 
 - Do not enable dangerous bypass in public examples.
 - Do not log prompts, secrets, auth files, or full Codex outputs by default.
 - Mutating tools must be clearly marked as mutating.
-- Add or update tests for path validation, job lifecycle behavior, and unsafe input handling.
+- Add or update tests for path validation, job lifecycle behavior, worker coordination behavior, and unsafe input handling.
 - Update README, examples, and tests when changing public tool names, CLI arguments, server behavior, or MCP schemas.
 - Update `README.md`, `QUICKSTART.md`, `CHATGPT_INSTRUCTIONS.md`, `PUBLIC_TOOL_SURFACE.md`, `SECURITY_PRODUCT_BOUNDARY.md`, and `TESTING.md` when changing connector behavior, auth/tunnel behavior, tool metadata, power modes, Codex CLI assumptions, or result parsing.
+- Treat MCP `initialize.instructions`, public tool descriptions, tool annotations, and `--tool-mode worker` behavior as ChatGPT-facing prompt surface. Keep these instructions outcome-first, concise, stateful-worker-aware, and explicit about side effects, validation, and stop/blocked behavior.
+- For first real ChatGPT validation, prefer `--tool-mode worker` so ChatGPT sees the natural-language worker surface plus required read-only context tools, not the full power-user catalog. Do not switch docs back to full mode as the default ChatGPT test path unless real ChatGPT tool-selection evidence supports it.
 - Preserve CodexPro attribution in `NOTICE` and README whenever code, product patterns, docs, or tests derived from CodexPro remain in the repository.
 - Do not claim public release readiness until real ChatGPT Developer Mode, public tunnel auth, apply-job, and resume scenarios have been verified on disposable repos.
 
@@ -44,9 +47,10 @@ When reviewing changes, prioritize:
 7. write tools incorrectly marked as read-only;
 8. unvalidated paths or config overrides;
 9. worktree cleanup and diff correctness;
-10. stale documentation that describes the app as only a maintainer wrapper;
-11. documentation that overstates safety, verified coverage, or production readiness;
-12. missing CodexPro attribution.
+10. ChatGPT-facing instructions that omit statefulness, preview-before-integrate, no-commit behavior, validation expectations, or worker-first tool-selection guidance;
+11. stale documentation that describes the app as only a maintainer wrapper;
+12. documentation that overstates safety, verified coverage, or production readiness;
+13. missing CodexPro attribution.
 
 ## Required Checks
 
@@ -95,3 +99,19 @@ For Codex CLI execution changes, record the current `codex --version` in the ver
 - Execute and verify against that full inventory. For websites, this means checking every affected public route/page and the shared components that can render the pattern. For code changes, this means searching all relevant files and call sites, not only the initial examples.
 - If a literal whole-scope request is too large, risky, or ambiguous, stop and say exactly what scope is covered, what is excluded, and why. Do not silently reduce scope.
 - Final reports for whole-scope requests must state the inventory checked and any remaining exclusions or unverified areas.
+
+
+## Phase 4 worker integration
+
+When changing worker integration behavior, preserve the natural-language management model: preview is read-only, applying a worker result is explicit, the wrapper must not commit automatically, and worker worktrees must remain available until explicit cleanup.
+
+## ChatGPT prompt surface
+
+When changing anything ChatGPT sees through MCP, preserve these prompt-surface rules:
+
+- `initialize.instructions` should tell ChatGPT to start with `codex_self_test` and `codex_open_workspace`.
+- ChatGPT should manage workers by human name, not by backend job IDs, session IDs, branch names, or worktree paths.
+- Worker mode should explain that default workers use isolated write worktrees, survive wrapper restart when durable state exists, and continue through `codex_worker_message`.
+- Integration must be described as preview-first, explicit, no-commit, and preserving the worker worktree.
+- Tool descriptions should include when to use the tool, relevant side effects, validation expectations, and safe fallback behavior.
+- Setup docs should recommend `--tool-mode worker` for first real ChatGPT validation.

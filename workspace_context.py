@@ -69,7 +69,10 @@ class WorkspaceContext:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         security = config.get("security", {})
-        self.blocked_globs = list(security.get("blocked_globs") or DEFAULT_BLOCKED_GLOBS)
+        if "blocked_globs" in security:
+            self.blocked_globs = list(security.get("blocked_globs") or [])
+        else:
+            self.blocked_globs = list(DEFAULT_BLOCKED_GLOBS)
         self.max_read_bytes = int(security.get("max_read_bytes", 200_000))
         self.max_write_bytes = int(security.get("max_write_bytes", 500_000))
         self.max_search_results = int(security.get("max_search_results", 100))
@@ -647,7 +650,7 @@ class WorkspaceContext:
         )
         return {
             "workspace_id": workspace.id,
-            "tool_modes": ["minimal", "standard", "full"],
+            "tool_modes": ["worker", "standard", "full", "minimal"],
             "context_dir": self.context_dir,
             "blocked_globs_count": len(self.blocked_globs),
             "git": self.git_summary(workspace),
