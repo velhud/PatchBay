@@ -4,6 +4,12 @@ Please do not report security issues by opening public issues that include secre
 
 This project is a local developer bridge between ChatGPT, MCP clients, local repositories, and the Codex CLI. Treat it like a tool with local coding-agent power, not like a harmless web widget.
 
+Detailed security references live in [docs/security/](docs/security/), including
+the [security model](docs/security/model.md),
+[product boundary](docs/security/product-boundary.md),
+[review scope](docs/security/review-scope.md), and
+[threat model](docs/security/threat-model.md).
+
 ## Product Power Boundary
 
 Security controls in this repo are product controls. They are what make it practical to give ChatGPT useful local power:
@@ -34,19 +40,19 @@ Security controls in this repo are product controls. They are what make it pract
 
 ## Auth And Tunnels
 
-Non-loopback and tunnel modes must fail closed unless `CODEX_MCP_HTTP_TOKEN` is set.
+Non-loopback and tunnel modes must fail closed unless `PATCHBAY_HTTP_TOKEN` is set.
 
 Bearer auth is preferred. Query-token URLs exist for ChatGPT connector flows, but they are sensitive:
 
 ```text
-https://your-tunnel.example/mcp?codex_mcp_token=<token>
+https://your-tunnel.example/mcp?patchbay_token=<token>
 ```
 
 Do not paste real tokenized URLs into docs, issues, logs, screenshots, shared chats, or commits.
 
-The launcher writes per-workspace profiles and runtime config under `CODEX_MCP_HOME` when set, otherwise under the user's home directory. Profiles may remember roots, ports, tunnel mode, public base URL, and power-mode preferences. Token-like keys are stripped before saving.
+The launcher writes per-workspace profiles and runtime config under `PATCHBAY_HOME` when set, otherwise under the user's home directory. Blank logging paths resolve under `PATCHBAY_HOME/runtime` or `~/.patchbay/runtime`, so audit logs, job artifacts, and job state do not populate the repository checkout by default. Profiles may remember roots, ports, tunnel mode, public base URL, and power-mode preferences. Token-like keys are stripped before saving.
 
-Public tunnel modes are launcher-managed child processes. The wrapper does not auto-install `cloudflared` or `ngrok`; install and verify provider binaries separately.
+Public tunnel modes are launcher-managed child processes. PatchBay does not auto-install `cloudflared` or `ngrok`; install and verify provider binaries separately.
 
 ## Data That Must Not Be Committed
 
@@ -62,10 +68,10 @@ Public tunnel modes are launcher-managed child processes. The wrapper does not a
 
 ## Known Pre-release Limits
 
-The local MCP path and real Codex plan job path are verified. Before public release, the project still needs disposable-repo verification for:
+The local MCP path, real Codex plan job path, and direct tokenized public-tunnel MCP path are verified on disposable repos. Before public release, the project still needs disposable-repo verification for:
 
-- real ChatGPT Developer Mode connection;
-- token-gated public tunnel flow;
+- real ChatGPT Developer Mode connection and natural tool selection;
+- ChatGPT-hosted file-parameter artifact import from the actual UI;
 - real `codex_apply_job` worktree flow from ChatGPT;
 - real resume/interactive continuation flow from ChatGPT.
 - real named-worker flow from ChatGPT.
@@ -78,7 +84,7 @@ When reporting a security issue privately, include:
 
 - affected version or commit;
 - whether the server was localhost-only or tunneled;
-- whether `CODEX_MCP_HTTP_TOKEN` was set;
+- whether `PATCHBAY_HTTP_TOKEN` was set;
 - the tool call name and high-level arguments;
 - redacted logs or minimal reproduction steps.
 

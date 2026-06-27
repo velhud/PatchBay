@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patchbay"
+version = "0.1.0"
+description = "Local control plane for ChatGPT-driven Codex work."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "PatchBay contributors" }
+]
+keywords = ["codex", "mcp", "chatgpt", "fastapi", "developer-tools"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development",
+  "Topic :: Software Development :: Build Tools"
+]
+dependencies = [
+  "fastapi==0.115.0",
+  "uvicorn[standard]==0.32.0",
+  "sse-starlette==2.1.3",
+  "pyyaml==6.0.2",
+  "gitpython==3.1.50",
+  "pydantic==2.9.2",
+  "python-multipart==0.0.32"
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==9.0.3",
+  "pytest-asyncio==1.4.0",
+  "httpx==0.28.1"
+]
+
+[project.urls]
+Homepage = "https://github.com/velhud/patchbay"
+Issues = "https://github.com/velhud/patchbay/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+patchbay = ["protocol/schemas/*.json", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

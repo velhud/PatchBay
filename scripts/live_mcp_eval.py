@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable live MCP eval for the ChatGPT-facing wrapper surface."""
+"""Disposable live MCP eval for the ChatGPT-facing PatchBay surface."""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +18,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL_CARD_URI = "ui://widget/codex-mcp-wrapper-tool-card-v1.html"
+TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v1.html"
 
 
 def main() -> int:
@@ -32,7 +32,7 @@ def main() -> int:
 
     temp_dir = Path(tempfile.mkdtemp(prefix="codex-mcp-live-eval."))
     report: dict[str, Any] = {
-        "name": "codex-mcp-wrapper-live-eval",
+        "name": "patchbay-live-eval",
         "status": "failed",
         "checks": [],
     }
@@ -44,7 +44,7 @@ def main() -> int:
         port = args.port or _free_port()
         env = dict(os.environ)
         env["HOME"] = str(temp_dir / "home")
-        env["CODEX_MCP_HOME"] = str(temp_dir / "runtime")
+        env["PATCHBAY_HOME"] = str(temp_dir / "runtime")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
 
         process = _start_server(repo, port, env)
@@ -66,7 +66,7 @@ def main() -> int:
                 },
             }
         )
-        _check(report, "initialize", bool(session_id) and initialize["result"]["serverInfo"]["name"] == "codex-mcp-wrapper")
+        _check(report, "initialize", bool(session_id) and initialize["result"]["serverInfo"]["name"] == "patchbay")
         client.session_id = session_id
 
         tools_payload = client.rpc(2, "tools/list")

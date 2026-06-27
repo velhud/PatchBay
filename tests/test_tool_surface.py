@@ -1,6 +1,6 @@
 import pytest
 
-from mcp_protocol import (
+from patchbay.protocol.mcp import (
     APP_SECURITY_SCHEMES,
     PUBLIC_TOOL_DESCRIPTORS,
     PUBLIC_TOOL_NAMES,
@@ -9,7 +9,7 @@ from mcp_protocol import (
     tool_descriptors_for_mode,
     validate_public_tool_arguments,
 )
-from tool_resources import TOOL_CARD_URI
+from patchbay.protocol.resources import TOOL_CARD_URI
 
 
 def test_public_tool_names_are_codex_specific():
@@ -47,6 +47,7 @@ def test_public_tool_names_are_codex_specific():
         "codex_interactive",
         "codex_interactive_reply",
         "codex_worker_options",
+        "codex_worker_inbox",
         "codex_worker_start",
         "codex_worker_message",
         "codex_worker_list",
@@ -88,7 +89,7 @@ def test_deprecated_aliases_are_resolved_but_not_advertised():
     assert "query_text_analytics" not in PUBLIC_TOOL_NAMES
 
 
-def test_codexpro_aliases_are_advertised_and_resolve_to_canonical_tools():
+def test_compatibility_aliases_are_advertised_and_resolve_to_canonical_tools():
     assert resolve_public_tool_name("read") == "codex_read_file"
     assert resolve_public_tool_name("edit") == "codex_edit_file"
     assert resolve_public_tool_name("show_changes") == "codex_show_changes"
@@ -105,12 +106,12 @@ def test_tool_modes_filter_advertised_surface():
     assert {"read", "edit", "show_changes", "codex_read_file", "codex_show_changes"} <= minimal
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= minimal
     assert "codex_plan_job" not in minimal
-    assert {"codex_plan_job", "codex_workspace_snapshot", "handoff_to_agent", "codex_worker_start"} <= standard
+    assert {"codex_plan_job", "codex_workspace_snapshot", "handoff_to_agent", "codex_worker_start", "codex_worker_inbox"} <= standard
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= standard
     assert "codex_read_session" not in standard
     assert {"codex_read_session", "read_codex_session"} <= full
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= full
-    assert {"codex_worker_options", "codex_worker_start", "codex_worker_message", "codex_worker_list", "codex_worker_inspect", "codex_worker_stop"} <= worker
+    assert {"codex_worker_options", "codex_worker_inbox", "codex_worker_start", "codex_worker_message", "codex_worker_list", "codex_worker_inspect", "codex_worker_stop"} <= worker
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= worker
     assert "codex_plan_job" not in worker
     assert "codex_get_status" not in worker
@@ -131,6 +132,7 @@ def test_mutating_tools_are_not_readonly():
     assert by_name["codex_resume"]["readOnlyHint"] is False
     assert by_name["codex_interactive"]["readOnlyHint"] is False
     assert by_name["codex_interactive_reply"]["readOnlyHint"] is False
+    assert by_name["codex_worker_inbox"]["readOnlyHint"] is False
     assert by_name["codex_worker_start"]["readOnlyHint"] is False
     assert by_name["codex_worker_message"]["readOnlyHint"] is False
     assert by_name["codex_worker_stop"]["readOnlyHint"] is False
@@ -151,6 +153,7 @@ def test_readonly_tools_are_marked_readonly():
         "codex_resume",
         "codex_interactive",
         "codex_interactive_reply",
+        "codex_worker_inbox",
         "codex_worker_start",
         "codex_worker_message",
         "codex_worker_integrate",
@@ -172,7 +175,7 @@ def test_public_tool_descriptors_have_chatgpt_app_metadata():
     assert len(PUBLIC_TOOL_DESCRIPTORS) > len(TOOLS)
 
     for descriptor in PUBLIC_TOOL_DESCRIPTORS:
-        assert descriptor["title"].startswith(("Codex ", "CodexPro "))
+        assert descriptor["title"].startswith(("Codex ", "PatchBay "))
         assert descriptor["outputSchema"]["type"] == "object"
         assert descriptor["securitySchemes"] == APP_SECURITY_SCHEMES
         assert descriptor["_meta"]["securitySchemes"] == APP_SECURITY_SCHEMES
@@ -216,7 +219,7 @@ def test_high_value_output_schemas_describe_structured_results():
     assert "diff" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "can_apply" in by_name["codex_worker_integrate"]["outputSchema"]["properties"]
     assert "connection" in by_name["codex_self_test"]["outputSchema"]["properties"]
-    assert "wrapper_config" in by_name["codex_get_config"]["outputSchema"]["properties"]
+    assert "patchbay_config" in by_name["codex_get_config"]["outputSchema"]["properties"]
     assert "modes" in by_name["codex_tool_mode_info"]["outputSchema"]["properties"]
     assert "current_mode" in by_name["codex_tool_mode_switch"]["outputSchema"]["properties"]
 

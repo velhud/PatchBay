@@ -33,7 +33,7 @@ The current implementation does not create a separate worker record. It stores p
 ## Private Runtime Layout
 
 ```text
-$CODEX_MCP_HOME/
+$PATCHBAY_HOME/
   worktrees/
     worker-<worker-id>/
 ```
@@ -168,7 +168,7 @@ Public summaries may include:
   "worker_id": "wrk_...",
   "name": "Connector Investigator",
   "workspace_id": "ws_...",
-  "workspace_name": "codex-mcp-wrapper",
+  "workspace_name": "patchbay",
   "state": "idle",
   "report": "...",
   "has_session": true,

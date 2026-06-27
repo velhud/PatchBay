@@ -1,7 +1,7 @@
 import pytest
 
-from power_tools import PowerToolRunner
-from workspace_context import WorkspaceContext
+from patchbay.tools.power import PowerToolRunner
+from patchbay.workspace.context import WorkspaceContext
 
 
 def make_config(root, power=None):
@@ -21,6 +21,7 @@ def make_config(root, power=None):
             "bash_max_output_bytes": 20_000,
             **(power or {}),
         },
+        "locks": {"root": str(root / "locks")},
     }
 
 
@@ -72,10 +73,10 @@ async def test_full_command_can_run_custom_command_in_workspace(tmp_path):
 async def test_star_allowed_env_inherits_full_environment(monkeypatch, tmp_path):
     config = make_config(tmp_path, {"bash_mode": "full"})
     config["security"]["allowed_env_keys"] = ["*"]
-    monkeypatch.setenv("CODEX_MCP_WRAPPER_TEST_ENV", "visible")
+    monkeypatch.setenv("PATCHBAY_WRAPPER_TEST_ENV", "visible")
     runner = PowerToolRunner(config, WorkspaceContext(config))
 
-    result = await runner.run_command({"command": "printf '%s' \"$CODEX_MCP_WRAPPER_TEST_ENV\""})
+    result = await runner.run_command({"command": "printf '%s' \"$PATCHBAY_WRAPPER_TEST_ENV\""})
 
     assert result["exit_code"] == 0
     assert result["stdout"] == "visible"

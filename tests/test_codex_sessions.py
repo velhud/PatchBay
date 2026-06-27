@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from codex_sessions import CodexSessionReader
-from job_executor import JobExecutor
-from job_manager import JobManager
-from tools import ToolHandler
+from patchbay.jobs.sessions import CodexSessionReader
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager
+from patchbay.tools.handler import ToolHandler
 
 
 SESSION_ID = "019e4789-9b15-77e0-8ddc-13b9525fd730"

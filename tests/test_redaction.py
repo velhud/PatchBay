@@ -1,4 +1,4 @@
-from security import redact_config_value, redact_sensitive_output
+from patchbay.security import redact_config_value, redact_sensitive_output
 
 
 def test_redacts_openai_key_pattern():
@@ -13,7 +13,7 @@ def test_redacts_credential_config_keys():
 
 
 def test_redacts_token_assignment_without_destroying_key_name():
-    token_name = "codex_mcp_" + "token"
+    token_name = "patchbay_" + "token"
     data = {"output": f"https://bridge.example/mcp?{token_name}=real-value"}
 
     assert redact_sensitive_output(data)["output"] == (

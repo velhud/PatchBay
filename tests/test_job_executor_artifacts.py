@@ -3,8 +3,8 @@ import sys
 
 import pytest
 
-from job_executor import JobExecutor
-from job_manager import JobManager, JobState
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager, JobState
 
 
 def make_config(tmp_path, logging_overrides=None):

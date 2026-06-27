@@ -11,20 +11,21 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-from workspace_context import WorkspaceContext  # noqa: E402
+from patchbay.workspace.context import WorkspaceContext  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="CodexPro-style Pro context bundle/apply for codex-mcp-wrapper.")
+    parser = argparse.ArgumentParser(description="CodexPro-style Pro context bundle/apply for patchbay.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     bundle = subparsers.add_parser("bundle", help="Write .ai-bridge/pro-context.md.")
     add_common(bundle)
     bundle.add_argument("--path", action="append", default=[], help="Workspace-relative file to include.")
-    bundle.add_argument("--title", default="Codex MCP Wrapper Pro Context", help="Context title.")
+    bundle.add_argument("--title", default="PatchBay Pro Context", help="Context title.")
     bundle.add_argument("--include-diff", action=argparse.BooleanOptionalAction, default=True)
     bundle.add_argument("--include-ai-bridge", action=argparse.BooleanOptionalAction, default=True)
     bundle.add_argument("--copy", action="store_true", help="Copy generated markdown to macOS clipboard when pbcopy exists.")

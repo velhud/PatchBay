@@ -36,7 +36,7 @@ PUBLIC_TOOLS = [
     "codex_get_config",
 ]
 
-TOOL_CARD_URI = "ui://widget/codex-mcp-wrapper-tool-card-v1.html"
+TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v1.html"
 
 
 def health_check():
@@ -122,7 +122,7 @@ def read_resource(session_id: str):
 
 
 if __name__ == "__main__":
-    print("Testing running codex-mcp-wrapper server\n")
+    print("Testing running patchbay server\n")
     health_check()
     session_id = initialize()
     if not session_id:

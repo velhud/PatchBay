@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CodexPro-style launcher for codex-mcp-wrapper."""
+"""CodexPro-style launcher for patchbay."""
 from __future__ import annotations
 
 import argparse
@@ -11,14 +11,15 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-from auth import build_auth_policy  # noqa: E402
-from connector import format_doctor_text  # noqa: E402
-from launcher import launcher_json_payload, load_config, prepare_start, prepared_with_revealed_token  # noqa: E402
-from profile_store import write_runtime_status  # noqa: E402
-from tunnel_manager import (  # noqa: E402
+from patchbay.auth import build_auth_policy  # noqa: E402
+from patchbay.connector.status import format_doctor_text  # noqa: E402
+from patchbay.connector.launcher import launcher_json_payload, load_config, prepare_start, prepared_with_revealed_token  # noqa: E402
+from patchbay.connector.profiles import write_runtime_status  # noqa: E402
+from patchbay.connector.tunnels import (  # noqa: E402
     TunnelLaunchError,
     build_tunnel_spec,
     is_process_tunnel,
@@ -31,11 +32,27 @@ from tunnel_manager import (  # noqa: E402
 )
 
 
+def _prepend_source_path(env: dict[str, str]) -> None:
+    entries = [entry for entry in env.get("PYTHONPATH", "").split(os.pathsep) if entry]
+    source = str(SRC)
+    if source not in entries:
+        entries.insert(0, source)
+    env["PYTHONPATH"] = os.pathsep.join(entries)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Start codex-mcp-wrapper with a per-workspace runtime profile.")
+    parser = argparse.ArgumentParser(description="Start patchbay with a per-workspace runtime profile.")
     parser.add_argument("--config", default=str(ROOT / "config.yaml"), help="Base config.yaml path.")
-    parser.add_argument("--root", help="Workspace root to expose.")
-    parser.add_argument("--allow-root", action="append", default=[], help="Additional allowed repository root.")
+    parser.add_argument(
+        "--root",
+        help="Default workspace root to expose. When supplied, allowed roots are reset to this root plus any --allow-root values.",
+    )
+    parser.add_argument(
+        "--allow-root",
+        action="append",
+        default=[],
+        help="Additional allowed repository root. Repeat for each extra repo this server should access.",
+    )
     parser.add_argument("--host", help="HTTP bind host.")
     parser.add_argument("--port", type=int, help="HTTP bind port.")
     parser.add_argument("--public-base-url", help="Public tunnel base URL used for ChatGPT Server URL output.")
@@ -122,12 +139,13 @@ def main() -> int:
         return 1
 
     env = dict(os.environ)
-    env["CODEX_MCP_CONFIG"] = str(prepared["runtime_config_path"])
+    env["PATCHBAY_CONFIG"] = str(prepared["runtime_config_path"])
+    _prepend_source_path(env)
     runtime_config = prepared["runtime_config"]
     auth_mode = runtime_config.get("auth", {}).get("tunnel_mode", "none")
     if is_process_tunnel(auth_mode):
         return _run_supervised_with_tunnel(prepared, env, reveal_token=args.reveal_token, verbose_logs=args.verbose_logs)
-    os.execvpe(sys.executable, [sys.executable, str(ROOT / "server.py")], env)
+    os.execvpe(sys.executable, [sys.executable, "-m", "patchbay.server"], env)
     return 1
 
 
@@ -166,7 +184,7 @@ def _run_supervised_with_tunnel(prepared: dict, env: dict[str, str], *, reveal_t
         server, _server_tail = spawn_logged(
             "server",
             sys.executable,
-            [str(ROOT / "server.py")],
+            ["-m", "patchbay.server"],
             cwd=ROOT,
             env=env,
             verbose=verbose_logs,

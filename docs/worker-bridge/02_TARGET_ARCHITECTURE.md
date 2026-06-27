@@ -1,6 +1,6 @@
 # Target Architecture
 
-Status: Phase 2 isolated writing worker architecture implemented; integration architecture pending.
+Status: Phase 4 isolated writing worker integration and artifact inbox architecture implemented; app-server backend architecture pending.
 
 ## Top-Level Shape
 
@@ -93,7 +93,7 @@ Current responsibility:
 Recommended private layout:
 
 ```text
-$CODEX_MCP_HOME/
+$PATCHBAY_HOME/
   worktrees/
     worker-<worker-id>/
 ```

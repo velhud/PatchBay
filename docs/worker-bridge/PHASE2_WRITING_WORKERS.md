@@ -9,7 +9,7 @@ start a named worker
 → create one external git worktree
 → run Codex with workspace-write authority in that worktree
 → continue the same Codex session by worker name
-→ reuse the same worktree across turns and wrapper restarts
+→ reuse the same worktree across turns and PatchBay restarts
 → inspect changed files or one-file diffs on demand
 ```
 
@@ -17,11 +17,11 @@ The base checkout remains unchanged until a later explicit integration phase.
 
 ## Workspace Modes
 
-- `isolated_write`: default. The wrapper creates one external git worktree and private branch for the worker, then reuses it for every continuation.
-- `read_only`: advisory mode for investigation, review, architecture, and planning. The wrapper forces a read-only Codex sandbox.
+- `isolated_write`: default. PatchBay creates one external git worktree and private branch for the worker, then reuses it for every continuation.
+- `read_only`: advisory mode for investigation, review, architecture, and planning. PatchBay forces a read-only Codex sandbox.
 - `shared_write`: explicit direct-workspace mode. It can modify the base checkout and its change view may include pre-existing local edits.
 
-Worker worktrees are created outside the source checkout under `workers.worktree_root`, or under `$CODEX_MCP_HOME/worktrees` / `~/.codex-mcp-wrapper/worktrees` when no root is configured.
+Worker worktrees are created outside the source checkout under `workers.worktree_root`, or under `$PATCHBAY_HOME/worktrees` / `~/.patchbay/worktrees` when no root is configured.
 
 ## Public Tool Changes
 
@@ -43,7 +43,7 @@ Every continuation reasserts the same worker workspace and sandbox before the `r
 codex exec --sandbox <mode> --cd <worker-workspace> ... resume <session> -
 ```
 
-A missing or discarded isolated worktree causes a clear refusal. The wrapper does not silently fall back to the base checkout.
+A missing or discarded isolated worktree causes a clear refusal. PatchBay does not silently fall back to the base checkout.
 
 ## Privacy Boundary
 

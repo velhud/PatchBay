@@ -1,6 +1,13 @@
 from fastapi.testclient import TestClient
 
-import server
+from patchbay import server
+
+
+def _mcp_post(client, message, session_id=None):
+    headers = {}
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    return client.post("/mcp", json=message, headers=headers)
 
 
 def test_mcp_rejects_oversized_request_body():
@@ -31,3 +38,89 @@ def test_mcp_rejects_unknown_session_id():
 
     assert response.status_code == 404
     assert response.json()["error"]["message"] == "Unknown or expired MCP session"
+
+
+def test_mcp_http_sessions_keep_tool_modes_separate():
+    original_mode = server.config.setdefault("app", {}).get("tool_mode")
+    original_sessions = dict(server.sessions)
+    server.sessions.clear()
+    server.config["app"]["tool_mode"] = "worker"
+    client = TestClient(server.app)
+    try:
+        init_a = _mcp_post(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "http-session-a", "version": "test"},
+                },
+            },
+        )
+        init_b = _mcp_post(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "http-session-b", "version": "test"},
+                },
+            },
+        )
+        session_a = init_a.headers["Mcp-Session-Id"]
+        session_b = init_b.headers["Mcp-Session-Id"]
+        assert session_a != session_b
+
+        before_a = _mcp_post(client, {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}, session_a)
+        before_b = _mcp_post(client, {"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}}, session_b)
+        assert "codex_resume" not in {tool["name"] for tool in before_a.json()["result"]["tools"]}
+        assert "codex_resume" not in {tool["name"] for tool in before_b.json()["result"]["tools"]}
+
+        switched_a = _mcp_post(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "codex_tool_mode_switch",
+                    "arguments": {"mode": "full", "reason": "Need low-level status tools in this chat."},
+                },
+            },
+            session_a,
+        )
+        assert switched_a.json()["result"]["structuredContent"]["switch_scope"] == "session"
+
+        after_a = _mcp_post(client, {"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {}}, session_a)
+        after_b = _mcp_post(client, {"jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": {}}, session_b)
+        assert "codex_resume" in {tool["name"] for tool in after_a.json()["result"]["tools"]}
+        assert "codex_resume" not in {tool["name"] for tool in after_b.json()["result"]["tools"]}
+
+        self_test_b = _mcp_post(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {"name": "codex_self_test", "arguments": {}},
+            },
+            session_b,
+        )
+        coordination = self_test_b.json()["result"]["structuredContent"]["coordination"]
+        assert coordination["active_mcp_sessions"] == 2
+        assert coordination["raw_session_ids_returned"] is False
+        assert session_a not in str(coordination)
+        assert session_b not in str(coordination)
+    finally:
+        if original_mode is None:
+            server.config["app"].pop("tool_mode", None)
+        else:
+            server.config["app"]["tool_mode"] = original_mode
+        server.sessions.clear()
+        server.sessions.update(original_sessions)

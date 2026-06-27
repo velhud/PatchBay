@@ -4,10 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from job_executor import JobExecutor
-from job_manager import JobManager, JobState
-from tools import ToolHandler
-from worker_runtime import WorkerRuntime
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager, JobState
+from patchbay.ownership import OWNER_CLIENT_REF_OPTION
+from patchbay.protocol.context import RequestContext
+from patchbay.tools.handler import ToolHandler
+from patchbay.workers.runtime import WorkerRuntime
 
 
 def init_repo(repo: Path) -> None:
@@ -43,6 +45,7 @@ def make_config(tmp_path):
             "job_logs_dir": str(tmp_path / "logs" / "jobs"),
             "job_state_dir": str(tmp_path / "logs" / "jobs" / "state"),
         },
+        "locks": {"root": str(tmp_path / "locks")},
     }
 
 
@@ -53,6 +56,10 @@ class RecordingExecutor(JobExecutor):
 
     async def execute_job(self, job_id):
         self.started.append(job_id)
+
+
+def request_context(client_ref: str, label: str = "") -> RequestContext:
+    return RequestContext(transport_session_id=f"session-{client_ref}", client_ref=client_ref, client_label=label)
 
 
 @pytest.mark.asyncio
@@ -93,6 +100,81 @@ async def test_integration_preview_and_apply_worker_result_to_base_checkout(tmp_
     assert (worker_root / "worker-note.txt").exists()
     assert str(worker_root) not in str(applied)
     assert config["repositories"]["default"] not in str(applied)
+
+
+@pytest.mark.asyncio
+async def test_integration_requires_takeover_for_other_owner(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    client_a = request_context("client_a", "Chat A")
+    client_b = request_context("client_b", "Chat B")
+
+    started = await runtime.start_worker(
+        name="Protected Implementer",
+        brief="Create the note file.",
+        repo_path=config["repositories"]["default"],
+        request_context=client_a,
+    )
+    await asyncio.sleep(0)
+    job = next(job for job in manager.jobs.values() if (job.options or {}).get("_worker_id") == started["worker_id"])
+    worker_root = Path(job.worktree_path)
+    (worker_root / "worker-note.txt").write_text("from protected worker\n", encoding="utf-8")
+    manager.update_job_state(job.job_id, JobState.COMPLETED, result={"summary": "Created worker-note.txt"}, session_id="session-1")
+
+    refused = await runtime.integrate_worker(worker="Protected Implementer", request_context=client_b)
+    assert refused["applied"] is False
+    assert refused["takeover_required"] is True
+    assert refused["owned_by_current_client"] is False
+    assert not (Path(config["repositories"]["default"]) / "worker-note.txt").exists()
+
+    applied = await runtime.integrate_worker(
+        worker="Protected Implementer",
+        request_context=client_b,
+        takeover=True,
+        takeover_reason="User accepted the other chat's worker result.",
+    )
+    assert applied["applied"] is True
+    assert applied["takeover_performed"] is True
+    assert (Path(config["repositories"]["default"]) / "worker-note.txt").read_text(encoding="utf-8") == "from protected worker\n"
+    assert manager.get_job(job.job_id).options[OWNER_CLIENT_REF_OPTION] == "client_b"
+
+
+@pytest.mark.asyncio
+async def test_integration_refuses_when_base_repo_mutation_lock_is_busy(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(name="Locked Implementer", brief="Create the note.", repo_path=config["repositories"]["default"])
+    await asyncio.sleep(0)
+    job = next(job for job in manager.jobs.values() if (job.options or {}).get("_worker_id") == started["worker_id"])
+    worker_root = Path(job.worktree_path)
+    (worker_root / "worker-note.txt").write_text("from locked worker\n", encoding="utf-8")
+    manager.update_job_state(job.job_id, JobState.COMPLETED, result={"summary": "Created worker-note.txt"}, session_id="session-1")
+
+    lease = await runtime.repo_locks.acquire(config["repositories"]["default"], operation="test_holder")
+    try:
+        refused = await runtime.integrate_worker(worker="Locked Implementer")
+        isolated = await runtime.start_worker(name="Parallel Isolated", brief="Start safely.", repo_path=config["repositories"]["default"])
+        shared = await runtime.start_worker(
+            name="Shared Writer",
+            brief="Write in base checkout.",
+            repo_path=config["repositories"]["default"],
+            workspace_mode="shared_write",
+        )
+    finally:
+        lease.release()
+
+    assert refused["repo_busy"] is True
+    assert refused["applied"] is False
+    assert not (Path(config["repositories"]["default"]) / "worker-note.txt").exists()
+    assert isolated["accepted"] is True
+    assert isolated["workspace_mode"] == "isolated_write"
+    assert shared["accepted"] is False
+    assert shared["repo_busy"] is True
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ Phase 4 adds the missing human management act:
 Use this worker's result.
 ```
 
-The wrapper now lets ChatGPT preview whether an isolated writing worker's changes can be applied to the base checkout, then apply the accepted result explicitly.
+PatchBay now lets ChatGPT preview whether an isolated writing worker's changes can be applied to the base checkout, then apply the accepted result explicitly.
 
 This is not a merge queue, PR system, reviewer bureaucracy, branch-management platform, or automatic promotion engine. It is the smallest reliable bridge between a worker's private desk and the main checkout.
 

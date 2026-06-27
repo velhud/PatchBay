@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import ToolHandler
+from patchbay.tools.handler import ToolHandler
 
 
 class DummyJobManager:
@@ -65,12 +65,12 @@ async def test_codex_get_config_never_returns_raw_local_config(monkeypatch, tmp_
     assert "config" not in result
     assert "dummy-secret-value-that-should-not-return" not in serialized
     assert "/example/project/path" not in serialized
-    assert result["wrapper_config"]["power_tools"]["direct_write"] is False
-    assert result["wrapper_config"]["tool_mode"] == "worker"
-    assert result["wrapper_config"]["power_tools"]["bash_mode"] == "off"
-    assert result["wrapper_config"]["power_tools"]["codex_session_read"] is False
-    assert result["wrapper_config"]["power_tools"]["codex_home_configured"] is False
-    assert "sandbox_tool_exposed" not in result["wrapper_config"]
+    assert result["patchbay_config"]["power_tools"]["direct_write"] is False
+    assert result["patchbay_config"]["tool_mode"] == "worker"
+    assert result["patchbay_config"]["power_tools"]["bash_mode"] == "off"
+    assert result["patchbay_config"]["power_tools"]["codex_session_read"] is False
+    assert result["patchbay_config"]["power_tools"]["codex_home_configured"] is False
+    assert "sandbox_tool_exposed" not in result["patchbay_config"]
     assert result["capabilities"] == {"json_events": {"stage": "stable", "enabled": True}}
 
 
@@ -113,14 +113,14 @@ async def test_codex_get_config_reports_auth_without_returning_token(monkeypatch
     async def fake_create_subprocess_exec(*args, **kwargs):
         return FakeProcess()
 
-    monkeypatch.setenv("CODEX_MCP_HTTP_TOKEN", "auth-fixture-value-not-returned")
+    monkeypatch.setenv("PATCHBAY_HTTP_TOKEN", "auth-fixture-value-not-returned")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     handler = ToolHandler(
         {
             "server": {"host": "127.0.0.1", "port": 8000, "enable_cors": False},
-            "auth": {"token_env": "CODEX_MCP_HTTP_TOKEN", "allow_query_token": True},
+            "auth": {"token_env": "PATCHBAY_HTTP_TOKEN", "allow_query_token": True},
             "repositories": {"default": ".", "allowed": ["."]},
             "security": {"default_sandbox": "read-only"},
             "logging": {"access_log": False},
@@ -132,7 +132,7 @@ async def test_codex_get_config_reports_auth_without_returning_token(monkeypatch
     result = await handler._codex_get_config({})
     serialized = json.dumps(result)
 
-    assert result["wrapper_config"]["http_auth"]["enabled"] is True
-    assert result["wrapper_config"]["http_auth"]["token_configured"] is True
-    assert result["wrapper_config"]["http_auth"]["token_returned"] is False
+    assert result["patchbay_config"]["http_auth"]["enabled"] is True
+    assert result["patchbay_config"]["http_auth"]["token_configured"] is True
+    assert result["patchbay_config"]["http_auth"]["token_returned"] is False
     assert "auth-fixture-value-not-returned" not in serialized

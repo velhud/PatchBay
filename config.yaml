@@ -17,11 +17,10 @@ app:
 
 auth:
   enabled: false
-  token_env: CODEX_MCP_HTTP_TOKEN
+  token_env: PATCHBAY_HTTP_TOKEN
   allow_query_token: true
   query_token_names:
-    - codex_mcp_token
-    - codexpro_token
+    - patchbay_token
     - token
   require_for_non_loopback: true
   require_for_tunnel: true
@@ -82,11 +81,23 @@ workers:
   worktree_root: ""
   ignore_user_config: false
 
+artifacts:
+  enabled: true
+  root:
+  allowed_download_schemes:
+    - http
+    - https
+  download_timeout_seconds: 60
+  max_archive_bytes:
+  max_unpacked_bytes:
+  max_file_count:
+  max_single_file_bytes:
+
 logging:
   level: INFO
-  audit_file: ./logs/audit.log
-  job_logs_dir: ./logs/jobs
-  job_state_dir: ./logs/jobs/state
+  audit_file:
+  job_logs_dir:
+  job_state_dir:
   job_log_max_bytes: 200000
   write_raw_job_logs: false
   access_log: false

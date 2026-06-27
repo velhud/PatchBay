@@ -1,12 +1,12 @@
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import yaml
 
@@ -34,9 +34,9 @@ def base_config(root):
         "app": {"widget_domain": "https://web-sandbox.oaiusercontent.com"},
         "auth": {
             "enabled": False,
-            "token_env": "CODEX_MCP_HTTP_TOKEN",
+            "token_env": "PATCHBAY_HTTP_TOKEN",
             "allow_query_token": True,
-            "query_token_names": ["codex_mcp_token"],
+            "query_token_names": ["patchbay_token"],
             "require_for_non_loopback": True,
             "require_for_tunnel": True,
             "tunnel_mode": "none",
@@ -73,6 +73,20 @@ def base_config(root):
     }
 
 
+def tunnel_ready_event(output):
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(output):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(output[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("event") == "tunnel_ready":
+            return payload
+    raise AssertionError(output)
+
+
 def test_start_script_supervises_fake_cloudflare_tunnel(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
@@ -91,8 +105,8 @@ def test_start_script_supervises_fake_cloudflare_tunnel(tmp_path):
     config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
     token_value = "fixture-" + "http-token"
     env = dict(os.environ)
-    env["CODEX_MCP_HOME"] = str(tmp_path / "home")
-    env["CODEX_MCP_HTTP_TOKEN"] = token_value
+    env["PATCHBAY_HOME"] = str(tmp_path / "home")
+    env["PATCHBAY_HTTP_TOKEN"] = token_value
 
     process = subprocess.Popen(
         [
@@ -127,13 +141,23 @@ def test_start_script_supervises_fake_cloudflare_tunnel(tmp_path):
             line = process.stdout.readline()
             if line:
                 output += line
-                if '"event": "tunnel_ready"' in output and '"server_url"' in output and '"runtime_status_path"' in output:
+                if (
+                    '"event": "tunnel_ready"' in output
+                    and '"server_url"' in output
+                    and '"runtime_status_path"' in output
+                    and line.strip() == "}"
+                ):
                     break
             elif process.poll() is not None:
                 raise AssertionError(f"launcher exited early:\n{output}")
         assert '"event": "tunnel_ready"' in output
-        token_query = "codex_" + "mcp_token"
-        assert f"https://unit-test.trycloudflare.com/mcp?{token_query}=%3Credacted%3E" in output
+        token_query = "patchbay_" + "token"
+        ready = tunnel_ready_event(output)
+        parsed_url = urlparse(ready["server_url"])
+        assert parsed_url.scheme == "https"
+        assert parsed_url.hostname == "unit-test.trycloudflare.com"
+        assert parsed_url.path == "/mcp"
+        assert parse_qs(parsed_url.query) == {token_query: ["<redacted>"]}
 
         request = urllib.request.Request(f"http://127.0.0.1:{port}/")
         request.add_header("Authorization", f"Bearer {token_value}")
@@ -142,13 +166,15 @@ def test_start_script_supervises_fake_cloudflare_tunnel(tmp_path):
             payload = json.loads(response.read().decode("utf-8"))
             assert payload["transport"] == "streamable-http"
 
-        match = re.search(r'"runtime_status_path": "([^"]+)"', output)
-        assert match, output
-        runtime_status = Path(match.group(1))
+        runtime_status = Path(ready["runtime_status_path"])
         assert runtime_status.exists()
-        status_text = runtime_status.read_text(encoding="utf-8")
+        status = json.loads(runtime_status.read_text(encoding="utf-8"))
+        status_text = json.dumps(status)
         assert token_value not in status_text
-        assert "unit-test.trycloudflare.com" in status_text
+        status_url = urlparse(status["server_url"])
+        assert status_url.hostname == "unit-test.trycloudflare.com"
+        assert status_url.path == "/mcp"
+        assert parse_qs(status_url.query) == {token_query: ["<redacted>"]}
     finally:
         if process.poll() is None:
             process.terminate()

@@ -1,12 +1,12 @@
 # Decisions, Risks, And Deferred Work
 
-Status: Phase 4 worker integration implemented; app-server backend decisions remain pending.
+Status: Phase 4 worker integration and artifact inbox transfer implemented; app-server backend decisions remain pending.
 
 ## Confirmed Decisions
 
 ### Add A Facade, Do Not Replace The Runtime
 
-The existing wrapper remains the mechanical substrate. The worker layer composes it into a better product abstraction.
+The existing PatchBay remains the mechanical substrate. The worker layer composes it into a better product abstraction.
 
 Rejected initially:
 
@@ -20,7 +20,7 @@ No additional internal orchestrator model is introduced. ChatGPT owns delegation
 
 Rejected initially:
 
-- fixed manager/worker graph inside the wrapper;
+- fixed manager/worker graph inside PatchBay;
 - deterministic role pipeline;
 - second LLM supervisor between ChatGPT and Codex.
 

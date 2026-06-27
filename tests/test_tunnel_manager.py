@@ -1,6 +1,6 @@
 import pytest
 
-from tunnel_manager import (
+from patchbay.connector.tunnels import (
     ProcessLogTail,
     TunnelConfigurationError,
     build_tunnel_spec,

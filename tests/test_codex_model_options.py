@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from codex_model_options import (
+from patchbay.workers.model_options import (
     build_reasoning_config_override,
     validate_reasoning_effort,
     validate_worker_model,
@@ -38,7 +38,7 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
             return subprocess.CompletedProcess(cmd, 0, "codex-cli 0.test\n", "")
         raise AssertionError(cmd)
 
-    monkeypatch.setattr("codex_model_options.subprocess.run", fake_run)
+    monkeypatch.setattr("patchbay.workers.model_options.subprocess.run", fake_run)
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     (codex_home / "config.toml").write_text(

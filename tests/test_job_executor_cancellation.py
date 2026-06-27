@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from job_executor import JobExecutor, STALE_RUNNING_JOB_ERROR
-from job_manager import JobManager, JobState
+from patchbay.jobs.executor import JobExecutor, STALE_RUNNING_JOB_ERROR
+from patchbay.jobs.manager import JobManager, JobState
 
 
 def make_config(tmp_path):
@@ -93,6 +93,7 @@ def test_reconcile_stale_running_job_marks_failed(tmp_path):
 
 def test_reconcile_stale_running_job_honors_process_tracking_and_grace(tmp_path):
     config = make_config(tmp_path)
+    config["server"]["max_concurrent_jobs"] = 0
     manager = JobManager(config)
     executor = JobExecutor(config, manager)
     tracked_job_id = manager.create_job("plan", "tracked", config["repositories"]["default"], {})

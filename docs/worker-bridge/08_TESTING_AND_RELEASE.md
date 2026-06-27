@@ -1,6 +1,6 @@
 # Testing And Release Plan
 
-Status: Phase 4 worker gates implemented; direct MCP and tokenized public-tunnel evidence exists; real ChatGPT Developer Mode UI validation remains a release gate.
+Status: Phase 4 worker gates, artifact inbox transfer, and shared-server multi-client coordination implemented; direct MCP and tokenized public-tunnel artifact-flow evidence exists; real ChatGPT Developer Mode UI validation remains a release gate.
 
 ## Testing Principle
 
@@ -12,15 +12,16 @@ Do not build a large semantic grading system for worker report quality before re
 
 ```bash
 codex --version
-PYTHONDONTWRITEBYTECODE=1 python -m compileall -q .
+PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests
 PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q
 PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase1_eval.py --timeout 600
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase2_eval.py --timeout 900
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase3_eval.py --timeout 900
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase4_eval.py --timeout 900
-PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --output-dir validation-reports/real_mcp_trial
-PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safety-cases --output-dir validation-reports/real_mcp_trial
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safety-cases
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json
 ```
 
 Record:
@@ -33,7 +34,7 @@ Record:
 
 ## Unit Test Matrix
 
-Future worker phases should cover:
+Worker regression coverage should cover:
 
 - worker persistence;
 - name resolution;
@@ -47,6 +48,10 @@ Future worker phases should cover:
 - peer-worker report/change/diff context;
 - team-report projection;
 - integration preview/apply;
+- session-local tool modes;
+- shared-server ownership flags and explicit takeover;
+- per-repository mutation locks and `repo_busy` refusals;
+- multi-client direct MCP trial evidence;
 - public tool descriptors and mode filtering;
 - compatibility with existing low-level tools.
 
@@ -119,10 +124,13 @@ These are release-critical because the product is specifically a ChatGPT-to-Code
 - ChatGPT starts an independent review worker.
 - ChatGPT asks for targeted evidence, not raw transcripts.
 - ChatGPT explicitly integrates an accepted result and receives conflict explanation when needed.
+- ChatGPT understands that one Server URL is shared local state and asks before takeover when another conversation owns a worker or artifact.
 
 ## Tunnel And Auth
 
-Before public release, repeat representative worker flows through supported token-gated public tunnel configuration if tunnel use is advertised. Local direct public-tunnel validation has proved MCP health, `initialize`, and worker-mode `tools/list` through ngrok; it did not prove ChatGPT UI setup, natural tool selection, or ChatGPT-originated worker flows.
+Before public release, repeat representative worker flows through supported token-gated public tunnel configuration if tunnel use is advertised. Local direct public-tunnel validation has proved MCP health, `initialize`, worker-mode `tools/list`, artifact inbox transfer, isolated worker artifact read, integration exclusion, base checkout preservation, and cleanup through ngrok; it did not prove ChatGPT UI setup, natural tool selection, or ChatGPT-originated worker flows from the actual UI.
+
+The direct multi-client MCP trial is the current regression gate for one shared local Server URL. It must pass before treating shared-server behavior as documented: two logical sessions, session-local tool modes, shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, preview-before-integrate, no automatic commit, and sanitized evidence.
 
 Verify:
 
@@ -165,7 +173,7 @@ Verify:
 ### W5: Release Ready
 
 - Real ChatGPT Developer Mode worker scenarios pass.
-- Direct tunnel/auth MCP scenario passes, and ChatGPT-originated tunnel worker flow passes if included.
+- Direct tunnel/auth MCP scenario passes, and ChatGPT-originated tunnel worker flow passes from the real UI if included.
 - Documentation accurately states verified versus pending behavior.
 - App-server is either verified and enabled or explicitly deferred.
 

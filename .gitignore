@@ -12,7 +12,26 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+build/
+dist/
+*.egg-info/
 .idea/
 .vscode/
 validation-reports/
 .local/
+
+# Local/private planning and campaign artifacts.
+.agents/
+.architect/
+BOT_FINDINGS_FIX_PLAN.md
+REPOSITORY_REORGANIZATION_PREPLAN.md
+codex_setup.md
+docs/CAMPAIGN_ACTIONS.md
+docs/REPO_MAP.md
+docs/*CAMPAIGN*.md
+docs/worker-bridge/PHASE4_5_*.md
+launch_prompt.txt
+resume_prompt.txt
+prepared_update/
+scripts/*campaign*.py
+skills/

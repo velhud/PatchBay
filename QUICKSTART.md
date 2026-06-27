@@ -21,7 +21,7 @@ tmpdir=$(mktemp -d)
 mkdir -p "$tmpdir/repo"
 cd "$tmpdir/repo"
 git init
-printf '# Disposable Codex MCP Eval\n' > README.md
+printf '# Disposable PatchBay Eval\n' > README.md
 mkdir -p src
 printf 'print("hello")\n' > src/app.py
 git add README.md src/app.py
@@ -30,7 +30,7 @@ git -c user.name='Eval User' -c user.email='eval@example.invalid' commit -m init
 
 ## 3. Check Connector Readiness
 
-From the wrapper repo:
+From PatchBay repo:
 
 ```bash
 python scripts/doctor.py
@@ -51,7 +51,18 @@ Local endpoint:
 http://127.0.0.1:8000/mcp
 ```
 
-For local-only MCP clients, no token is required by default. If `CODEX_MCP_HTTP_TOKEN` is set, the same endpoint requires Bearer or query-token auth.
+For local-only MCP clients, no token is required by default. If `PATCHBAY_HTTP_TOKEN` is set, the same endpoint requires Bearer or query-token auth.
+
+For multi-repository testing, include every repository when starting the server. `--root` is the default workspace and resets allowed roots to that workspace unless extra roots are supplied:
+
+```bash
+python scripts/start.py \
+  --root "$repo_a" \
+  --allow-root "$repo_b" \
+  --tool-mode worker
+```
+
+If ChatGPT or another MCP client gets "Path is outside configured allowed roots," restart with the missing repository passed through `--allow-root` or add it to `repositories.allowed`.
 
 ## 5. Run The Local MCP Eval
 
@@ -69,7 +80,7 @@ In the current full-power profile it also verifies direct write and full bash on
 ChatGPT web usually needs a public HTTPS URL to reach a local MCP server. Use a token before any tunnel:
 
 ```bash
-export CODEX_MCP_HTTP_TOKEN='<long-random-token>'
+export PATCHBAY_HTTP_TOKEN='<long-random-token>'
 python scripts/start.py \
   --root "$tmpdir/repo" \
   --tunnel-mode cloudflare \
@@ -79,7 +90,7 @@ python scripts/start.py \
 
 The launcher supervises the local server and tunnel process together. It does not install `cloudflared` or `ngrok`; install the provider CLI yourself. Start real ChatGPT validation with `--tool-mode worker` so ChatGPT sees the worker-first surface instead of the full power-user catalog.
 
-During a run, `codex_tool_mode_info` can compare `worker`, `standard`, `full`, and `minimal`; `codex_tool_mode_switch` can request a process-local mode change. Direct MCP clients that re-run `tools/list` see the new catalog. ChatGPT Developer Mode may still require refreshing or reconnecting the connector before newly exposed tools appear.
+During a run, `codex_tool_mode_info` can compare `worker`, `standard`, `full`, and `minimal`; `codex_tool_mode_switch` can request a session-local mode change. Direct MCP clients that re-run `tools/list` on the same MCP session see the new catalog, while other sessions keep their own mode. ChatGPT Developer Mode may still require refreshing or reconnecting the connector before newly exposed tools appear.
 
 For a stable provider hostname:
 
@@ -115,14 +126,14 @@ Settings
 Use these Create App settings:
 
 ```text
-Name: Codex MCP Wrapper
+Name: PatchBay
 Description: Local workspace and Codex bridge for ChatGPT coding
 Connection: Server URL
 Server URL: paste the full URL printed by scripts/start.py --reveal-token
 Authentication: No Authentication / None
 ```
 
-Choose `No Authentication / None` inside ChatGPT because the copied Server URL already carries the wrapper token as a query parameter. Do not configure OAuth or an API key in ChatGPT for this local bridge.
+Choose `No Authentication / None` inside ChatGPT because the copied Server URL already carries PatchBay token as a query parameter. Do not configure OAuth or an API key in ChatGPT for this local bridge.
 
 Keep `Enforce CSP in developer mode` enabled. The tool card resource is designed for the CSP-enabled path.
 
@@ -180,9 +191,31 @@ Call `codex_worker_start`, then inspect with:
 {"worker": "Repository Investigator", "wait_seconds": 10}
 ```
 
-using `codex_worker_inspect`. Use `{"worker": "Repository Implementer", "view": "changes"}` to list worker changes, `{"worker": "Repository Implementer", "view": "file", "file_path": "worker-note.txt"}` to read worker-side file content before integration, and `{"worker": "Repository Implementer", "view": "diff", "file_path": "worker-note.txt"}` to inspect one file's patch. `codex_read_file` reads the base checkout, so it will not see worker-created files until after explicit integration. After restarting the wrapper, `codex_worker_list` should still show same-workspace workers, and `codex_worker_message` should continue the same Codex conversation by name when the worker has a session.
+using `codex_worker_inspect`. Use `{"worker": "Repository Implementer", "view": "changes"}` to list worker changes, `{"worker": "Repository Implementer", "view": "file", "file_path": "worker-note.txt"}` to read worker-side file content before integration, and `{"worker": "Repository Implementer", "view": "diff", "file_path": "worker-note.txt"}` to inspect one file's patch. `codex_read_file` reads the base checkout, so it will not see worker-created files until after explicit integration. After restarting PatchBay, `codex_worker_list` should still show same-workspace workers, and `codex_worker_message` should continue the same Codex conversation by name when the worker has a session.
 
-For local worker-first testing without a tunnel, start the wrapper with:
+If ChatGPT creates a file or zip that should be used by a local worker, first import it:
+
+```json
+{
+  "action": "import_file",
+  "artifact_file": "<ChatGPT supplied file parameter>",
+  "label": "update package"
+}
+```
+
+using `codex_worker_inbox`. Then pass the returned id to an isolated worker:
+
+```json
+{
+  "name": "Repository Implementer",
+  "brief": "Use the imported update package as source material and adapt it to this repo.",
+  "context_from_artifacts": ["art_example123"]
+}
+```
+
+Artifact import is local context only: it does not edit the repo. Multiple files or zips can be imported in sequence, then attached to `codex_worker_start` or later `codex_worker_message` calls.
+
+For local worker-first testing without a tunnel, start PatchBay with:
 
 ```bash
 python scripts/start.py --root "$tmpdir/repo" --tool-mode worker

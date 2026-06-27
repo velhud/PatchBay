@@ -6,8 +6,8 @@ from pathlib import Path
 
 import yaml
 
-from launcher import launcher_json_payload, prepare_start
-from profile_store import read_workspace_profile
+from patchbay.connector.launcher import launcher_json_payload, prepare_start
+from patchbay.connector.profiles import read_workspace_profile
 
 
 def base_config(root):
@@ -25,9 +25,9 @@ def base_config(root):
         "app": {"widget_domain": "https://web-sandbox.oaiusercontent.com"},
         "auth": {
             "enabled": False,
-            "token_env": "CODEX_MCP_HTTP_TOKEN",
+            "token_env": "PATCHBAY_HTTP_TOKEN",
             "allow_query_token": True,
-            "query_token_names": ["codex_mcp_token"],
+            "query_token_names": ["patchbay_token"],
             "require_for_non_loopback": True,
             "require_for_tunnel": True,
             "tunnel_mode": "none",
@@ -57,7 +57,7 @@ def test_prepare_start_applies_cli_overrides_and_writes_runtime_config(tmp_path)
     root.mkdir()
     extra = tmp_path / "extra"
     extra.mkdir()
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
 
     prepared = prepare_start(
         base_config(root),
@@ -85,7 +85,7 @@ def test_prepare_start_applies_cli_overrides_and_writes_runtime_config(tmp_path)
 def test_prepare_start_accepts_worker_tool_mode(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
 
     prepared = prepare_start(
         base_config(root),
@@ -99,10 +99,27 @@ def test_prepare_start_accepts_worker_tool_mode(tmp_path):
     assert prepared["status"]["ready"] is True
 
 
+def test_prepare_start_resolves_default_logging_paths_to_runtime_home(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
+    config = base_config(root)
+    config["logging"].update({"audit_file": None, "job_logs_dir": None, "job_state_dir": None})
+
+    prepared = prepare_start(config, root=str(root), use_profile=False, environ=env)
+
+    logging_config = prepared["runtime_config"]["logging"]
+    assert logging_config["audit_file"] == str(tmp_path / "home" / "runtime" / "logs" / "audit.log")
+    assert logging_config["job_logs_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs")
+    assert logging_config["job_state_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs" / "state")
+    assert logging_config["worktrees_dir"] == str(tmp_path / "home" / "runtime" / "worktrees" / "jobs")
+    assert not (root / "logs").exists()
+
+
 def test_prepare_start_public_url_requires_token(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
 
     prepared = prepare_start(
         base_config(root),
@@ -120,7 +137,7 @@ def test_prepare_start_public_url_requires_token(tmp_path):
 def test_prepare_start_process_tunnel_requires_token_and_records_tunnel_config(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
 
     prepared = prepare_start(
         base_config(root),
@@ -142,7 +159,7 @@ def test_prepare_start_saves_tunnel_profile_without_token_values(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     token_value = "fixture-" + "token-value"
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home"), "CODEX_MCP_HTTP_TOKEN": token_value}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home"), "PATCHBAY_HTTP_TOKEN": token_value}
 
     saved = prepare_start(
         base_config(root),
@@ -167,7 +184,7 @@ def test_prepare_start_saves_and_reuses_profile_without_tokens(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     token_value = "fixture-" + "token-value"
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home"), "CODEX_MCP_HTTP_TOKEN": token_value}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home"), "PATCHBAY_HTTP_TOKEN": token_value}
 
     saved = prepare_start(
         base_config(root),
@@ -185,7 +202,7 @@ def test_prepare_start_saves_and_reuses_profile_without_tokens(tmp_path):
 
     reused = prepare_start(base_config(root), root=str(root), use_profile=True, environ=env)
     assert reused["profile"]["used"] is True
-    expected_query = "codex_" + "mcp_token=%3Credacted%3E"
+    expected_query = "patchbay_" + "token=%3Credacted%3E"
     assert reused["status"]["connection"]["server_url"] == f"https://bridge.example/mcp?{expected_query}"
     assert reused["runtime_config"]["power_tools"]["bash_mode"] == "safe"
 
@@ -193,12 +210,12 @@ def test_prepare_start_saves_and_reuses_profile_without_tokens(tmp_path):
 def test_launcher_json_payload_is_bounded(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
-    env = {"CODEX_MCP_HOME": str(tmp_path / "home")}
+    env = {"PATCHBAY_HOME": str(tmp_path / "home")}
     prepared = prepare_start(base_config(root), root=str(root), use_profile=False, environ=env)
 
     payload = launcher_json_payload(prepared)
 
-    assert payload["name"] == "codex-mcp-wrapper"
+    assert payload["name"] == "patchbay"
     assert payload["ready"] is True
     assert "runtime_config" not in payload
     assert payload["connection"]["local_mcp_url"].endswith("/mcp")
@@ -210,8 +227,8 @@ def test_start_script_print_only_json(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
     env = dict(os.environ)
-    env["CODEX_MCP_HOME"] = str(tmp_path / "home")
-    env.pop("CODEX_MCP_HTTP_TOKEN", None)
+    env["PATCHBAY_HOME"] = str(tmp_path / "home")
+    env.pop("PATCHBAY_HTTP_TOKEN", None)
 
     completed = subprocess.run(
         [
@@ -241,14 +258,53 @@ def test_start_script_print_only_json(tmp_path):
     assert Path(payload["runtime_config_path"]).exists()
 
 
+def test_start_script_print_only_json_includes_extra_allowed_roots(tmp_path):
+    root = tmp_path / "repo-a"
+    extra = tmp_path / "repo-b"
+    root.mkdir()
+    extra.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
+    env = dict(os.environ)
+    env["PATCHBAY_HOME"] = str(tmp_path / "home")
+    env.pop("PATCHBAY_HTTP_TOKEN", None)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/start.py",
+            "--config",
+            str(config_path),
+            "--root",
+            str(root),
+            "--allow-root",
+            str(extra),
+            "--print-only",
+            "--json",
+            "--no-profile",
+        ],
+        cwd=".",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    runtime_config = yaml.safe_load(Path(payload["runtime_config_path"]).read_text(encoding="utf-8"))
+    assert runtime_config["repositories"]["default"] == str(root.resolve())
+    assert runtime_config["repositories"]["allowed"] == [str(root.resolve()), str(extra.resolve())]
+
+
 def test_start_script_accepts_worker_tool_mode(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
     env = dict(os.environ)
-    env["CODEX_MCP_HOME"] = str(tmp_path / "home")
-    env.pop("CODEX_MCP_HTTP_TOKEN", None)
+    env["PATCHBAY_HOME"] = str(tmp_path / "home")
+    env.pop("PATCHBAY_HTTP_TOKEN", None)
 
     completed = subprocess.run(
         [
@@ -285,8 +341,8 @@ def test_start_script_print_only_reveal_token_is_explicit(tmp_path):
     config_path.write_text(yaml.safe_dump(base_config(root)), encoding="utf-8")
     token_value = "fixture-token-value"
     env = dict(os.environ)
-    env["CODEX_MCP_HOME"] = str(tmp_path / "home")
-    env["CODEX_MCP_HTTP_TOKEN"] = token_value
+    env["PATCHBAY_HOME"] = str(tmp_path / "home")
+    env["PATCHBAY_HTTP_TOKEN"] = token_value
 
     redacted = subprocess.run(
         [

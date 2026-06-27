@@ -1,0 +1,5 @@
+[mcp_servers.patchbay]
+url = "http://127.0.0.1:8000/mcp"
+enabled = true
+startup_timeout_sec = 10
+tool_timeout_sec = 600

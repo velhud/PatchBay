@@ -4,7 +4,7 @@ Status: Phase 2 isolated writing worker facade implemented; integration phases p
 
 ## Executive Decision
 
-`codex-mcp-wrapper` remains the release repository and the local control point between ChatGPT and Codex. The worker bridge is a semantic layer above the existing job, session, workspace, and worktree primitives.
+`patchbay` remains the release repository and the local control point between ChatGPT and Codex. The worker bridge is a semantic layer above the existing job, session, workspace, and worktree primitives.
 
 The transition is:
 
@@ -19,11 +19,11 @@ Phase 2 primary abstraction:
 ChatGPT manages named isolated writing workers through natural language.
 ```
 
-The existing wrapper continues to own exact mechanics. Codex continues to own local engineering judgment. ChatGPT continues to own user-facing management, context selection, delegation, and final synthesis.
+The existing PatchBay continues to own exact mechanics. Codex continues to own local engineering judgment. ChatGPT continues to own user-facing management, context selection, delegation, and final synthesis.
 
 ## Problem Being Solved
 
-The current wrapper can launch and inspect Codex work, but ChatGPT must currently reason in low-level concepts:
+The current PatchBay can launch and inspect Codex work, but ChatGPT must currently reason in low-level concepts:
 
 - job IDs;
 - plan/apply job mode;
@@ -93,7 +93,7 @@ Codex workers own:
 - coding, testing, debugging, and revision;
 - concise natural-language reporting.
 
-The wrapper owns:
+PatchBay owns:
 
 - MCP transport and descriptors;
 - authorization and allowed roots;

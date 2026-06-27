@@ -10,6 +10,7 @@ The implemented worker surface is:
 
 ```text
 codex_worker_options
+codex_worker_inbox
 codex_worker_start
 codex_worker_message
 codex_worker_list
@@ -28,6 +29,24 @@ Purpose: return a bounded setup menu for selecting a Codex model and reasoning e
 
 Behavior loads model metadata from the installed Codex runtime/catalog when available and returns only safe public fields. It does not expose raw Codex config paths, provider/auth settings, prompts, base instructions, or full catalog blobs.
 
+### `codex_worker_inbox`
+
+Purpose: import ChatGPT-generated files or zip packages into local PatchBay runtime storage, then return artifact ids that can be attached to isolated workers.
+
+Input for import:
+
+```json
+{
+  "action": "import_file",
+  "artifact_file": "{ChatGPT Apps file parameter}",
+  "label": "optional short label"
+}
+```
+
+Other actions: `list`, `inspect`, and `cleanup`.
+
+Importing an artifact does not edit the repository. `codex_worker_start` and `codex_worker_message` accept `context_from_artifacts` to copy selected artifacts into `.ai-bridge/imported-artifacts/` inside an isolated worker worktree. That reserved directory is excluded from worker changes, diffs, integration preview, and apply.
+
 ### `codex_worker_start`
 
 Purpose: create a named worker and send its first natural-language assignment.
@@ -39,7 +58,8 @@ Input:
   "name": "Connector Investigator",
   "brief": "Inspect continuation behavior and report the smallest clean fix.",
   "repo_path": "/optional/allowed/repo",
-  "workspace_mode": "isolated_write"
+  "workspace_mode": "isolated_write",
+  "context_from_artifacts": ["art_example123"]
 }
 ```
 
@@ -117,7 +137,7 @@ This is implemented in Phase 4. It applies the worker patch to the base checkout
 
 Purpose: interrupt active work.
 
-Behavior preserves the worker identity and prior conversation reference. `cleanup_workspace=true` explicitly discards an isolated worker worktree and private branch. After cleanup, the worker history remains inspectable but the wrapper refuses to continue that worker instead of falling back to the base checkout.
+Behavior preserves the worker identity and prior conversation reference. `cleanup_workspace=true` explicitly discards an isolated worker worktree and private branch. After cleanup, the worker history remains inspectable but PatchBay refuses to continue that worker instead of falling back to the base checkout.
 
 ## Worker Tool Mode
 

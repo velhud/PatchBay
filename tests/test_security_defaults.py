@@ -2,6 +2,8 @@ from pathlib import Path
 
 import yaml
 
+from patchbay.connector.profiles import normalize_logging_paths
+
 
 def load_default_config():
     return yaml.safe_load(Path("config.yaml").read_text())
@@ -32,10 +34,10 @@ def test_request_size_limit_configured_by_default():
 def test_http_auth_defaults_are_public_exposure_ready():
     config = load_default_config()
     assert config["auth"]["enabled"] is False
-    assert config["auth"]["token_env"] == "CODEX_MCP_HTTP_TOKEN"
+    assert config["auth"]["token_env"] == "PATCHBAY_HTTP_TOKEN"
     assert config["auth"]["allow_query_token"] is True
-    assert "codex_mcp_token" in config["auth"]["query_token_names"]
-    assert "codexpro_token" in config["auth"]["query_token_names"]
+    assert "patchbay_token" in config["auth"]["query_token_names"]
+    assert "token" in config["auth"]["query_token_names"]
     assert config["auth"]["require_for_non_loopback"] is True
     assert config["auth"]["require_for_tunnel"] is True
     assert config["auth"]["tunnel_mode"] == "none"
@@ -51,14 +53,21 @@ def test_tunnel_defaults_do_not_expose_network_or_store_tokens():
     assert tunnel["timeout_seconds"] == 45
 
 
-def test_prompt_and_response_body_logging_disabled_by_default():
+def test_prompt_and_response_body_logging_disabled_by_default(tmp_path):
     config = load_default_config()
     assert config["logging"].get("access_log", False) is False
-    assert config["logging"].get("job_state_dir") == "./logs/jobs/state"
+    assert config["logging"].get("audit_file") is None
+    assert config["logging"].get("job_logs_dir") is None
+    assert config["logging"].get("job_state_dir") is None
     assert config["logging"].get("job_log_max_bytes") == 200_000
     assert config["logging"].get("write_raw_job_logs", False) is False
     assert config["logging"].get("log_prompt_bodies", False) is False
     assert config["logging"].get("log_response_bodies", False) is False
+
+    normalized = normalize_logging_paths(config, {"PATCHBAY_HOME": str(tmp_path / "home")})
+    assert normalized["logging"]["audit_file"] == str(tmp_path / "home" / "runtime" / "logs" / "audit.log")
+    assert normalized["logging"]["job_logs_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs")
+    assert normalized["logging"]["job_state_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs" / "state")
 
 
 def test_child_process_environment_is_inherited_for_full_permission_profile():

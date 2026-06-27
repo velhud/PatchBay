@@ -4,22 +4,30 @@ The test strategy separates four things:
 
 - static/unit checks that do not require Codex login;
 - live local MCP probing without ChatGPT or a public tunnel;
-- real Codex CLI execution through the wrapper;
-- release evals that still need real ChatGPT Developer Mode coverage. Direct tokenized public-tunnel MCP probing is tracked separately from ChatGPT UI/tool-selection proof.
+- real Codex CLI execution through PatchBay;
+- release evals that still need real ChatGPT Developer Mode coverage. Direct tokenized public-tunnel MCP simulation is tracked separately from ChatGPT UI/tool-selection proof.
+
+For the detailed release matrix, see [docs/testing/evals.md](docs/testing/evals.md).
 
 ## Baseline
 
+Install runtime and test dependencies before running the suite:
+
+```bash
+pip install -r requirements.txt -e ".[test]"
+```
+
 ```bash
 codex --version
-PYTHONDONTWRITEBYTECODE=1 python -m compileall -q .
+PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests
 PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q
 PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase1_eval.py --timeout 600
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase2_eval.py --timeout 900
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase3_eval.py --timeout 900
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase4_eval.py --timeout 900
-PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --output-dir validation-reports/real_mcp_trial
-PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safety-cases --output-dir validation-reports/real_mcp_trial
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safety-cases
 ```
 
 Current verified Codex CLI baseline:
@@ -45,10 +53,11 @@ The unit suite verifies:
 - gated, bounded, redacted Codex session transcript reads;
 - process cancellation for running jobs;
 - durable named worker start/message/list/inspect/stop behavior;
+- worker artifact inbox import/list/inspect, repeated imports, structural archive rejection, sensitive-looking artifact filenames, and worker attachment;
 - worker model/reasoning option discovery, sanitized model catalog output, and inherited worker execution settings;
 - isolated worker worktree creation, same-worktree resume, change/file/diff views, workspace-scoped worker names, and explicit cleanup;
 - multi-worker context relay through `context_from_workers` and `context_detail`;
-- worker integration preview, dirty-base refusal, blocked-path refusal, conflict reporting, and explicit accepted-result application;
+- worker integration preview, dirty-base refusal, blocked-path refusal, artifact-context exclusion, conflict reporting, and explicit accepted-result application;
 - worker tool descriptors and worker-only mode;
 - durable real MCP worker trial evidence writer, sanitizer, and safety negative cases;
 - optional direct workspace write/edit and command power tools;
@@ -71,7 +80,7 @@ python scripts/start.py --root /absolute/path/to/allowed/repo --print-only --jso
 
 Expected output includes readiness checks, the local MCP URL, a redacted ChatGPT Server URL preview when token auth is enabled, and no raw token value.
 
-For public ChatGPT tunnel previews, set `CODEX_MCP_HTTP_TOKEN` before using `--public-base-url`; the launcher should fail closed without that token.
+For public ChatGPT tunnel previews, set `PATCHBAY_HTTP_TOKEN` before using `--public-base-url`; the launcher should fail closed without that token.
 
 ## Live Local MCP Eval
 
@@ -101,7 +110,7 @@ This test proves the local MCP surface behaves like a compact ChatGPT-style clie
 
 ## Direct Tokenized Public Tunnel Probe
 
-For connector and tunnel changes, run a disposable public-tunnel probe before attempting real ChatGPT UI validation. Current local validation has verified this through ngrok with a generated disposable token: missing token startup failed closed, Bearer-auth health passed, query-token MCP `initialize` passed, and worker-mode `tools/list` exposed worker tools while hiding low-level job status tools.
+For connector and tunnel changes, run a disposable public-tunnel probe before attempting real ChatGPT UI validation. Current validation has verified this through ngrok with a generated disposable token: missing token startup failed closed, Bearer-auth health passed, query-token MCP `initialize` passed, worker-mode `tools/list` exposed worker tools while hiding low-level job status tools, and an Apps-style file parameter drove `codex_worker_inbox` import/list/inspect, repeated import, `file://` rejection, isolated worker artifact attachment/read, artifact-context exclusion from integration, clean base checkout preservation, and worker cleanup.
 
 This proves public network reachability and token enforcement at the MCP level. It does not prove ChatGPT Developer Mode setup, tool selection, or ChatGPT-originated worker flows.
 
@@ -116,7 +125,7 @@ For execution changes, run a disposable real-Codex plan job through MCP. The exp
 5. call `codex_get_result`;
 6. confirm a clean structured summary and `session_ref` when Codex returns one.
 
-Current manual verification used Codex CLI `0.142.2` and confirmed the wrapper parses the current JSONL `item.completed` / `agent_message` result shape. Worker verification should record the current local `codex --version`.
+Current manual verification used Codex CLI `0.142.2` and confirmed PatchBay parses the current JSONL `item.completed` / `agent_message` result shape. Worker verification should record the current local `codex --version`.
 
 ## Real Codex Worker Continuity
 
@@ -131,7 +140,7 @@ Expected result:
 1. start one named read-only worker;
 2. complete its first Codex turn;
 3. capture a Codex session internally;
-4. reconstruct runtime objects to simulate wrapper restart;
+4. reconstruct runtime objects to simulate PatchBay restart;
 5. list the worker by name;
 6. continue the same Codex session by worker name;
 7. avoid exposing backend job/session ids or private paths in public worker output.
@@ -151,7 +160,7 @@ Expected result:
 2. create one external worker worktree;
 3. write only inside that worktree;
 4. keep the base checkout clean;
-5. reconstruct runtime objects to simulate wrapper restart;
+5. reconstruct runtime objects to simulate PatchBay restart;
 6. continue the same Codex session by worker name;
 7. reuse the same worker worktree;
 8. expose changed files and one-file diff only when requested;
@@ -185,18 +194,26 @@ After applying worker integration changes, run a direct MCP worker trial before 
 Run the durable direct-MCP worker trial when validating real MCP worker lifecycle evidence:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --output-dir validation-reports/real_mcp_trial
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py
 ```
 
-This writes progressive `calls.jsonl`, `results.json`, and `summary.md` artifacts under `validation-reports/real_mcp_trial/<timestamp>/`. It uses a disposable repo, a trial-specific runtime config, `worker` tool mode by default, and proves worker integration does not create a commit by comparing commit counts before and after `codex_worker_integrate`. The trial config runs worker Codex subprocesses with `--ignore-user-config`; Codex authentication still uses `CODEX_HOME`, but unrelated user-level MCP connector config is not loaded into validation workers.
+This writes progressive `calls.jsonl`, `results.json`, and `summary.md` artifacts under `.local/validation/real_mcp_trial/<timestamp>/`. It uses a disposable repo, a trial-specific runtime config, `worker` tool mode by default, and proves worker integration does not create a commit by comparing commit counts before and after `codex_worker_integrate`. The trial config runs worker Codex subprocesses with `--ignore-user-config`; Codex authentication still uses `CODEX_HOME`, but unrelated user-level MCP connector config is not loaded into validation workers.
 
 Run the safety variant to cover negative cases over the same real MCP path:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safety-cases --output-dir validation-reports/real_mcp_trial
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safety-cases
 ```
 
 The safety variant adds active-worker integration refusal, read-only worker integration refusal, dirty-base refusal, blocked `.env` refusal, untracked binary refusal, conflict preview refusal, cleanup isolation, connector/OAuth stderr noise scanning, and artifact leak scanning.
+
+Run the multi-client variant to cover one shared MCP server URL with two logical MCP sessions:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json
+```
+
+The multi-client variant verifies session-local tool modes, safe shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, preview-before-integrate, no automatic commit, connector/OAuth stderr noise scanning, and sanitized private evidence under `.local/validation/real_mcp_trial/<timestamp>/`.
 
 Start the server:
 
@@ -225,7 +242,7 @@ Save the returned `Mcp-Session-Id` header and use it for `tools/list`, `resource
 Before public release, run all of these against disposable repos:
 
 - real ChatGPT Developer Mode connection;
-- ChatGPT-originated worker flow through a token-gated public tunnel if tunnel use is advertised;
+- ChatGPT-originated worker flow through a token-gated public tunnel if tunnel use is advertised in the real ChatGPT UI;
 - direct workspace orientation from ChatGPT;
 - real `codex_plan_job` from ChatGPT;
 - real `codex_apply_job` from ChatGPT with diff inspection;
@@ -243,15 +260,16 @@ Before public release, run all of these against disposable repos:
 - `scripts/worker_phase2_eval.py --timeout 900` passes for isolated writing worker continuity, or the Codex-auth/environment blocker is reported.
 - `scripts/worker_phase3_eval.py --timeout 900` passes for multi-worker peer context relay, or the Codex-auth/environment blocker is reported.
 - `scripts/worker_phase4_eval.py --timeout 900` passes for worker integration preview and accepted-result application, or the Codex-auth/environment blocker is reported.
-- `scripts/real_mcp_worker_trial.py --output-dir validation-reports/real_mcp_trial` passes for direct MCP worker lifecycle evidence, or the blocker is reported with partial artifacts.
-- `scripts/real_mcp_worker_trial.py --include-safety-cases --output-dir validation-reports/real_mcp_trial` passes for direct MCP worker safety negative cases, or the blocker is reported with partial artifacts.
+- `scripts/real_mcp_worker_trial.py` passes for direct MCP worker lifecycle evidence, or the blocker is reported with partial artifacts.
+- `scripts/real_mcp_worker_trial.py --include-safety-cases` passes for direct MCP worker safety negative cases, or the blocker is reported with partial artifacts.
+- `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json` passes for shared-server multi-client coordination, or the blocker is reported with partial artifacts.
 - `tools/list` returns the expected public catalog and metadata.
-- `resources/list` and `resources/read` return `ui://widget/codex-mcp-wrapper-tool-card-v1.html`.
+- `resources/list` and `resources/read` return `ui://widget/patchbay-tool-card-v1.html`.
 - Async starter tools return `job_id`.
 - Real Codex plan jobs complete through MCP.
 - Structured Codex result parsing is clean.
 - Direct write, bash, and transcript reads deny by default.
-- Token-gated tunnel startup fails closed without `CODEX_MCP_HTTP_TOKEN`.
+- Token-gated tunnel startup fails closed without `PATCHBAY_HTTP_TOKEN`.
 - Direct tokenized public-tunnel MCP probes pass before treating real ChatGPT UI failures as tool-selection or descriptor failures.
 - Logs and runtime files do not contain real tokens, prompt bodies, or private paths in committed docs.
 

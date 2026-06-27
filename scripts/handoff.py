@@ -18,10 +18,11 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-from workspace_context import WorkspaceContext  # noqa: E402
+from patchbay.workspace.context import WorkspaceContext  # noqa: E402
 
 
 DEFAULT_TIMEOUT_MS = 600_000
@@ -29,7 +30,7 @@ DEFAULT_MAX_OUTPUT_BYTES = 120_000
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Execute or watch codex-mcp-wrapper .ai-bridge handoffs.")
+    parser = argparse.ArgumentParser(description="Execute or watch patchbay .ai-bridge handoffs.")
     parser.add_argument("command", choices=["execute", "watch"], help="Run one plan or watch for new plans.")
     parser.add_argument("--config", default=str(ROOT / "config.yaml"), help="Base config.yaml path.")
     parser.add_argument("--root", default=".", help="Workspace root. Default: current directory.")
