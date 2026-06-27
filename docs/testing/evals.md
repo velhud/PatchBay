@@ -26,9 +26,9 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --multi-client
 
 ## Worker Bridge Gates
 
-Phase 4 implements durable named workers with default isolated writing worktrees, bounded peer-worker context for natural multi-worker coordination, local artifact inbox transfer for ChatGPT-generated files/zips, and explicit accepted-result integration. The worker release gates are tracked in [../worker-bridge/08_TESTING_AND_RELEASE.md](../worker-bridge/08_TESTING_AND_RELEASE.md).
+PatchBay includes durable named workers with default isolated writing worktrees, bounded peer-worker context for natural multi-worker coordination, local artifact inbox transfer for ChatGPT-generated files/zips, and explicit accepted-result integration. The worker release gates are tracked in [../worker-bridge/08_TESTING_AND_RELEASE.md](../worker-bridge/08_TESTING_AND_RELEASE.md).
 
-Worker bridge verification must distinguish targeted unit tests, live local MCP regression, real-Codex read-only continuity, real-Codex isolated writing continuity, integration preview/apply, real ChatGPT Developer Mode, and public tunnel coverage. Phase 4 adds real `codex_worker_*` descriptors, handlers, state behavior, external worker worktrees, peer-context relay, accepted-result integration, and eval coverage.
+Worker bridge verification must distinguish targeted unit tests, live local MCP regression, real-Codex read-only continuity, real-Codex isolated writing continuity, integration preview/apply, real ChatGPT Developer Mode, and public tunnel coverage. The current worker surface includes real `codex_worker_*` descriptors, handlers, state behavior, external worker worktrees, peer-context relay, accepted-result integration, and eval coverage.
 
 CodexPro source-material checks:
 
@@ -54,8 +54,8 @@ Verification performed for the current hybrid implementation:
 - Real multi-worker peer-context eval `scripts/worker_phase3_eval.py --timeout 900`: passed.
 - Real worker integration eval `scripts/worker_phase4_eval.py --timeout 900`: passed.
 - Real MCP worker lifecycle trial `scripts/real_mcp_worker_trial.py`: passed and wrote progressive `calls.jsonl`, `results.json`, and `summary.md`.
-- Real MCP worker safety trial `scripts/real_mcp_worker_trial.py --include-safety-cases`: passed for active/read-only/dirty-base/blocked-path/binary/conflict/cleanup negative cases, connector/OAuth stderr noise scan, and public artifact leak scan.
-- Direct multi-client MCP trial `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json`: passed for two logical MCP sessions, session-local tool modes, safe shared worker inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, preview-before-integrate, no automatic commit, and sanitized private evidence.
+- Real MCP worker negative-case trial `scripts/real_mcp_worker_trial.py --include-safety-cases`: passed for active/read-only/dirty-base/blocked-path/binary/conflict/cleanup negative cases, connector/OAuth stderr noise scan, and public artifact leak scan.
+- Direct multi-client MCP trial `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json`: passed for two logical MCP sessions, session-local tool modes, shared worker inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, preview-before-integrate, no automatic commit, and sanitized private evidence.
 - Real worker validation configs run Codex worker subprocesses with `--ignore-user-config`, preserving `CODEX_HOME` auth while suppressing unrelated user-level MCP connector config in trial workers.
 - Tokenized public-tunnel MCP simulator through ngrok: passed for health, initialize, worker-mode `tools/list`, Apps-style file-parameter metadata, artifact inbox import/list/inspect, repeated import, `file://` rejection, isolated worker artifact attachment/read, artifact-context integration exclusion, clean base preservation, and cleanup. Real ChatGPT Developer Mode UI/tool-selection remains blocked in this session.
 - Real `codex_plan_job` through the MCP server: passed against a disposable repo.
@@ -295,7 +295,7 @@ Status: targeted unit tests and `scripts/worker_phase3_eval.py` coverage exist; 
 Acceptance:
 
 - raw MCP session ids are not returned;
-- ownership flags are safe and session-relative;
+- ownership flags are session-relative;
 - cross-owner mutation requires explicit takeover;
 - base checkout remains clean until integration;
 - integration does not commit;

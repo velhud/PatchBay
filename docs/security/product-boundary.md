@@ -2,11 +2,11 @@
 
 ## Framing
 
-Security in this project is not a reason to weaken the product. It is the control system that lets the product be powerful enough for real ChatGPT-to-local-Codex work.
+PatchBay is positioned around power: a local bridge from ChatGPT into Codex, repositories, commands, workers, artifacts, and diffs. Security in this project is the control system around that power, not a reason to shrink the product into something less useful.
 
 Broken boundaries reduce usable power:
 
-- a leaked connector token means the user cannot safely keep the bridge running;
+- a leaked connector token means the user should not keep the bridge running;
 - a path escape means ChatGPT cannot be trusted with repo context;
 - bad read-only metadata means ChatGPT asks for too many confirmations or skips needed confirmations;
 - raw prompt/session logging means users cannot use the tool on serious work.
@@ -63,7 +63,7 @@ Worker start/message tools can create durable local job state and, by default, r
 
 `codex_worker_inbox` is mutating, open-world, non-idempotent, and marked destructive because it downloads ChatGPT-supplied files into local runtime storage and can remove local artifact copies. Importing does not edit the repository and does not integrate worker output. Selected artifacts become worker context only when explicitly attached through `context_from_artifacts`.
 
-One MCP Server URL is a shared local control surface. PatchBay exposes safe coordination metadata such as `client_ref` and active MCP session count through `codex_self_test`, but it must not return raw MCP session ids. This coordination model is not authentication; access remains controlled by loopback/network binding and HTTP token policy.
+One MCP Server URL is a shared local control surface. PatchBay exposes redacted coordination metadata such as `client_ref` and active MCP session count through `codex_self_test`, but it must not return raw MCP session ids. This coordination model is not authentication; access remains controlled by loopback/network binding and HTTP token policy.
 
 When multiple MCP sessions share a URL, worker and artifact ownership is session-relative coordination only. Read/list/inspect remain shared, but cross-owner worker or artifact mutation must refuse until the caller explicitly retries with `takeover: true` after user confirmation. Base-checkout mutation paths must use per-repository mutation locks and fail fast with `repo_busy` rather than creating hidden queues or parallel base writes.
 
@@ -127,7 +127,7 @@ Audit logs should record:
 - timestamp;
 - request id;
 - tool name;
-- workspace id or safe display name;
+- workspace id or redacted display name;
 - status code/result category;
 - duration;
 - correlation/job id;
@@ -194,7 +194,7 @@ Verified so far:
 - worker model/reasoning option discovery, sanitized output, and inherited worker execution settings in automated tests;
 - artifact inbox import/list/inspect, repeated imports, structural archive rejection, worker materialization, and integration exclusion in automated tests;
 - direct tokenized public-tunnel MCP artifact worker flow through ngrok.
-- direct two-client MCP trial for session-local tool modes, safe shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, integration preview, no automatic commit, and sanitized local evidence.
+- direct two-client MCP trial for session-local tool modes, shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, integration preview, no automatic commit, and sanitized local evidence.
 
 Remaining hardening is future-facing rather than a known boundary break:
 

@@ -4,7 +4,7 @@
 
 PatchBay should expose tools as product capabilities, not implementation conveniences. ChatGPT should see narrow, intentional tools that explain when to use them and what control boundary they cross.
 
-Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps canonical `codex_*` names as the durable API, while `app.tool_mode` can advertise compatibility aliases for ChatGPT live use. Aliases resolve to canonical handlers and do not create separate execution paths.
+Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps canonical `codex_*` names as the durable API, while `app.tool_mode` can advertise compatibility aliases for ChatGPT live use. Aliases are tool-selection aids, not separate or safer execution paths; they resolve to canonical handlers.
 
 ## Current Stable Tools
 
@@ -24,7 +24,7 @@ Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps
 
 ## Natural-Language Worker Tools
 
-Phase 4 implements durable natural-language workers documented in [../worker-bridge/PHASE1_DURABLE_WORKERS.md](../worker-bridge/PHASE1_DURABLE_WORKERS.md), [../worker-bridge/PHASE2_WRITING_WORKERS.md](../worker-bridge/PHASE2_WRITING_WORKERS.md), [../worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md](../worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md), and [../worker-bridge/PHASE4_INTEGRATION.md](../worker-bridge/PHASE4_INTEGRATION.md). These tools are the preferred durable delegation path when ChatGPT wants to manage an ongoing named Codex colleague without exposing job ids, session ids, branch names, or private paths.
+PatchBay includes durable natural-language workers documented in [../worker-bridge/PHASE1_DURABLE_WORKERS.md](../worker-bridge/PHASE1_DURABLE_WORKERS.md), [../worker-bridge/PHASE2_WRITING_WORKERS.md](../worker-bridge/PHASE2_WRITING_WORKERS.md), [../worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md](../worker-bridge/PHASE3_MULTI_WORKER_COORDINATION.md), and [../worker-bridge/PHASE4_INTEGRATION.md](../worker-bridge/PHASE4_INTEGRATION.md). These tools are the preferred durable delegation path when ChatGPT wants to manage an ongoing named Codex colleague without exposing job ids, session ids, branch names, or private paths.
 
 | Tool | Mutability | Role |
 | --- | --- | --- |
@@ -37,7 +37,7 @@ Phase 4 implements durable natural-language workers documented in [../worker-bri
 | `codex_worker_integrate` | destructive/non-idempotent | Apply an explicitly accepted isolated writing worker result to the base checkout. Does not commit or delete the worker worktree. |
 | `codex_worker_stop` | destructive/non-idempotent | Cancel only the active worker turn while preserving durable identity and prior session continuity; optionally discard an isolated workspace. |
 
-Worker names are scoped to the base workspace. The same human name can be reused in another repo; worker ids remain globally addressable for explicit disambiguation. Worker results omit low-level job ids, Codex session ids, absolute repo/worktree paths, branch names, raw transcripts, and raw process logs. Stale durable `running` jobs with no tracked live Codex process are reconciled to `failed` with a public explanation before worker list/inspect/status responses. Phase 3 derives worker identity and workspace ownership from private durable job metadata and adds bounded peer-worker context for coordination. Phase 4 adds explicit accepted-result integration. It does not add a worker database, mailbox, queue, transcript copy, role engine, automatic reviewer chain, automatic commits, or a merge queue.
+Worker names are scoped to the base workspace. The same human name can be reused in another repo; worker ids remain globally addressable for explicit disambiguation. Worker results omit low-level job ids, Codex session ids, absolute repo/worktree paths, branch names, raw transcripts, and raw process logs. Stale durable `running` jobs with no tracked live Codex process are reconciled to `failed` with a public explanation before worker list/inspect/status responses. Worker identity and workspace ownership come from private durable job metadata; peer-worker context is bounded and explicit. Accepted-result integration is explicit and does not commit. PatchBay does not add a worker database, mailbox, queue, transcript copy, role engine, automatic reviewer chain, automatic commits, or a merge queue.
 
 Worker workspace modes:
 
@@ -199,12 +199,12 @@ Alias policy:
 
 Use `worker` mode for first real ChatGPT Developer Mode validation. It keeps the visible tool surface small enough for natural tool selection while still exposing the context tools needed to orient and brief workers. Use `codex_tool_mode_info` before broadening the surface, and `codex_tool_mode_switch` only when current tools are insufficient. Use `full` mode when testing or operating low-level job/session controls and power tools deliberately.
 
-One server URL is one shared local state surface. `codex_self_test` returns safe coordination metadata such as `client_ref`, `active_mcp_sessions`, and `shared_server`; it does not return raw MCP session ids. Read/list/inspect tools may expose shared local state to connected clients.
+One server URL is one shared local state surface. `codex_self_test` returns redacted coordination metadata such as `client_ref`, `active_mcp_sessions`, and `shared_server`; it does not return raw MCP session ids. Read/list/inspect tools may expose shared local state to connected clients.
 
 Shared-server coordination rules:
 
 - tool mode is session-local for MCP sessions; one chat switching to `full` does not change another chat's effective mode;
-- worker, job, and artifact owner metadata is private, but public views can return safe session-relative fields such as `owned_by_current_client`, `ownership_status`, `owner_label`, and `ownership_note`;
+- worker, job, and artifact owner metadata is private, but public views can return session-relative fields such as `owned_by_current_client`, `ownership_status`, `owner_label`, and `ownership_note`;
 - `codex_worker_message`, `codex_worker_integrate`, `codex_worker_stop`, and artifact cleanup refuse cross-owner MCP mutation unless the caller explicitly retries with `takeover: true`;
 - takeover is coordination, not authentication. HTTP auth, local binding, and tunnel token policy remain the actual access boundary;
 - base-checkout mutation paths are serialized per repository. Direct write/edit, command execution, shared-write worker turns, low-level base-writing jobs, and worker integration can return `repo_busy: true` instead of queueing hidden writes;

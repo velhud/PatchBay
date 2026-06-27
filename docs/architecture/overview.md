@@ -2,7 +2,9 @@
 
 ## Product Identity
 
-`patchbay` is the release repository for a hybrid ChatGPT-to-local-Codex bridge. CodexPro is MIT-licensed source material and product inspiration, not an upstream target, fork base, or contribution destination.
+`patchbay` is the release repository for PatchBay: a local MCP control plane that routes ChatGPT context into local Codex execution.
+
+The product is powerful because it lets ChatGPT web/Pro, Projects, memory, and active conversations drive local Codex workers without turning the human into a copy-paste bridge. ChatGPT keeps the high-level conversation, product context, generated files, and coordination loop. Local Codex keeps the repository, git state, toolchain, credentials, and execution environment.
 
 The intended user experience is:
 
@@ -10,17 +12,18 @@ The intended user experience is:
 2. Connect ChatGPT web/Pro through Developer Mode or an Apps-compatible MCP connector.
 3. Open an allowed local workspace.
 4. Load repository context, AGENTS instructions, selected files, skills, git status, and diffs.
-5. Delegate investigations or isolated implementation work to named Codex workers and continue them by human name after restart.
-6. Delegate lower-level Codex jobs when explicit job/session control is useful.
-7. Inspect job status, results, changed files, and diffs from ChatGPT.
-8. Resume prior Codex work when useful.
-9. Optionally enable direct workspace tools such as edit, bash, or session transcript reads behind explicit power-mode controls.
+5. Import ChatGPT-generated files or zips as local worker context when needed.
+6. Delegate investigations or isolated implementation work to named Codex workers and continue them by human name after restart.
+7. Pass reports, changed-file context, and diffs between workers.
+8. Inspect job status, results, changed files, diffs, and integration previews from ChatGPT.
+9. Apply accepted worker output without automatic commits.
+10. Optionally enable direct workspace tools such as edit, bash, or session transcript reads behind explicit power-mode controls.
 
 The product is not trying to preserve either current architecture for its own sake. PatchBay repository remains the final application because that is the desired release target.
 
 ## Runtime Decision
 
-The recommended architecture is Python/FastAPI first, with CodexPro subsystems ported into PatchBay rather than run as a permanent TypeScript sidecar.
+The recommended architecture is Python/FastAPI first, with useful connector and workspace ideas ported into PatchBay rather than run as a permanent TypeScript sidecar.
 
 Reasons:
 
@@ -33,32 +36,48 @@ A temporary Node sidecar is acceptable only for a fast ChatGPT Apps widget proto
 
 ## Component Model
 
-```text
-ChatGPT Developer Mode / Apps-compatible MCP client
-   |
-   | Streamable HTTP MCP /mcp
-   v
-Connector layer
-   | auth, session handling, tool descriptors, resources, tool cards
-   v
-Policy and tool registry
-   | public allowlist, tool tiers, schema validation, mutability hints
-   v
-Worker facade
-   | named Codex colleagues, isolated worker worktrees, report/change/diff views, stop active turn
-   v
-Workspace context layer
-   | allowed roots, path guard, AGENTS, skills, tree, search, read, context packs
-   v
-Codex orchestration layer
-   | async jobs, command builder, resume, interactive continuation
-   v
-Execution layer
-   | Codex CLI subprocess, restricted env, durable job store, logs/artifacts
-   v
-Worktree and artifact layer
-   | isolated apply worktrees, artifact inbox, diffs, `.ai-bridge`, review artifacts
+```mermaid
+flowchart TD
+    ChatGPT["ChatGPT web/Pro<br/>Developer Mode connector"] -->|"HTTPS /mcp<br/>tokenized Server URL"| Server["FastAPI Streamable HTTP server"]
+    LocalClient["Local MCP client"] -->|"loopback /mcp"| Server
+
+    Server --> Auth["Auth and transport<br/>Bearer/query token, request size cap, MCP sessions"]
+    Auth --> Context["RequestContext<br/>client_ref, active sessions, session-local tool_mode"]
+    Context --> Protocol["MCP protocol<br/>initialize, tools/list, tools/call, resources/list/read"]
+    Protocol --> Registry["Tool registry and descriptors<br/>schemas, aliases, annotations, Apps metadata"]
+    Protocol --> Card["Passive Apps tool card<br/>ui://widget/patchbay-tool-card-v1.html"]
+
+    Registry --> Handler["ToolHandler service graph"]
+    Handler --> Workspace["WorkspaceContext<br/>allowed roots, path guard, tree/read/search, git, AGENTS, skills, .ai-bridge"]
+    Handler --> Workers["WorkerRuntime<br/>named workers, model/reasoning options, peer context, inspect/integrate/stop"]
+    Handler --> Inbox["ArtifactStore<br/>ChatGPT file params, zip/file import, manifests, cleanup"]
+    Handler --> Jobs["JobManager + JobExecutor<br/>durable jobs, Codex command builder, JSONL parsing, cancellation"]
+    Handler --> Power["PowerToolRunner<br/>direct write/edit, command execution, transcript reads"]
+    Handler --> Locks["RepoMutationLockManager<br/>async + file locks, repo_busy fast-fail"]
+    Handler --> Sessions["CodexSessionReader<br/>metadata and bounded transcript reads"]
+
+    Workers --> WorkerTrees["Worker worktrees<br/>isolated_write, read_only, shared_write, changes/file/diff/preview"]
+    Inbox --> WorkerTrees
+    Jobs --> Codex["Local Codex CLI subprocesses"]
+    Power --> Host["Local host shell/files"]
+    Workspace --> Repo["Approved repositories<br/>source tree, git state, .ai-bridge"]
+    WorkerTrees --> Repo
+
+    Jobs --> Runtime["PatchBay runtime state<br/>job records, logs, profiles, runtime configs, artifacts, locks"]
+    Inbox --> Runtime
+    Locks --> Runtime
 ```
+
+The important boundary is not one monolithic "wrapper." PatchBay is a set of cooperating runtime services behind one MCP endpoint:
+
+- transport/auth/session handling in `patchbay.server`;
+- public protocol and ChatGPT-visible tool descriptors in `patchbay.protocol`;
+- workspace orientation and `.ai-bridge` context in `patchbay.workspace`;
+- durable jobs and Codex subprocess execution in `patchbay.jobs`;
+- named worker orchestration in `patchbay.workers`;
+- ChatGPT file/zip import in `patchbay.artifacts`;
+- direct power tools in `patchbay.tools`;
+- runtime profiles, status files, artifacts, and locks under `PATCHBAY_HOME` or `~/.patchbay`.
 
 ## Public MCP Boundary
 
@@ -83,7 +102,7 @@ Developer Mode treats tools without `readOnlyHint` as write actions, so missing 
 
 ### Tier 1: Core Codex Jobs
 
-Default tools for serious work:
+Low-level tools for explicit job/session control:
 
 - `codex_plan_job`
 - `codex_apply_job`
@@ -97,7 +116,7 @@ Default tools for serious work:
 - `codex_interactive_reply`
 - `codex_get_config`
 
-These are the current PatchBay surface and should remain stable. Current Codex CLI `0.142.2` JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
+These remain available for compatibility and power-user control. The normal ChatGPT-first path should prefer the worker facade when the user wants durable named local Codex colleagues. Current Codex CLI `0.142.2` JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
 
 `codex_resume`, `codex_interactive`, and `codex_interactive_reply` are async job starters classified as mutating/open-world in the public descriptors because they can continue sessions that write locally or call Codex externally. `codex_plan_job` remains locally read-only, but is not idempotent because it creates job state and can invoke Codex.
 
@@ -105,7 +124,22 @@ These are the current PatchBay surface and should remain stable. Current Codex C
 
 `codex_read_session` is the explicit transcript power mode. It is advertised as read-only but remains disabled by default; when enabled it reads only bounded Codex session JSONL messages, redacts likely secrets, and does not return local session source paths.
 
-### Tier 2: Workspace Context
+### Tier 2: Worker-First Delegation
+
+Preferred tools for ChatGPT-driven Codex work:
+
+- `codex_worker_options`
+- `codex_worker_inbox`
+- `codex_worker_start`
+- `codex_worker_message`
+- `codex_worker_list`
+- `codex_worker_inspect`
+- `codex_worker_integrate`
+- `codex_worker_stop`
+
+These let ChatGPT use its current conversation/project context to brief named local Codex workers, attach generated files or zips, pass reports between workers, inspect diffs, and apply accepted results without asking the user to manage backend job ids, session ids, branch names, or worktree paths.
+
+### Tier 3: Workspace Context
 
 Read-only tools ported from CodexPro concepts:
 
@@ -120,7 +154,7 @@ Read-only tools ported from CodexPro concepts:
 
 These make ChatGPT useful before it starts a Codex job. They are bounded, redacted, and rooted in the active workspace.
 
-### Tier 3: Handoff Artifacts
+### Tier 4: Handoff Artifacts
 
 Controlled write tools limited to `.ai-bridge`:
 
@@ -130,9 +164,9 @@ Controlled write tools limited to `.ai-bridge`:
 
 These bridge ChatGPT planning to local terminal execution without giving ChatGPT arbitrary write access to source files.
 
-### Tier 4: Power Tools
+### Tier 5: Power Tools
 
-Disabled by default, but designed as first-class optional capabilities:
+Designed as first-class optional capabilities controlled by runtime configuration:
 
 - direct file write/edit;
 - safe bash;
@@ -161,28 +195,29 @@ The worker facade provides:
 
 The artifact inbox lets ChatGPT import generated files or zips into PatchBay runtime storage, then attach artifact ids to isolated workers through `context_from_artifacts`. Imported artifacts are copied into `.ai-bridge/imported-artifacts/` inside the worker worktree as source material and excluded from changed-file reporting, diffs, integration preview, and apply.
 
-Phase 2 adds durable external worker worktrees for default `isolated_write` workers, same-session/same-worktree continuation after PatchBay restart, on-demand changed-file inspection, one-file worker diffs, and explicit isolated workspace cleanup. Phase 3 adds bounded peer-worker report/change/diff context on worker start/message plus a `team_report` from worker list. Phase 4 adds read-only integration preview and explicit accepted-result application into the base checkout. Current lifecycle handling reconciles stale durable `running` jobs that no longer have a tracked Codex subprocess into a redacted failed report before public worker/status views.
+Default `isolated_write` workers use durable external worktrees, same-session/same-worktree continuation after PatchBay restart, on-demand changed-file inspection, one-file worker diffs, and explicit isolated workspace cleanup. Worker start/message calls can include bounded peer-worker report/change/diff context, and worker list returns a compact `team_report`. Worker integration is preview-first: ChatGPT can inspect whether the worker patch applies, then explicitly apply the accepted result into the base checkout without committing. Current lifecycle handling reconciles stale durable `running` jobs that no longer have a tracked Codex subprocess into a redacted failed report before public worker/status views.
 
-For shared MCP Server URLs, the runtime treats ownership as coordination rather than authentication. Tool mode is session-local, worker/artifact views include safe session-relative ownership flags, cross-owner mutation requires explicit `takeover: true`, and base-checkout mutation paths use per-repository locks that fail fast with `repo_busy`. No separate worker database, queue, mailbox, transcript copy, role system, automatic reviewer chain, automatic commit, or automatic merge/promotion flow exists in this phase. Later phases can add optional app-server backend evaluation.
+For shared MCP Server URLs, the runtime treats ownership as coordination rather than authentication. Tool mode is session-local, worker/artifact views include session-relative ownership flags, cross-owner mutation requires explicit `takeover: true`, and base-checkout mutation paths use per-repository locks that fail fast with `repo_busy`. No separate worker database, queue, mailbox, transcript copy, role system, automatic reviewer chain, automatic commit, or automatic merge/promotion flow exists. Future work can add optional app-server backend evaluation.
 
 The worker bridge does not replace the security boundary. It should reuse the same typed registry, path guard, power-mode controls, auth policy, artifact caps, and redaction rules used by the current public surface.
 
 ## Codex Execution Boundary
 
-The execution boundary should be rewritten around explicit services:
+The execution boundary is organized around explicit services:
 
-- `CommandBuilder`: builds `codex exec` commands with options before the final stdin prompt sentinel, keeping user prompts out of process argv.
-- `JobStore`: durable job records instead of memory-only state.
-- `ProcessManager`: process handles, cancellation, timeouts, and status transitions.
-- `WorktreeService`: per-repo worktree roots, branch naming, cleanup, and artifact retention.
-- `ArtifactStore`: capped and redacted stdout/stderr summaries, structured Codex JSONL events, result text, diffs, and review metadata.
-- `PolicyEngine`: sandbox, network, approval, auth, allowed-root, and power-mode decisions.
+- `JobExecutor`: builds `codex exec` and resume commands with prompts sent through stdin, tracks subprocesses, cancellation, timeouts, JSONL parsing, diffs, and redacted artifacts.
+- `JobManager`: durable job records, active-job admission, apply-job worktrees, worker worktree creation/removal, and persisted state.
+- `WorkerRuntime`: job-derived worker identity, worker continuation, peer-worker context, artifact materialization, worktree inspection, integration preview, and accepted-result application.
+- `ArtifactStore`: runtime-only ChatGPT file/zip imports, manifests, bounded inspection, workspace scoping, and materialization into isolated workers.
+- `RepoMutationLockManager`: per-repository async and file locks for base-checkout writes, direct command/write paths, shared-write workers, and integration.
+- `WorkspaceContext`: repository orientation, path validation, AGENTS and skills, git state, `.ai-bridge`, and direct write/edit helpers.
+- `PowerToolRunner`: configured direct command execution with timeout/output controls and optional session gating.
 
-CodexPro should not auto-register generic `read`, `write`, `edit`, or `bash` handlers into this boundary. Those capabilities can exist only through the tool tier policy.
+Generic `read`, `write`, `edit`, or `bash` handlers must enter this boundary only through the tool tier policy and current tool mode. Aliases are selection aids; they do not create separate execution paths.
 
 ## Workspace Context Layer
 
-CodexPro's workspace layer is one of the highest-value imports. PatchBay should gain:
+PatchBay's workspace layer provides:
 
 - active workspace selection from configured allowed roots;
 - path guard with realpath checks and symlink escape rejection;
@@ -195,7 +230,7 @@ CodexPro's workspace layer is one of the highest-value imports. PatchBay should 
 - skill inventory and bounded `SKILL.md` loading by skill name;
 - selected-file context bundle export.
 
-The context layer should be read-only except for `.ai-bridge` artifact writes.
+The context layer is read-only except for `.ai-bridge` artifact writes and direct write/edit calls when the configured power mode exposes them.
 
 ## State And Artifacts
 
@@ -209,6 +244,10 @@ State should be separated by purpose:
 - audit log: metadata-only events with correlation IDs.
 
 Raw prompts, secrets, auth files, full Codex outputs, and local session transcripts must not be logged by default.
+
+## Lineage And Attribution
+
+CodexPro is MIT-licensed source material and product inspiration, not an upstream target, fork base, or contribution destination. PatchBay ports or rewrites useful ideas into one local MCP server and one policy layer. See [../../NOTICE](../../NOTICE) for attribution.
 
 ## Current Verification
 

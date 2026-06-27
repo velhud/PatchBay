@@ -1,6 +1,6 @@
 # Quick Start
 
-This quick start is for a disposable first run. Do not start by pointing ChatGPT at an important private repository.
+This quick start is centered on connecting ChatGPT to PatchBay. Use a disposable repository first: PatchBay gives ChatGPT a powerful route into local Codex and local repositories, so verify the connector flow before using it on important work.
 
 ## 1. Install
 
@@ -28,7 +28,7 @@ git add README.md src/app.py
 git -c user.name='Eval User' -c user.email='eval@example.invalid' commit -m init
 ```
 
-## 3. Check Connector Readiness
+## 3. Check Local Readiness
 
 From PatchBay repo:
 
@@ -37,34 +37,93 @@ python scripts/doctor.py
 python scripts/start.py --root "$tmpdir/repo" --print-only
 ```
 
-The output should show a local MCP URL and no raw token unless you explicitly ask for one.
+The output should show `name: patchbay`, `ready: true`, a local MCP URL, and no raw token unless you explicitly ask for one.
 
-## 4. Start The Local MCP Server
+## 4. Start PatchBay For ChatGPT
 
 ```bash
-python scripts/start.py --root "$tmpdir/repo" --save-profile
+export PATCHBAY_HTTP_TOKEN='<long-random-token>'
+python scripts/start.py \
+  --root "$tmpdir/repo" \
+  --tunnel-mode cloudflare \
+  --tool-mode worker \
+  --save-profile \
+  --reveal-token
 ```
 
-Local endpoint:
+Copy the full HTTPS Server URL printed by the launcher. It should end with `/mcp` and include `patchbay_token=...`.
+
+The local endpoint still exists for local MCP clients:
 
 ```text
 http://127.0.0.1:8000/mcp
 ```
 
-For local-only MCP clients, no token is required by default. If `PATCHBAY_HTTP_TOKEN` is set, the same endpoint requires Bearer or query-token auth.
+For local-only MCP clients, no token is required by default. If `PATCHBAY_HTTP_TOKEN` is set, the same endpoint requires Bearer or query-token auth. ChatGPT web normally needs a public HTTPS URL, so use a tunnel for the first real ChatGPT connector run.
 
-For multi-repository testing, include every repository when starting the server. `--root` is the default workspace and resets allowed roots to that workspace unless extra roots are supplied:
+The launcher supervises the local server and tunnel process together. It does not install `cloudflared` or `ngrok`; install the provider CLI yourself. Use `--tool-mode worker` first so ChatGPT sees the worker-first surface instead of the full power-user catalog.
+
+OpenAI's Apps SDK docs describe the ChatGPT connector flow as: enable Developer Mode, create a connector, paste an HTTPS `/mcp` URL, then open a new chat and add the connector from the `+` / More menu. References:
+
+- [OpenAI Apps SDK quickstart: Add your app to ChatGPT](https://developers.openai.com/apps-sdk/quickstart#add-your-app-to-chatgpt)
+- [OpenAI Apps SDK: Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt#create-a-connector)
+
+For multi-repository testing, include every repository when starting PatchBay. `--root` is the default workspace and resets allowed roots to that workspace unless extra roots are supplied:
 
 ```bash
 python scripts/start.py \
   --root "$repo_a" \
   --allow-root "$repo_b" \
-  --tool-mode worker
+  --tunnel-mode cloudflare \
+  --tool-mode worker \
+  --reveal-token
 ```
 
 If ChatGPT or another MCP client gets "Path is outside configured allowed roots," restart with the missing repository passed through `--allow-root` or add it to `repositories.allowed`.
 
-## 5. Run The Local MCP Eval
+## 5. Create The ChatGPT Connector
+
+In ChatGPT, open:
+
+```text
+Settings
+-> Apps & Connectors
+-> Advanced settings
+-> Developer mode: on
+-> Enforce CSP in developer mode: on
+-> Settings -> Connectors -> Create
+```
+
+Use these settings:
+
+```text
+Name: PatchBay
+Description: Route ChatGPT context into local Codex workers
+Connector URL / Server URL: paste the full HTTPS /mcp URL printed by scripts/start.py --reveal-token
+Authentication: No Authentication / None
+```
+
+Choose `No Authentication / None` inside ChatGPT because the copied Server URL already carries PatchBay token as a query parameter. Do not configure OAuth or an API key in ChatGPT for this local bridge.
+
+Keep `Enforce CSP in developer mode` enabled. The tool card resource is designed for the CSP-enabled path.
+
+After the connector is created, ChatGPT should show the tools PatchBay advertises. Open a new chat, click `+`, add PatchBay from the More menu, and send:
+
+```text
+Use PatchBay. Call codex_self_test, then codex_open_workspace, then tell me what repo you can see and which worker tools are available.
+```
+
+Expected result:
+
+- `codex_self_test` reports `name: patchbay`, readiness, the active tool mode, and shared-server coordination metadata.
+- `codex_open_workspace` reports the disposable repo, branch, git status, AGENTS/context hints, and next suggested tools.
+- In worker mode, ChatGPT should see `codex_worker_*` tools plus the context tools needed to brief workers.
+
+During a run, `codex_tool_mode_info` can compare `worker`, `standard`, `full`, and `minimal`; `codex_tool_mode_switch` can request a session-local mode change. Direct MCP clients that re-run `tools/list` on the same MCP session see the new catalog, while other sessions keep their own mode. ChatGPT Developer Mode may still require refreshing or reconnecting the connector before newly exposed tools appear.
+
+Never commit, screenshot, or share the full tokenized URL.
+
+## 6. Run The Local MCP Eval
 
 In another terminal:
 
@@ -75,82 +134,20 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
 This does not use ChatGPT and does not open a public tunnel. It starts a temporary server and probes MCP initialize, tool listing, resources, workspace context, aliases, path guards, and default power-tool denial.
 In the current full-power profile it also verifies direct write and full bash on the disposable repo.
 
-## 6. First ChatGPT Connection Prep
+## 7. Try ChatGPT As Workspace Coder
 
-ChatGPT web usually needs a public HTTPS URL to reach a local MCP server. Use a token before any tunnel:
-
-```bash
-export PATCHBAY_HTTP_TOKEN='<long-random-token>'
-python scripts/start.py \
-  --root "$tmpdir/repo" \
-  --tunnel-mode cloudflare \
-  --tool-mode worker \
-  --save-profile
-```
-
-The launcher supervises the local server and tunnel process together. It does not install `cloudflared` or `ngrok`; install the provider CLI yourself. Start real ChatGPT validation with `--tool-mode worker` so ChatGPT sees the worker-first surface instead of the full power-user catalog.
-
-During a run, `codex_tool_mode_info` can compare `worker`, `standard`, `full`, and `minimal`; `codex_tool_mode_switch` can request a session-local mode change. Direct MCP clients that re-run `tools/list` on the same MCP session see the new catalog, while other sessions keep their own mode. ChatGPT Developer Mode may still require refreshing or reconnecting the connector before newly exposed tools appear.
-
-For a stable provider hostname:
-
-```bash
-python scripts/start.py \
-  --root "$tmpdir/repo" \
-  --tunnel-mode ngrok \
-  --tool-mode worker \
-  --hostname your-domain.ngrok-free.app
-```
-
-Use Bearer auth where the MCP client supports headers. For copied ChatGPT Server URLs, reveal the tokenized URL only when you are ready to paste it into ChatGPT:
-
-```bash
-python scripts/start.py --root "$tmpdir/repo" --tunnel-mode cloudflare --tool-mode worker --reveal-token
-```
-
-Never commit, screenshot, or share the full tokenized URL.
-
-## 7. Create The ChatGPT App
-
-In ChatGPT, open:
-
-```text
-Settings
--> Apps
--> Advanced settings
--> Developer mode: on
--> Enforce CSP in developer mode: on
--> Create app
-```
-
-Use these Create App settings:
-
-```text
-Name: PatchBay
-Description: Local workspace and Codex bridge for ChatGPT coding
-Connection: Server URL
-Server URL: paste the full URL printed by scripts/start.py --reveal-token
-Authentication: No Authentication / None
-```
-
-Choose `No Authentication / None` inside ChatGPT because the copied Server URL already carries PatchBay token as a query parameter. Do not configure OAuth or an API key in ChatGPT for this local bridge.
-
-Keep `Enforce CSP in developer mode` enabled. The tool card resource is designed for the CSP-enabled path.
-
-## 8. Try ChatGPT As Workspace Coder
-
-Ask the MCP client to use:
+Ask ChatGPT to use:
 
 1. `codex_self_test`
 2. `codex_open_workspace`
 3. `codex_workspace_snapshot`
-4. `codex_read_file` or alias `read`
+4. `codex_read_file`
 5. `codex_search_repo`
 6. `codex_show_changes`
 
 This path lets ChatGPT inspect and reason about the repo directly. The checked-in profile enables direct writes and full bash; using `--root "$tmpdir/repo"` keeps that power scoped to the disposable repo for this first run.
 
-## 9. Try ChatGPT With A Named Worker
+## 8. Try ChatGPT With A Named Worker
 
 Use this for durable isolated implementation:
 
@@ -223,7 +220,7 @@ python scripts/start.py --root "$tmpdir/repo" --tool-mode worker
 
 This hides low-level job/session controls and compatibility aliases while keeping worker tools and the read-only context tools needed to brief them.
 
-## 10. Try ChatGPT As Codex Controller
+## 9. Try ChatGPT As Codex Controller
 
 Call `codex_plan_job`:
 
@@ -244,7 +241,7 @@ with `codex_get_status` and `codex_get_result`.
 
 For an implementation test, call `codex_apply_job` only on the disposable repo and inspect diffs with `codex_get_diff` before copying or merging anything.
 
-## 11. Resume Flow
+## 10. Resume Flow
 
 When `codex_get_result` returns `session_ref`, keep it. Continue later with:
 
