@@ -1,6 +1,8 @@
 # ChatGPT MCP Client Instructions
 
-This server lets ChatGPT work with local repositories and local Codex through MCP Streamable HTTP. It supports three primary modes:
+PatchBay lets ChatGPT turn its conversation context, project memory, generated files, and planning state into local Codex work through MCP Streamable HTTP. Use it when the useful reasoning is already in ChatGPT but the implementation, verification, and diffs need the local repository and local Codex environment.
+
+It supports three primary modes:
 
 - direct workspace mode, where ChatGPT reads/searches/orients inside an allowed repo;
 - named worker mode, where ChatGPT starts and continues durable Codex colleagues by human name;
@@ -35,34 +37,33 @@ If a tool returns "Path is outside configured allowed roots," treat it as a setu
 
 For public tunnel validation, keep `--tool-mode worker` in the tunnel launch command. Worker mode exposes the natural-language worker tools and the read-only context tools needed to brief them; it hides low-level job/session controls and compatibility aliases. Use `full` mode only when the user explicitly wants power-user controls.
 
-One copied Server URL points to one shared local server. Multiple ChatGPT conversations or MCP clients using that URL can see the same local worker, job, artifact, and repository state. Start every conversation with `codex_self_test`; it returns a safe `client_ref`, active MCP session count, and coordination note without returning raw MCP session ids.
+One copied Server URL points to one shared local server. Multiple ChatGPT conversations or MCP clients using that URL can see the same local worker, job, artifact, and repository state. Start every conversation with `codex_self_test`; it returns a session-relative `client_ref`, active MCP session count, and coordination note without returning raw MCP session ids.
 
 ChatGPT can call `codex_tool_mode_info` to compare tool modes and `codex_tool_mode_switch` to request a session-local mode change. A switch changes the server's next `tools/list` response for the same MCP session, but other sessions keep their own effective mode. Real ChatGPT Developer Mode may keep the old visible tool catalog until the connector is refreshed or reconnected.
 
-## ChatGPT App Settings
+## ChatGPT Connector Settings
 
 Open ChatGPT:
 
 ```text
 Settings
--> Apps
+-> Apps & Connectors
 -> Advanced settings
 -> Developer mode: on
 -> Enforce CSP in developer mode: on
--> Create app
+-> Settings -> Connectors -> Create
 ```
 
 Use:
 
 ```text
 Name: PatchBay
-Description: Local workspace and Codex bridge for ChatGPT coding
-Connection: Server URL
-Server URL: paste the full URL printed by scripts/start.py --reveal-token
+Description: Route ChatGPT context into local Codex workers
+Connector URL / Server URL: paste the full HTTPS /mcp URL printed by scripts/start.py --reveal-token
 Authentication: No Authentication / None
 ```
 
-The ChatGPT app should use `No Authentication / None` because PatchBay protects `/mcp` with the query token embedded in the copied Server URL. Do not configure OAuth or paste an OpenAI API key into ChatGPT for this connector.
+The ChatGPT connector should use `No Authentication / None` because PatchBay protects `/mcp` with the query token embedded in the copied Server URL. Do not configure OAuth or paste an OpenAI API key into ChatGPT for this connector.
 
 After changing tool metadata or updating PatchBay, open the app settings in ChatGPT and use the refresh action if ChatGPT still shows stale tools.
 
@@ -126,7 +127,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 
 ## Worker-First Flow
 
-The natural-language worker facade is implemented through Phase 4. Use it when ChatGPT wants to appoint named local Codex colleagues, read reports, restart PatchBay, continue conversations by name, and pass bounded report/change/diff context between workers.
+Use the natural-language worker facade when ChatGPT wants to appoint named local Codex colleagues, read reports, restart PatchBay, continue conversations by name, import generated artifacts, and pass bounded report/change/diff context between workers.
 
 Default workers use `isolated_write`: PatchBay creates one external worker worktree and reuses it across turns. Use `read_only` for investigation/review work that must not edit files. Use `shared_write` only when the user explicitly wants direct base-checkout writes.
 

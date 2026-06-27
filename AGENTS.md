@@ -11,10 +11,17 @@ The product exposes a local Streamable HTTP MCP server so ChatGPT web/Pro or ano
 - delegate larger work to local Codex CLI jobs;
 - inspect async job status, structured results, session refs, worker reports, peer-worker context, imported artifact state, and worktree diffs;
 - use `.ai-bridge` handoff artifacts;
-- coordinate multiple ChatGPT/MCP sessions on one shared local server with session-local tool modes, safe ownership flags, explicit takeover for cross-owner mutation, and per-repository mutation locks;
+- coordinate multiple ChatGPT/MCP sessions on one shared local server with session-local tool modes, session-relative ownership flags, explicit takeover for cross-owner mutation, and per-repository mutation locks;
 - optionally use direct edit, bash, or transcript-read power tools when explicitly enabled.
 
 The repo still supports local maintainer workflows, but do not describe the app as only a maintainer utility. The public identity is now the broader ChatGPT-to-local-Codex platform.
+
+## Product Self-Knowledge
+
+- Treat PatchBay as a ChatGPT-first local control plane: ChatGPT brings conversation, Projects, memory, generated artifacts, and coordination; local Codex brings the repository, git state, tools, credentials, and execution.
+- Start docs/config/behavior changes by checking `README.md`, `QUICKSTART.md`, `docs/project/why-patchbay.md`, `docs/architecture/overview.md`, `docs/reference/public-tool-surface.md`, and `docs/user/chatgpt-instructions.md`.
+- Keep the app self-describing enough that a future coding agent can update configuration, docs, tool metadata, and examples from repository context without needing private oral history.
+- Do not replace concrete setup steps with vague philosophy. Add the rationale, then keep the exact command, ChatGPT connector step, expected tool result, and verification command.
 
 ## Rules For Agents
 
@@ -114,6 +121,6 @@ When changing anything ChatGPT sees through MCP, preserve these prompt-surface r
 - ChatGPT should manage workers by human name, not by backend job IDs, session IDs, branch names, or worktree paths.
 - Worker mode should explain that default workers use isolated write worktrees, survive PatchBay restart when durable state exists, and continue through `codex_worker_message`.
 - Integration must be described as preview-first, explicit, no-commit, and preserving the worker worktree.
-- Tool descriptions should include when to use the tool, relevant side effects, validation expectations, and safe fallback behavior.
+- Tool descriptions should include when to use the tool, relevant side effects, validation expectations, and fallback behavior.
 - Setup docs should recommend `--tool-mode worker` for first real ChatGPT validation.
 - Shared-server docs should tell ChatGPT to start with `codex_self_test`, treat one copied Server URL as one shared local state surface, use `takeover: true` only after user confirmation, and report `repo_busy` instead of trying to bypass locks.

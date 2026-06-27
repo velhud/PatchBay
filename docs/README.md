@@ -6,6 +6,7 @@ The repository root keeps the practical entrypoints: `README.md`,
 
 ## User Docs
 
+- [Quick Start](../QUICKSTART.md)
 - [ChatGPT MCP client instructions](user/chatgpt-instructions.md)
 - [Worker bridge guide](worker-bridge/README.md)
 - [Multi-chat concurrency model](worker-bridge/MULTI_CHAT_CONCURRENCY_PLAN.md)
@@ -42,7 +43,7 @@ The repository root keeps the practical entrypoints: `README.md`,
 
 ## Project Notes
 
-- [Why this project matters](project/why-this-matters.md)
+- [Why PatchBay exists](project/why-patchbay.md)
 - [OSS roadmap](project/roadmap.md)
 - [OSS pipeline](project/oss-pipeline.md)
 - [API credits plan](project/api-credits-plan.md)

@@ -429,7 +429,7 @@ Testing proves PatchBay remains simple. The tests should verify refusals and exp
 1. Add `RequestContext` and pass it through HTTP, protocol, and tool handler layers with no behavior change.
 2. Make tool mode session-local while keeping existing default mode and backward-compatible descriptors.
 3. Add public shared-server notes to server instructions, docs, self-test/open-workspace output, and tool descriptions.
-4. Stamp workers/jobs/artifacts with owner metadata and return safe ownership flags in public views.
+4. Stamp workers/jobs/artifacts with owner metadata and return session-relative ownership flags in public views.
 5. Enforce explicit takeover for cross-owner mutating worker/artifact tools.
 6. Add repo mutation lock manager and lock base-checkout writes/integration/shared-write entry points.
 7. Fix concurrency admission to count pending plus running jobs under a manager lock.

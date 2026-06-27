@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "patchbay"
 version = "0.1.0"
-description = "Local control plane for ChatGPT-driven Codex work."
+description = "Route ChatGPT context into local Codex workers."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

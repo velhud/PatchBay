@@ -61,7 +61,7 @@ The ChatGPT-facing prompt surface is the combination of MCP `initialize.instruct
 - launch with `--tool-mode worker`;
 - use `codex_tool_mode_info` and `codex_tool_mode_switch` only for explicit, temporary broadening; ChatGPT may need connector refresh before newly exposed tools appear;
 - start with `codex_self_test` and `codex_open_workspace`;
-- treat one copied Server URL as one shared local state surface and use safe ownership/takeover signals instead of assuming a private app instance;
+- treat one copied Server URL as one shared local state surface and use session-relative ownership/takeover signals instead of assuming a private app instance;
 - manage workers by human name instead of backend IDs;
 - inspect reports, changes, diffs, and `integration_preview` before integration;
 - report `repo_busy` or path-guard setup failures directly instead of trying to bypass local controls;

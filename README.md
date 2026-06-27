@@ -1,7 +1,7 @@
 <h1 align="center">PatchBay</h1>
 
 <p align="center">
-  <strong>Local control plane for ChatGPT-driven Codex work.</strong>
+  <strong>Route ChatGPT's context into local Codex workers.</strong>
 </p>
 
 <p align="center">
@@ -12,16 +12,17 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
-PatchBay lets ChatGPT use your local Codex CLI without handing over your whole machine. It exposes a guarded Streamable HTTP MCP server where ChatGPT can open approved repositories, brief durable Codex workers by name, inspect reports and diffs, and apply accepted changes through explicit local controls.
+PatchBay is a local MCP control plane that routes ChatGPT's active conversation, project context, generated files, and long-running reasoning into your local Codex CLI. It lets ChatGPT open approved repositories, brief durable Codex workers by name, pass reports between them, inspect diffs, and apply accepted work from the chat instead of copy-pasting prompts, files, diffs, and status notes between ChatGPT and terminal Codex.
 
-Use it when you want ChatGPT to manage local engineering work while you keep the repository, execution environment, diffs, and integration boundary under your control.
+Use it when the best context already lives in ChatGPT web/Pro, Projects, memory, or another conversation, but the real work needs your local repository, local Codex setup, git state, tools, and execution environment.
 
-| What PatchBay gives ChatGPT | Why it matters |
+| What PatchBay makes possible | Why it matters |
 | --- | --- |
-| Repository awareness | Open approved workspaces, search/read files, load AGENTS and skills, inspect git state, and prepare `.ai-bridge` handoffs. |
-| Named local workers | Start persistent Codex workers from natural-language briefs, continue them after restart, pass bounded context between workers, and inspect their reports or diffs. |
-| Controlled integration | Keep writing workers in isolated worktrees by default, preview changes before applying them, and never commit automatically. |
-| Power when you ask for it | Enable direct edits, command execution, transcript reads, and low-level Codex job controls only through explicit power-mode settings. |
+| ChatGPT context becomes executable | Reuse a deep ChatGPT conversation, project instructions, memory, and generated files as source material for local Codex work. |
+| No copy-paste bridge | Move briefs, artifacts, reports, diffs, and follow-up instructions through MCP instead of manually shuttling text between apps. |
+| Durable local worker loops | Start named Codex workers, continue them after restart, pass context between workers, and inspect their reports or diffs from ChatGPT. |
+| Local execution stays local | Codex still runs on your machine against your repo, git state, toolchain, and configured Codex account. |
+| Explicit power boundary | Isolated worktrees, tool modes, tokens, metadata, and integration previews keep powerful actions visible and reviewable. |
 
 ## Contents
 
@@ -31,7 +32,7 @@ Use it when you want ChatGPT to manage local engineering work while you keep the
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Public MCP Tool Tiers](#public-mcp-tool-tiers)
-- [Safety And Power Controls](#safety-and-power-controls)
+- [Power Boundary And Controls](#power-boundary-and-controls)
 - [Development And Verification](#development-and-verification)
 
 ## Current Readiness
@@ -48,7 +49,7 @@ This branch is **pre-release verified**, not public-release complete.
 | Isolated writing worker eval | `scripts/worker_phase2_eval.py --timeout 900` passes real Codex isolated write/restart/continue/diff/cleanup |
 | Multi-worker coordination eval | `scripts/worker_phase3_eval.py --timeout 900` passes real Codex peer diff/report relay |
 | Worker integration eval | `scripts/worker_phase4_eval.py --timeout 900` passes real Codex integration preview/apply |
-| Real MCP worker safety trial | `scripts/real_mcp_worker_trial.py --include-safety-cases` passes direct MCP worker lifecycle and negative cases |
+| Real MCP worker negative-case trial | `scripts/real_mcp_worker_trial.py --include-safety-cases` passes direct MCP worker lifecycle and negative cases |
 | Direct multi-client MCP trial | `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker` passes two-session tool-mode, ownership, takeover, preview, and integration checks |
 | Public tunnel MCP probe | Tokenized ngrok MCP simulator passed health, `initialize`, worker-mode `tools/list`, artifact inbox import/list/inspect, isolated worker artifact attachment/read, integration exclusion, and cleanup |
 | Real Codex through MCP | `codex_plan_job` completes through PatchBay |
@@ -67,7 +68,7 @@ This branch is **pre-release verified**, not public-release complete.
 | Workspace context | tree, read, search, git status/diff, AGENTS, skills, context packs |
 | Codex orchestration | plan, apply, status, result, diff, cancel, review, interactive, resume |
 | Durable worker facade | discover worker model/reasoning options, import generated artifact context, start/message/list/inspect/stop named Codex colleagues, use isolated writing worktrees by default, and include bounded peer-worker context |
-| Isolation | allowed roots, path guard, blocked globs, worktree apply jobs |
+| Repository boundary | allowed roots, path guard, blocked globs, worktree apply jobs |
 | Handoff | `.ai-bridge` plan/status/diff and local execute/watch scripts |
 | Power modes | direct write, exact edit, safe/full bash, bounded transcript reads |
 | Connector UX | doctor, start, profiles, redacted runtime metadata, token-gated tunnels |
@@ -76,16 +77,32 @@ This branch is **pre-release verified**, not public-release complete.
 
 ```mermaid
 flowchart TD
-    A["ChatGPT Developer Mode<br/>or MCP client"] -->|"Streamable HTTP /mcp"| B["Connector layer<br/>auth, sessions, request caps"]
-    B --> C["Tool registry and policy<br/>schemas, aliases, mutability metadata"]
-    C --> D["Workspace context<br/>allowed roots, path guard, AGENTS, skills, git, .ai-bridge"]
-    C --> E["Codex orchestration<br/>async jobs, command builder, resume, cancellation"]
-    E --> F["Codex CLI subprocesses<br/>configured sandbox or isolated worktree"]
-    D --> G["Artifacts and state<br/>context packs, handoffs, redacted job records, diffs"]
-    F --> G
+    A["ChatGPT web/Pro<br/>Developer Mode connector"] -->|"HTTPS /mcp<br/>tokenized Server URL"| B["PatchBay FastAPI server"]
+    A2["Local MCP client"] -->|"http://127.0.0.1:8000/mcp"| B
+
+    B --> C["Transport boundary<br/>auth, request caps, MCP sessions, client_ref"]
+    C --> D["MCP protocol surface<br/>initialize, tools/list, resources/read, schemas, annotations"]
+    D --> E["Session-local tool modes<br/>worker, standard, full, minimal + aliases"]
+    D --> R["Passive Apps card<br/>ui://widget/patchbay-tool-card-v1.html"]
+
+    E --> H["Tool handler"]
+    H --> W["Workspace context<br/>allowed roots, path guard, tree/read/search, git, AGENTS, skills"]
+    H --> N["Worker runtime<br/>named workers, model/reasoning menu, peer context, inspect, stop"]
+    H --> I["Artifact inbox<br/>ChatGPT file/zip import, manifest, materialize into worker"]
+    H --> J["Job manager/executor<br/>durable jobs, Codex command builder, JSONL parsing, cancellation"]
+    H --> P["Power tools<br/>direct write/edit, command, transcript read"]
+    H --> L["Repo mutation locks<br/>repo_busy instead of hidden base-write queues"]
+
+    N --> WT["Isolated/shared/read-only worker worktrees<br/>changes, file reads, diffs, integration preview/apply"]
+    I --> WT
+    J --> X["Local Codex CLI subprocesses"]
+    P --> Y["Local shell/files/session logs"]
+    W --> Z["Approved repositories<br/>.ai-bridge handoffs and context packs"]
+    WT --> Z
+    X --> S["PatchBay runtime state<br/>profiles, runtime config/status, job records, artifacts, locks"]
 ```
 
-The core runtime is Python/FastAPI.
+The core runtime is Python/FastAPI. ChatGPT sees the MCP surface; PatchBay keeps local paths, raw session ids, worker worktree paths, process logs, and runtime files behind the local control boundary unless a specific public tool is designed to expose a bounded summary.
 
 ## Requirements
 
@@ -135,7 +152,7 @@ python scripts/doctor.py
 python scripts/start.py --root "$tmpdir/repo" --print-only
 ```
 
-Start the local MCP server:
+For local MCP clients, start the local MCP server:
 
 ```bash
 python scripts/start.py --root "$tmpdir/repo" --save-profile
@@ -147,7 +164,7 @@ The local endpoint is:
 http://127.0.0.1:8000/mcp
 ```
 
-For ChatGPT web through a public tunnel, set a token first. Tunnel startup fails closed without it:
+For ChatGPT web, start PatchBay with an HTTPS tunnel and worker-first tool surface. Tunnel startup fails closed without a token:
 
 ```bash
 export PATCHBAY_HTTP_TOKEN='<long-random-token>'
@@ -155,12 +172,17 @@ python scripts/start.py \
   --root "$tmpdir/repo" \
   --tunnel-mode cloudflare \
   --tool-mode worker \
-  --save-profile
+  --save-profile \
+  --reveal-token
 ```
 
-The launcher does not install `cloudflared` or `ngrok`; install and verify your tunnel provider separately. Tokenized ChatGPT Server URLs are redacted by default and shown only with `--reveal-token`. Use `--tool-mode worker` for the first ChatGPT validation run; it exposes the worker tools plus the read-only context tools needed to brief them, while hiding low-level job/session controls and aliases. Direct tokenized public-tunnel MCP simulation has passed through ngrok, including artifact inbox transfer into an isolated worker. The real ChatGPT Developer Mode UI/tool-selection run remains a release gate.
+Copy the full tokenized Server URL printed by `--reveal-token`. It should look like `https://.../mcp?patchbay_token=...`. The launcher does not install `cloudflared` or `ngrok`; install and verify your tunnel provider separately. Tokenized ChatGPT Server URLs are redacted unless you ask to reveal them.
 
-One copied Server URL points to one shared local server. Multiple ChatGPT conversations or MCP clients connected to that URL can see the same local worker, job, artifact, and repository state. Start each conversation with `codex_self_test`; it returns a safe `client_ref`, active MCP session count, and shared-server coordination note without returning raw MCP session ids.
+OpenAI's Apps SDK docs describe the same connector shape: enable Developer Mode, create a connector, paste an HTTPS `/mcp` URL, then open a new chat and add the connector from the `+` / More menu. See [OpenAI Apps SDK quickstart](https://developers.openai.com/apps-sdk/quickstart#add-your-app-to-chatgpt) and [Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt#create-a-connector).
+
+Use `--tool-mode worker` for the first ChatGPT validation run; it exposes the worker tools plus the read-only context tools needed to brief them, while hiding low-level job/session controls and aliases. Direct tokenized public-tunnel MCP simulation has passed through ngrok, including artifact inbox transfer into an isolated worker. The real ChatGPT Developer Mode UI/tool-selection run remains a release gate.
+
+One copied Server URL points to one shared local server. Multiple ChatGPT conversations or MCP clients connected to that URL can see the same local worker, job, artifact, and repository state. Start each conversation with `codex_self_test`; it returns a session-relative `client_ref`, active MCP session count, and shared-server coordination note without returning raw MCP session ids.
 
 For multi-repository validation, include every repository at launch time. `--root` sets the default workspace and narrows `repositories.allowed` to that root unless extra roots are supplied:
 
@@ -168,29 +190,36 @@ For multi-repository validation, include every repository at launch time. `--roo
 python scripts/start.py \
   --root "$repo_a" \
   --allow-root "$repo_b" \
-  --tool-mode worker
+  --tunnel-mode cloudflare \
+  --tool-mode worker \
+  --reveal-token
 ```
 
 If a tool reports that a path is outside configured allowed roots, treat it as a launcher setup issue. Restart PatchBay with the missing repository passed through `--allow-root` or add it to `repositories.allowed`; do not work around the path guard.
 
 ChatGPT can inspect mode choices with `codex_tool_mode_info` and request a session-local mode change with `codex_tool_mode_switch`. The switch does not rewrite config files. Direct MCP clients that call `tools/list` again on the same MCP session will see the new catalog; other sessions keep their own effective mode. ChatGPT Developer Mode may require refreshing the connector metadata before newly exposed tools appear.
 
-Create the ChatGPT app with:
+Create the ChatGPT connector/app with:
 
 ```text
-Settings -> Apps -> Advanced settings
+Settings -> Apps & Connectors -> Advanced settings
 Developer mode: on
 Enforce CSP in developer mode: on
-Create app
+Settings -> Connectors -> Create
 
 Name: PatchBay
-Description: Local control plane for ChatGPT-driven Codex work
-Connection: Server URL
-Server URL: paste the full URL printed by scripts/start.py --reveal-token
+Description: Route ChatGPT context into local Codex workers
+Connector URL / Server URL: paste the full HTTPS /mcp URL printed by scripts/start.py --reveal-token
 Authentication: No Authentication / None
 ```
 
 The ChatGPT app auth setting is `No Authentication / None` because the Server URL already includes the private PatchBay token. Do not configure OAuth or paste an API key into ChatGPT for this local bridge.
+
+After ChatGPT shows the advertised tools, open a new chat, add PatchBay from the `+` / More menu, and start with:
+
+```text
+Use PatchBay. Call codex_self_test, then codex_open_workspace, then tell me what repo you can see and which worker tools are available.
+```
 
 See [QUICKSTART.md](QUICKSTART.md) for the full disposable-repo flow.
 
@@ -288,7 +317,11 @@ The canonical public names are `codex_*`. In `full` tool mode, compatibility ali
 | `codex_worker_integrate` | Apply an explicitly accepted isolated worker result to the base checkout without committing or deleting the worktree | no |
 | `codex_worker_stop` | Stop the active turn and optionally discard an isolated worker workspace | no |
 
-Workers are derived from existing persisted job records and Codex sessions. Human worker names are scoped to the base workspace, so `Small Implementer` can exist in more than one repo; pass `repo_path` or use the public `worker_id` only when a name is ambiguous. When ChatGPT needs control over the underlying Codex model or reasoning depth, it should call `codex_worker_options` and then pass `model` and/or `reasoning_effort` to `codex_worker_start`. When ChatGPT has generated a file or zip that local Codex should use, it should call `codex_worker_inbox(action="import_file")` and pass the returned artifact id through `context_from_artifacts`. Imports are local context only and can be repeated; they do not edit the repository. Follow-up `codex_worker_message` calls inherit the worker's prior model/reasoning choices unless explicitly overridden and can attach later imported artifacts. If multiple ChatGPT conversations share one Server URL, worker and artifact views include safe ownership flags. Read/list/inspect remain shared, but mutating another connection's worker or artifact requires an explicit `takeover: true` call after user confirmation. Base-checkout mutation paths, including direct writes, command execution, shared-write workers, and worker integration, use per-repository mutation locks and return `repo_busy` instead of queueing hidden writes. Phase 2 adds durable external worker worktrees for `isolated_write` workers and on-demand change/diff/file inspection. Before integration, `codex_read_file` reads only the base checkout; use `codex_worker_inspect(view="file", file_path="...")` to read a worker-created file from its isolated worktree. Imported artifacts are copied into `.ai-bridge/imported-artifacts/` inside the isolated worker worktree and excluded from changes/diffs/integration. Phase 3 lets start/message calls include bounded report/change/diff context from other workers and makes `codex_worker_list` return a concise `team_report`. Phase 4 adds explicit integration preview and accepted-result application for isolated writing workers. It does not add a worker database, message bus, transcript copy, role engine, automatic reviewer chain, automatic commits, automatic queue, or automatic merge queue.
+Workers are derived from persisted job records and Codex sessions. Human worker names are scoped to the base workspace, so `Small Implementer` can exist in more than one repo; pass `repo_path` or use the public `worker_id` only when a name is ambiguous. When ChatGPT needs control over the underlying Codex model or reasoning depth, it should call `codex_worker_options` and then pass `model` and/or `reasoning_effort` to `codex_worker_start`. When ChatGPT has generated a file or zip that local Codex should use, it should call `codex_worker_inbox(action="import_file")` and pass the returned artifact id through `context_from_artifacts`. Imports are local context only and can be repeated; they do not edit the repository. Follow-up `codex_worker_message` calls inherit the worker's prior model/reasoning choices unless explicitly overridden and can attach later imported artifacts.
+
+Default writing workers use durable external worktrees with on-demand changed-file, file-content, and one-file diff inspection. Before integration, `codex_read_file` reads only the base checkout; use `codex_worker_inspect(view="file", file_path="...")` to read a worker-created file from its isolated worktree. Imported artifacts are copied into `.ai-bridge/imported-artifacts/` inside the isolated worker worktree and excluded from changes, diffs, integration previews, and applies. Worker start/message calls can include bounded report/change/diff context from other workers, and `codex_worker_list` returns a concise `team_report`.
+
+If multiple ChatGPT conversations share one Server URL, worker and artifact views include session-relative ownership flags. Read/list/inspect remain shared, but mutating another connection's worker or artifact requires an explicit `takeover: true` call after user confirmation. Base-checkout mutation paths, including direct writes, command execution, shared-write workers, and worker integration, use per-repository mutation locks and return `repo_busy` instead of queueing hidden writes. PatchBay does not add a worker database, message bus, transcript copy, role engine, automatic reviewer chain, automatic commits, automatic queue, or automatic merge queue.
 
 ### Core Codex jobs
 
@@ -365,9 +398,9 @@ ui://widget/patchbay-tool-card-v1.html
 
 Clients can fetch it with `resources/list` and `resources/read`. The MIME type is `text/html;profile=mcp-app`. The current card renders bounded tool results and does not initiate tool calls.
 
-## Safety And Power Controls
+## Power Boundary And Controls
 
-This tool deliberately bridges ChatGPT and local developer power. The controls exist so the product can be powerful enough for serious work.
+PatchBay is deliberately powerful. These controls are not the product story; they are the boundary that makes it practical to aim ChatGPT at real local engineering work without hiding what is reading, writing, executing, or applying.
 
 - Keep first runs on disposable repos.
 - The checked-in profile is intentionally full-power: `/` allowed root, `danger-full-access`, direct writes, full bash, and Codex session reads.
@@ -412,8 +445,9 @@ That direct MCP trial uses two logical MCP sessions against a disposable repo. I
 - [docs/user/chatgpt-instructions.md](docs/user/chatgpt-instructions.md): tool-use guidance for ChatGPT or another MCP client.
 - [docs/architecture/overview.md](docs/architecture/overview.md): current hybrid architecture.
 - [docs/reference/public-tool-surface.md](docs/reference/public-tool-surface.md): tool tiers, schemas, aliases, and metadata policy.
-- [docs/worker-bridge/README.md](docs/worker-bridge/README.md): natural-language worker bridge architecture and phase plan, including artifact inbox transfer, Phase 3 worker coordination, and Phase 4 accepted-result integration.
+- [docs/worker-bridge/README.md](docs/worker-bridge/README.md): natural-language worker bridge architecture and implementation history.
 - [docs/reference/context-and-handoff.md](docs/reference/context-and-handoff.md): AGENTS, skills, context packs, and `.ai-bridge`.
+- [docs/project/why-patchbay.md](docs/project/why-patchbay.md): product purpose and value proposition.
 - [SECURITY.md](SECURITY.md): vulnerability reporting and operator warnings.
 - [docs/security/product-boundary.md](docs/security/product-boundary.md): power-control model.
 - [TESTING.md](TESTING.md): local checks and live MCP evals.
