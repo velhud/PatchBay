@@ -274,9 +274,9 @@ Before public release, run all of these against disposable repos:
 - Logs and runtime files do not contain real tokens, prompt bodies, or private paths in committed docs.
 
 
-## Phase 4 Worker Integration Eval
+## Worker Integration Eval
 
-Run after Phase 4 changes:
+Run after worker integration changes:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase4_eval.py --timeout 900

@@ -1,6 +1,6 @@
 # Testing And Release Plan
 
-Status: Phase 4 worker gates, artifact inbox transfer, and shared-server multi-client coordination implemented; direct MCP and tokenized public-tunnel artifact-flow evidence exists; real ChatGPT Developer Mode UI validation remains a release gate.
+Status: worker gates, artifact inbox transfer, and shared-server multi-client coordination are implemented; direct MCP and tokenized public-tunnel artifact-flow evidence exists; real ChatGPT Developer Mode UI validation remains a release gate.
 
 ## Testing Principle
 

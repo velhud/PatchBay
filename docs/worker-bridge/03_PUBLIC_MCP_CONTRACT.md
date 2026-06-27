@@ -1,6 +1,6 @@
 # Public MCP Contract
 
-Status: Phase 4 worker contract implemented; app-server backend pending.
+Status: current worker contract implemented; app-server backend pending.
 
 ## Design Rule
 
@@ -131,7 +131,7 @@ Implemented views:
 
 Purpose: apply an explicitly accepted worker result to its base workspace after a clean preview.
 
-This is implemented in Phase 4. It applies the worker patch to the base checkout only after preview succeeds. It does not commit, delete the worker worktree, auto-resolve conflicts, or create a PR.
+This applies the worker patch to the base checkout only after preview succeeds. It does not commit, delete the worker worktree, auto-resolve conflicts, or create a PR.
 
 ### `codex_worker_stop`
 

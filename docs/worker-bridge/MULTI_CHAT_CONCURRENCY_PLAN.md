@@ -50,10 +50,9 @@ This plan covers the eight multi-client risks found after the first real ChatGPT
 - `README.md:261-278` documents the canonical worker tool surface and says worker mode hides low-level job/session controls while workers derive from persisted jobs/sessions.
 - `docs/worker-bridge/05_END_TO_END_ALGORITHMS.md:5-19` says worker start creates a durable `interactive` job with private worker identity and returns a public pointer without backend internals.
 - `docs/worker-bridge/05_END_TO_END_ALGORITHMS.md:55-69` says busy workers return `accepted: false`; PatchBay intentionally does not queue messages.
-- `docs/worker-bridge/PHASE4_5_VALIDATION_CAMPAIGN.md:34` forbids fixing failures by turning the product into a low-level job panel, workflow engine, queue, ERP, or deterministic role system.
-- `docs/worker-bridge/PHASE4_5_VALIDATION_CAMPAIGN.md:64-76` requires worker continuity by name without exposing backend job/session ids, local paths, branch names, logs, or transcripts.
-- `docs/worker-bridge/PHASE4_5_VALIDATION_CAMPAIGN.md:78-90` requires isolated writing worktrees and separate worktrees for multiple writing workers.
-- `docs/worker-bridge/PHASE4_5_VALIDATION_CAMPAIGN.md:92-103` says multi-worker coordination is managed by ChatGPT and PatchBay, not by a generic message bus.
+- Worker continuity must stay name-based without exposing backend job/session ids, local paths, branch names, logs, or transcripts.
+- Isolated writing worktrees remain the default for writing workers, including separate worktrees for multiple writing workers.
+- Multi-worker coordination is managed by ChatGPT through PatchBay's bounded context tools, not by a generic message bus or deterministic role engine.
 - `docs/security/product-boundary.md:51-64` requires tool metadata to match behavior and classifies worker start/message/inbox as mutating/open-world where appropriate.
 
 ## Implemented Shared Design
@@ -250,7 +249,7 @@ Before the fix, any connected chat that could name a worker could message, stop,
 - `src/patchbay/workers/runtime.py:358-410` previews and applies integration without owner checks.
 - `src/patchbay/tools/handler.py:245-251` stops a worker without owner checks.
 - `src/patchbay/artifacts.py:136-148` cleans up an artifact without owner checks.
-- `docs/worker-bridge/PHASE4_5_VALIDATION_CAMPAIGN.md:64-76` requires worker continuity without exposing backend ids, which means ownership checks must still allow human-name operation.
+- Worker continuity must not expose backend ids, which means ownership checks must still allow human-name operation.
 
 ### Vendor Guidance
 

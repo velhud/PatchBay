@@ -1,6 +1,6 @@
 # Decisions, Risks, And Deferred Work
 
-Status: Phase 4 worker integration and artifact inbox transfer implemented; app-server backend decisions remain pending.
+Status: worker integration and artifact inbox transfer are implemented; app-server backend decisions remain pending.
 
 ## Confirmed Decisions
 
@@ -42,7 +42,7 @@ Do not duplicate the transcript. Reuse the session ID already persisted by the e
 
 ### JSON Files Later If Needed
 
-The durable job store is enough through Phase 2. If later worker records are added, use private atomic JSON under runtime state first. Revisit SQLite only if measured concurrency or corruption problems appear.
+The durable job store is enough for the current worker runtime. If later worker records are added, use private atomic JSON under runtime state first. Revisit SQLite only if measured concurrency or corruption problems appear.
 
 ### Stable Worker Worktree
 
@@ -52,9 +52,9 @@ A writing worker owns one external worktree across turns. Job cleanup does not o
 
 Use current `codex exec` and resume machinery for the first complete worker system. Add app-server only behind the same contract after a real spike.
 
-### Six Public Worker Tools
+### Public Worker Tool Set
 
-Use six semantically distinct tools for start, message, list, inspect, integrate, and stop. Integration is separate because accepting a worker result is a distinct mutating act.
+Use semantically distinct tools for options, artifact inbox, start, message, list, inspect, integrate, and stop. Integration is separate because accepting a worker result is a distinct mutating act.
 
 ### Low-Level Tools Remain
 
@@ -78,7 +78,7 @@ Use simple local worker resolution and message delivery first. Keep future proto
 
 Risk: current or future `codex exec resume` versions may not preserve the desired worker-owned worktree semantics.
 
-Mitigation: Phase 2 command builder reasserts `--sandbox` and `--cd` before `resume`, and `scripts/worker_phase2_eval.py` tests real behavior. Add an app-server adapter if exec behavior becomes insufficient.
+Mitigation: the command builder reasserts `--sandbox` and `--cd` before `resume`, and `scripts/worker_phase2_eval.py` tests real behavior. Add an app-server adapter if exec behavior becomes insufficient.
 
 ### Session ID Availability
 
@@ -88,7 +88,7 @@ Mitigation: return `accepted: false` for follow-ups until a session is available
 
 ### Worker And Job Cleanup Conflict
 
-Mitigation: ordinary cleanup skips worker-tagged durable jobs. Phase 2 adds explicit worktree ownership and cleanup.
+Mitigation: ordinary cleanup skips worker-tagged durable jobs, and worker cleanup owns worker worktree removal explicitly.
 
 ### ChatGPT May Prefer Old Low-Level Tools
 
@@ -100,7 +100,7 @@ Mitigation: keep descriptors truthful, reduce mutating call count through long-r
 
 ### Patch Construction Risk
 
-Mitigation: Phase 4 builds a bounded patch, rejects blocked paths, checks the base checkout before applying, uses `git apply --check`, and avoids target mutation on conflict.
+Mitigation: worker integration builds a bounded patch, rejects blocked paths, checks the base checkout before applying, uses `git apply --check`, and avoids target mutation on conflict.
 
 ### Multi-Worker Resource Pressure
 

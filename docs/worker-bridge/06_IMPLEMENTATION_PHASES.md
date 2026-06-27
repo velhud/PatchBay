@@ -1,6 +1,6 @@
 # Implementation Phases
 
-Status: Phase 4 integration preview, accepted-result application, artifact inbox transfer, and shared-server multi-client coordination implemented; app-server backend phase not implemented yet.
+Status: historical implementation sequence. The current runtime includes integration preview, accepted-result application, artifact inbox transfer, and shared-server multi-client coordination; app-server backend work is not implemented.
 
 ## Delivery Strategy
 
