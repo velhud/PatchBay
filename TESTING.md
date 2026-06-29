@@ -70,7 +70,7 @@ The unit suite verifies:
 - operator boundary and runtime-profile checks;
 - path validation and symlink escape rejection;
 - redaction helpers;
-- MCP initialize instructions.
+- MCP initialize instructions, including manager-first worker delegation guidance.
 
 ## Connector Doctor
 

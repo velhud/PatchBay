@@ -8,6 +8,23 @@ It supports three primary modes:
 - named worker mode, where ChatGPT starts and continues durable Codex colleagues by human name;
 - Codex controller mode, where ChatGPT starts local Codex jobs and inspects status, results, diffs, and session refs.
 
+## Operating Role
+
+ChatGPT should act as engineering lead, consultant, and coordinator. Local Codex workers are the assistants that investigate the repository, implement code, verify behavior, and report evidence.
+
+For non-trivial repository work, ChatGPT should do as little direct line-by-line work as practical. Use workspace read/search/git tools for light orientation, setup checks, focused verification, and reviewing worker evidence. Do not turn those tools into the main development loop unless the user explicitly asks for direct ChatGPT inspection or the task is tiny.
+
+The normal pattern is natural-language management:
+
+1. Open the workspace and understand the allowed boundary.
+2. Start one or more named Codex workers with clear goals, constraints, deliverables, and report expectations.
+3. Ask workers natural follow-up questions with `codex_worker_message`.
+4. Use `codex_worker_list` and `codex_worker_inspect` to read reports, changes, diffs, files, and integration previews.
+5. Synthesize worker reports for the user and decide the next instruction.
+6. Integrate only explicitly accepted isolated-worker results, then verify.
+
+Do not micromanage every folder, file name, or implementation step unless the user asked for that level of control. It is acceptable to brief a worker with "find the relevant area in this repository and report the plan before changing code" instead of precomputing every path yourself.
+
 ## Endpoint
 
 Local development endpoint:
@@ -90,8 +107,8 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - For multi-repository tasks, verify each repo is already allowed; a path-guard refusal means the launcher/config must be updated, not bypassed.
 - Start with a disposable repo until the real ChatGPT Developer Mode flow is verified.
 - The current checked-in profile is full-power. Treat direct writes, full bash, `danger-full-access`, session reads, and child-process environment inheritance as available unless the launcher/runtime config narrows them.
-- Prefer context tools before starting jobs.
-- Prefer `codex_worker_start` for durable delegation when ChatGPT wants to manage an ongoing named Codex colleague. The default `isolated_write` mode is for implementation work in a private worktree; use `workspace_mode: "read_only"` for advisory/review workers.
+- Use context tools before starting workers only enough to identify the workspace, constraints, and useful AGENTS/skill context.
+- Prefer `codex_worker_start` for durable delegation whenever the task needs real repository understanding, implementation, verification, or review. The default `isolated_write` mode is for implementation work in a private worktree; use `workspace_mode: "read_only"` for advisory/review workers.
 - When the user asks for a specific model, deeper/faster reasoning, or model-sensitive delegation, call `codex_worker_options` first. Then pass `model` and/or `reasoning_effort` to `codex_worker_start`; otherwise omit them and use Codex defaults.
 - When ChatGPT has generated a file or zip package that local Codex should use, call `codex_worker_inbox` with `action: "import_file"` first. Then pass the returned `artifact_id` through `context_from_artifacts` on `codex_worker_start` or `codex_worker_message`.
 - Importing an artifact stores local inbox context only. It does not edit the repo, does not integrate worker output, and can be repeated for multiple files or zips in the same conversation.
@@ -125,22 +142,20 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 
 1. Call `codex_self_test`.
 2. Call `codex_open_workspace`.
-3. Call `codex_workspace_snapshot` or `codex_inventory`.
-4. Load relevant AGENTS/context with `codex_load_context`.
-5. Use `codex_list_skills` and `codex_load_skill` only when a discovered skill is relevant.
-6. Use `codex_read_file`, `codex_search_repo`, `codex_git_status`, `codex_git_diff`, and `codex_show_changes` for orientation.
-7. If a worker needs a specific Codex model or reasoning effort, call `codex_worker_options` and choose from the returned menu.
-8. If ChatGPT has generated files or zips for local Codex, call `codex_worker_inbox` with `action: "import_file"` for each artifact. Use `action: "list"` or `action: "inspect"` only when needed to choose or inspect artifact ids.
-9. For durable delegation, call `codex_worker_start` with a human name, natural-language brief, optional `workspace_mode`, optional `model`/`reasoning_effort`, and optional `context_from_artifacts`.
-10. Inspect the worker with `codex_worker_inspect` or `codex_worker_list`.
-11. Continue the same Codex conversation by name with `codex_worker_message`; include `context_from_workers` when another worker's report or diff should be relayed, and include `context_from_artifacts` when a later imported file or zip should be added to the same worker.
-12. If the required control is not visible, call `codex_tool_mode_info`, then `codex_tool_mode_switch` only when broadening is justified. If ChatGPT does not receive the new catalog, ask the operator to refresh or reconnect the connector.
-13. Use low-level `codex_plan_job`, `codex_get_status`, `codex_get_result`, and session tools for compatibility, debugging, or explicit power-user control.
-14. For worker changes, inspect with `codex_worker_inspect` using `view: "changes"`, `view: "file"` with a workspace-relative `file_path` for worker-created file content, `view: "diff"` with a workspace-relative `file_path`, or `view: "integration_preview"` before accepting work.
-15. Use `codex_worker_integrate` only for an explicitly accepted isolated writing worker result; review, test, and commit through the normal repository workflow afterward.
-16. For low-level one-shot changes, call `codex_apply_job`, then inspect with `codex_get_result` and `codex_get_diff`.
-17. If a result includes `session_ref`, continue with `codex_resume` or `codex_interactive_reply`.
-18. If a local terminal handoff is preferred, write `.ai-bridge/current-plan.md` with `codex_write_handoff` and let the operator run the local handoff CLI.
+3. Load only the context needed to brief work: usually `codex_load_context`, and optionally `codex_workspace_snapshot`, `codex_inventory`, `codex_list_skills`, or `codex_load_skill`.
+4. For non-trivial understanding or implementation, start a named worker instead of reading and solving the repository yourself.
+5. If a worker needs a specific Codex model or reasoning effort, call `codex_worker_options` and choose from the returned menu.
+6. If ChatGPT has generated files, specs, plans, or zips for local Codex, call `codex_worker_inbox` with `action: "import_file"` for each artifact. Use `action: "list"` or `action: "inspect"` only when needed to choose or inspect artifact ids.
+7. For durable delegation, call `codex_worker_start` with a human name, natural-language brief, optional `workspace_mode`, optional `model`/`reasoning_effort`, optional `context_from_workers`, and optional `context_from_artifacts`.
+8. Inspect workers with `codex_worker_inspect` or `codex_worker_list`.
+9. Continue the same Codex conversation by name with `codex_worker_message`; include `context_from_workers` when another worker's report or diff should be relayed, and include `context_from_artifacts` when a later imported file or zip should be added to the same worker.
+10. Use `codex_read_file`, `codex_search_repo`, `codex_git_status`, `codex_git_diff`, and `codex_show_changes` for focused checks, verification, and reviewing worker evidence.
+11. If the required control is not visible, call `codex_tool_mode_info`, then `codex_tool_mode_switch` only when broadening is justified. If ChatGPT does not receive the new catalog, ask the operator to refresh or reconnect the connector.
+12. Use low-level `codex_plan_job`, `codex_get_status`, `codex_get_result`, and session tools for compatibility, debugging, or explicit power-user control.
+13. For worker changes, inspect with `codex_worker_inspect` using `view: "changes"`, `view: "file"` with a workspace-relative `file_path` for worker-created file content, `view: "diff"` with a workspace-relative `file_path`, or `view: "integration_preview"` before accepting work.
+14. Use `codex_worker_integrate` only for an explicitly accepted isolated writing worker result; review, test, and commit through the normal repository workflow afterward.
+15. For low-level one-shot changes, call `codex_apply_job` only when explicit job/diff handling is better than the worker facade.
+16. If a local terminal handoff is preferred, write `.ai-bridge/current-plan.md` with `codex_write_handoff` and let the operator run the local handoff CLI.
 
 ## Worker-First Flow
 
@@ -148,11 +163,65 @@ Use the natural-language worker facade when ChatGPT wants to appoint named local
 
 Default workers use `isolated_write`: PatchBay creates one external worker worktree and reuses it across turns. Use `read_only` for investigation/review work that must not edit files. Use `shared_write` only when the user explicitly wants direct base-checkout writes.
 
+For an unclear bug or architecture question, start with a read-only worker:
+
+```json
+{
+  "name": "Repository Investigator",
+  "workspace_mode": "read_only",
+  "brief": "Inspect this repository as my local Codex assistant. Explain the main architecture, identify the areas most likely related to the reported problem, cite evidence, and recommend the next worker task. Do not edit files."
+}
+```
+
+Then continue naturally:
+
+```json
+{
+  "worker": "Repository Investigator",
+  "message": "Focus on the authentication flow and tell me where a fix would probably belong. Do not patch yet; report the smallest safe implementation plan."
+}
+```
+
+For a larger build, ChatGPT can create a small worker team instead of planning every file itself:
+
+```json
+{
+  "name": "Backend Implementer",
+  "brief": "You are one of several Codex workers on this repo. Own the backend/API part of the requested feature. Find the relevant files yourself, implement the backend changes in your isolated worktree, run focused verification, and report changed files, behavior, tests, and any frontend contract the UI worker must know."
+}
+```
+
+```json
+{
+  "name": "UI Implementer",
+  "brief": "You are one of several Codex workers on this repo. Own the user-facing UI for the requested feature. Find the relevant UI structure yourself, implement in your isolated worktree, and report integration assumptions that need backend confirmation."
+}
+```
+
+```json
+{
+  "name": "Review And Verification",
+  "workspace_mode": "read_only",
+  "brief": "Review the plan and repository structure while backend and UI workers proceed. Identify likely integration risks, testing requirements, and questions to send back to the implementers. Do not edit files."
+}
+```
+
+When reports come back, use `context_from_workers` to pass bounded context rather than copying transcripts manually:
+
+```json
+{
+  "worker": "UI Implementer",
+  "context_from_workers": ["Backend Implementer", "Review And Verification"],
+  "context_detail": "report",
+  "message": "Reconcile your UI work with the backend report and the review risks. Adjust if needed, then report remaining integration gaps."
+}
+```
+
 Worker coordination is implemented through `context_from_workers` and `context_detail` on `codex_worker_start` and `codex_worker_message`. Use this for reviewer handoffs, alternate implementations, and sending one worker's concern back to another. Worker integration is implemented as an explicit boundary: inspect through `view: "changes"`, `view: "file"`, `view: "diff"`, and `view: "integration_preview"` as needed, then call `codex_worker_integrate` only when the user or ChatGPT deliberately accepts that worker result. Integration applies to the base checkout without committing and preserves the worker worktree.
 
 Worker model and reasoning selection is implemented as a progressive menu. `codex_worker_options` returns bounded model metadata from the installed Codex runtime/catalog and explains which `model` and `reasoning_effort` values can be passed to worker tools. It does not expose raw Codex config paths, provider credentials, prompts, or auth data. Leave these fields empty unless the user or task makes the choice important.
 
-Worker artifact transfer is implemented through `codex_worker_inbox`. Use `action: "import_file"` when ChatGPT has a generated file or zip that local Codex should use. The returned artifact id can be attached to an isolated worker through `context_from_artifacts`; PatchBay copies selected artifacts into `.ai-bridge/imported-artifacts/` inside the worker worktree and excludes that reserved directory from integration. Imports can happen multiple times in one conversation. Import/list responses stay compact; inspect a specific artifact file only when contents are needed.
+Worker artifact transfer is implemented through `codex_worker_inbox`. Use `action: "import_file"` when ChatGPT has a generated plan, spec, patch sketch, file, or zip that local Codex should use. The returned artifact id can be attached to an isolated worker through `context_from_artifacts`; PatchBay copies selected artifacts into `.ai-bridge/imported-artifacts/` inside the worker worktree and excludes that reserved directory from integration. Imports can happen multiple times in one conversation. Import/list responses stay compact; inspect a specific artifact file only when contents are needed.
 
 ## Tool Tiers
 

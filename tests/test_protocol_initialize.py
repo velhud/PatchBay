@@ -34,14 +34,22 @@ def test_initialize_includes_server_instructions():
     assert result["serverInfo"]["name"] == "patchbay"
     assert result["serverInfo"]["version"] == "0.1.0"
     assert "instructions" in result
+    assert "engineering lead, consultant, and coordinator" in result["instructions"]
+    assert "do as little line-by-line work yourself as practical" in result["instructions"]
     assert "one shared local server" in result["instructions"]
+    assert "repo_busy" in result["instructions"]
     assert "raw MCP session ids" in result["instructions"]
     assert "codex_self_test" in result["instructions"]
     assert "codex_open_workspace" in result["instructions"]
+    assert "Use read-only context tools for light orientation" in result["instructions"]
+    assert "ask workers natural questions" in result["instructions"]
+    assert "split responsibilities across multiple isolated_write workers" in result["instructions"]
+    assert "codex_worker_inbox(action=import_file)" in result["instructions"]
     assert "Workers are stateful by name" in result["instructions"]
     assert "integration_preview" in result["instructions"]
     assert "does not commit" in result["instructions"]
     assert "allowed roots" in result["instructions"]
+    assert "--allow-root" in result["instructions"]
     assert result["capabilities"]["resources"]["listChanged"] is False
 
 

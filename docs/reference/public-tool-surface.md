@@ -4,6 +4,8 @@
 
 PatchBay should expose tools as product capabilities, not implementation conveniences. ChatGPT should see narrow, intentional tools that explain when to use them and what control boundary they cross.
 
+The primary ChatGPT posture is lead/manager/consultant, not line-by-line repository implementer. The worker-first surface should encourage ChatGPT to do as little detailed code investigation and implementation itself as practical: use direct context tools for light orientation, focused checks, and verification; use named Codex workers for broad repository understanding, implementation, review, and validation. Tool descriptions should make it natural for ChatGPT to ask workers natural-language questions and assign deliverables rather than precomputing every path or command.
+
 The same public tool surface is served through Streamable HTTP `/mcp` and the stdio entry point (`patchbay stdio` / `patchbay-stdio`). Stdio is a transport compatibility layer; it must not fork tool policy, hidden-tool filtering, schema validation, or session-local tool mode behavior.
 
 Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps canonical `codex_*` names as the durable API, while `app.tool_mode` can advertise compatibility aliases for ChatGPT live use. Aliases are tool-selection aids, not separate or safer execution paths; they resolve to canonical handlers and use precise alias-specific schemas instead of open generic argument bags.
@@ -27,6 +29,8 @@ Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps
 ## Natural-Language Worker Tools
 
 PatchBay includes durable natural-language workers summarized in [../worker-bridge/README.md](../worker-bridge/README.md). These tools are the preferred durable delegation path when ChatGPT wants to manage an ongoing named Codex colleague without exposing job ids, session ids, branch names, or private paths.
+
+For larger tasks, ChatGPT may start a small team of workers with separate responsibilities such as investigation, backend implementation, UI implementation, tests, review, or integration risk. PatchBay does not impose fixed roles; ChatGPT chooses the management shape and passes bounded report/change/diff context between workers with `context_from_workers`.
 
 | Tool | Mutability | Role |
 | --- | --- | --- |
@@ -159,7 +163,9 @@ Every public descriptor must include:
 
 These descriptors are not only API documentation; they are part of the model prompt surface ChatGPT uses for tool selection. Keep descriptions outcome-first and explicit about:
 
+- ChatGPT's manager/consultant role and the expectation that non-trivial repo work is delegated to workers;
 - when to use the tool and when another worker/context tool is better;
+- when direct read/search tools are only for light orientation or verification rather than the primary implementation loop;
 - whether the tool reads, writes, starts a process, stops work, or applies changes;
 - whether state is durable across PatchBay restart;
 - what should be inspected before a mutating follow-up;
@@ -178,6 +184,7 @@ Current implementation returns these descriptor fields from `tools/list`, includ
 - aliases are advertised in the wrong tool mode or point to duplicate execution paths instead of canonical handlers.
 - descriptor resource URIs drift from the registered resource.
 - prompt-critical workflow guidance such as stateful workers, preview-before-integrate, no-commit integration, or validation expectations disappears from `initialize.instructions` or worker descriptors.
+- manager-first guidance disappears from `initialize.instructions` or worker descriptors.
 
 ## Schema Compatibility
 

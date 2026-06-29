@@ -122,7 +122,7 @@ Keep `Enforce CSP in developer mode` enabled. The tool card resource is designed
 After the connector is created, ChatGPT should show the tools PatchBay advertises. Open a new chat, click `+`, add PatchBay from the More menu, and send:
 
 ```text
-Use PatchBay. Call codex_self_test, then codex_open_workspace, then tell me what repo you can see and which worker tools are available.
+Use PatchBay. Act as engineering lead, not as the line-by-line coder. Call codex_self_test, then codex_open_workspace, then tell me what repo you can see and which worker tools are available.
 ```
 
 Expected result:
@@ -146,7 +146,7 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
 This does not use ChatGPT and does not open a public tunnel. It starts a temporary server and probes MCP initialize, tool listing, resources, workspace context, aliases, path guards, and default power-tool denial.
 In the current full-power profile it also verifies direct write and full bash on the disposable repo.
 
-## 7. Try ChatGPT As Workspace Coder
+## 7. Try Light Workspace Orientation
 
 Ask ChatGPT to use:
 
@@ -157,11 +157,22 @@ Ask ChatGPT to use:
 5. `codex_search_repo`
 6. `codex_show_changes`
 
-This path lets ChatGPT inspect and reason about the repo directly. The checked-in profile enables direct writes and full bash; using `--root "$tmpdir/repo"` keeps that power scoped to the disposable repo for this first run.
+This path is for brief orientation and verification. It should not become the normal development loop for non-trivial work. The normal PatchBay posture is ChatGPT as lead: ask local Codex workers natural-language questions, assign them work, read their reports, and inspect direct files/diffs only when needed to verify evidence. The checked-in profile enables direct writes and full bash; using `--root "$tmpdir/repo"` keeps that power scoped to the disposable repo for this first run.
 
 ## 8. Try ChatGPT With A Named Worker
 
 Use this for durable isolated implementation:
+
+For investigation, ask a worker a natural question instead of manually searching every file yourself:
+
+```json
+{
+  "name": "Repository Investigator",
+  "brief": "Inspect this repository, explain the main structure, identify where the reported problem probably lives, and recommend the next implementation task. Do not edit files.",
+  "repo_path": "/absolute/path/to/disposable/repo",
+  "workspace_mode": "read_only"
+}
+```
 
 First, if the task needs a specific Codex model or reasoning depth, call `codex_worker_options`:
 
@@ -201,6 +212,22 @@ Call `codex_worker_start`, then inspect with:
 ```
 
 using `codex_worker_inspect`. Use `{"worker": "Repository Implementer", "view": "changes"}` to list worker changes, `{"worker": "Repository Implementer", "view": "file", "file_path": "worker-note.txt"}` to read worker-side file content before integration, and `{"worker": "Repository Implementer", "view": "diff", "file_path": "worker-note.txt"}` to inspect one file's patch. `codex_read_file` reads the base checkout, so it will not see worker-created files until after explicit integration. After restarting PatchBay, `codex_worker_list` should still show same-workspace workers, and `codex_worker_message` should continue the same Codex conversation by name when the worker has a session.
+
+For larger tasks, start several workers with separate responsibilities instead of asking ChatGPT to precompute every path:
+
+```json
+{
+  "name": "Backend Implementer",
+  "brief": "Own the backend/API side of the requested feature. Find the relevant files yourself, implement in your isolated worktree, run focused checks, and report behavior, changed files, and any UI contract."
+}
+```
+
+```json
+{
+  "name": "UI Implementer",
+  "brief": "Own the UI side of the requested feature. Find the relevant UI structure yourself, implement in your isolated worktree, and report integration assumptions."
+}
+```
 
 If ChatGPT creates a file or zip that should be used by a local worker, first import it:
 
