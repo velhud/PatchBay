@@ -269,9 +269,12 @@ WORKER_TOOLS = [
     {
         "name": "codex_worker_start",
         "description": (
-            "Appoint a durable named Codex colleague for work that may take time, need review, or continue "
-            "later. Give goals, context, constraints, and expected report in the natural-language brief. "
+            "Appoint a durable named Codex colleague for autonomous investigation, implementation, review, "
+            "or verification. Use this as the normal path for non-trivial repository work so ChatGPT can lead "
+            "instead of micromanaging code. Give goals, context, constraints, deliverables, and expected report "
+            "in the natural-language brief; do not spell out every file or line unless truly necessary. "
             "Defaults to an isolated writing worktree; choose workspace_mode=read_only for advisory work. "
+            "For larger tasks, start multiple workers with separate responsibilities and reconcile their reports. "
             "Can include bounded context from other workers for review, alternatives, or handoff. When a "
             "specific model or reasoning depth matters, call codex_worker_options first, then pass model and/or "
             "reasoning_effort here. Worker names are scoped to the target workspace, so the same name can be reused "
@@ -328,9 +331,10 @@ WORKER_TOOLS = [
     {
         "name": "codex_worker_message",
         "description": (
-            "Continue or redirect an existing named Codex worker in natural language, preserving its session "
-            "and worker worktree when available. Use this for follow-up, review feedback, or revision of the "
-            "same worker's task, not for a new independent colleague. Can include bounded peer report/change/diff "
+            "Continue, question, or redirect an existing named Codex worker in natural language, preserving its "
+            "session and worker worktree when available. Use this for follow-up, review feedback, clarification, "
+            "or revision of the same worker's task, not for a new independent colleague. Prefer asking the worker "
+            "to investigate or adjust over ChatGPT doing a manual file-by-file implementation loop. Can include bounded peer report/change/diff "
             "context without exposing backend ids. By default the worker keeps its prior model/reasoning choices; "
             "pass model or reasoning_effort only to intentionally change them for this continuation. If the worker "
             "belongs to another MCP connection, retry with takeover=true only after user confirmation."
@@ -377,8 +381,8 @@ WORKER_TOOLS = [
         "name": "codex_worker_list",
         "description": (
             "List durable Codex workers as an engineering lead would want to see them: names, human-readable "
-            "state, latest report, team summary, and whether each worker can receive a follow-up. Use this after "
-            "restart or before choosing which worker to inspect, message, stop, or integrate. By default ChatGPT "
+            "state, latest report, team summary, and whether each worker can receive a follow-up. Use this to manage "
+            "a small team of worker threads, after restart, or before choosing which worker to inspect, message, stop, or integrate. By default ChatGPT "
             "sees workers for the current workspace, so old workers from other repos do not steal the same name."
         ),
         "inputSchema": {
@@ -399,8 +403,8 @@ WORKER_TOOLS = [
         "description": (
             "Read one worker's current state and latest natural-language report. Optionally wait briefly for the "
             "current turn; this does not expose private repo paths, job ids, session ids, or raw transcripts. "
-            "Use view=changes, view=diff with file_path, view=file with file_path for worker-created files before "
-            "integration, or view=integration_preview before accepting a worker result. codex_read_file reads the "
+            "Use the report as the normal management signal. Use view=changes, view=diff with file_path, view=file with file_path for worker-created files before "
+            "integration, or view=integration_preview when verifying an accepted worker result. codex_read_file reads the "
             "base checkout, not an isolated worker worktree."
         ),
         "inputSchema": {

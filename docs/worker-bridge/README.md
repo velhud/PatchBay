@@ -47,6 +47,7 @@ The existing workspace, low-level job, session, handoff, and power-tool surfaces
 The ChatGPT-facing prompt surface is the combination of MCP `initialize.instructions`, `tools/list` descriptors, annotations, output schemas, the passive tool card, and the setup docs. Keep it worker-first for first real ChatGPT validation:
 
 - launch with `--tool-mode worker`;
+- keep ChatGPT in the lead/consultant role: use direct context tools for light orientation and verification, and delegate non-trivial repository work to workers instead of doing a manual line-by-line implementation loop;
 - use `codex_tool_mode_info` and `codex_tool_mode_switch` only for explicit, temporary broadening; ChatGPT may need connector refresh before newly exposed tools appear;
 - start with `codex_self_test` and `codex_open_workspace`;
 - treat one copied Server URL as one shared local state surface and use session-relative ownership/takeover signals instead of assuming a private app instance;

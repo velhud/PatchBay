@@ -43,7 +43,7 @@ This branch is **pre-release verified**, not public-release complete.
 | --- | --- |
 | Codex CLI baseline | Verified with `codex-cli 0.142.2` |
 | Python checks | `compileall` passes |
-| Test suite | `259` tests pass |
+| Test suite | `260` tests pass |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |
 | Isolated writing worker eval | `scripts/worker_phase2_eval.py --timeout 900` passes real Codex isolated write/restart/continue/diff/cleanup |
@@ -240,7 +240,7 @@ The ChatGPT app auth setting is `No Authentication / None` because the Server UR
 After ChatGPT shows the advertised tools, open a new chat, add PatchBay from the `+` / More menu, and start with:
 
 ```text
-Use PatchBay. Call codex_self_test, then codex_open_workspace, then tell me what repo you can see and which worker tools are available.
+Use PatchBay. Act as engineering lead, not as the line-by-line coder. Call codex_self_test, then codex_open_workspace, then tell me what repo you can see and which worker tools are available.
 ```
 
 See [QUICKSTART.md](QUICKSTART.md) for the full disposable-repo flow.
@@ -324,7 +324,7 @@ Never commit or share a real tokenized URL.
 
 ## Public MCP Tool Tiers
 
-The canonical public names are `codex_*`. In `full` tool mode, compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` can also be advertised. Aliases resolve to the canonical handlers and now expose precise CodexPro-derived input schemas adapted to PatchBay argument names. Use `--tool-mode worker` for a worker-first surface that hides low-level job/session controls and compatibility aliases while keeping worker tools plus the context tools needed to brief them. All modes expose `codex_tool_mode_info` and `codex_tool_mode_switch` so ChatGPT can compare surfaces and request temporary session-local broadening when the host refreshes the tool list.
+The canonical public names are `codex_*`. In `full` tool mode, compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` can also be advertised. Aliases resolve to the canonical handlers and now expose precise CodexPro-derived input schemas adapted to PatchBay argument names. Use `--tool-mode worker` for a worker-first surface that hides low-level job/session controls and compatibility aliases while keeping worker tools plus the context tools needed to brief them. In this mode, ChatGPT should act as a lead/consultant: use direct read/search tools for light orientation and verification, and delegate non-trivial repository investigation or implementation to named Codex workers through natural-language briefs. All modes expose `codex_tool_mode_info` and `codex_tool_mode_switch` so ChatGPT can compare surfaces and request temporary session-local broadening when the host refreshes the tool list.
 
 ### Natural-language workers
 
@@ -339,7 +339,7 @@ The canonical public names are `codex_*`. In `full` tool mode, compatibility ali
 | `codex_worker_integrate` | Apply an explicitly accepted isolated worker result to the base checkout without committing or deleting the worktree | no |
 | `codex_worker_stop` | Stop the active turn and optionally discard an isolated worker workspace | no |
 
-Workers are derived from persisted job records and Codex sessions. Human worker names are scoped to the base workspace, so `Small Implementer` can exist in more than one repo; pass `repo_path` or use the public `worker_id` only when a name is ambiguous. When ChatGPT needs control over the underlying Codex model or reasoning depth, it should call `codex_worker_options` and then pass `model` and/or `reasoning_effort` to `codex_worker_start`. When ChatGPT has generated a file or zip that local Codex should use, it should call `codex_worker_inbox(action="import_file")` and pass the returned artifact id through `context_from_artifacts`. Imports are local context only and can be repeated; they do not edit the repository. Follow-up `codex_worker_message` calls inherit the worker's prior model/reasoning choices unless explicitly overridden and can attach later imported artifacts.
+Workers are derived from persisted job records and Codex sessions. Human worker names are scoped to the base workspace, so `Small Implementer` can exist in more than one repo; pass `repo_path` or use the public `worker_id` only when a name is ambiguous. ChatGPT should treat these workers as local assistants, not low-level commands: ask natural questions, assign goals and deliverables, and let workers find the relevant repository details unless exact paths matter. For larger work, ChatGPT can start several workers with separate responsibilities and reconcile their reports using `context_from_workers`. When ChatGPT needs control over the underlying Codex model or reasoning depth, it should call `codex_worker_options` and then pass `model` and/or `reasoning_effort` to `codex_worker_start`. When ChatGPT has generated a plan, file, or zip that local Codex should use, it should call `codex_worker_inbox(action="import_file")` and pass the returned artifact id through `context_from_artifacts`. Imports are local context only and can be repeated; they do not edit the repository. Follow-up `codex_worker_message` calls inherit the worker's prior model/reasoning choices unless explicitly overridden and can attach later imported artifacts.
 
 Default writing workers use durable external worktrees with on-demand changed-file, file-content, and one-file diff inspection. Before integration, `codex_read_file` reads only the base checkout; use `codex_worker_inspect(view="file", file_path="...")` to read a worker-created file from its isolated worktree. Imported artifacts are copied into `.ai-bridge/imported-artifacts/` inside the isolated worker worktree and excluded from changes, diffs, integration previews, and applies. Worker start/message calls can include bounded report/change/diff context from other workers, and `codex_worker_list` returns a concise `team_report`.
 

@@ -346,6 +346,18 @@ def test_high_value_output_schemas_describe_structured_results():
     assert "current_mode" in by_name["codex_tool_mode_switch"]["outputSchema"]["properties"]
 
 
+def test_prompt_surface_discourages_direct_micromanagement_loop():
+    by_name = {tool["name"]: tool for tool in PUBLIC_TOOL_DESCRIPTORS}
+
+    assert "brief setup step before delegating" in by_name["codex_open_workspace"]["description"]
+    assert "For broad architecture mapping, prefer a read-only Codex worker" in by_name["codex_repo_tree"]["description"]
+    assert "not as the main development loop" in by_name["codex_read_file"]["description"]
+    assert "For broad investigation, ask a read-only Codex worker" in by_name["codex_search_repo"]["description"]
+    assert "brief or verify work" in by_name["codex_load_context"]["description"]
+    assert "session-local MCP tool surface switch" in by_name["codex_tool_mode_switch"]["description"]
+    assert "process-local MCP tool surface switch" not in by_name["codex_tool_mode_switch"]["description"]
+
+
 def test_public_tool_descriptor_power_classifications_are_explicit():
     by_name = {tool["name"]: tool for tool in PUBLIC_TOOL_DESCRIPTORS}
 
