@@ -373,7 +373,10 @@ class WorkerRuntime:
             resolved = str(Path(repo_path).expanduser().resolve())
             groups = [jobs for jobs in groups if str(Path(jobs[-1].repo_path).resolve()) == resolved]
 
-        views = [self._public_view(jobs, request_context=request_context) for jobs in groups]
+        views = [
+            self._public_view(jobs, request_context=request_context, include_change_state=False)
+            for jobs in groups
+        ]
         views.sort(key=lambda item: (item["state"] not in {"starting", "working"}, item["name"].casefold()))
         return {
             "workers": views,
@@ -1618,6 +1621,7 @@ class WorkerRuntime:
         jobs: list[JobInfo],
         *,
         request_context: Optional[RequestContext] = None,
+        include_change_state: bool = True,
     ) -> Dict[str, Any]:
         latest = jobs[-1]
         worker_id, worker_name = self._worker_identity(jobs)
@@ -1628,7 +1632,7 @@ class WorkerRuntime:
         state = self._public_state(latest.state)
         timestamp = latest.completed_at or latest.started_at
         workspace_available = bool(workspace["available"])
-        has_changes = self._has_changes(jobs) if workspace_available else False
+        has_changes = self._has_changes(jobs) if include_change_state and workspace_available else False
         model, reasoning_effort = self._worker_execution_choices(jobs)
 
         view = {
@@ -1646,6 +1650,8 @@ class WorkerRuntime:
             "integration_state": self._integration_state_for_jobs(jobs),
             "latest_turn": self._latest_turn_diagnostics(latest, session_id=session_id),
         }
+        if not include_change_state:
+            view["changes_checked"] = False
         if model:
             view["model"] = model
         if reasoning_effort:
