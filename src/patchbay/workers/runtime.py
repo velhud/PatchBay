@@ -454,7 +454,7 @@ class WorkerRuntime:
                 else " No isolated worker workspace was available to discard."
             )
 
-        view = self._public_view(jobs, request_context=request_context)
+        view = self._public_view(jobs, request_context=request_context, include_change_state=False)
         view.update(
             {
                 "stopped": cancelled,
@@ -602,7 +602,7 @@ class WorkerRuntime:
             return None
         if takeover:
             return None
-        view = self._public_view(jobs, request_context=request_context)
+        view = self._public_view(jobs, request_context=request_context, include_change_state=False)
         view.update(takeover_refusal(latest.options or {}, request_context, mutation_name=mutation_name))
         view.update(result_fields or {})
         if takeover_reason:
@@ -1156,7 +1156,7 @@ class WorkerRuntime:
         *,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
-        view = self._public_view(jobs, request_context=request_context)
+        view = self._public_view(jobs, request_context=request_context, include_change_state=False)
         workspace = self._workspace_for_jobs(jobs)
         if not workspace["available"]:
             view.update({"changed_files": [], "change_count": 0, "note": "Worker workspace is unavailable."})
@@ -1183,7 +1183,7 @@ class WorkerRuntime:
     ) -> Dict[str, Any]:
         if not file_path:
             raise ValueError("file_path is required for view=diff")
-        view = self._public_view(jobs, request_context=request_context)
+        view = self._public_view(jobs, request_context=request_context, include_change_state=False)
         workspace = self._workspace_for_jobs(jobs)
         if not workspace["available"]:
             view.update({"file_path": file_path, "diff": "", "note": "Worker workspace is unavailable."})
@@ -1209,7 +1209,7 @@ class WorkerRuntime:
     ) -> Dict[str, Any]:
         if not file_path:
             raise ValueError("file_path is required for view=file")
-        view = self._public_view(jobs, request_context=request_context)
+        view = self._public_view(jobs, request_context=request_context, include_change_state=False)
         workspace = self._workspace_for_jobs(jobs)
         if not workspace["available"]:
             view.update({"file_path": file_path, "text": "", "exists": False, "note": "Worker workspace is unavailable."})
@@ -1238,6 +1238,15 @@ class WorkerRuntime:
         if not target.is_file():
             view["note"] = "File is not present in the worker workspace."
             return view
+        if Path(rel_path).name.lower().startswith("worker-report"):
+            view["worker_report_files"] = [
+                {
+                    "file_path": rel_path,
+                    "location": view.get("workspace_location", "worker_workspace"),
+                    "integrated": self._integration_state_for_jobs(jobs) == "applied_to_checkout",
+                    "note": "This report is being read from the worker workspace.",
+                }
+            ]
 
         max_allowed = int(self.config.get("security", {}).get("max_read_bytes", DEFAULT_WORKER_FILE_READ_BYTES))
         public_cap = int(self.config.get("workers", {}).get("file_response_max_bytes", DEFAULT_WORKER_FILE_RESPONSE_BYTES))
@@ -1343,7 +1352,7 @@ class WorkerRuntime:
             target = Path(root) / rel_path
             if not target.is_file():
                 continue
-            view = self._public_view(jobs)
+            view = self._public_view(jobs, include_change_state=False)
             locations.append(
                 {
                     "worker": view["name"],
