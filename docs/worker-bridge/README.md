@@ -52,7 +52,7 @@ The ChatGPT-facing prompt surface is the combination of MCP `initialize.instruct
 - keep ChatGPT in the lead/consultant role: use direct context tools for light orientation and verification, and delegate non-trivial repository work to workers instead of doing a manual line-by-line implementation loop;
 - use `codex_tool_mode_info` and `codex_tool_mode_switch` only for explicit, temporary broadening; ChatGPT may need connector refresh before newly exposed tools appear;
 - start with `codex_self_test` and `codex_open_workspace`;
-- treat one copied Server URL as one shared local state surface and use session-relative ownership/takeover signals instead of assuming a private app instance;
+- treat one copied Server URL as one shared local state surface and use coordination-owner-relative ownership/takeover signals instead of assuming a private app instance; `active_mcp_sessions` is transport-session churn, not proof of worker ownership by itself;
 - manage workers by human name instead of backend IDs;
 - treat workers as continuing specialists and use `codex_worker_message` for follow-up before final synthesis when evidence is weak, contradictory, or decision-critical;
 - ask for durable report files or changed-file evidence for consequential audits, implementation, review, or synthesis;

@@ -396,35 +396,66 @@ class WorkspaceContext:
         if not file_path:
             raise ValueError("file_path is required")
         target, rel = self.resolve_path(workspace, str(file_path))
-        self._assert_text_file(target, min(int(args.get("max_bytes") or self.max_read_bytes), self.max_read_bytes))
+        self._assert_text_file(target)
 
-        raw = target.read_bytes()
-        text = raw.decode("utf-8")
-        lines = text.replace("\r\n", "\n").split("\n")
-        total_lines = len(lines)
+        max_bytes = self._bounded_int(args.get("max_bytes"), self.max_read_bytes, 1, self.max_read_bytes)
+        size = target.stat().st_size
+        digest, total_lines = self._text_file_digest_and_line_count(target)
         start_line = max(1, int(args.get("start_line") or 1))
         end_line = min(total_lines, int(args.get("end_line") or total_lines))
         if end_line < start_line:
             raise ValueError(f"end_line ({end_line}) must be >= start_line ({start_line})")
 
-        selected = lines[start_line - 1 : end_line]
         width = len(str(end_line))
-        numbered = "\n".join(
-            f"{str(start_line + offset).rjust(width)} | {redact_text(line)}"
-            for offset, line in enumerate(selected)
-        )
+        selected: list[str] = []
+        used_bytes = 0
+        returned_end_line = start_line - 1
+        next_start_line: int | None = None
 
-        return {
+        with target.open("r", encoding="utf-8", newline=None) as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if line_number < start_line:
+                    continue
+                if line_number > end_line:
+                    break
+                clean_line = line.rstrip("\n").rstrip("\r")
+                rendered = f"{str(line_number).rjust(width)} | {redact_text(clean_line)}"
+                prefix = "\n" if selected else ""
+                rendered_bytes = (prefix + rendered).encode("utf-8")
+                if used_bytes + len(rendered_bytes) > max_bytes:
+                    if not selected:
+                        available = max(0, max_bytes - len(prefix.encode("utf-8")))
+                        clipped = self._clip_text_bytes(rendered, available)
+                        selected.append(prefix + clipped if prefix else clipped)
+                        returned_end_line = line_number
+                        next_start_line = line_number + 1 if line_number < end_line else None
+                    else:
+                        next_start_line = line_number
+                    break
+                selected.append(prefix + rendered if prefix else rendered)
+                used_bytes += len(rendered_bytes)
+                returned_end_line = line_number
+
+        numbered = "".join(selected)
+        if returned_end_line < start_line:
+            returned_end_line = start_line - 1
+
+        result = {
             "workspace_id": workspace.id,
             "path": rel,
             "text": numbered,
             "start_line": start_line,
-            "end_line": end_line,
+            "end_line": returned_end_line,
+            "requested_end_line": end_line,
             "total_lines": total_lines,
-            "bytes": len(raw),
-            "sha256": hashlib.sha256(raw).hexdigest(),
-            "truncated": start_line > 1 or end_line < total_lines,
+            "bytes": size,
+            "sha256": digest,
+            "max_bytes_applied": max_bytes,
+            "truncated": start_line > 1 or returned_end_line < total_lines,
         }
+        if next_start_line:
+            result["next_start_line"] = next_start_line
+        return result
 
     def search_repo(self, args: Dict[str, Any]) -> Dict[str, Any]:
         query = str(args.get("query") or "")
@@ -1331,15 +1362,44 @@ class WorkspaceContext:
             "used": used,
         }
 
-    def _assert_text_file(self, path: Path, max_bytes: int) -> None:
+    def _assert_text_file(self, path: Path, max_bytes: int | None = None) -> None:
         if not path.is_file():
             raise ValueError(f"Not a file: {path.name}")
-        size = path.stat().st_size
-        if size > max_bytes:
-            raise ValueError(f"File is too large ({size} bytes). Limit: {max_bytes} bytes.")
+        if max_bytes is not None:
+            size = path.stat().st_size
+            if size > max_bytes:
+                raise ValueError(f"File is too large ({size} bytes). Limit: {max_bytes} bytes.")
         sample = path.read_bytes()[:4096]
         if b"\0" in sample:
             raise ValueError("Refusing to read binary file")
+        try:
+            sample.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Refusing to read non-UTF-8 text file") from exc
+
+    def _text_file_digest_and_line_count(self, path: Path) -> tuple[str, int]:
+        digest = hashlib.sha256()
+        size = 0
+        newline_count = 0
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                size += len(chunk)
+                newline_count += chunk.count(b"\n")
+                digest.update(chunk)
+        return digest.hexdigest(), max(1, newline_count + 1 if size or newline_count else 1)
+
+    def _clip_text_bytes(self, text: str, max_bytes: int) -> str:
+        if max_bytes <= 0:
+            return ""
+        encoded = text.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return text
+        suffix = " ...[line truncated]"
+        suffix_bytes = suffix.encode("utf-8")
+        if max_bytes <= len(suffix_bytes):
+            return encoded[:max_bytes].decode("utf-8", errors="ignore")
+        body = encoded[: max_bytes - len(suffix_bytes)].decode("utf-8", errors="ignore")
+        return body + suffix
 
     def _candidate_agent_dirs(self, target_path: str) -> list[str]:
         normalized = self._normalize_rel(target_path).replace("./", "")

@@ -16,6 +16,8 @@ ChatGPT should act as engineering lead, consultant, and coordinator. Local Codex
 
 For non-trivial repository work, ChatGPT should do as little direct line-by-line work as practical. Use workspace read/search/git tools for light orientation, setup checks, focused verification, and reviewing worker evidence. Do not turn those tools into the main development loop unless the user explicitly asks for direct ChatGPT inspection or the task is tiny.
 
+If ChatGPT is about to make repeated direct `codex_read_file` or `codex_search_repo` calls to understand a repository, it is doing the worker's job. Stop that pattern and start or continue a named Codex worker with the investigation question, then use direct tools only to verify focused claims.
+
 The normal pattern is natural-language management:
 
 1. Open the workspace and understand the allowed boundary.
@@ -111,7 +113,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - For multi-repository tasks, verify each repo is already allowed; a path-guard refusal means the launcher/config must be updated, not bypassed.
 - Start with a disposable repo until the real ChatGPT Developer Mode flow is verified.
 - The current checked-in profile is full-power. Treat direct writes, full bash, `danger-full-access`, session reads, and child-process environment inheritance as available unless the launcher/runtime config narrows them.
-- Use context tools before starting workers only enough to identify the workspace, constraints, and useful AGENTS/skill context.
+- Use context tools before starting workers only enough to identify the workspace, constraints, and useful AGENTS/skill context. Repeated direct `codex_read_file`/`codex_search_repo` calls are a sign that ChatGPT is doing line-worker analysis itself; delegate that investigation to a worker instead.
 - Prefer `codex_worker_start` for durable delegation whenever the task needs real repository understanding, implementation, verification, or review. The default `isolated_write` mode is for implementation work in a private worktree; use `workspace_mode: "read_only"` for advisory/review workers.
 - For important worker assignments, include an explicit deliverable such as `Create worker-report-<topic>.md at the worker workspace root and report what you inspected, changed, verified, and what remains uncertain.` Use a durable file when the user may need to inspect, compare, or reuse the result later.
 - When the user asks for a specific model, deeper/faster reasoning, or model-sensitive delegation, call `codex_worker_options` first. Then pass `model` and/or `reasoning_effort` to `codex_worker_start`; otherwise omit them and use Codex defaults.
@@ -120,7 +122,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - Use `codex_worker_inspect`, `codex_worker_list`, and `codex_worker_message` instead of asking the user to track low-level job/session ids.
 - When `codex_worker_list` is noisy, use `active_only`, `include_stopped: false`, `owned_only`, or `created_after` rather than manually scanning old workers.
 - Worker names are scoped to the current workspace. The same name may exist in another repo; pass `repo_path` or use the public `worker_id` only when disambiguation is needed.
-- In shared Server URL use, read/list/inspect can show workers, jobs, and artifacts created by another ChatGPT conversation. PatchBay defaults to token-scoped ownership, so short-lived transport sessions from the same copied connector URL remain the same coordination owner. If a mutating worker or artifact call returns `takeover_required: true`, stop and confirm with the user before calling again with `takeover: true`.
+- In shared Server URL use, read/list/inspect can show workers, jobs, and artifacts created by another ChatGPT conversation. PatchBay defaults to token-scoped ownership, so short-lived transport sessions from the same copied connector URL normally remain the same coordination owner. `active_mcp_sessions` is transport-session churn, not proof of worker ownership by itself. If a mutating worker or artifact call returns `takeover_required: true`, stop and confirm with the user before calling again with `takeover: true`.
 - If `codex_self_test` reports `queue_enabled: true`, extra Codex turns can remain pending until an execution slot opens.
 - If a base-write, command, shared-write worker, or integration call returns `repo_busy: true`, report that another operation is mutating the same checkout. Inspect/wait/retry deliberately; do not start parallel base-checkout writes to work around the refusal.
 - Use `codex_tool_mode_info` before broadening the visible tool surface. Use `codex_tool_mode_switch` only when the current mode lacks a needed control, and switch back to `worker` after the power-user operation when the host sees the updated catalog.
@@ -140,7 +142,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - Ownership flags are coordination-owner-relative, not authentication. `owned_by_current_client: false` does not mean the user lacks permission; it means another owner last controlled that worker or artifact, so mutation requires explicit takeover.
 - A default `isolated_write` worker changes its own external worktree first. The base checkout is not changed until `codex_worker_integrate` succeeds.
 - Before accepting a worker result, inspect `view: "changes"`, targeted `view: "diff"`, and `view: "integration_preview"` when applying the result is being considered.
-- `codex_read_file` reads the base checkout. Before integration, worker-created files live in the worker workspace; read them with `codex_worker_inspect` using `view: "file"` and `file_path`. Large file views are paged; if `next_start_line` is present, continue with that line instead of requesting a very large `max_bytes`.
+- `codex_read_file` reads the base checkout. Its `max_bytes` caps the returned page, not the whole file size; small `start_line`/`end_line` slices of large files should work, and large base reads may return `next_start_line` for continuation. Before integration, worker-created files live in the worker workspace; read them with `codex_worker_inspect` using `view: "file"` and `file_path`. Large worker file views are also paged; if `next_start_line` is present, continue with that line instead of requesting a very large `max_bytes`.
 - Worker report files created by isolated workers are not automatically in the base checkout. Treat `worker_report_files.location: worker_worktree_only` as explicit evidence that the report exists only in that worker workspace until integrated or copied.
 - `codex_worker_integrate` applies accepted changes to the base checkout, does not commit, and preserves the worker worktree.
 - After integration or direct edits, review `codex_show_changes` or `codex_git_diff`, then run focused validation with `codex_run_command` when that tool is available. If validation cannot run, report the exact blocker.
@@ -168,6 +170,8 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 ## Worker-First Flow
 
 Use the natural-language worker facade when ChatGPT wants to appoint named local Codex colleagues, read reports, restart PatchBay, continue conversations by name, import generated artifacts, and pass bounded report/change/diff context between workers.
+
+Do not use this section as permission to manually inspect a whole repository through many `codex_read_file` or `codex_search_repo` calls. For anything broad, create a worker and let that worker inspect the repository as the local Codex employee.
 
 Default workers use `isolated_write`: PatchBay creates one external worker worktree and reuses it across turns. Use `read_only` for investigation/review work that must not edit files. Use `shared_write` only when the user explicitly wants direct base-checkout writes.
 

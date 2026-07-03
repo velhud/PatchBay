@@ -209,6 +209,7 @@ async def test_worker_owner_metadata_is_private_and_public_flags_are_session_rel
     assert same_client["workers"][0]["owned_by_current_client"] is True
     assert other_client["workers"][0]["owned_by_current_client"] is False
     assert other_client["workers"][0]["ownership_status"] == "other_connection"
+    assert "different PatchBay coordination owner" in other_client["workers"][0]["ownership_note"]
     assert "takeover=true" in other_client["workers"][0]["ownership_note"]
     assert OWNER_SESSION_HASH_OPTION not in str(other_client)
     assert "client_a" not in str(other_client)
@@ -245,6 +246,7 @@ async def test_stable_owner_ref_survives_short_lived_transport_sessions(tmp_path
     seen = await runtime.list_workers(request_context=second_transport)
     assert seen["workers"][0]["owned_by_current_client"] is True
     assert seen["workers"][0]["ownership_status"] == "current_client"
+    assert seen["workers"][0]["ownership_scope"] == "token"
 
 
 @pytest.mark.asyncio
