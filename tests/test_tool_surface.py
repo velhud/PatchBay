@@ -66,6 +66,7 @@ def test_public_tool_names_are_codex_specific():
         "codex_worker_start",
         "codex_worker_message",
         "codex_worker_list",
+        "codex_worker_status",
         "codex_worker_inspect",
         "codex_worker_integrate",
         "codex_worker_stop",
@@ -199,7 +200,7 @@ def test_tool_modes_filter_advertised_surface():
     assert "codex_read_session" not in standard
     assert {"codex_read_session", "read_codex_session"} <= full
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= full
-    assert {"codex_worker_options", "codex_worker_inbox", "codex_worker_start", "codex_worker_message", "codex_worker_list", "codex_worker_inspect", "codex_worker_stop"} <= worker
+    assert {"codex_worker_options", "codex_worker_inbox", "codex_worker_start", "codex_worker_message", "codex_worker_list", "codex_worker_status", "codex_worker_inspect", "codex_worker_stop"} <= worker
     assert {"codex_pro_request_list", "codex_pro_request_read", "codex_pro_request_claim", "codex_pro_request_respond", "codex_pro_request_dispatch", "codex_pro_request_close"} <= worker
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= worker
     assert "codex_plan_job" not in worker
@@ -361,6 +362,7 @@ def test_high_value_output_schemas_describe_structured_results():
     assert "models" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "report" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "workers" in by_name["codex_worker_list"]["outputSchema"]["properties"]
+    assert "worker_lines" in by_name["codex_worker_status"]["outputSchema"]["properties"]
     assert "diff" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "can_apply" in by_name["codex_worker_integrate"]["outputSchema"]["properties"]
     assert "connection" in by_name["codex_self_test"]["outputSchema"]["properties"]

@@ -50,6 +50,19 @@ class JobInfo:
     process_started_at: Optional[float] = None
     process_pid: Optional[int] = None
     last_heartbeat_at: Optional[float] = None
+    event_count: int = 0
+    stdout_bytes_seen: int = 0
+    stderr_bytes_seen: int = 0
+    last_stdout_at: Optional[float] = None
+    last_stderr_at: Optional[float] = None
+    current_phase: Optional[str] = None
+    current_item_type: Optional[str] = None
+    current_item_status: Optional[str] = None
+    current_command_preview: Optional[str] = None
+    current_command_started_at: Optional[float] = None
+    last_command_preview: Optional[str] = None
+    last_command_completed_at: Optional[float] = None
+    checkpoints: Optional[list[Dict[str, Any]]] = None
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     exit_code: Optional[int] = None
@@ -70,6 +83,8 @@ class JobInfo:
                 for key, value in self.result.items()
                 if not key.startswith("_")
             }
+        if self.checkpoints:
+            data["checkpoints"] = redact_sensitive_output(self.checkpoints)
         if self.error:
             data["error"] = redact_sensitive_output(self.error)
         return data

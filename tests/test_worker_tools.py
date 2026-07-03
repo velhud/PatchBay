@@ -142,8 +142,14 @@ async def test_tool_handler_exposes_natural_worker_flow(tmp_path):
 
     workers = await handler.handle_tool_call("codex_worker_list", {})
     assert workers["count"] == 1
+    assert "team_status" in workers
     assert "job_id" not in str(workers)
     assert "session-abc" not in str(workers)
+
+    status = await handler.handle_tool_call("codex_worker_status", {})
+    assert status["count"] == 1
+    assert status["worker_lines"]
+    assert "session-abc" not in str(status)
 
 
 @pytest.mark.asyncio

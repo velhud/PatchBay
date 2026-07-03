@@ -61,6 +61,94 @@ async def test_cancel_job_terminates_running_process(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_json_worker_preserves_partial_report_and_checkpoints(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "stream then cancel", config["repositories"]["default"], {})
+
+    thread = json.dumps({"type": "thread.started", "thread_id": "session-cancelled"})
+    agent_message = json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_checkpoint",
+                "type": "agent_message",
+                "status": "completed",
+                "text": json.dumps(
+                    {
+                        "summary": "I finished the first evidence pass and am continuing.",
+                        "files_changed": [],
+                        "commands_run": ["rg --files"],
+                        "tests_run": [],
+                    }
+                ),
+            },
+        }
+    )
+    script = (
+        "import time\n"
+        f"print({thread!r}, flush=True)\n"
+        f"print({agent_message!r}, flush=True)\n"
+        "time.sleep(30)\n"
+    )
+
+    def fake_command(mode, prompt, cwd, options=None):
+        return [sys.executable, "-u", "-c", script]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    task = asyncio.create_task(executor.execute_job(job_id))
+    for _ in range(80):
+        job = manager.get_job(job_id)
+        if job and job.checkpoints:
+            break
+        await asyncio.sleep(0.03)
+
+    result = await executor.cancel_job(job_id)
+    await asyncio.wait_for(task, timeout=5)
+
+    job = manager.get_job(job_id)
+    result_file = tmp_path / "logs" / "jobs" / f"{job_id}_result.json"
+    assert result["cancelled"] is True
+    assert job.state == JobState.CANCELLED
+    assert job.session_id == "session-cancelled"
+    assert job.result["partial"] is True
+    assert job.result["status"] == "cancelled"
+    assert "first evidence pass" in job.result["summary"]
+    assert job.checkpoints[-1]["kind"] == "agent_message"
+    assert "first evidence pass" in job.checkpoints[-1]["summary"]
+    assert json.loads(result_file.read_text(encoding="utf-8"))["partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_marks_cancelled_before_waiting_for_process_exit(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "cancel ordering", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.RUNNING)
+
+    class RunningProcess:
+        returncode = None
+
+    executor.processes[job_id] = RunningProcess()
+
+    async def fake_terminate_process(cancelled_job_id, process):
+        assert cancelled_job_id == job_id
+        assert manager.get_job(job_id).state == JobState.CANCELLED
+        return True
+
+    monkeypatch.setattr(executor, "_terminate_process", fake_terminate_process)
+
+    result = await executor.cancel_job(job_id)
+
+    assert result["cancelled"] is True
+    assert result["process_signalled"] is True
+    assert manager.get_job(job_id).state == JobState.CANCELLED
+
+
+@pytest.mark.asyncio
 async def test_cancel_unknown_job_returns_false(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

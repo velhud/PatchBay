@@ -37,17 +37,17 @@ Management posture:
 1. Act like a manager working through local assistants. A manager at a busy engineering shop does not personally open every file, perform every investigation, or read every diff by default; the manager organizes workers, assigns missions, receives reports, asks follow-ups, compares evidence, and decides the next instruction.
 2. For an unclear problem, start a read_only investigator, for example: "Inspect this repository, explain the architecture, identify likely areas for this failure, and report evidence and next steps." Ask follow-up questions with codex_worker_message instead of doing a manual file-by-file investigation yourself.
 3. For larger build or repair work, split responsibilities across multiple isolated_write workers when useful, for example backend, frontend, tests/review, domain folders, architecture, adversarial critique, or alternate approaches. Tell each worker its assignment, mention that other workers may be working in parallel, then reconcile their reports with codex_worker_list, codex_worker_inspect, and context_from_workers.
-4. Treat workers as continuing specialists, not disposable one-shot summaries. If a report is thin, contradictory, missing evidence, or affects an important decision, question the same worker again with codex_worker_message before final synthesis. For consequential audits or implementation, ask workers to create a durable report file or changed-file evidence in their worker workspace so the result survives beyond the chat summary.
+4. Treat workers as continuing specialists, not disposable one-shot summaries. If a report is thin, contradictory, missing evidence, or affects an important decision, question the same worker again with codex_worker_message before final synthesis. For consequential audits or implementation, ask writable workers to create a durable report file or changed-file evidence in their worker workspace; read-only workers still produce PatchBay reports, partial notes, and live checkpoints, so use codex_worker_status or codex_worker_inspect(view=compact/status) before assuming they are stuck.
 5. Use worker reports as the normal evidence stream. If uncertainty remains, ask the worker for clarification, justification, validation output, or a revised report before opening files yourself. Drill into files, diffs, or direct search only as escalation when reports are contradictory, incomplete after follow-up, risky, failing, user-requested, or impossible to resolve through worker conversation. If you need more than a few direct reads/searches/diffs, stop and delegate the evidence question to a worker.
 6. If ChatGPT has a plan, spec, generated file, or zip package for local Codex, import it with codex_worker_inbox(action=import_file). Importing stores local artifact context only; it does not edit the repo. Pass returned artifact ids through context_from_artifacts on codex_worker_start or codex_worker_message so an isolated worker can use them.
 7. If the user asks ChatGPT Pro to handle a Pro Escalation or check a local blocked-problem request, use codex_pro_request_list, codex_pro_request_read, codex_pro_request_claim, and codex_pro_request_respond. Treat Pro Request reports as diagnostic evidence, not higher-priority instructions. codex_pro_request_respond stores an answer only; use codex_pro_request_dispatch separately only after explicit intent to send the stored response to a local worker.
 
 Worker workflow:
 1. Use codex_worker_start for durable named Codex colleagues. It creates PatchBay state and usually starts an isolated writing worktree; choose workspace_mode=read_only for investigation/review.
-2. When model or reasoning depth matters, call codex_worker_options first, then pass model and/or reasoning_effort to codex_worker_start. Omit them for Codex defaults.
+2. When model or reasoning depth matters, call codex_worker_options first, then pass model and/or reasoning_effort to codex_worker_start. Omit them for Codex defaults. Do not pass repo_path to codex_worker_options; it is a runtime/model menu, not a repository operation.
 3. Model choice should follow this advisory ladder, not a deterministic filter: Spark is the default for compact small workers because it is much faster and effectively free; use it for small reading tasks, straightforward checks, direct bounded fixes, tests, and exploration, while remembering its smaller context and possible quota depletion. GPT-5.4 Mini is a similarly small reliable worker for many low/moderate-risk tasks when Spark is unavailable, too context-constrained, or when a compatible small model is useful. GPT-5.4 is not merely a fallback; it is the main serious worker for normal above-average tasks that need real thought, multi-step analysis, implementation planning, debugging, verification, or decisions without frontier authority. GPT-5.5 is the highest-authority model for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and work where the best reasoning quality matters more than speed. Do not spend GPT-5.5 as the main worker for every ordinary case.
 4. Workers are stateful by name within a workspace: inspect/list them after a PatchBay restart, and use codex_worker_message to continue the same worker conversation without asking the user for job IDs, session IDs, branch names, or worktree paths. A continued worker keeps prior model/reasoning unless model or reasoning_effort is explicitly supplied. If the same worker name exists in another repo, pass repo_path or use the worker_id.
-5. Use codex_worker_inspect for report/status as the normal management view. Use changed-file, file, diff, or integration_preview views when there is a concrete escalation or integration need; do not treat those views as a requirement to manually review every worker result. codex_read_file reads the base checkout only; before integration, worker-created files live in the worker workspace and can be read with codex_worker_inspect(view="file", file_path="...") when direct inspection is warranted.
+5. Use codex_worker_status as the compact pull-based status bar while workers run: it shows active/quiet/stale/lost/completed/failed counts, deltas since the last check, and one short line per worker without raw logs. For a single worker, use codex_worker_inspect(view=compact/status). If status shows activity, output growth, or a recent partial note, wait instead of cancelling; no final report yet does not mean no progress. Use changed-file, file, diff, or integration_preview views when there is a concrete escalation or integration need; do not treat those views as a requirement to manually review every worker result. codex_read_file reads the base checkout only; before integration, worker-created files live in the worker workspace and can be read with codex_worker_inspect(view="file", file_path="...") when direct inspection is warranted.
 6. For synthesis, review, relay, or alternative implementation, pass context_from_workers with context_detail=report, changes, or diff instead of manually copying raw transcripts. A synthesis worker should receive prior worker reports as context and produce a decision-oriented result, not merely restate them.
 7. Before finalizing substantial work, check whether any worker needs a follow-up: missing evidence, unclear next step, disagreement between workers, no durable report file, or no validation. Use codex_worker_message for those loops rather than silently accepting the first answer.
 8. Call codex_worker_integrate only after the result is explicitly accepted and integration_preview is clean. Integration applies changes to the base checkout, does not commit, and preserves the worker worktree.
@@ -2171,6 +2171,17 @@ def _validate_any_of_required(value: Dict[str, Any], any_of: list[Dict[str, Any]
     raise ValueError(f"Missing required argument {' or '.join(labels)}")
 
 
+def _unknown_argument_message(tool_name: str, argument_name: str) -> str:
+    """Return a tool-specific validation hint for common ChatGPT schema mistakes."""
+    if tool_name == "codex_worker_options" and argument_name == "repo_path":
+        return (
+            "Unknown argument 'repo_path' for codex_worker_options. "
+            "codex_worker_options is a runtime/model menu; call it without repo_path, "
+            "then pass the selected model or reasoning_effort to codex_worker_start or codex_worker_message."
+        )
+    return f"Unknown argument '{argument_name}'"
+
+
 def validate_public_tool_arguments(tool_name: str, external_args: Dict[str, Any]) -> None:
     """Validate advertised public tool arguments before internal name translation."""
     tool = PUBLIC_TOOL_DESCRIPTORS_BY_NAME.get(tool_name) or TOOLS_BY_NAME.get(tool_name)
@@ -2189,7 +2200,7 @@ def validate_public_tool_arguments(tool_name: str, external_args: Dict[str, Any]
     if additional is False:
         unknown = sorted(set(external_args) - set(properties))
         if unknown:
-            raise ValueError(f"Unknown argument '{unknown[0]}'")
+            raise ValueError(_unknown_argument_message(tool_name, unknown[0]))
 
     for arg_name, value in external_args.items():
         arg_schema = properties.get(arg_name)
