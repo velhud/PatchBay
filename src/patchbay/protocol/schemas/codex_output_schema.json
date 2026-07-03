@@ -6,7 +6,18 @@
   "properties": {
     "summary": {
       "type": "string",
-      "description": "High-level summary of what was accomplished"
+      "description": "Concise outcome summary. Do not use this as the only substantive report when the task involved investigation, implementation, review, or debugging."
+    },
+    "detailed_report": {
+      "type": "string",
+      "description": "Manager-grade report explaining what was investigated or changed, the reasoning behind the outcome, important evidence, uncertainty, and any decisions the manager should understand. For non-trivial tasks this should be substantive, not a one-line restatement of the summary."
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Concrete evidence supporting the report: files, functions, commands, observations, test results, or other specific signals. Use concise strings, but include enough detail for a manager to trust the report without immediately rereading files.",
+      "items": {
+        "type": "string"
+      }
     },
     "files_changed": {
       "type": "array",
@@ -33,6 +44,20 @@
       "type": "string",
       "description": "Additional notes, warnings, or considerations"
     },
+    "risks": {
+      "type": "array",
+      "description": "Known risks, unresolved concerns, tradeoffs, or reasons the manager may need follow-up. Empty array is acceptable only when there are no meaningful risks.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "Questions that remain unresolved or need manager/user decision. Empty array is acceptable only when there are no open questions.",
+      "items": {
+        "type": "string"
+      }
+    },
     "next_steps": {
       "type": "array",
       "description": "Suggested follow-up actions",
@@ -43,10 +68,14 @@
   },
   "required": [
     "summary",
+    "detailed_report",
+    "evidence",
     "files_changed",
     "commands_run",
     "tests_run",
     "notes",
+    "risks",
+    "open_questions",
     "next_steps"
   ],
   "additionalProperties": false

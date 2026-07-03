@@ -18,6 +18,15 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "workspace_location": {"type": "string"},
         "state": {"type": "string"},
         "report": {"type": "string"},
+        "status_line": {"type": "string"},
+        "compact_status": {"type": "object", "additionalProperties": True},
+        "activity_since_last_check": {"type": "object", "additionalProperties": True},
+        "liveness": {"type": "object", "additionalProperties": True},
+        "latest_partial_note": {"type": "object", "additionalProperties": True},
+        "latest_checkpoints": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "checkpoint_count": {"type": "integer"},
+        "report_artifacts": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "worker_report_files_note": {"type": "string"},
         "worker_report_files": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "has_changes": {"type": "boolean"},
         "changed_files": {"type": "array", "items": {"type": "string"}},
@@ -37,6 +46,12 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "truncated": {"type": "boolean"},
         "has_session": {"type": "boolean"},
         "can_message": {"type": "boolean"},
+        "can_message_now": {"type": "boolean"},
+        "can_queue_message": {"type": "boolean"},
+        "queued_message_count": {"type": "integer"},
+        "can_message_reason": {"type": "string"},
+        "followup_mode": {"type": "string"},
+        "active_steering_supported": {"type": "boolean"},
         "last_activity_at": {"type": "number"},
         "accepted": {"type": "boolean"},
         "stopped": {"type": "boolean"},
@@ -82,7 +97,24 @@ WORKER_LIST_SCHEMA: Dict[str, Any] = {
         "workers": {"type": "array", "items": WORKER_VIEW_SCHEMA},
         "count": {"type": "integer"},
         "active": {"type": "integer"},
+        "team_status": {"type": "object", "additionalProperties": True},
         "team_report": {"type": "string"},
+    },
+}
+
+WORKER_STATUS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "summary": {"type": "string"},
+        "since_last_check": {"type": "object", "additionalProperties": True},
+        "since_last_check_line": {"type": "string"},
+        "suggested_action": {"type": "string"},
+        "worker_lines": {"type": "array", "items": {"type": "string"}},
+        "counts": {"type": "object", "additionalProperties": True},
+        "workers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "count": {"type": "integer"},
+        "active": {"type": "integer"},
     },
 }
 
@@ -186,7 +218,8 @@ WORKER_TOOLS = [
             "choose a Codex model or reasoning effort before starting or continuing a worker. It loads bounded "
             "model metadata from the installed Codex runtime/catalog, returns advisory model-selection guidance "
             "for Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5, and explains which fields to pass to "
-            "codex_worker_start or codex_worker_message. The guidance is a judgment aid, not a hard router."
+            "codex_worker_start or codex_worker_message. Do not pass repo_path to this tool; it is a runtime/model "
+            "menu, not a repository operation. The guidance is a judgment aid, not a hard router."
         ),
         "inputSchema": {
             "type": "object",
@@ -285,7 +318,8 @@ WORKER_TOOLS = [
             "read/search loop. Give goals, context, constraints, deliverables, and expected report "
             "in the natural-language brief; let the worker find relevant files unless exact paths matter. "
             "For consequential audits or implementation, ask the worker to write a durable report file or "
-            "changed-file evidence in its worker workspace, not only a brief chat summary. "
+            "changed-file evidence in its worker workspace when the workspace is writable; read-only workers still "
+            "produce structured reports and live checkpoints through PatchBay. "
             "Defaults to an isolated writing worktree; choose workspace_mode=read_only for advisory work. "
             "For larger tasks, start multiple workers with separate responsibilities and reconcile their reports; "
             "up to 10 concurrent worker slots may be available depending on server config. "
@@ -353,6 +387,9 @@ WORKER_TOOLS = [
             "conversation with direct reads. Use follow-up "
             "messages when a report is thin, contradictory, missing evidence, lacks a durable report file, or needs "
             "another worker's findings. Can include bounded peer report/change/diff context without exposing backend ids. "
+            "If the worker is still running, inspect view=status and latest_checkpoints instead of cancelling it only "
+            "because the final report is not ready; active-turn steering is not yet exposed, so this tool continues "
+            "the next turn after completion. "
             "By default the worker keeps its prior model/reasoning choices; "
             "pass model or reasoning_effort only to intentionally change them for this continuation. If the worker "
             "belongs to another MCP connection, retry with takeover=true only after user confirmation."
@@ -399,8 +436,9 @@ WORKER_TOOLS = [
         "name": "codex_worker_list",
         "description": (
             "List durable Codex workers as an engineering lead would want to see them: names, human-readable "
-            "state, latest report, team summary, and whether each worker can receive a follow-up. Use this to manage "
+            "state, compact liveness/status lines, activity deltas since the last status check, latest report/checkpoints, team summary, and whether each worker can receive a follow-up. Use this to manage "
             "a worker team, after restart, or before choosing which worker to inspect, message, stop, or integrate. "
+            "For long-running teams, read team_status/status_line first: active or quiet workers with recent activity are not failed just because no final report is ready. "
             "Use active_only, owned_only, include_stopped=false, or created_after to reduce historical worker clutter during a specific task. "
             "If the team report shows thin, failed, stale, or conflicting work, continue the relevant named worker instead "
             "of treating first reports as final. By default ChatGPT "
@@ -436,11 +474,49 @@ WORKER_TOOLS = [
         "readOnlyHint": True,
     },
     {
+        "name": "codex_worker_status",
+        "description": (
+            "Return the compact pull-based worker team status bar. Use this while workers are running to see "
+            "active/quiet/stale/lost/completed/failed counts, deltas since the last check, and one short line per "
+            "worker without raw logs or long reports. This is the default liveness check before stopping a worker: "
+            "if events/output/partial notes are changing, wait; if a worker is stale or lost, inspect it deliberately."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional authorized repository path used to filter workers.",
+                },
+                "active_only": {
+                    "type": "boolean",
+                    "description": "When true, return only workers whose latest turn is starting or working.",
+                },
+                "include_stopped": {
+                    "type": "boolean",
+                    "description": "When true, include stopped/cancelled workers. Default: false for compact status.",
+                },
+                "owned_only": {
+                    "type": "boolean",
+                    "description": "When true, return only workers owned by the current coordination owner.",
+                },
+                "created_after": {
+                    "type": "number",
+                    "description": "Optional Unix timestamp; return workers first created at or after this time.",
+                },
+            },
+            "required": [],
+        },
+        "readOnlyHint": True,
+    },
+    {
         "name": "codex_worker_inspect",
         "description": (
             "Read one worker's current state and latest natural-language report. Optionally wait briefly for the "
             "current turn; this does not expose private repo paths, job ids, session ids, or raw transcripts. "
-            "Use the report as the normal management signal. Managerial review means reading the report and asking follow-up questions, not routinely opening every changed file or diff; question the worker again with codex_worker_message "
+            "For running workers, use view=compact or codex_worker_status to check active/quiet/stale/lost status, activity deltas, phase, latest_checkpoints, and latest partial note before "
+            "assuming the worker is stuck. Use the report as the normal management signal. Managerial review means reading the report and asking follow-up questions, not routinely opening every changed file or diff; question the worker again with codex_worker_message "
             "when evidence is missing, output is too compressed, or another worker disagrees. Use view=changes, view=diff with file_path, view=file with file_path, or view=integration_preview only when there is a concrete escalation or integration need. codex_read_file reads the "
             "base checkout, not an isolated worker worktree."
         ),
@@ -459,8 +535,8 @@ WORKER_TOOLS = [
                 },
                 "view": {
                     "type": "string",
-                    "enum": ["report", "status", "changes", "diff", "file", "integration_preview"],
-                    "description": "Report/status by default. Use changes for file inventory, diff with file_path, file with file_path for worker-created file content, or integration_preview before accepting a worker result.",
+                    "enum": ["report", "compact", "status", "changes", "diff", "file", "integration_preview"],
+                    "description": "Report/status by default. Use compact for a small liveness snapshot, changes for file inventory, diff with file_path, file with file_path for worker-created file content, or integration_preview before accepting a worker result.",
                 },
                 "file_path": {
                     "type": "string",
@@ -515,7 +591,9 @@ WORKER_TOOLS = [
         "name": "codex_worker_stop",
         "description": (
             "Stop a named worker's active Codex turn. The durable worker identity and Codex conversation are "
-            "preserved so ChatGPT can continue the colleague later. Set cleanup_workspace=true only when the "
+            "preserved so ChatGPT can continue the colleague later, and PatchBay preserves any partial checkpoints "
+            "or partial report it captured before cancellation. Stop is an escalation, not a liveness probe; inspect "
+            "view=status first when the worker has recent heartbeat or checkpoints. Set cleanup_workspace=true only when the "
             "user intentionally wants to discard that worker's isolated worktree. If the worker belongs to "
             "another MCP connection, retry with takeover=true only after user confirmation."
         ),
@@ -600,6 +678,7 @@ def install_worker_tool_surface(
             "codex_worker_inbox": ("Updating worker inbox", "Worker inbox ready"),
             "codex_worker_message": ("Messaging worker", "Message delivered"),
             "codex_worker_list": ("Listing workers", "Workers ready"),
+            "codex_worker_status": ("Checking worker status", "Worker status ready"),
             "codex_worker_inspect": ("Checking worker", "Worker report ready"),
             "codex_worker_integrate": ("Integrating worker", "Worker result applied"),
             "codex_worker_stop": ("Stopping worker", "Worker stopped"),
@@ -613,6 +692,7 @@ def install_worker_tool_surface(
             "codex_worker_start": deepcopy(WORKER_VIEW_SCHEMA),
             "codex_worker_message": deepcopy(WORKER_VIEW_SCHEMA),
             "codex_worker_list": deepcopy(WORKER_LIST_SCHEMA),
+            "codex_worker_status": deepcopy(WORKER_STATUS_SCHEMA),
             "codex_worker_inspect": deepcopy(WORKER_VIEW_SCHEMA),
             "codex_worker_integrate": deepcopy(WORKER_VIEW_SCHEMA),
             "codex_worker_stop": deepcopy(WORKER_VIEW_SCHEMA),

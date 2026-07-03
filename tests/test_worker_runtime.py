@@ -98,6 +98,29 @@ class RecordingExecutor:
         return {"cancelled": True, "job_id": job_id, "state": "cancelled"}
 
 
+class DelayedPartialCancelExecutor(RecordingExecutor):
+    async def cancel_job(self, job_id, reason="Cancelled by request"):
+        self.cancelled.append(job_id)
+        self.manager.update_job_state(job_id, JobState.CANCELLED, error=reason)
+
+        async def attach_partial_result():
+            await asyncio.sleep(0.05)
+            self.manager.update_job_state(
+                job_id,
+                JobState.CANCELLED,
+                result={
+                    "summary": "Partial evidence attached after stop.",
+                    "files_changed": [],
+                    "partial": True,
+                    "status": "cancelled",
+                },
+                last_event="process.cancelled",
+            )
+
+        asyncio.create_task(attach_partial_result())
+        return {"cancelled": True, "job_id": job_id, "state": "cancelled"}
+
+
 class FailingCreateJobManager(JobManager):
     def create_job(self, *args, **kwargs):
         raise RuntimeError("forced job creation failure")
@@ -701,6 +724,284 @@ async def test_message_does_not_create_a_queue_while_worker_is_busy(tmp_path):
     assert result["state"] == "starting"
     assert "does not add a message queue" in result["note"]
     assert len(manager.jobs) == before
+
+
+@pytest.mark.asyncio
+async def test_running_worker_public_view_exposes_liveness_and_checkpoints(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Live Checkpoint Worker",
+        brief="Investigate slowly and report checkpoints.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-live-checkpoint",
+        process_started_at=time.time(),
+        process_pid=12345,
+        last_heartbeat_at=time.time(),
+        last_event="item.completed",
+        progress="Worker checkpoint: first pass complete",
+        checkpoints=[
+            {
+                "kind": "agent_message",
+                "event": "item.completed",
+                "at": time.time(),
+                "summary": "I finished the first pass and am still checking edge cases.",
+            }
+        ],
+    )
+
+    view = await runtime.inspect_worker(worker=started["worker_id"], view="status")
+
+    assert view["state"] == "working"
+    assert view["can_message"] is False
+    assert view["can_message_reason"] == "active_turn_running"
+    assert view["active_steering_supported"] is False
+    assert view["followup_mode"] == "next_turn_after_completion"
+    assert view["liveness"]["status"] == "active"
+    assert view["liveness"]["phase"] == "model_reasoning"
+    assert view["liveness"]["suggested_action"] == "wait"
+    assert view["liveness"]["heartbeat_age_seconds"] is not None
+    assert view["latest_partial_note"]["available"] is True
+    assert view["latest_checkpoints"][0]["kind"] == "agent_message"
+    assert "first pass" in view["latest_checkpoints"][0]["summary"]
+    assert view["latest_turn"]["latest_checkpoint"]["summary"] == view["latest_checkpoints"][0]["summary"]
+    assert view["checkpoint_count"] == 1
+    assert view["report_artifacts"][0]["kind"] == "live_checkpoints"
+    assert view["worker_report_files_note"].startswith("No repo report files because this is a read_only worker")
+    assert view["activity_since_last_check"]["first_check"] is True
+    assert "Live Checkpoint Worker: active" in view["status_line"]
+    assert "still running" in view["report"]
+
+
+@pytest.mark.asyncio
+async def test_liveness_thresholds_are_configurable_display_policy(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["heartbeat_fresh_seconds"] = 1
+    config["workers"]["heartbeat_quiet_seconds"] = 5
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Quiet Worker",
+        brief="Investigate slowly.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-quiet",
+        process_started_at=time.time() - 10,
+        last_heartbeat_at=time.time() - 3,
+        last_event="stdout",
+    )
+
+    view = await runtime.inspect_worker(worker=started["worker_id"], view="status")
+
+    assert view["liveness"]["status"] == "quiet"
+    assert view["liveness"]["heartbeat_fresh_seconds"] == 1
+    assert view["liveness"]["heartbeat_quiet_seconds"] == 5
+    assert "quiet" in view["report"]
+
+
+@pytest.mark.asyncio
+async def test_worker_status_reports_compact_team_deltas(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Delta Worker",
+        brief="Investigate with visible status.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-delta",
+        process_started_at=time.time(),
+        process_pid=12345,
+        last_heartbeat_at=time.time(),
+        last_event="item.started",
+        current_phase="command_running",
+        current_item_type="command_execution",
+        current_command_preview="rg worker runtime",
+        current_command_started_at=time.time(),
+        event_count=1,
+        stdout_bytes_seen=100,
+    )
+
+    first = await runtime.worker_status(repo_path=config["repositories"]["default"], include_stopped=True)
+
+    assert first["summary"].startswith("Workers: 1 total | 1 active")
+    assert first["since_last_check"]["first_check"] is True
+    assert "baseline recorded" in first["since_last_check_line"]
+    assert first["worker_lines"][0].startswith("Delta Worker: active")
+
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        last_heartbeat_at=time.time(),
+        last_event="item.completed",
+        current_phase="command_completed_waiting_for_model",
+        current_command_preview=None,
+        current_command_started_at=None,
+        last_command_preview="rg worker runtime",
+        last_command_completed_at=time.time(),
+        event_count=5,
+        stdout_bytes_seen=1124,
+        checkpoints=[
+            {
+                "kind": "agent_message",
+                "event": "item.completed",
+                "at": time.time(),
+                "summary": "I found the status layer and am checking report surfacing.",
+            }
+        ],
+    )
+
+    second = await runtime.worker_status(repo_path=config["repositories"]["default"], include_stopped=True)
+
+    assert second["since_last_check"]["first_check"] is False
+    assert second["since_last_check"]["events_delta"] == 4
+    assert second["since_last_check"]["stdout_bytes_delta"] == 1024
+    assert second["since_last_check"]["partial_notes_delta"] == 1
+    assert second["workers"][0]["latest_partial_note"]["available"] is True
+    assert "partial note" in second["worker_lines"][0]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_worker_report_uses_partial_result(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Partial Worker",
+        brief="Start and get cancelled.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.CANCELLED,
+        result={
+            "summary": "I mapped the UI routes before cancellation.",
+            "files_changed": [],
+            "partial": True,
+            "status": "cancelled",
+        },
+        session_id="session-partial",
+        checkpoints=[
+            {
+                "kind": "agent_message",
+                "event": "item.completed",
+                "at": time.time(),
+                "summary": "I mapped the UI routes before cancellation.",
+            }
+        ],
+        error="Cancelled by request",
+    )
+
+    view = await runtime.inspect_worker(worker=started["worker_id"])
+
+    assert view["state"] == "stopped"
+    assert "Partial report" in view["report"]
+    assert "UI routes" in view["report"]
+    assert view["report_artifacts"][0]["kind"] == "structured_result"
+    assert view["report_artifacts"][0]["partial"] is True
+    assert view["latest_checkpoints"][0]["summary"] == "I mapped the UI routes before cancellation."
+
+
+@pytest.mark.asyncio
+async def test_completed_worker_report_exposes_detailed_evidence_fields(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Detailed Reporter",
+        brief="Investigate and report with evidence.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={
+            "summary": "Mapped the request path.",
+            "detailed_report": "The worker traced the route handler, service layer, and test fixture before recommending a focused fix.",
+            "evidence": ["web/server.py defines the route", "tests cover the existing response shape"],
+            "files_changed": [],
+            "commands_run": ["rg route"],
+            "tests_run": [],
+            "notes": "No code changed.",
+            "risks": ["Data fixture coverage is thin"],
+            "open_questions": ["Whether the UI should expose this field"],
+            "next_steps": ["Ask implementation worker to patch the route"],
+        },
+        session_id="session-detailed",
+    )
+
+    view = await runtime.inspect_worker(worker=started["worker_id"])
+
+    assert "Mapped the request path." in view["report"]
+    assert "traced the route handler" in view["report"]
+    assert "Evidence: web/server.py defines the route" in view["report"]
+    assert "Risks: Data fixture coverage is thin" in view["report"]
+    assert "Open questions: Whether the UI should expose this field" in view["report"]
+    assert view["report_artifacts"][0]["evidence_count"] == 2
+    assert view["report_artifacts"][0]["risk_count"] == 1
+    assert view["report_artifacts"][0]["open_question_count"] == 1
+    assert "detailed_report" in view["report_artifacts"][0]["fields_present"]
+
+
+@pytest.mark.asyncio
+async def test_stop_worker_waits_briefly_for_partial_report_artifact(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["stop_artifact_wait_seconds"] = 1
+    manager = JobManager(config)
+    executor = DelayedPartialCancelExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Stop Evidence Worker",
+        brief="Start then stop.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-stop-evidence",
+        process_started_at=time.time(),
+        last_heartbeat_at=time.time(),
+    )
+
+    view = await runtime.stop_worker(worker=started["worker_id"])
+
+    assert view["stopped"] is True
+    assert "Partial evidence attached after stop" in view["report"]
+    assert view["report_artifacts"][0]["partial"] is True
 
 
 @pytest.mark.asyncio

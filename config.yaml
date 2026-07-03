@@ -95,6 +95,9 @@ workers:
   worktree_root: ""
   ignore_user_config: false
   file_response_max_bytes: 25000
+  heartbeat_fresh_seconds: 120
+  heartbeat_quiet_seconds: 600
+  stop_artifact_wait_seconds: 2
 
 artifacts:
   enabled: true

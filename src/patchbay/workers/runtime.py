@@ -60,6 +60,11 @@ MAX_INTEGRATION_PATCH_BYTES = 2_000_000
 MAX_INTEGRATION_MESSAGE_CHARS = 12_000
 DEFAULT_WORKER_FILE_READ_BYTES = 200_000
 DEFAULT_WORKER_FILE_RESPONSE_BYTES = 25_000
+DEFAULT_HEARTBEAT_FRESH_SECONDS = 120
+DEFAULT_HEARTBEAT_QUIET_SECONDS = 600
+DEFAULT_STOP_ARTIFACT_WAIT_SECONDS = 2.0
+MAX_STATUS_LINE_CHARS = 260
+MAX_PARTIAL_NOTE_PREVIEW_CHARS = 220
 WORKER_CONTEXT_DETAILS = {"report", "changes", "diff"}
 ARTIFACT_CONTEXT_DIR = ".ai-bridge/imported-artifacts"
 PRIVATE_BRANCH_PATTERN = re.compile(r"\bcodex/(?:worker|job)-[A-Za-z0-9._/-]+\b")
@@ -74,6 +79,13 @@ When you finish this turn, report back like an engineer in plain English:
 state the outcome, what you inspected or changed, what you verified, what
 remains uncertain, and what you recommend next. Keep raw logs and full diffs
 out of the report unless they are essential to explain a blocker.
+
+During longer turns, emit occasional concise checkpoints as normal assistant
+messages when you finish a meaningful phase or before starting a broad scan.
+Do not stream every command or log line. A useful checkpoint says what phase
+you are in, what evidence you found so far, what remains, and whether you are
+blocked. These checkpoints help ChatGPT manage you as a colleague without
+interrupting the turn or reading files manually.
 """.strip()
 
 
@@ -95,6 +107,7 @@ class WorkerRuntime:
         if hasattr(job_executor, "repo_locks"):
             job_executor.repo_locks = self.repo_locks
         self.artifact_store = ArtifactStore(config)
+        self._status_poll_snapshots: dict[str, dict[str, Dict[str, Any]]] = {}
 
     async def start_worker(
         self,
@@ -220,8 +233,10 @@ class WorkerRuntime:
                 {
                     "accepted": False,
                     "note": (
-                        f"{view['name']} is still working. Inspect it later, or stop it before sending "
-                        "a replacement direction. PatchBay intentionally does not add a message queue."
+                        f"{view['name']} is still working. Inspect view=status for heartbeat and "
+                        "latest_checkpoints; do not stop it only because a final report is not ready. "
+                        "PatchBay intentionally does not add a message queue; follow-up currently resumes the "
+                        "next turn after completion and does not yet steer an active turn."
                     ),
                 }
             )
@@ -350,8 +365,12 @@ class WorkerRuntime:
             jobs = self._resolve_worker(worker, repo_path=repo_path)
             latest = jobs[-1]
             if latest.state not in (JobState.PENDING, JobState.RUNNING) or time.monotonic() >= deadline:
-                if view in {"report", "status"}:
-                    return self._public_view(jobs, request_context=request_context)
+                if view in {"report", "status", "compact"}:
+                    public = self._public_view(jobs, request_context=request_context)
+                    self._annotate_worker_deltas([public], request_context=request_context)
+                    if view == "compact":
+                        return self._compact_worker_view(public)
+                    return public
                 if view == "changes":
                     return self._changes_view(jobs, request_context=request_context)
                 if view == "diff":
@@ -367,7 +386,7 @@ class WorkerRuntime:
                     )
                 if view == "integration_preview":
                     return self._integration_preview(jobs, request_context=request_context)
-                raise ValueError("view must be one of: report, status, changes, diff, file, integration_preview")
+                raise ValueError("view must be one of: report, compact, status, changes, diff, file, integration_preview")
             await asyncio.sleep(0.25)
 
     async def list_workers(
@@ -404,11 +423,45 @@ class WorkerRuntime:
         if owned_only:
             views = [item for item in views if item.get("owned_by_current_client") is True]
         views.sort(key=lambda item: (item["state"] not in {"starting", "working"}, item["name"].casefold()))
+        team_status = self._annotate_worker_deltas(views, request_context=request_context)
         return {
             "workers": views,
             "count": len(views),
             "active": sum(1 for item in views if item["state"] in {"starting", "working"}),
-            "team_report": self._team_report(views),
+            "team_status": team_status,
+            "team_report": self._team_report(views, team_status=team_status),
+        }
+
+    async def worker_status(
+        self,
+        *,
+        repo_path: Optional[str] = None,
+        active_only: bool = False,
+        include_stopped: bool = False,
+        owned_only: bool = False,
+        created_after: Optional[float] = None,
+        request_context: Optional[RequestContext] = None,
+    ) -> Dict[str, Any]:
+        """Return the compact pull-based manager status bar for a worker team."""
+        listed = await self.list_workers(
+            repo_path=repo_path,
+            active_only=active_only,
+            include_stopped=include_stopped,
+            owned_only=owned_only,
+            created_after=created_after,
+            request_context=request_context,
+        )
+        team_status = listed["team_status"]
+        return {
+            "summary": team_status["summary"],
+            "since_last_check": team_status["since_last_check"],
+            "since_last_check_line": team_status["since_last_check_line"],
+            "suggested_action": team_status["suggested_action"],
+            "worker_lines": team_status["worker_lines"],
+            "counts": team_status["counts"],
+            "workers": [self._compact_worker_view(worker) for worker in listed["workers"]],
+            "count": listed["count"],
+            "active": listed["active"],
         }
 
     async def stop_worker(
@@ -441,6 +494,8 @@ class WorkerRuntime:
         if latest.state in (JobState.PENDING, JobState.RUNNING):
             result = await self.job_executor.cancel_job(latest.job_id)
             cancelled = bool(result.get("cancelled"))
+            if cancelled:
+                await self._wait_for_cancelled_turn_artifacts(latest.job_id)
             jobs = self._resolve_worker(worker, repo_path=repo_path)
 
         cleaned = False
@@ -470,6 +525,20 @@ class WorkerRuntime:
             view["takeover_performed"] = True
             view["note"] = "Control was transferred to this MCP connection. " + view["note"]
         return view
+
+    async def _wait_for_cancelled_turn_artifacts(self, job_id: str) -> None:
+        """Give the executor a short chance to attach partial evidence after stop."""
+        deadline = time.time() + self._stop_artifact_wait_seconds()
+        while time.time() < deadline:
+            job = self.job_manager.get_job(job_id)
+            if not job:
+                return
+            if job.last_event == "process.cancelled" or job.result or job.checkpoints:
+                return
+            task = getattr(self.job_executor, "tasks", {}).get(job_id)
+            if task is not None and getattr(task, "done", lambda: True)():
+                return
+            await asyncio.sleep(0.05)
 
     async def integrate_worker(
         self,
@@ -1136,19 +1205,285 @@ class WorkerRuntime:
                 return model, reasoning
         return "", ""
 
-    def _team_report(self, views: list[Dict[str, Any]]) -> str:
+    def _status_poll_key(self, request_context: Optional[RequestContext]) -> str:
+        if request_context:
+            if request_context.owner_ref:
+                return f"owner:{request_context.owner_ref}"
+            if request_context.client_ref:
+                return f"client:{request_context.client_ref}"
+        return "anonymous"
+
+    def _annotate_worker_deltas(
+        self,
+        views: list[Dict[str, Any]],
+        *,
+        request_context: Optional[RequestContext],
+    ) -> Dict[str, Any]:
+        poll_key = self._status_poll_key(request_context)
+        previous = self._status_poll_snapshots.setdefault(poll_key, {})
+        current: dict[str, Dict[str, Any]] = {}
+        for view in views:
+            worker_id = str(view.get("worker_id") or view.get("name") or "")
+            signature = self._worker_status_signature(view)
+            delta = self._status_delta(signature, previous.get(worker_id))
+            view["activity_since_last_check"] = delta
+            view["compact_status"] = self._compact_status_payload(view)
+            view["status_line"] = self._worker_status_line(view)
+            if worker_id:
+                current[worker_id] = signature
+        previous.update(current)
+        return self._team_status(views)
+
+    def _worker_status_signature(self, view: Dict[str, Any]) -> Dict[str, Any]:
+        latest_turn = view.get("latest_turn") if isinstance(view.get("latest_turn"), dict) else {}
+        liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+        return {
+            "state": str(view.get("state") or ""),
+            "liveness_status": str(liveness.get("status") or ""),
+            "phase": str(liveness.get("phase") or latest_turn.get("phase") or ""),
+            "last_event": str(latest_turn.get("last_event") or liveness.get("last_event") or ""),
+            "event_count": int(latest_turn.get("event_count") or liveness.get("event_count") or 0),
+            "stdout_bytes_seen": int(latest_turn.get("stdout_bytes_seen") or liveness.get("stdout_bytes_seen") or 0),
+            "stderr_bytes_seen": int(latest_turn.get("stderr_bytes_seen") or liveness.get("stderr_bytes_seen") or 0),
+            "checkpoint_count": int(view.get("checkpoint_count") or 0),
+        }
+
+    def _status_delta(self, current: Dict[str, Any], previous: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not previous:
+            return {
+                "first_check": True,
+                "changed": False,
+                "events_delta": 0,
+                "stdout_bytes_delta": 0,
+                "stderr_bytes_delta": 0,
+                "partial_notes_delta": 0,
+                "completed_turns_delta": 0,
+                "last_event_changed": False,
+                "heartbeat_changed": False,
+                "state_changed": False,
+                "line": "baseline recorded",
+            }
+        events_delta = max(0, int(current["event_count"]) - int(previous.get("event_count") or 0))
+        stdout_delta = max(0, int(current["stdout_bytes_seen"]) - int(previous.get("stdout_bytes_seen") or 0))
+        stderr_delta = max(0, int(current["stderr_bytes_seen"]) - int(previous.get("stderr_bytes_seen") or 0))
+        partial_delta = max(0, int(current["checkpoint_count"]) - int(previous.get("checkpoint_count") or 0))
+        state_changed = str(current["state"]) != str(previous.get("state") or "")
+        last_event_changed = str(current["last_event"]) != str(previous.get("last_event") or "")
+        heartbeat_changed = events_delta > 0 or stdout_delta > 0 or stderr_delta > 0 or last_event_changed
+        completed_delta = 1 if str(previous.get("state") or "") != "idle" and str(current["state"]) == "idle" else 0
+        changed = bool(events_delta or stdout_delta or stderr_delta or partial_delta or state_changed or last_event_changed)
+        if changed:
+            line = self._delta_line(events_delta, stdout_delta, stderr_delta, partial_delta, completed_delta)
+        else:
+            line = "no new events or output"
+        return {
+            "first_check": False,
+            "changed": changed,
+            "events_delta": events_delta,
+            "stdout_bytes_delta": stdout_delta,
+            "stderr_bytes_delta": stderr_delta,
+            "partial_notes_delta": partial_delta,
+            "completed_turns_delta": completed_delta,
+            "last_event_changed": last_event_changed,
+            "heartbeat_changed": heartbeat_changed,
+            "state_changed": state_changed,
+            "line": line,
+        }
+
+    def _delta_line(
+        self,
+        events_delta: int,
+        stdout_delta: int,
+        stderr_delta: int,
+        partial_delta: int,
+        completed_delta: int,
+    ) -> str:
+        parts: list[str] = []
+        if events_delta:
+            parts.append(f"+{events_delta} events")
+        if stdout_delta:
+            parts.append(f"+{self._format_bytes(stdout_delta)} stdout")
+        if stderr_delta:
+            parts.append(f"+{self._format_bytes(stderr_delta)} stderr")
+        if partial_delta:
+            parts.append(f"+{partial_delta} partial notes")
+        if completed_delta:
+            parts.append(f"+{completed_delta} completed turns")
+        return " | ".join(parts) if parts else "no new events or output"
+
+    def _team_status(self, views: list[Dict[str, Any]]) -> Dict[str, Any]:
+        counts = {
+            "total": len(views),
+            "starting": 0,
+            "active": 0,
+            "quiet": 0,
+            "stale": 0,
+            "lost": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+        deltas = {
+            "first_check": True,
+            "changed_workers": 0,
+            "events_delta": 0,
+            "stdout_bytes_delta": 0,
+            "stderr_bytes_delta": 0,
+            "partial_notes_delta": 0,
+            "completed_turns_delta": 0,
+        }
+        worker_lines: list[str] = []
+        for view in views:
+            liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+            status = str(liveness.get("status") or "failed")
+            if status not in counts:
+                status = "failed"
+            counts[status] += 1
+            delta = view.get("activity_since_last_check") if isinstance(view.get("activity_since_last_check"), dict) else {}
+            deltas["first_check"] = bool(deltas["first_check"] and delta.get("first_check"))
+            if delta.get("changed"):
+                deltas["changed_workers"] += 1
+            for key in ("events_delta", "stdout_bytes_delta", "stderr_bytes_delta", "partial_notes_delta", "completed_turns_delta"):
+                deltas[key] += int(delta.get(key) or 0)
+            worker_lines.append(str(view.get("status_line") or self._worker_status_line(view)))
+
+        summary = (
+            f"Workers: {counts['total']} total | {counts['active']} active | {counts['quiet']} quiet | "
+            f"{counts['stale']} stale | {counts['lost']} lost | {counts['failed']} failed | "
+            f"{counts['completed']} completed | {counts['cancelled']} cancelled"
+        )
+        if counts["lost"]:
+            suggested = "recover"
+        elif counts["failed"] or counts["stale"]:
+            suggested = "inspect"
+        elif counts["active"] or counts["quiet"] or counts["starting"]:
+            suggested = "wait"
+        elif counts["completed"]:
+            suggested = "read_reports"
+        else:
+            suggested = "start_workers"
+
+        if deltas["first_check"]:
+            since_line = "Since last check: baseline recorded."
+        else:
+            since_line = (
+                "Since last check: "
+                + self._delta_line(
+                    int(deltas["events_delta"]),
+                    int(deltas["stdout_bytes_delta"]),
+                    int(deltas["stderr_bytes_delta"]),
+                    int(deltas["partial_notes_delta"]),
+                    int(deltas["completed_turns_delta"]),
+                )
+                + f" | {deltas['changed_workers']} workers changed."
+            )
+        return {
+            "summary": summary,
+            "since_last_check": deltas,
+            "since_last_check_line": since_line,
+            "suggested_action": suggested,
+            "worker_lines": worker_lines,
+            "counts": counts,
+        }
+
+    def _compact_status_payload(self, view: Dict[str, Any]) -> Dict[str, Any]:
+        liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+        latest_turn = view.get("latest_turn") if isinstance(view.get("latest_turn"), dict) else {}
+        return {
+            "status": liveness.get("status"),
+            "phase": liveness.get("phase") or latest_turn.get("phase"),
+            "suggested_action": liveness.get("suggested_action"),
+            "last_activity_age_seconds": liveness.get("last_activity_age_seconds"),
+            "latest_event": latest_turn.get("last_event") or liveness.get("last_event"),
+            "current_command_preview": latest_turn.get("current_command_preview") or liveness.get("current_command_preview"),
+            "current_command_elapsed_seconds": latest_turn.get("current_command_elapsed_seconds") or liveness.get("current_command_elapsed_seconds"),
+            "latest_partial_note": view.get("latest_partial_note"),
+            "activity_since_last_check": view.get("activity_since_last_check"),
+        }
+
+    def _compact_worker_view(self, view: Dict[str, Any]) -> Dict[str, Any]:
+        latest_turn = view.get("latest_turn") if isinstance(view.get("latest_turn"), dict) else {}
+        liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+        return {
+            "worker_id": view.get("worker_id"),
+            "name": view.get("name"),
+            "workspace_name": view.get("workspace_name"),
+            "workspace_mode": view.get("workspace_mode"),
+            "state": view.get("state"),
+            "status": liveness.get("status"),
+            "phase": liveness.get("phase"),
+            "alive": {
+                "process": bool(liveness.get("process_alive")),
+                "session": bool(liveness.get("session_created")),
+            },
+            "last_activity_age_seconds": liveness.get("last_activity_age_seconds"),
+            "since_last_check": view.get("activity_since_last_check"),
+            "latest_event": latest_turn.get("last_event") or liveness.get("last_event"),
+            "current_command": {
+                "preview": latest_turn.get("current_command_preview") or liveness.get("current_command_preview") or "",
+                "elapsed_seconds": latest_turn.get("current_command_elapsed_seconds") or liveness.get("current_command_elapsed_seconds"),
+            },
+            "latest_partial_note": view.get("latest_partial_note"),
+            "report_files_note": view.get("worker_report_files_note"),
+            "suggested_action": liveness.get("suggested_action"),
+            "status_line": view.get("status_line"),
+            "can_message_now": view.get("can_message_now"),
+            "can_queue_message": view.get("can_queue_message"),
+            "followup_mode": view.get("followup_mode"),
+            "active_steering_supported": view.get("active_steering_supported"),
+        }
+
+    def _worker_status_line(self, view: Dict[str, Any]) -> str:
+        name = str(view.get("name") or "Worker")
+        liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+        latest_turn = view.get("latest_turn") if isinstance(view.get("latest_turn"), dict) else {}
+        delta = view.get("activity_since_last_check") if isinstance(view.get("activity_since_last_check"), dict) else {}
+        status = str(liveness.get("status") or view.get("state") or "unknown")
+        phase = str(liveness.get("phase") or latest_turn.get("phase") or "unknown")
+        age = self._format_age(liveness.get("last_activity_age_seconds"))
+        delta_line = str(delta.get("line") or "baseline recorded")
+        action = str(liveness.get("suggested_action") or "inspect")
+        partial = view.get("latest_partial_note") if isinstance(view.get("latest_partial_note"), dict) else {}
+        current_command = latest_turn.get("current_command_preview") or liveness.get("current_command_preview") or ""
+        detail = ""
+        if current_command:
+            detail = f"command {self._clip_status_line(str(current_command), max_chars=80)}"
+        elif partial.get("available"):
+            detail = f"partial note {self._format_age(partial.get('age_seconds'))} ago"
+        else:
+            detail = f"last activity {age} ago" if age != "unknown" else "activity age unknown"
+        return self._clip_status_line(f"{name}: {status}; {phase}; {detail}; {delta_line}; {action}.")
+
+    def _team_report(self, views: list[Dict[str, Any]], *, team_status: Optional[Dict[str, Any]] = None) -> str:
         if not views:
             return "No Codex workers are known yet."
-        lines = ["# Codex Worker Team", ""]
-        for item in views:
-            first_line = " ".join(str(item.get("report") or "No report yet.").split())
-            if len(first_line) > 220:
-                first_line = first_line[:217].rstrip() + "..."
-            can_message = "can receive follow-up" if item.get("can_message") else "not ready for follow-up"
-            lines.append(
-                f"- {item['name']}: {item['state']} / {item['workspace_mode']} / {can_message}. {first_line}"
-            )
+        team_status = team_status or self._team_status(views)
+        lines = [team_status["summary"], team_status["since_last_check_line"], f"Suggested action: {team_status['suggested_action']}"]
+        lines.extend(f"- {line}" for line in team_status["worker_lines"])
         return "\n".join(lines)
+
+    def _format_bytes(self, count: int) -> str:
+        count = int(count or 0)
+        if count < 1024:
+            return f"{count} B"
+        if count < 1024 * 1024:
+            return f"{count / 1024:.1f} KB"
+        return f"{count / (1024 * 1024):.1f} MB"
+
+    def _format_age(self, seconds: Any) -> str:
+        if seconds is None:
+            return "unknown"
+        try:
+            value = max(0, int(seconds))
+        except (TypeError, ValueError):
+            return "unknown"
+        if value < 60:
+            return f"{value}s"
+        minutes, sec = divmod(value, 60)
+        if minutes < 60:
+            return f"{minutes}m {sec}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m"
 
     def _changes_view(
         self,
@@ -1707,6 +2042,10 @@ class WorkerRuntime:
         workspace_available = bool(workspace["available"])
         has_changes = self._has_changes(jobs) if include_change_state and workspace_available else False
         model, reasoning_effort = self._worker_execution_choices(jobs)
+        latest_checkpoints = self._latest_checkpoints_for_jobs(jobs)
+        latest_partial_note = self._latest_partial_note_for_jobs(jobs)
+        can_message = state not in {"starting", "working"} and bool(session_id) and workspace_available
+        liveness = self._liveness_for_job(latest, session_id=session_id, latest_partial_note=latest_partial_note)
 
         view = {
             "worker_id": worker_id,
@@ -1718,11 +2057,27 @@ class WorkerRuntime:
             "state": state,
             "report": self._report_for_jobs(jobs),
             "has_session": bool(session_id),
-            "can_message": state not in {"starting", "working"} and bool(session_id) and workspace_available,
+            "can_message": can_message,
+            "can_message_reason": self._can_message_reason(
+                state,
+                has_session=bool(session_id),
+                workspace_available=workspace_available,
+            ),
+            "followup_mode": "next_turn_after_completion",
+            "active_steering_supported": False,
+            "can_message_now": can_message,
+            "can_queue_message": False,
+            "queued_message_count": 0,
+            "liveness": liveness,
+            "latest_partial_note": latest_partial_note,
+            "latest_checkpoints": latest_checkpoints,
+            "checkpoint_count": self._checkpoint_count_for_jobs(jobs),
+            "report_artifacts": self._report_artifacts_for_jobs(jobs),
+            "worker_report_files_note": self._worker_report_files_note(jobs),
             "has_changes": has_changes,
             "integration_state": self._integration_state_for_jobs(jobs),
             "workspace_location": self._workspace_location_label(workspace),
-            "latest_turn": self._latest_turn_diagnostics(latest, session_id=session_id),
+            "latest_turn": self._latest_turn_diagnostics(latest, session_id=session_id, latest_checkpoints=latest_checkpoints),
         }
         if not include_change_state:
             view["changes_checked"] = False
@@ -1779,11 +2134,355 @@ class WorkerRuntime:
             for path in reports[:20]
         ]
 
-    def _latest_turn_diagnostics(self, job: JobInfo, *, session_id: Optional[str]) -> Dict[str, Any]:
+    def _worker_report_files_note(self, jobs: list[JobInfo]) -> str:
+        workspace = self._workspace_for_jobs(jobs)
+        if not workspace["available"]:
+            return "No repo report files are available because the worker workspace is unavailable."
+        if workspace["mode"] == "read_only":
+            return (
+                "No repo report files because this is a read_only worker; use PatchBay runtime report, "
+                "latest_partial_note, latest_checkpoints, and report_artifacts."
+            )
+        if workspace["mode"] == "isolated_write":
+            return "Repo report files, if created, live in the isolated worker worktree until explicitly integrated or copied."
+        return "Repo report files, if created, live in the base checkout."
+
+    def _can_message_reason(self, state: str, *, has_session: bool, workspace_available: bool) -> str:
+        if state in {"starting", "working"}:
+            return "active_turn_running"
+        if not has_session:
+            return "no_resumable_codex_session"
+        if not workspace_available:
+            return "worker_workspace_unavailable"
+        return "ready_for_next_turn"
+
+    def _latest_checkpoints_for_jobs(self, jobs: list[JobInfo]) -> list[Dict[str, Any]]:
+        private_paths = self._private_paths_for_jobs(jobs)
+        collected: list[Dict[str, Any]] = []
+        for job in jobs:
+            checkpoints = job.checkpoints if isinstance(job.checkpoints, list) else []
+            for checkpoint in checkpoints:
+                if not isinstance(checkpoint, dict):
+                    continue
+                safe = dict(redact_sensitive_output(checkpoint))
+                summary = safe.get("summary")
+                if isinstance(summary, str):
+                    safe["summary"] = self._safe_public_text(summary, private_paths, max_chars=2_000, truncation_label="checkpoint")
+                collected.append(safe)
+        collected.sort(key=self._checkpoint_timestamp)
+        return collected[-8:]
+
+    def _checkpoint_count_for_jobs(self, jobs: list[JobInfo]) -> int:
+        total = 0
+        for job in jobs:
+            if isinstance(job.checkpoints, list):
+                total += len(job.checkpoints)
+        return total
+
+    def _report_artifacts_for_jobs(self, jobs: list[JobInfo]) -> list[Dict[str, Any]]:
+        artifacts: list[Dict[str, Any]] = []
+        for index, job in enumerate(jobs, start=1):
+            if isinstance(job.result, dict):
+                artifacts.append(
+                    {
+                        "kind": "structured_result",
+                        "turn_index": index,
+                        "state": job.state.value,
+                        "partial": bool(job.result.get("partial")),
+                        "fields_present": sorted(str(key) for key in job.result if not str(key).startswith("_")),
+                        "evidence_count": self._list_field_count(job.result.get("evidence")),
+                        "risk_count": self._list_field_count(job.result.get("risks")),
+                        "open_question_count": self._list_field_count(job.result.get("open_questions")),
+                        "location": "patchbay_runtime",
+                        "note": "Structured worker report is exposed through the report field; raw runtime files stay local.",
+                    }
+                )
+            checkpoint_count = len(job.checkpoints) if isinstance(job.checkpoints, list) else 0
+            if checkpoint_count:
+                artifacts.append(
+                    {
+                        "kind": "live_checkpoints",
+                        "turn_index": index,
+                        "state": job.state.value,
+                        "checkpoint_count": checkpoint_count,
+                        "location": "patchbay_runtime",
+                        "note": "Bounded manager-level checkpoints are exposed through latest_checkpoints.",
+                    }
+                )
+        return artifacts[-12:]
+
+    def _list_field_count(self, value: Any) -> int:
+        return len(value) if isinstance(value, list) else 0
+
+    def _checkpoint_timestamp(self, checkpoint: Dict[str, Any]) -> float:
+        try:
+            return float(checkpoint.get("at") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _latest_checkpoint_summary(self, jobs: list[JobInfo]) -> str:
+        checkpoints = self._latest_checkpoints_for_jobs(jobs)
+        if not checkpoints:
+            return ""
+        summary = checkpoints[-1].get("summary")
+        return str(summary).strip() if summary else ""
+
+    def _latest_partial_note_for_jobs(self, jobs: list[JobInfo]) -> Dict[str, Any]:
+        checkpoints = self._latest_checkpoints_for_jobs(jobs)
+        if not checkpoints:
+            return {"available": False, "preview": "", "age_seconds": None, "count": 0}
+        latest = checkpoints[-1]
+        summary = str(latest.get("summary") or "").strip()
+        preview = self._clip_status_line(summary, max_chars=MAX_PARTIAL_NOTE_PREVIEW_CHARS) if summary else ""
+        at = None
+        age = None
+        try:
+            at = float(latest.get("at") or 0)
+        except (TypeError, ValueError):
+            at = None
+        if at:
+            age = max(0, int(time.time() - at))
+        return {
+            "available": bool(preview),
+            "preview": preview,
+            "age_seconds": age,
+            "count": self._checkpoint_count_for_jobs(jobs),
+            "source": "latest_checkpoint",
+        }
+
+    def _heartbeat_age_seconds(self, job: JobInfo) -> Optional[int]:
+        if job.last_heartbeat_at is None:
+            return None
+        return max(0, int(time.time() - float(job.last_heartbeat_at)))
+
+    def _worker_seconds_config(self, key: str, default: float) -> float:
+        try:
+            value = float(self.config.get("workers", {}).get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(0.0, value)
+
+    def _heartbeat_thresholds(self) -> tuple[float, float]:
+        fresh = self._worker_seconds_config("heartbeat_fresh_seconds", DEFAULT_HEARTBEAT_FRESH_SECONDS)
+        quiet = self._worker_seconds_config("heartbeat_quiet_seconds", DEFAULT_HEARTBEAT_QUIET_SECONDS)
+        return fresh, max(fresh, quiet)
+
+    def _stop_artifact_wait_seconds(self) -> float:
+        return self._worker_seconds_config("stop_artifact_wait_seconds", DEFAULT_STOP_ARTIFACT_WAIT_SECONDS)
+
+    def _phase_for_job(self, job: JobInfo, *, session_id: Optional[str]) -> str:
+        if job.state == JobState.PENDING:
+            return "launching"
+        if job.state == JobState.COMPLETED:
+            return "done"
+        if job.state == JobState.CANCELLED:
+            return "cancelled"
+        if job.state == JobState.FAILED:
+            return "failed"
+        if job.state == JobState.RUNNING:
+            if not job.process_started_at:
+                return "launching"
+            if not session_id:
+                return "waiting_for_session"
+            if job.current_command_preview:
+                return "command_running"
+            if job.current_phase:
+                return str(job.current_phase)
+            if job.last_event == "item.completed" and job.current_item_type == "command_execution":
+                return "command_completed_waiting_for_model"
+            return "model_reasoning"
+        return "unknown"
+
+    def _job_has_live_runtime(self, job: JobInfo) -> bool:
+        checker = getattr(self.job_executor, "_job_has_live_runtime", None)
+        if callable(checker):
+            try:
+                return bool(checker(job.job_id))
+            except Exception:
+                return bool(job.process_started_at)
+        return bool(job.process_started_at)
+
+    def _job_looks_lost(self, job: JobInfo) -> bool:
+        if job.state != JobState.RUNNING or self._job_has_live_runtime(job):
+            return False
+        started = job.started_at or job.process_started_at
+        if started is None:
+            return False
+        grace_getter = getattr(self.job_executor, "_stale_running_grace_seconds", None)
+        try:
+            grace = float(grace_getter()) if callable(grace_getter) else float(self.config.get("server", {}).get("stale_running_job_grace_seconds", 5))
+        except (TypeError, ValueError):
+            grace = 5.0
+        return time.time() - float(started) >= max(0.0, grace)
+
+    def _elapsed_since(self, timestamp: Optional[float]) -> Optional[int]:
+        if timestamp is None:
+            return None
+        try:
+            return max(0, int(time.time() - float(timestamp)))
+        except (TypeError, ValueError):
+            return None
+
+    def _last_activity_age_seconds(self, job: JobInfo) -> Optional[int]:
+        timestamps = [
+            value
+            for value in (job.last_heartbeat_at, job.last_stdout_at, job.last_stderr_at, job.last_command_completed_at, job.process_started_at, job.started_at)
+            if value is not None
+        ]
+        if not timestamps:
+            return None
+        return self._elapsed_since(max(float(value) for value in timestamps))
+
+    def _clip_status_line(self, value: str, *, max_chars: int = MAX_STATUS_LINE_CHARS) -> str:
+        text = " ".join(str(value or "").strip().split())
+        if len(text) <= max_chars:
+            return text
+        return text[: max(0, max_chars - 3)].rstrip() + "..."
+
+    def _liveness_for_job(
+        self,
+        job: JobInfo,
+        *,
+        session_id: Optional[str],
+        latest_partial_note: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        age = self._heartbeat_age_seconds(job)
+        fresh_seconds, quiet_seconds = self._heartbeat_thresholds()
+        phase = self._phase_for_job(job, session_id=session_id)
+        last_activity_age = self._last_activity_age_seconds(job)
+        latest_partial_note = latest_partial_note or {"available": False, "preview": "", "age_seconds": None, "count": 0}
+        payload: Dict[str, Any] = {
+            "worker_state": self._public_state(job.state),
+            "turn_state": job.state.value,
+            "process_started": bool(job.process_started_at),
+            "session_created": bool(session_id),
+            "process_alive": self._job_has_live_runtime(job),
+            "heartbeat_age_seconds": age,
+            "heartbeat_fresh_seconds": fresh_seconds,
+            "heartbeat_quiet_seconds": quiet_seconds,
+            "last_event": str(job.last_event or ""),
+            "last_activity_age_seconds": last_activity_age,
+            "phase": phase,
+            "latest_partial_note": latest_partial_note,
+            "event_count": int(job.event_count or 0),
+            "stdout_bytes_seen": int(job.stdout_bytes_seen or 0),
+            "stderr_bytes_seen": int(job.stderr_bytes_seen or 0),
+            "current_command_preview": str(job.current_command_preview or ""),
+            "current_command_elapsed_seconds": self._elapsed_since(job.current_command_started_at),
+            "status": "unknown",
+            "suggested_action": "inspect",
+            "manager_guidance": "",
+        }
+        if job.state == JobState.PENDING:
+            payload.update(
+                {
+                    "status": "starting",
+                    "suggested_action": "wait",
+                    "manager_guidance": "Worker has been accepted and is waiting to start or launch Codex.",
+                }
+            )
+            return payload
+        if job.state == JobState.RUNNING:
+            if self._job_looks_lost(job):
+                payload.update(
+                    {
+                        "status": "lost",
+                        "suggested_action": "recover",
+                        "manager_guidance": "PatchBay still marks this turn as running, but no live Codex runtime is tracked.",
+                    }
+                )
+                return payload
+            if not job.process_started_at or not session_id:
+                payload.update(
+                    {
+                        "status": "starting",
+                        "suggested_action": "wait",
+                        "manager_guidance": "Worker is starting; wait for the Codex process and session to appear.",
+                    }
+                )
+                return payload
+            if latest_partial_note.get("available") and latest_partial_note.get("age_seconds") is not None and latest_partial_note["age_seconds"] <= fresh_seconds:
+                payload.update(
+                    {
+                        "status": "active",
+                        "suggested_action": "wait",
+                        "manager_guidance": "Worker emitted a recent partial note. Read it if useful, but do not treat lack of final report as failure.",
+                    }
+                )
+                return payload
+            if age is not None and age <= fresh_seconds:
+                payload.update(
+                    {
+                        "status": "active",
+                        "suggested_action": "wait",
+                        "manager_guidance": "Worker is alive and recently streamed Codex activity. Wait or inspect compact status later.",
+                    }
+                )
+                return payload
+            if age is not None and age <= quiet_seconds:
+                payload.update(
+                    {
+                        "status": "quiet",
+                        "suggested_action": "recheck",
+                        "manager_guidance": "Worker is alive but quiet. Recheck status before stopping; quiet after a command can be normal model reasoning.",
+                    }
+                )
+                return payload
+            payload.update(
+                {
+                    "status": "stale",
+                    "suggested_action": "inspect",
+                    "manager_guidance": "Worker has been quiet beyond the configured window. Inspect compact/full status before deciding whether to stop it.",
+                }
+            )
+            return payload
+        if job.state == JobState.COMPLETED:
+            payload.update(
+                {
+                    "status": "completed",
+                    "phase": "done",
+                    "suggested_action": "read",
+                    "manager_guidance": "Worker completed this turn and can receive follow-up.",
+                }
+            )
+            return payload
+        if job.state == JobState.CANCELLED:
+            payload.update(
+                {
+                    "status": "cancelled",
+                    "phase": "cancelled",
+                    "suggested_action": "read_partial",
+                    "manager_guidance": "Worker was stopped; review any preserved partial report/checkpoints before interpreting it as failed.",
+                }
+            )
+            return payload
+        if job.state == JobState.FAILED:
+            payload.update(
+                {
+                    "status": "failed",
+                    "phase": "failed",
+                    "suggested_action": "inspect",
+                    "manager_guidance": "Worker failed. Inspect the report/error and decide whether to retry or start a replacement.",
+                }
+            )
+            return payload
+        return payload
+
+    def _latest_turn_diagnostics(
+        self,
+        job: JobInfo,
+        *,
+        session_id: Optional[str],
+        latest_checkpoints: Optional[list[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         diagnostics: Dict[str, Any] = {
             "state": job.state.value,
             "process_started": bool(job.process_started_at),
             "session_created": bool(session_id),
+            "phase": self._phase_for_job(job, session_id=session_id),
+            "event_count": int(job.event_count or 0),
+            "stdout_bytes_seen": int(job.stdout_bytes_seen or 0),
+            "stderr_bytes_seen": int(job.stderr_bytes_seen or 0),
         }
         if job.launch_started_at is not None:
             diagnostics["launch_started_at"] = float(job.launch_started_at)
@@ -1793,10 +2492,35 @@ class WorkerRuntime:
             diagnostics["process_pid"] = int(job.process_pid)
         if job.last_heartbeat_at is not None:
             diagnostics["last_heartbeat_at"] = float(job.last_heartbeat_at)
+            diagnostics["heartbeat_age_seconds"] = self._heartbeat_age_seconds(job)
         if job.last_event:
             diagnostics["last_event"] = str(job.last_event)
+        if job.current_item_type:
+            diagnostics["current_item_type"] = str(job.current_item_type)
+        if job.current_item_status:
+            diagnostics["current_item_status"] = str(job.current_item_status)
+        if job.current_command_preview:
+            diagnostics["current_command_preview"] = str(job.current_command_preview)
+        if job.current_command_started_at is not None:
+            diagnostics["current_command_started_at"] = float(job.current_command_started_at)
+            diagnostics["current_command_elapsed_seconds"] = self._elapsed_since(job.current_command_started_at)
+        if job.last_command_preview:
+            diagnostics["last_command_preview"] = str(job.last_command_preview)
+        if job.last_command_completed_at is not None:
+            diagnostics["last_command_completed_at"] = float(job.last_command_completed_at)
+            diagnostics["last_command_age_seconds"] = self._elapsed_since(job.last_command_completed_at)
+        if job.last_stdout_at is not None:
+            diagnostics["last_stdout_at"] = float(job.last_stdout_at)
+            diagnostics["last_stdout_age_seconds"] = self._elapsed_since(job.last_stdout_at)
+        if job.last_stderr_at is not None:
+            diagnostics["last_stderr_at"] = float(job.last_stderr_at)
+            diagnostics["last_stderr_age_seconds"] = self._elapsed_since(job.last_stderr_at)
         if job.progress:
             diagnostics["progress"] = self._safe_public_text(str(job.progress), self._private_paths_for_jobs([job]))
+        checkpoints = latest_checkpoints if latest_checkpoints is not None else self._latest_checkpoints_for_jobs([job])
+        if checkpoints:
+            diagnostics["latest_checkpoint"] = checkpoints[-1]
+            diagnostics["checkpoint_count"] = len(checkpoints)
         if job.exit_code is not None:
             diagnostics["exit_code"] = job.exit_code
         return diagnostics
@@ -1827,9 +2551,38 @@ class WorkerRuntime:
         if job.state == JobState.PENDING:
             return "The worker is starting the latest Codex turn."
         if job.state == JobState.RUNNING:
-            return "The worker is currently working on the latest instruction."
+            partial_note = self._latest_partial_note_for_jobs(jobs)
+            liveness = self._liveness_for_job(job, session_id=self._session_for_jobs(jobs), latest_partial_note=partial_note)
+            parts = [
+                "The worker is still running on the latest instruction.",
+                f"Liveness: {liveness['status']}.",
+                f"Phase: {liveness['phase']}.",
+            ]
+            age = liveness.get("heartbeat_age_seconds")
+            if age is not None:
+                parts.append(f"Last heartbeat: {age}s ago.")
+            if partial_note.get("available"):
+                parts.append(f"Latest partial note: {partial_note['preview']}")
+            checkpoint = self._latest_checkpoint_summary(jobs)
+            if checkpoint:
+                parts.append(f"Latest checkpoint: {checkpoint}")
+            parts.append(str(liveness.get("manager_guidance") or "Inspect status before deciding whether to stop it."))
+            return self._safe_public_text(" ".join(parts), private_paths)
         if job.state == JobState.CANCELLED:
-            return "The latest worker turn was stopped. The conversation can be continued later."
+            result = job.result if isinstance(job.result, dict) else {}
+            summary = str(result.get("summary") or "").strip()
+            if summary:
+                return self._safe_public_text(
+                    f"The latest worker turn was stopped after partial work. Partial report: {summary}",
+                    private_paths,
+                )
+            checkpoint = self._latest_checkpoint_summary(jobs)
+            if checkpoint:
+                return self._safe_public_text(
+                    f"The latest worker turn was stopped after partial work. Latest checkpoint: {checkpoint}",
+                    private_paths,
+                )
+            return "The latest worker turn was stopped. No partial checkpoint was captured. The conversation can be continued later."
         if job.state == JobState.FAILED:
             detail = job.error or "Codex could not complete the latest turn."
             return self._safe_public_text(f"The latest turn failed: {detail}", private_paths)
@@ -1839,9 +2592,27 @@ class WorkerRuntime:
         summary = result.get("summary")
         if isinstance(summary, str) and summary.strip():
             parts.append(summary.strip())
+        detailed_report = result.get("detailed_report")
+        if isinstance(detailed_report, str) and detailed_report.strip():
+            parts.append(detailed_report.strip())
+        evidence = result.get("evidence")
+        if isinstance(evidence, list):
+            clean_evidence = [str(item).strip() for item in evidence if str(item).strip()]
+            if clean_evidence:
+                parts.append("Evidence: " + "; ".join(clean_evidence))
         notes = result.get("notes")
         if isinstance(notes, str) and notes.strip():
             parts.append(f"Notes: {notes.strip()}")
+        risks = result.get("risks")
+        if isinstance(risks, list):
+            clean_risks = [str(item).strip() for item in risks if str(item).strip()]
+            if clean_risks:
+                parts.append("Risks: " + "; ".join(clean_risks))
+        open_questions = result.get("open_questions")
+        if isinstance(open_questions, list):
+            clean_questions = [str(item).strip() for item in open_questions if str(item).strip()]
+            if clean_questions:
+                parts.append("Open questions: " + "; ".join(clean_questions))
         next_steps = result.get("next_steps")
         if isinstance(next_steps, list):
             clean_steps = [str(item).strip() for item in next_steps if str(item).strip()]

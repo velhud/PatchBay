@@ -47,7 +47,7 @@ These confirm the source material remains buildable if more behavior is ported.
 Verification performed for the current hybrid implementation:
 
 - PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests`: passed.
-- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 281 tests at the time this section was updated.
+- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 312 tests at the time this section was updated.
 - PatchBay `python scripts/live_mcp_eval.py --json`: passed against a disposable local repo with no ChatGPT and no public tunnel.
 - Codex CLI: current local validation recorded `0.142.2`.
 - Real read-only worker continuity eval `scripts/worker_phase1_eval.py --timeout 600`: passed.
@@ -108,7 +108,7 @@ Required test groups:
 - worker changed-file and one-file diff views;
 - worker resume command ordering with `--sandbox` and `--cd` before `resume`.
 - peer-worker context relay using reports, changed files, or bounded diffs;
-- team-report output from `codex_worker_list`.
+- compact team status from `codex_worker_status` / `codex_worker_list.team_status`, including activity deltas and one-line worker status output.
 
 ## MCP Protocol Smoke Tests
 
@@ -189,7 +189,8 @@ Status: pending real resume/interactive continuation verification.
 2. Inspect the report with `codex_worker_inspect`.
 3. Restart/reconstruct PatchBay runtime.
 4. List workers and find the same human name.
-5. Continue with `codex_worker_message`.
+5. Call `codex_worker_status` and verify compact status lines are present.
+6. Continue with `codex_worker_message`.
 
 Acceptance:
 
@@ -283,7 +284,7 @@ Status: automated disabled-profile descriptor tests and enabled full-power tests
 2. Inspect its changed files or diff.
 3. Start a read-only reviewer with `context_from_workers` pointing at the implementer and `context_detail="diff"`.
 4. Send the reviewer report back to the implementer with `codex_worker_message`.
-5. List workers and inspect `team_report`.
+5. List workers and inspect `team_status` / `team_report`.
 
 Acceptance:
 

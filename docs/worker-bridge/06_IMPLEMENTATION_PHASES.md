@@ -47,6 +47,7 @@ Public capabilities:
 - `codex_worker_start`;
 - `codex_worker_message`;
 - `codex_worker_list`;
+- `codex_worker_status`;
 - `codex_worker_inspect` for `status` and `report`;
 - `codex_worker_stop`.
 
@@ -147,7 +148,8 @@ Public changes:
 
 - `codex_worker_start(context_from_workers=[...], context_detail="report|changes|diff")`;
 - `codex_worker_message(context_from_workers=[...], context_detail="report|changes|diff")`;
-- `codex_worker_list` returns `team_report`.
+- `codex_worker_status` returns compact team status;
+- `codex_worker_list` returns `team_status` / `team_report`.
 
 Added:
 

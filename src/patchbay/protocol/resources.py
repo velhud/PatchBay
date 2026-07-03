@@ -479,6 +479,8 @@ TOOL_CARD_HTML = r"""
     if (data?.reference_id || data?.job_id || data?.session_ref || data?.delta_content) return "job";
     if (data?.command || data?.exit_code !== undefined || data?.stdout !== undefined || data?.stderr !== undefined) return "command";
     if (data?.diff || data?.status_short || data?.files_changed || data?.changed_files) return "diff";
+    if (Array.isArray(data?.models) || Array.isArray(data?.reasoning_efforts) || data?.model_selection_guidance || data?.default_model) return "worker_options";
+    if (Array.isArray(data?.available_modes) || Array.isArray(data?.modes) || data?.current_mode) return "tool_mode";
     if (Array.isArray(data?.checks) || data?.coordination || data?.connection) return "self_test";
     if (Array.isArray(data?.sessions)) return "sessions";
     if (data?.workspace_id || data?.tree || data?.git || data?.skill_counts) return "workspace";
@@ -495,6 +497,8 @@ TOOL_CARD_HTML = r"""
     if (kind === "job") return data.mode ? "Codex " + data.mode : "Codex job";
     if (kind === "command") return "Command";
     if (kind === "self_test") return "Self-test";
+    if (kind === "worker_options") return "Worker options";
+    if (kind === "tool_mode") return "Tool modes";
     if (kind === "sessions") return "Codex sessions";
     if (kind === "workspace") return "Workspace";
     if (kind === "diff") return data.path || data.record_path || "Changes";
@@ -510,6 +514,8 @@ TOOL_CARD_HTML = r"""
     if (kind === "diff") return "D";
     if (kind === "workspace") return "R";
     if (kind === "self_test") return "T";
+    if (kind === "worker_options") return "M";
+    if (kind === "tool_mode") return "T";
     if (kind === "repo_busy") return "!";
     if (kind === "sessions") return "S";
     return "P";
@@ -526,6 +532,8 @@ TOOL_CARD_HTML = r"""
     if (kind === "artifact") return data.kind || data.view || ((data.count ?? data.artifacts?.length) + " artifacts");
     if (kind === "job") return data.state || data.status || data.reference_id || data.job_id || "Job status";
     if (kind === "workspace") return data.workspace_name || data.root || "Repository context";
+    if (kind === "worker_options") return data.default_model || data.source || "Model and reasoning menu";
+    if (kind === "tool_mode") return data.current_mode || data.default_mode || "Available tool modes";
     if (kind === "command") return data.command || data.cwd || "Terminal result";
     if (kind === "repo_busy") return data.operation || "Mutation lock is held";
     if (kind === "sessions") return (data.count ?? data.sessions?.length ?? 0) + " sessions";
@@ -708,6 +716,51 @@ TOOL_CARD_HTML = r"""
       '</div></article>';
   }
 
+  function renderWorkerOptions(data) {
+    const models = Array.isArray(data.models) ? data.models : [];
+    const efforts = Array.isArray(data.reasoning_efforts) ? data.reasoning_efforts : [];
+    const rows = models.slice(0, 14).map((model) => {
+      if (typeof model === "string") return fileRow("model", model);
+      return fileRow(
+        model?.recommended_for || model?.role || model?.tier || "model",
+        model?.id || model?.model || model?.name || compact(model)
+      );
+    }).join("");
+    const effortRows = efforts.slice(0, 8).map((effort) => {
+      if (typeof effort === "string") return fileRow("effort", effort);
+      return fileRow(effort?.value || effort?.name || "effort", effort?.description || compact(effort));
+    }).join("");
+    return '<article class="card">' + header(data, "worker_options", [
+      pill(data.default_model || "model menu", "info"),
+      data.model_count !== undefined ? pill(data.model_count + " models", "info") : "",
+      data.models_truncated ? pill("truncated", "warn") : ""
+    ].join("")) +
+      '<div class="body">' +
+      '<div class="summary">' + summaryItem("Models", data.model_count ?? models.length ?? "-") + summaryItem("Default", data.default_model || "-") + summaryItem("Reasoning", data.default_reasoning_effort || data.selected_reasoning_effort || "-") + '</div>' +
+      (data.next_step || data.note ? '<div class="empty">' + esc(data.next_step || data.note) + '</div>' : "") +
+      (rows ? fold("Models", models.length + " listed", '<div class="file-list">' + rows + '</div>', true) : "") +
+      (effortRows ? fold("Reasoning efforts", efforts.length + " listed", '<div class="file-list">' + effortRows + '</div>', false) : "") +
+      (data.model_selection_guidance ? fold("Model guidance", "", codebox("guidance", esc(truncate(JSON.stringify(data.model_selection_guidance, null, 2), 5000)), ""), false) : "") +
+      '</div></article>';
+  }
+
+  function renderToolMode(data) {
+    const modes = Array.isArray(data.modes) ? data.modes : [];
+    const rows = modes.slice(0, 8).map((mode) =>
+      fileRow(mode?.current ? "current" : "mode", (mode?.mode || "mode") + (mode?.tool_count !== undefined ? " - " + mode.tool_count + " tools" : "") + (mode?.purpose ? " - " + mode.purpose : ""))
+    ).join("");
+    return '<article class="card">' + header(data, "tool_mode", [
+      pill(data.current_mode || data.default_mode || "mode", "info"),
+      data.recommended_default ? pill("recommended " + data.recommended_default, "good") : "",
+      data.persisted_to_config === false ? pill("session", "warn") : ""
+    ].join("")) +
+      '<div class="body">' +
+      '<div class="summary">' + summaryItem("Current", data.current_mode || "-") + summaryItem("Default", data.default_mode || "-") + summaryItem("Modes", data.available_modes?.length ?? modes.length ?? "-") + '</div>' +
+      (data.chatgpt_refresh_note ? '<div class="empty">' + esc(data.chatgpt_refresh_note) + '</div>' : "") +
+      '<div class="file-list">' + (rows || '<div class="empty">No tool modes listed.</div>') + '</div>' +
+      '</div></article>';
+  }
+
   function renderSessions(data) {
     const sessions = Array.isArray(data.sessions) ? data.sessions : [];
     const rows = sessions.slice(0, 16).map((session) =>
@@ -755,29 +808,43 @@ TOOL_CARD_HTML = r"""
     ].join("");
   }
 
+  function renderWidgetError(error, data) {
+    const message = error?.message || String(error || "Unknown widget error");
+    root.innerHTML = '<article class="card">' + header({ error: message }, "generic", pill("widget error", "bad")) +
+      '<div class="body">' +
+      '<div class="empty">' + esc(message) + '</div>' +
+      fold("Payload", "", codebox("json", esc(truncate(JSON.stringify(data || {}, null, 2), 4000)), ""), false) +
+      '</div></article>';
+  }
+
   function render(data) {
-    if (isPlaceholderPayload(data)) {
-      renderPending();
-      return;
+    try {
+      if (isPlaceholderPayload(data)) {
+        renderPending();
+        return;
+      }
+      const kind = inferKind(data);
+      if (kind === "repo_busy") root.innerHTML = renderRepoBusy(data);
+      else if (kind === "worker_list") root.innerHTML = renderWorkerList(data);
+      else if (kind === "worker") root.innerHTML = renderWorker(data);
+      else if (kind === "artifact") root.innerHTML = renderArtifact(data);
+      else if (kind === "job") root.innerHTML = renderJob(data);
+      else if (kind === "command") root.innerHTML = renderCommand(data);
+      else if (kind === "diff") root.innerHTML = renderDiffCard(data);
+      else if (kind === "workspace") root.innerHTML = renderWorkspace(data);
+      else if (kind === "self_test") root.innerHTML = renderSelfTest(data);
+      else if (kind === "worker_options") root.innerHTML = renderWorkerOptions(data);
+      else if (kind === "tool_mode") root.innerHTML = renderToolMode(data);
+      else if (kind === "sessions") root.innerHTML = renderSessions(data);
+      else if (kind === "text") root.innerHTML = renderText(data);
+      else root.innerHTML = renderGeneric(data);
+    } catch (error) {
+      renderWidgetError(error, data);
     }
-    const kind = inferKind(data);
-    if (kind === "repo_busy") root.innerHTML = renderRepoBusy(data);
-    else if (kind === "worker_list") root.innerHTML = renderWorkerList(data);
-    else if (kind === "worker") root.innerHTML = renderWorker(data);
-    else if (kind === "artifact") root.innerHTML = renderArtifact(data);
-    else if (kind === "job") root.innerHTML = renderJob(data);
-    else if (kind === "command") root.innerHTML = renderCommand(data);
-    else if (kind === "diff") root.innerHTML = renderDiffCard(data);
-    else if (kind === "workspace") root.innerHTML = renderWorkspace(data);
-    else if (kind === "self_test") root.innerHTML = renderSelfTest(data);
-    else if (kind === "sessions") root.innerHTML = renderSessions(data);
-    else if (kind === "text") root.innerHTML = renderText(data);
-    else root.innerHTML = renderGeneric(data);
   }
 
   function extractStructuredContent(value) {
     if (!value || typeof value !== "object") return {};
-    if (value.worker_id || value.workers || value.artifact_id || value.reference_id || value.repo_busy) return value;
     const candidates = [
       value.structuredContent,
       value.toolOutput?.structuredContent,
@@ -791,19 +858,31 @@ TOOL_CARD_HTML = r"""
     for (const candidate of candidates) {
       if (candidate && typeof candidate === "object") return candidate;
     }
+    // ChatGPT's Apps SDK compatibility layer exposes window.openai.toolOutput
+    // as the structuredContent object itself. Treat any non-empty plain object
+    // as renderable structured data after checking known envelope shapes.
+    if (Object.keys(value).length > 0) return value;
     return {};
   }
 
-  render(extractStructuredContent(window.openai?.toolOutput || window.openai?.toolResponseMetadata || {}));
+  function firstStructuredContent(...values) {
+    for (const value of values) {
+      const structured = extractStructuredContent(value);
+      if (!isPlaceholderPayload(structured)) return structured;
+    }
+    return {};
+  }
+
+  render(firstStructuredContent(window.openai?.toolOutput, window.openai?.toolResponseMetadata));
 
   window.addEventListener("openai:set_globals", (event) => {
-    render(extractStructuredContent(
+    render(firstStructuredContent(
       event.detail?.globals?.toolOutput ||
-      event.detail?.globals?.toolResponseMetadata ||
-      event.detail ||
-      window.openai?.toolOutput ||
-      window.openai?.toolResponseMetadata ||
-      {}
+      event.detail?.globals?.structuredContent,
+      event.detail?.globals?.toolResponseMetadata,
+      event.detail,
+      window.openai?.toolOutput,
+      window.openai?.toolResponseMetadata
     ));
   }, { passive: true });
 

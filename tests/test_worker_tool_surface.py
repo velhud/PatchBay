@@ -21,6 +21,7 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "reasoning_efforts" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "model_selection_guidance" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5" in by_name["codex_worker_options"]["description"]
+    assert "Do not pass repo_path" in by_name["codex_worker_options"]["description"]
     assert "not a hard router" in by_name["codex_worker_options"]["description"]
     assert by_name["codex_worker_inbox"]["readOnlyHint"] is False
     assert by_name["codex_worker_inbox"]["_meta"]["openai/fileParams"] == ["artifact_file"]
@@ -43,6 +44,7 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "long manual read/search loop" in by_name["codex_worker_start"]["description"]
     assert "let the worker find relevant files" in by_name["codex_worker_start"]["description"]
     assert "durable report file" in by_name["codex_worker_start"]["description"]
+    assert "live checkpoints" in by_name["codex_worker_start"]["description"]
     assert "start multiple workers with separate responsibilities" in by_name["codex_worker_start"]["description"]
     assert "up to 10 concurrent worker slots" in by_name["codex_worker_start"]["description"]
     assert "workspace_mode=read_only" in by_name["codex_worker_start"]["description"]
@@ -59,15 +61,33 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "evidence is usable" in by_name["codex_worker_message"]["description"]
     assert "thin, contradictory, missing evidence" in by_name["codex_worker_message"]["description"]
     assert "lacks a durable report file" in by_name["codex_worker_message"]["description"]
+    assert "latest_checkpoints" in by_name["codex_worker_message"]["description"]
+    assert "next turn after completion" in by_name["codex_worker_message"]["description"]
     assert "takeover=true" in by_name["codex_worker_message"]["description"]
     assert "workers" in by_name["codex_worker_list"]["outputSchema"]["properties"]
     assert "team_report" in by_name["codex_worker_list"]["outputSchema"]["properties"]
+    assert "team_status" in by_name["codex_worker_list"]["outputSchema"]["properties"]
+    assert "liveness" in by_name["codex_worker_list"]["description"]
+    assert "activity deltas" in by_name["codex_worker_list"]["description"]
     assert "active_only" in by_name["codex_worker_list"]["inputSchema"]["properties"]
     assert "include_stopped" in by_name["codex_worker_list"]["inputSchema"]["properties"]
     assert "owned_only" in by_name["codex_worker_list"]["inputSchema"]["properties"]
     assert "created_after" in by_name["codex_worker_list"]["inputSchema"]["properties"]
     assert "reduce historical worker clutter" in by_name["codex_worker_list"]["description"]
+    assert by_name["codex_worker_status"]["readOnlyHint"] is True
+    assert "worker_lines" in by_name["codex_worker_status"]["outputSchema"]["properties"]
+    assert "since_last_check" in by_name["codex_worker_status"]["outputSchema"]["properties"]
+    assert "compact pull-based worker team status bar" in by_name["codex_worker_status"]["description"]
+    assert "active/quiet/stale/lost" in by_name["codex_worker_status"]["description"]
     assert "report" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "liveness" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "status_line" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "latest_partial_note" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "activity_since_last_check" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "latest_checkpoints" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "checkpoint_count" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "report_artifacts" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
+    assert "active_steering_supported" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "text" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "next_start_line" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "max_bytes_applied" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
@@ -75,11 +95,13 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "ownership_scope" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "workspace_location" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "view" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]
+    assert "compact" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]["view"]["enum"]
     assert "file" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]["view"]["enum"]
     assert "start_line" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]
     assert "view=file" in by_name["codex_worker_inspect"]["description"]
     assert "view=integration_preview" in by_name["codex_worker_inspect"]["description"]
+    assert "latest_checkpoints" in by_name["codex_worker_inspect"]["description"]
     assert "normal management signal" in by_name["codex_worker_inspect"]["description"]
     assert "question the worker again with codex_worker_message" in by_name["codex_worker_inspect"]["description"]
     assert "pagination" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]["max_bytes"]["description"]
@@ -94,6 +116,7 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "cleanup_workspace" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "takeover" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
+    assert "partial checkpoints" in by_name["codex_worker_stop"]["description"]
     assert "discard" in by_name["codex_worker_stop"]["description"]
 
 
@@ -190,3 +213,6 @@ def test_worker_peer_context_arguments_validate():
                 "reasoning_effort": "maximum",
             },
         )
+
+    with pytest.raises(ValueError, match="codex_worker_options is a runtime/model menu"):
+        validate_public_tool_arguments("codex_worker_options", {"repo_path": "/repo"})

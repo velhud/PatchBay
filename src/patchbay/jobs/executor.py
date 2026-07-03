@@ -29,6 +29,9 @@ STALE_RUNNING_JOB_ERROR = (
     "PatchBay marked it failed so it can be inspected or restarted."
 )
 
+MAX_JOB_CHECKPOINTS = 8
+MAX_CHECKPOINT_TEXT_CHARS = 2_000
+
 
 @dataclass
 class ProcessCapture:
@@ -275,6 +278,29 @@ class JobExecutor:
                 if self._job_is_cancelled(job_id):
                     self._write_process_artifact(stdout_log, stdout)
                     self._write_process_artifact(stderr_log, stderr)
+                    raw_stdout = stdout.decode('utf-8', errors='replace')
+                    session_id = capture.session_id or self._extract_session_id_from_json_events(raw_stdout)
+                    if not session_id:
+                        session_id = self._extract_session_id(stderr.decode('utf-8', errors='replace'))
+                    cancelled_job = self.job_manager.get_job(job_id)
+                    cancel_reason = (cancelled_job.error if cancelled_job else None) or "Cancelled by request"
+                    partial_result = await self._parse_partial_result(
+                        stdout,
+                        result_file,
+                        job.options,
+                        reason=str(cancel_reason),
+                    )
+                    self.job_manager.update_job_state(
+                        job_id,
+                        JobState.CANCELLED,
+                        result=partial_result,
+                        session_id=session_id,
+                        exit_code=process.returncode,
+                        error=str(cancel_reason),
+                        last_heartbeat_at=time.time(),
+                        last_event="process.cancelled",
+                        progress="Codex process was stopped; PatchBay preserved the latest partial worker checkpoint.",
+                    )
                     logger.info(f"Job {job_id} process exited after cancellation")
                     return
 
@@ -572,12 +598,17 @@ class JobExecutor:
                     self._observe_stdout_event(job_id, chunk, state)
                 else:
                     stderr_chunks.append(chunk)
+                    now = time.time()
+                    job = self.job_manager.get_job(job_id)
                     self.job_manager.update_job_state(
                         job_id,
                         JobState.RUNNING,
-                        last_heartbeat_at=time.time(),
+                        last_heartbeat_at=now,
                         last_event="stderr",
                         progress="Codex emitted stderr output; inspect local stderr log if the turn fails.",
+                        event_count=(int(job.event_count or 0) + 1) if job else 1,
+                        stderr_bytes_seen=(int(job.stderr_bytes_seen or 0) + len(chunk)) if job else len(chunk),
+                        last_stderr_at=now,
                     )
 
         stdin_task = asyncio.create_task(feed_stdin())
@@ -624,6 +655,9 @@ class JobExecutor:
         session_id = None
         event_label = "stdout"
         progress = "Codex emitted stdout output."
+        checkpoint = None
+        now = time.time()
+        item: Dict[str, Any] = {}
         if text:
             try:
                 event = json.loads(text)
@@ -633,22 +667,223 @@ class JobExecutor:
                 event_label = str(event.get("type") or "json_event")
                 progress = self._event_progress_label(event)
                 session_id = self._session_id_from_event(event)
-        updates: dict[str, Any] = {
-            "last_heartbeat_at": time.time(),
-            "last_event": event_label,
-            "progress": progress,
-        }
+                checkpoint = self._checkpoint_from_event(event)
+                item = self._event_item_from_event(event)
+        job = self.job_manager.get_job(job_id)
+        updates = self._activity_updates_from_event(
+            job,
+            chunk=chunk,
+            now=now,
+            event_label=event_label,
+            item=item,
+        )
+        updates.update(
+            {
+                "last_heartbeat_at": now,
+                "last_event": event_label,
+                "progress": progress,
+            }
+        )
+        if checkpoint:
+            updates["checkpoints"] = self._append_checkpoint(job_id, checkpoint)
+            updates["progress"] = f"Worker checkpoint: {checkpoint['summary']}"
+            updates["current_phase"] = "agent_message_emitted"
         if session_id and not state.get("session_id"):
             state["session_id"] = session_id
             updates["session_id"] = session_id
             updates["progress"] = "Codex session created; worker turn is now streaming events."
+            updates["current_phase"] = "model_reasoning"
         self.job_manager.update_job_state(job_id, JobState.RUNNING, **updates)
+
+    def _activity_updates_from_event(
+        self,
+        job: Any,
+        *,
+        chunk: bytes,
+        now: float,
+        event_label: str,
+        item: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        updates: Dict[str, Any] = {
+            "event_count": (int(getattr(job, "event_count", 0) or 0) + 1) if job else 1,
+            "stdout_bytes_seen": (int(getattr(job, "stdout_bytes_seen", 0) or 0) + len(chunk)) if job else len(chunk),
+            "last_stdout_at": now,
+        }
+        item_type = str(item.get("type") or "").strip()
+        item_status = str(item.get("status") or "").strip()
+        if item_type:
+            updates["current_item_type"] = item_type
+        if item_status:
+            updates["current_item_status"] = item_status
+
+        command_preview = self._command_preview_from_item(item)
+        if item_type == "command_execution":
+            if event_label == "item.started":
+                updates["current_phase"] = "command_running"
+                updates["current_command_preview"] = command_preview
+                updates["current_command_started_at"] = now
+            elif event_label == "item.completed":
+                updates["current_phase"] = "command_completed_waiting_for_model"
+                updates["last_command_preview"] = command_preview or str(getattr(job, "current_command_preview", "") or "")
+                updates["last_command_completed_at"] = now
+                updates["current_command_preview"] = None
+                updates["current_command_started_at"] = None
+        elif item_type in {"agent_message", "message"}:
+            updates["current_phase"] = "agent_message_emitted"
+        elif event_label == "turn.completed":
+            updates["current_phase"] = "finalizing_report"
+        elif event_label == "thread.started":
+            updates["current_phase"] = "model_reasoning"
+        elif event_label == "turn.started":
+            updates["current_phase"] = "model_reasoning"
+        elif event_label.startswith("item."):
+            updates["current_phase"] = item_type or "item_activity"
+        elif event_label == "stdout":
+            updates["current_phase"] = "stdout_output"
+        return updates
+
+    def _append_checkpoint(self, job_id: str, checkpoint: Dict[str, Any]) -> list[Dict[str, Any]]:
+        job = self.job_manager.get_job(job_id)
+        existing = list(job.checkpoints or []) if job else []
+        existing.append(redact_sensitive_output(checkpoint))
+        return existing[-MAX_JOB_CHECKPOINTS:]
+
+    def _checkpoint_from_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        item = self._agent_item_from_event(event)
+        if not item:
+            return None
+        text = self._text_from_agent_item(item)
+        if not text:
+            return None
+
+        summary = text
+        details: Dict[str, Any] = {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            candidate = (
+                parsed.get("summary")
+                or parsed.get("detailed_report")
+                or parsed.get("notes")
+                or parsed.get("message")
+            )
+            if isinstance(candidate, str) and candidate.strip():
+                summary = candidate.strip()
+            for key in (
+                "evidence",
+                "files_changed",
+                "commands_run",
+                "tests_run",
+                "risks",
+                "open_questions",
+                "next_steps",
+            ):
+                value = parsed.get(key)
+                if isinstance(value, list):
+                    details[f"{key}_count"] = len(value)
+            if isinstance(parsed.get("notes"), str) and parsed["notes"].strip() and parsed["notes"].strip() != summary:
+                details["notes"] = self._clip_checkpoint_text(parsed["notes"])
+
+        return {
+            "kind": "agent_message",
+            "event": str(event.get("type") or "json_event"),
+            "item_status": str(item.get("status") or ""),
+            "at": time.time(),
+            "summary": self._clip_checkpoint_text(summary),
+            **details,
+        }
+
+    def _event_item_from_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if item:
+            return item
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        data_item = data.get("item") if isinstance(data.get("item"), dict) else {}
+        if data_item:
+            return data_item
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        payload_item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+        if payload_item:
+            return payload_item
+        return {}
+
+    def _agent_item_from_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        item = self._event_item_from_event(event)
+        if item and str(item.get("type") or "") in {"agent_message", "message"}:
+            return item
+        return {}
+
+    def _command_preview_from_item(self, item: Dict[str, Any]) -> str:
+        if not item:
+            return ""
+        for key in ("command", "cmd", "text", "description", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return self._clip_status_text(value)
+        for key in ("input", "arguments", "params"):
+            value = item.get(key)
+            if isinstance(value, dict):
+                for nested_key in ("command", "cmd", "text", "description"):
+                    nested = value.get(nested_key)
+                    if isinstance(nested, str) and nested.strip():
+                        return self._clip_status_text(nested)
+                if value:
+                    return self._clip_status_text(json.dumps(value, ensure_ascii=False, sort_keys=True))
+            if isinstance(value, str) and value.strip():
+                return self._clip_status_text(value)
+        return ""
+
+    def _clip_status_text(self, value: str) -> str:
+        text = redact_text(str(value or "").strip())
+        text = " ".join(text.split())
+        if len(text) <= 240:
+            return text
+        return text[:237].rstrip() + "..."
+
+    def _text_from_agent_item(self, item: Dict[str, Any]) -> str:
+        for key in ("text", "message", "content_text"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for entry in content:
+                if isinstance(entry, str) and entry.strip():
+                    parts.append(entry.strip())
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                for key in ("text", "content"):
+                    value = entry.get(key)
+                    if isinstance(value, str) and value.strip():
+                        parts.append(value.strip())
+                        break
+            if parts:
+                return "\n".join(parts).strip()
+        return ""
+
+    def _clip_checkpoint_text(self, value: str) -> str:
+        text = redact_text(str(value or "").strip())
+        if len(text) <= MAX_CHECKPOINT_TEXT_CHARS:
+            return text
+        return text[:MAX_CHECKPOINT_TEXT_CHARS].rstrip() + "\n...[checkpoint truncated]"
 
     def _session_id_from_event(self, event: Dict[str, Any]) -> Optional[str]:
         if event.get("type") == "thread.started":
             thread_id = event.get("thread_id") or event.get("data", {}).get("thread_id")
             if thread_id:
                 return str(thread_id)
+        for container_name in ("thread", "data", "payload"):
+            container = event.get(container_name)
+            if isinstance(container, dict):
+                thread_id = container.get("thread_id") or container.get("threadId") or container.get("id")
+                if thread_id:
+                    return str(thread_id)
         thread_id = event.get("thread_id")
         return str(thread_id) if thread_id else None
 
@@ -731,19 +966,18 @@ class JobExecutor:
                             result = parsed['data']
                             break
                         elif parsed.get('type') == 'item.completed':
-                            item = parsed.get('item') or {}
-                            if isinstance(item, dict) and item.get('type') == 'agent_message':
-                                text = item.get('text')
-                                if isinstance(text, str) and text.strip():
-                                    try:
-                                        message_result = json.loads(text)
-                                        if isinstance(message_result, dict):
-                                            result = message_result
-                                        else:
-                                            result = {"summary": str(message_result), "files_changed": []}
-                                    except json.JSONDecodeError:
-                                        result = {"summary": text, "files_changed": []}
-                                    break
+                            item = self._agent_item_from_event(parsed)
+                            text = self._text_from_agent_item(item) if item else ""
+                            if text:
+                                try:
+                                    message_result = json.loads(text)
+                                    if isinstance(message_result, dict):
+                                        result = message_result
+                                    else:
+                                        result = {"summary": str(message_result), "files_changed": []}
+                                except json.JSONDecodeError:
+                                    result = {"summary": text, "files_changed": []}
+                                break
                         elif 'summary' in parsed:
                             result = parsed
                             break
@@ -769,6 +1003,29 @@ class JobExecutor:
                 "files_changed": [],
                 "notes": "Could not parse Codex JSON output"
             }
+
+    async def _parse_partial_result(
+        self,
+        stdout: bytes,
+        result_file: Path,
+        options: Dict[str, Any] = None,
+        *,
+        reason: str,
+    ) -> Dict[str, Any]:
+        """Parse and persist the latest useful report from a stopped worker turn."""
+        result = await self._parse_result(stdout, result_file, options)
+        if not isinstance(result, dict):
+            result = {"summary": str(result), "files_changed": []}
+        summary = str(result.get("summary") or "").strip()
+        if not summary or summary == "No output received":
+            result["summary"] = "Worker turn was stopped before a final report. No partial worker message was captured."
+        result.setdefault("files_changed", [])
+        result["partial"] = True
+        result["partial_reason"] = redact_text(reason)
+        result["status"] = "cancelled"
+        safe_result = redact_sensitive_output(result)
+        result_file.write_text(json.dumps(safe_result, indent=2))
+        return safe_result
     
     def _extract_session_id_from_json_events(self, stdout: str) -> Optional[str]:
         """Extract thread_id/session_id from JSON events in stdout."""
@@ -811,10 +1068,10 @@ class JobExecutor:
 
         process = self.processes.get(job_id)
         process_signalled = False
+        self.job_manager.update_job_state(job_id, JobState.CANCELLED, error=reason)
         if process and process.returncode is None:
             process_signalled = await self._terminate_process(job_id, process)
 
-        self.job_manager.update_job_state(job_id, JobState.CANCELLED, error=reason)
         self.repo_locks.release_job(job_id)
         logger.info(f"Job {job_id} cancelled")
         return {

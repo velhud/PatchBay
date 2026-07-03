@@ -87,6 +87,7 @@ def main() -> int:
             "codex_worker_start",
             "codex_worker_message",
             "codex_worker_list",
+            "codex_worker_status",
             "codex_worker_inspect",
             "codex_worker_stop",
             "codex_pro_request_list",
@@ -129,6 +130,7 @@ def main() -> int:
             and "workspace_mode" in tools["codex_worker_start"]["inputSchema"]["properties"]
             and "model" in tools["codex_worker_start"]["inputSchema"]["properties"]
             and "reasoning_effort" in tools["codex_worker_start"]["inputSchema"]["properties"]
+            and "worker_lines" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "view" in tools["codex_worker_inspect"]["inputSchema"]["properties"]
             and "cleanup_workspace" in tools["codex_worker_stop"]["inputSchema"]["properties"],
         )

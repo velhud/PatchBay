@@ -12,6 +12,7 @@
 - Added optional direct write, command, and Codex transcript power modes that remain disabled by default.
 - Added durable job/session state, cancellation, redacted artifacts, and current Codex CLI JSONL result parsing.
 - Added durable natural-language workers with model/reasoning selection, artifact inbox transfer, isolated writing worktrees, multi-worker context relay, integration preview, and explicit accepted-result application.
+- Added compact worker state visibility: `codex_worker_status`, per-worker status lines, active/quiet/stale/lost liveness categories, activity deltas since the last check, latest partial notes, read-only report-file explanations, and live event/output counters.
 - Added shared-server coordination for multiple ChatGPT/MCP sessions: session-local tool modes, session-relative ownership flags, explicit worker/artifact takeover, per-repository mutation locks, and multi-client trial coverage.
 - Added installable onboarding/transport commands: `patchbay`, `patchbay-stdio`, `patchbay setup`, `patchbay settings`, stdio MCP transport, explicit `patchbay install-cloudflared`, ngrok/stable tunnel shortcuts, and URL copy/open controls.
 - Clarified multi-repository launcher behavior: `--root` narrows the allowed root set and every additional repository must be passed with `--allow-root` or configured under `repositories.allowed`.

@@ -14,6 +14,7 @@ codex_worker_inbox
 codex_worker_start
 codex_worker_message
 codex_worker_list
+codex_worker_status
 codex_worker_inspect
 codex_worker_integrate
 codex_worker_stop
@@ -97,11 +98,26 @@ Output fields:
 - worker ID;
 - name;
 - state;
+- compact status line;
+- liveness status and phase;
+- activity delta since the last status/list check for the same coordination owner/client;
 - workspace ID and display name;
 - latest report;
 - session availability;
 - whether the worker can receive a follow-up;
 - updated timestamp.
+
+### `codex_worker_status`
+
+Purpose: return the compact pull-based manager status bar for the current worker team.
+
+Output fields:
+
+- active/quiet/stale/lost/completed/failed/cancelled counts;
+- delta summary since the last status/list check;
+- suggested manager action;
+- one short status line per worker;
+- compact worker records with latest partial note, phase, and read-only report-file explanation.
 
 ### `codex_worker_inspect`
 
