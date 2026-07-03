@@ -1,7 +1,7 @@
 # Worker State Visibility Implementation
 
-Status: implemented locally, verified through unit tests, live local MCP eval,
-and a temporary token-gated ngrok MCP call. Not deployed to the VM yet.
+Status: implemented locally and covered by unit tests plus live local MCP eval.
+For a running VM, verify the deployed service commit and runtime config directly.
 
 Source input: user-provided state-visibility investigation and proposed design.
 
@@ -20,7 +20,8 @@ PatchBay now has a compact worker liveness layer.
 - `codex_worker_status` returns the pull-based team status bar:
   counts for `active`, `quiet`, `stale`, `lost`, `completed`, `failed`, and
   `cancelled`; deltas since the last status/list check for the same coordination
-  owner/client; suggested action; and one short status line per worker.
+  owner/client; suggested action; one short status line per worker; and the
+  recommended next polling interval.
 - `codex_worker_list` includes the same `team_status` plus the existing
   `team_report`.
 - `codex_worker_inspect(view="compact")` returns a bounded one-worker status
@@ -40,7 +41,10 @@ PatchBay now has a compact worker liveness layer.
 ## Design Boundaries
 
 The layer is pull-based. PatchBay does not push chat messages every few seconds
-and does not expose raw JSONL/stdout logs by default.
+and does not expose raw JSONL/stdout logs by default. Normal ChatGPT monitoring
+should call status, wait about 20-30 seconds, then call status again; rapid
+five-second polling is reserved for explicit near-real-time user requests or
+immediate recovery from a lost/failed status.
 
 The status categories are runtime telemetry categories, not prompt/content
 classification:
@@ -55,7 +59,9 @@ classification:
 - `cancelled`
 
 No whole-turn timeout was added. Fresh/quiet windows remain display guidance
-only.
+only. The status polling interval is separate display guidance controlled by
+`workers.status_recommended_poll_seconds` and
+`workers.status_minimum_poll_seconds`.
 
 Queued worker-message delivery and active-turn steering are not implemented in
 this pass. The official Codex App Server supports active-turn `turn/steer`, but

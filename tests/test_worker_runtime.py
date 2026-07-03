@@ -851,6 +851,9 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert first["since_last_check"]["first_check"] is True
     assert "baseline recorded" in first["since_last_check_line"]
     assert first["worker_lines"][0].startswith("Delta Worker: active")
+    assert first["minimum_next_poll_seconds"] == 20
+    assert first["recommended_next_poll_seconds"] == 30
+    assert "20-30 seconds" in first["poll_guidance"]
 
     manager.update_job_state(
         job.job_id,
@@ -882,6 +885,9 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert second["since_last_check"]["partial_notes_delta"] == 1
     assert second["workers"][0]["latest_partial_note"]["available"] is True
     assert "partial note" in second["worker_lines"][0]
+    listed = await runtime.list_workers(repo_path=config["repositories"]["default"], include_stopped=True)
+    assert listed["team_status"]["recommended_next_poll_seconds"] == 30
+    assert "Do not poll every few seconds" in listed["team_report"]
 
 
 @pytest.mark.asyncio

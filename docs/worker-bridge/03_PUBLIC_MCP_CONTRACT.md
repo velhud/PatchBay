@@ -117,6 +117,9 @@ Output fields:
 - delta summary since the last status/list check;
 - suggested manager action;
 - one short status line per worker;
+- `minimum_next_poll_seconds`, `recommended_next_poll_seconds`, and `poll_guidance`
+  so ChatGPT waits about 20-30 seconds between normal status checks instead of
+  polling every few seconds;
 - compact worker records with latest partial note, phase, and read-only report-file explanation.
 
 ### `codex_worker_inspect`

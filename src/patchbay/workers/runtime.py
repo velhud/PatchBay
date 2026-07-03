@@ -63,6 +63,8 @@ DEFAULT_WORKER_FILE_RESPONSE_BYTES = 25_000
 DEFAULT_HEARTBEAT_FRESH_SECONDS = 120
 DEFAULT_HEARTBEAT_QUIET_SECONDS = 600
 DEFAULT_STOP_ARTIFACT_WAIT_SECONDS = 2.0
+DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 30
+DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 20
 MAX_STATUS_LINE_CHARS = 260
 MAX_PARTIAL_NOTE_PREVIEW_CHARS = 220
 WORKER_CONTEXT_DETAILS = {"report", "changes", "diff"}
@@ -86,6 +88,14 @@ Do not stream every command or log line. A useful checkpoint says what phase
 you are in, what evidence you found so far, what remains, and whether you are
 blocked. These checkpoints help ChatGPT manage you as a colleague without
 interrupting the turn or reading files manually.
+
+For repository searches, prefer scoped investigation over unbounded silent
+scans. Use the repository tree, file lists, and targeted paths to narrow broad
+questions before running expensive searches. If a broad search is truly needed,
+emit a checkpoint first that says what you are about to scan and why. Avoid
+large whole-repo searches such as `rg -S .` unless the full surface is actually
+needed; exclude generated, dependency, archive, or research areas when they are
+not part of the assignment.
 """.strip()
 
 
@@ -459,6 +469,9 @@ class WorkerRuntime:
             "suggested_action": team_status["suggested_action"],
             "worker_lines": team_status["worker_lines"],
             "counts": team_status["counts"],
+            "minimum_next_poll_seconds": team_status["minimum_next_poll_seconds"],
+            "recommended_next_poll_seconds": team_status["recommended_next_poll_seconds"],
+            "poll_guidance": team_status["poll_guidance"],
             "workers": [self._compact_worker_view(worker) for worker in listed["workers"]],
             "count": listed["count"],
             "active": listed["active"],
@@ -1312,6 +1325,7 @@ class WorkerRuntime:
         return " | ".join(parts) if parts else "no new events or output"
 
     def _team_status(self, views: list[Dict[str, Any]]) -> Dict[str, Any]:
+        poll_policy = self._status_poll_policy()
         counts = {
             "total": len(views),
             "starting": 0,
@@ -1384,6 +1398,7 @@ class WorkerRuntime:
             "suggested_action": suggested,
             "worker_lines": worker_lines,
             "counts": counts,
+            **poll_policy,
         }
 
     def _compact_status_payload(self, view: Dict[str, Any]) -> Dict[str, Any]:
@@ -1458,7 +1473,12 @@ class WorkerRuntime:
         if not views:
             return "No Codex workers are known yet."
         team_status = team_status or self._team_status(views)
-        lines = [team_status["summary"], team_status["since_last_check_line"], f"Suggested action: {team_status['suggested_action']}"]
+        lines = [
+            team_status["summary"],
+            team_status["since_last_check_line"],
+            f"Suggested action: {team_status['suggested_action']}",
+            f"Next status check: wait about {team_status['minimum_next_poll_seconds']}-{team_status['recommended_next_poll_seconds']} seconds. Do not poll every few seconds unless the user explicitly asked for near-real-time monitoring.",
+        ]
         lines.extend(f"- {line}" for line in team_status["worker_lines"])
         return "\n".join(lines)
 
@@ -2269,6 +2289,36 @@ class WorkerRuntime:
 
     def _stop_artifact_wait_seconds(self) -> float:
         return self._worker_seconds_config("stop_artifact_wait_seconds", DEFAULT_STOP_ARTIFACT_WAIT_SECONDS)
+
+    def _status_poll_policy(self) -> Dict[str, Any]:
+        minimum = int(
+            round(
+                self._worker_seconds_config(
+                    "status_minimum_poll_seconds",
+                    DEFAULT_STATUS_MINIMUM_POLL_SECONDS,
+                )
+            )
+        )
+        recommended = int(
+            round(
+                self._worker_seconds_config(
+                    "status_recommended_poll_seconds",
+                    DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS,
+                )
+            )
+        )
+        minimum = max(1, minimum)
+        recommended = max(minimum, recommended)
+        return {
+            "minimum_next_poll_seconds": minimum,
+            "recommended_next_poll_seconds": recommended,
+            "poll_guidance": (
+                f"For normal worker monitoring, wait about {minimum}-{recommended} seconds before "
+                "calling codex_worker_status again. Do not poll every few seconds unless the user "
+                "explicitly requests near-real-time monitoring or the previous result shows a lost/failed "
+                "worker that needs immediate recovery."
+            ),
+        }
 
     def _phase_for_job(self, job: JobInfo, *, session_id: Optional[str]) -> str:
         if job.state == JobState.PENDING:
