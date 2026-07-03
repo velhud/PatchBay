@@ -4,7 +4,9 @@
 
 PatchBay should expose tools as product capabilities, not implementation conveniences. ChatGPT should see narrow, intentional tools that explain when to use them and what control boundary they cross.
 
-The primary ChatGPT posture is lead/manager/consultant, not line-by-line repository implementer. The worker-first surface should encourage ChatGPT to do as little detailed code investigation and implementation itself as practical: use direct context tools for light orientation, focused checks, and verification; use named Codex workers for broad repository understanding, implementation, review, and validation. Tool descriptions should make it natural for ChatGPT to ask workers natural-language questions and assign deliverables rather than precomputing every path or command.
+The primary ChatGPT posture is lead/manager/consultant, not line-by-line repository implementer or primary repository file reader. The worker-first surface should make ChatGPT ask "Which worker or worker team should I appoint?" for non-trivial repository, Documents, codebase, architecture, audit, debugging, implementation, or review work. Direct context tools remain available and useful for orientation, briefing context, focused checks, exact line/diff verification, reviewing worker evidence, specific doubts, and tiny tasks, but they should not become the main broad-work execution loop.
+
+Delegation is a positive behavior. Tool descriptions and initialize instructions should make it natural for ChatGPT to create multiple named workers when work can be split cleanly. A 10-slot worker configuration should be treated as an opportunity to run investigators, implementers, reviewers, verification workers, and synthesis workers in parallel, not as a limit ChatGPT should avoid approaching for broad tasks.
 
 Repeated direct `codex_read_file` or `codex_search_repo` calls are a negative signal for non-trivial work. They should push ChatGPT back to the manager posture: start or continue a worker, ask it the evidence question, and use direct reads only to verify focused claims or inspect accepted worker evidence.
 
@@ -208,6 +210,8 @@ Every public descriptor must include:
 These descriptors are not only API documentation; they are part of the model prompt surface ChatGPT uses for tool selection. Keep descriptions outcome-first and explicit about:
 
 - ChatGPT's manager/consultant role and the expectation that non-trivial repo work is delegated to workers;
+- the explicit exception list for direct read/search tools: orientation, worker briefing context, focused verification, exact line/diff checks, reviewing worker evidence, specific doubts, tiny tasks, and quick checks where a worker brief would be worse than the check;
+- the expectation that broad work should consider a worker team and may use up to the configured concurrent worker slots when responsibilities are clear;
 - the expectation that named workers are reusable continuing specialists, and that `codex_worker_message` is the normal follow-up path when worker output is incomplete, contradictory, or decision-critical;
 - when to use the tool and when another worker/context tool is better;
 - when direct read/search tools are only for light orientation or verification rather than the primary implementation loop;
@@ -217,6 +221,7 @@ These descriptors are not only API documentation; they are part of the model pro
 - what validation or blocked-state behavior ChatGPT should report after the tool result.
 - when consequential worker assignments should request durable report files or changed-file evidence instead of relying on a compressed chat/tool summary.
 - when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool.
+- that paging, byte caps, and bounded result fields are response-stability controls, not an instruction to save tokens or avoid necessary evidence.
 
 The canonical names remain `codex_*`. Compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` may be advertised depending on `app.tool_mode`, but they must resolve to canonical handlers rather than duplicate execution paths. Their descriptors should advertise the alias names ChatGPT can actually call, such as `path` for `read`/`write`/`edit` and `cmd` or `command` for `bash`, then translate those names into the canonical handler arguments.
 
@@ -230,7 +235,7 @@ Current implementation returns these descriptor fields from `tools/list`, includ
 - aliases are advertised in the wrong tool mode or point to duplicate execution paths instead of canonical handlers.
 - descriptor resource URIs drift from the registered resource.
 - prompt-critical workflow guidance such as stateful workers, preview-before-integrate, no-commit integration, or validation expectations disappears from `initialize.instructions` or worker descriptors.
-- manager-first guidance disappears from `initialize.instructions` or worker descriptors.
+- manager-first guidance, direct-tool exceptions, or multi-worker encouragement disappears from `initialize.instructions` or worker descriptors.
 
 ## Schema Compatibility
 

@@ -6,6 +6,8 @@
 
 The product is powerful because it lets ChatGPT web/Pro, Projects, memory, and active conversations drive local Codex workers without turning the human into a copy-paste bridge. ChatGPT keeps the high-level conversation, product context, generated files, and coordination loop. Local Codex keeps the repository, git state, toolchain, credentials, and execution environment.
 
+The intended ChatGPT role is manager of local Codex workers, not primary file reader for broad work. Direct read/search/git tools stay available for orientation, briefing context, focused verification, exact line/diff checks, worker evidence review, and tiny exceptions, but non-trivial repository investigation, implementation, review, and synthesis should be delegated to named workers. A multi-worker configuration is part of the product value: ChatGPT can coordinate investigators, implementers, reviewers, verification workers, and synthesis workers through natural language.
+
 The intended user experience is:
 
 1. Start one local application.

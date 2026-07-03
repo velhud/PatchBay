@@ -366,11 +366,23 @@ def test_prompt_surface_discourages_direct_micromanagement_loop():
 
     assert "brief setup step before delegating" in by_name["codex_open_workspace"]["description"]
     assert "For broad architecture mapping, prefer a read-only Codex worker" in by_name["codex_repo_tree"]["description"]
-    assert "not as the main development loop" in by_name["codex_read_file"]["description"]
+    assert "manager's inspection instrument" in by_name["codex_read_file"]["description"]
+    assert "initial orientation" in by_name["codex_read_file"]["description"]
+    assert "focused verification" in by_name["codex_read_file"]["description"]
+    assert "tiny tasks" in by_name["codex_read_file"]["description"]
+    assert "main analysis loop for broad work" in by_name["codex_read_file"]["description"]
     assert "next_start_line" in by_name["codex_read_file"]["description"]
     assert "start or continue a Codex worker" in by_name["codex_read_file"]["description"]
-    assert "For broad investigation, ask a read-only Codex worker" in by_name["codex_search_repo"]["description"]
-    assert "Repeated direct read/search calls" in SERVER_INSTRUCTIONS
+    assert "response-stability boundary, not a token-saving instruction" in by_name["codex_read_file"]["description"]
+    assert "focused manager question" in by_name["codex_search_repo"]["description"]
+    assert "one or more read-only Codex workers" in by_name["codex_search_repo"]["description"]
+    assert "manager, engineering lead, and coordinator" in SERVER_INSTRUCTIONS
+    assert "not the primary repository file reader" in SERVER_INSTRUCTIONS
+    assert "Which worker or worker team should I appoint?" in SERVER_INSTRUCTIONS
+    assert "up to 10 concurrent worker slots" in SERVER_INSTRUCTIONS
+    assert "Direct read/search/git tools remain available" in SERVER_INSTRUCTIONS
+    assert "tiny task where creating a worker would be absurd" in SERVER_INSTRUCTIONS
+    assert "transport and stability controls, not a token-saving philosophy" in SERVER_INSTRUCTIONS
     assert "brief or verify work" in by_name["codex_load_context"]["description"]
     assert "session-local MCP tool surface switch" in by_name["codex_tool_mode_switch"]["description"]
     assert "process-local MCP tool surface switch" not in by_name["codex_tool_mode_switch"]["description"]

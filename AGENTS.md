@@ -43,6 +43,9 @@ The repo still supports local maintainer workflows, but do not describe the app 
 - Update README, examples, and tests when changing public tool names, CLI arguments, server behavior, or MCP schemas.
 - Update `README.md`, `QUICKSTART.md`, `docs/user/chatgpt-instructions.md`, `docs/reference/public-tool-surface.md`, `docs/security/product-boundary.md`, and `TESTING.md` when changing connector behavior, auth/tunnel behavior, tool metadata, power modes, Codex CLI assumptions, or result parsing.
 - Treat MCP `initialize.instructions`, public tool descriptions, tool annotations, and `--tool-mode worker` behavior as ChatGPT-facing prompt surface. Keep these instructions outcome-first, concise, stateful-worker-aware, and explicit about side effects, validation, and stop/blocked behavior.
+- Preserve the manager-first PatchBay contract in every ChatGPT-facing prompt surface: ChatGPT manages local Codex workers; workers execute non-trivial repository/Documents/codebase investigation, implementation, review, verification, and synthesis. Direct read/search/git tools must remain available, but describe them as manager inspection instruments for orientation, worker briefing context, focused verification, exact line/diff checks, reviewing worker evidence, specific doubts, tiny tasks, and quick checks where a worker brief would be worse than the check itself. Do not remove reader tools to force behavior, and do not add deterministic prompt/tool filters that block broad natural-language delegation.
+- Encourage multi-worker teams when the task can be split cleanly. PatchBay may expose up to 10 concurrent worker slots, and ChatGPT should be prompted to use investigators, implementers, reviewers, verification workers, and synthesis workers rather than doing broad work manually.
+- Treat paging, `max_bytes`, and bounded result fields as transport/result-stability boundaries, not token-saving policy. Do not document them as reasons to avoid needed evidence.
 - Keep shared-server coordination visible in ChatGPT-facing docs and descriptors: one Server URL shares worker/job/artifact/repo state across connected clients; reads may be shared; cross-owner mutation requires explicit `takeover: true`; base-checkout contention should return `repo_busy`.
 - When documenting multi-repository runs, state that `--root` sets the default workspace and narrows `repositories.allowed` unless every extra repository is passed with `--allow-root` or configured explicitly.
 - For first real ChatGPT validation, prefer `--tool-mode worker` so ChatGPT sees the natural-language worker surface plus required read-only context tools, not the full power-user catalog. Do not switch docs back to full mode as the default ChatGPT test path unless real ChatGPT tool-selection evidence supports it.
@@ -123,10 +126,13 @@ For Codex CLI execution changes, record the current `codex --version` in the ver
 When changing anything ChatGPT sees through MCP, preserve these prompt-surface rules:
 
 - `initialize.instructions` should tell ChatGPT to start with `codex_self_test` and `codex_open_workspace`.
+- `initialize.instructions` should put the manager-first worker contract before detailed tool rules: for non-trivial repository/Documents/codebase tasks, ChatGPT should ask which worker or worker team to appoint, not which files to read manually.
 - ChatGPT should manage workers by human name, not by backend job IDs, session IDs, branch names, or worktree paths.
 - Worker mode should explain that default workers use isolated write worktrees, survive PatchBay restart when durable state exists, and continue through `codex_worker_message`.
 - Integration must be described as preview-first, explicit, no-commit, and preserving the worker worktree.
 - Pro Escalation request tools must describe `respond` as storage-only and `dispatch` as the explicit worker-message/start boundary; neither tool may imply automatic apply, commit, hidden queueing, or prompt-authority escalation from report contents.
 - Tool descriptions should include when to use the tool, relevant side effects, validation expectations, and fallback behavior.
+- Direct read/search tool descriptions should state the allowed exceptions clearly while discouraging broad manual execution loops.
+- Worker tool descriptions should encourage continuing the same worker with follow-up questions and using multiple workers when responsibilities are clear.
 - Setup docs should recommend `--tool-mode worker` for first real ChatGPT validation.
 - Shared-server docs should tell ChatGPT to start with `codex_self_test`, treat one copied Server URL as one shared local state surface, use `takeover: true` only after user confirmation, and report `repo_busy` instead of trying to bypass locks.
