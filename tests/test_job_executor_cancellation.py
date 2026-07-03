@@ -114,6 +114,39 @@ def test_reconcile_stale_running_job_honors_process_tracking_and_grace(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_reconcile_stale_running_job_honors_live_task_after_process_exit(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "parsing", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.RUNNING)
+    manager.jobs[job_id].started_at = time.time() - 60
+    manager._persist_job(manager.jobs[job_id])
+
+    class ExitedProcess:
+        returncode = 0
+
+    async def live_task():
+        await asyncio.sleep(30)
+
+    task = asyncio.create_task(live_task())
+    executor.tasks[job_id] = task
+    executor.processes[job_id] = ExitedProcess()
+    try:
+        result = executor.reconcile_stale_running_jobs(grace_seconds=0)
+    finally:
+        executor.processes.pop(job_id, None)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert result["checked"] == 1
+    assert result["reconciled"] == 0
+    assert manager.get_job(job_id).state == JobState.RUNNING
+    assert manager.get_job(job_id).error is None
+
+
+@pytest.mark.asyncio
 async def test_reconcile_stale_running_job_honors_live_executor_task(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

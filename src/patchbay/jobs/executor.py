@@ -117,11 +117,13 @@ class JobExecutor:
         }
 
     def _job_has_live_runtime(self, job_id: str) -> bool:
+        task = self.tasks.get(job_id)
+        if task is not None and not task.done():
+            return True
         process = self.processes.get(job_id)
         if process is not None:
             return getattr(process, "returncode", None) is None
-        task = self.tasks.get(job_id)
-        return bool(task and not task.done())
+        return False
 
     def _stale_running_grace_seconds(self, override: Optional[float] = None) -> float:
         if override is not None:
@@ -270,12 +272,23 @@ class JobExecutor:
                 stdout = capture.stdout
                 stderr = capture.stderr
 
-                self._write_process_artifact(stdout_log, stdout)
-                self._write_process_artifact(stderr_log, stderr)
-
                 if self._job_is_cancelled(job_id):
+                    self._write_process_artifact(stdout_log, stdout)
+                    self._write_process_artifact(stderr_log, stderr)
                     logger.info(f"Job {job_id} process exited after cancellation")
                     return
+
+                self.job_manager.update_job_state(
+                    job_id,
+                    JobState.RUNNING,
+                    exit_code=process.returncode,
+                    last_heartbeat_at=time.time(),
+                    last_event="process.exited",
+                    progress="Codex process exited; PatchBay is parsing the result and writing artifacts.",
+                )
+
+                self._write_process_artifact(stdout_log, stdout)
+                self._write_process_artifact(stderr_log, stderr)
 
                 if capture.session_start_timed_out:
                     self.job_manager.update_job_state(
