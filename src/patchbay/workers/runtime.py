@@ -59,6 +59,7 @@ MAX_CONTEXT_DIFF_BYTES = 120_000
 MAX_INTEGRATION_PATCH_BYTES = 2_000_000
 MAX_INTEGRATION_MESSAGE_CHARS = 12_000
 DEFAULT_WORKER_FILE_READ_BYTES = 200_000
+DEFAULT_WORKER_FILE_RESPONSE_BYTES = 25_000
 WORKER_CONTEXT_DETAILS = {"report", "changes", "diff"}
 ARTIFACT_CONTEXT_DIR = ".ai-bridge/imported-artifacts"
 PRIVATE_BRANCH_PATTERN = re.compile(r"\bcodex/(?:worker|job)-[A-Za-z0-9._/-]+\b")
@@ -164,7 +165,11 @@ class WorkerRuntime:
             raise
         self._schedule_job(job_id)
 
-        view = self._public_view(self._jobs_for_worker(worker_id), request_context=request_context)
+        view = self._public_view(
+            self._jobs_for_worker(worker_id),
+            request_context=request_context,
+            include_change_state=False,
+        )
         view.update(
             {
                 "accepted": True,
@@ -303,7 +308,11 @@ class WorkerRuntime:
             return view
         self._schedule_job(job_id)
 
-        view = self._public_view(self._jobs_for_worker(worker_id), request_context=request_context)
+        view = self._public_view(
+            self._jobs_for_worker(worker_id),
+            request_context=request_context,
+            include_change_state=False,
+        )
         view.update(
             {
                 "accepted": True,
@@ -365,6 +374,10 @@ class WorkerRuntime:
         self,
         *,
         repo_path: Optional[str] = None,
+        active_only: bool = False,
+        include_stopped: bool = True,
+        owned_only: bool = False,
+        created_after: Optional[float] = None,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         self._reconcile_active_jobs()
@@ -372,11 +385,24 @@ class WorkerRuntime:
         if repo_path:
             resolved = str(Path(repo_path).expanduser().resolve())
             groups = [jobs for jobs in groups if str(Path(jobs[-1].repo_path).resolve()) == resolved]
+        if created_after is not None:
+            threshold = float(created_after)
+            groups = [
+                jobs
+                for jobs in groups
+                if float(jobs[0].started_at or jobs[0].completed_at or 0) >= threshold
+            ]
 
         views = [
             self._public_view(jobs, request_context=request_context, include_change_state=False)
             for jobs in groups
         ]
+        if active_only:
+            views = [item for item in views if item["state"] in {"starting", "working"}]
+        if not include_stopped:
+            views = [item for item in views if item["state"] != "stopped"]
+        if owned_only:
+            views = [item for item in views if item.get("owned_by_current_client") is True]
         views.sort(key=lambda item: (item["state"] not in {"starting", "working"}, item["name"].casefold()))
         return {
             "workers": views,
@@ -758,7 +784,7 @@ class WorkerRuntime:
         used_bytes = 0
         for source in source_names:
             jobs = self._resolve_worker(source, repo_path=repo_path)
-            view = self._public_view(jobs)
+            view = self._public_view(jobs, include_change_state=False)
             name = view["name"]
             public_names.append(name)
             lines = [
@@ -1214,30 +1240,51 @@ class WorkerRuntime:
             return view
 
         max_allowed = int(self.config.get("security", {}).get("max_read_bytes", DEFAULT_WORKER_FILE_READ_BYTES))
-        max_read = max(1, min(int(max_bytes or max_allowed), max_allowed))
+        public_cap = int(self.config.get("workers", {}).get("file_response_max_bytes", DEFAULT_WORKER_FILE_RESPONSE_BYTES))
+        max_read = max(1, min(int(max_bytes or public_cap), max_allowed, public_cap))
         size = target.stat().st_size
-        if size > max_read:
-            view.update({"bytes": size, "truncated": True, "note": f"File is too large to read fully; limit is {max_read} bytes."})
-            return view
-
-        raw = target.read_bytes()
-        if b"\0" in raw[:4096]:
+        with target.open("rb") as sample_handle:
+            sample = sample_handle.read(4096)
+        if b"\0" in sample:
             view.update({"bytes": size, "note": "Refusing to read binary file from worker workspace."})
             return view
+
+        start = max(1, int(start_line or 1))
+        requested_end = int(end_line) if end_line is not None else None
+        selected: list[str] = []
+        total_lines = 0
+        bytes_used = 0
+        capped_by_bytes = False
         try:
-            text = raw.decode("utf-8")
+            with target.open("r", encoding="utf-8", errors="strict") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    total_lines = line_number
+                    if line_number < start:
+                        continue
+                    if requested_end is not None and line_number > requested_end:
+                        continue
+                    encoded = line.encode("utf-8", errors="replace")
+                    if selected and bytes_used + len(encoded) > max_read:
+                        capped_by_bytes = True
+                        continue
+                    if not selected and len(encoded) > max_read:
+                        line = encoded[:max_read].decode("utf-8", errors="replace")
+                        capped_by_bytes = True
+                        selected.append(line)
+                        bytes_used = max_read
+                        continue
+                    selected.append(line.rstrip("\n"))
+                    bytes_used += len(encoded)
         except UnicodeDecodeError:
             view.update({"bytes": size, "note": "Refusing to read non-UTF-8 file from worker workspace."})
             return view
+        except Exception:
+            view.update({"bytes": size, "note": "Could not read text from worker workspace."})
+            return view
 
-        lines = text.replace("\r\n", "\n").split("\n")
-        total_lines = len(lines)
-        start = max(1, int(start_line or 1))
-        end = min(total_lines, int(end_line or total_lines))
-        if end < start:
-            raise ValueError(f"end_line ({end}) must be >= start_line ({start})")
-
-        selected = lines[start - 1 : end]
+        if requested_end is not None and requested_end < start:
+            raise ValueError(f"end_line ({requested_end}) must be >= start_line ({start})")
+        end = start + len(selected) - 1 if selected else min(start, total_lines)
         width = len(str(end))
         numbered = "\n".join(
             f"{str(start + offset).rjust(width)} | {redact_sensitive_output(line)}"
@@ -1256,11 +1303,21 @@ class WorkerRuntime:
                 "start_line": start,
                 "end_line": end,
                 "total_lines": total_lines,
-                "bytes": len(raw),
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "truncated": start > 1 or end < total_lines or numbered.endswith("...[worker file truncated]"),
+                "bytes": size,
+                "sha256": self._file_sha256(target),
+                "truncated": (
+                    start > 1
+                    or end < total_lines
+                    or capped_by_bytes
+                    or numbered.endswith("...[worker file truncated]")
+                ),
+                "max_bytes_applied": max_read,
             }
         )
+        if end < total_lines:
+            view["next_start_line"] = end + 1
+        if max_bytes and int(max_bytes) > max_read:
+            view["note"] += f" Requested max_bytes was capped to {max_read} bytes; use start_line/end_line for the next chunk."
         return view
 
     def worker_file_locations(self, *, repo_path: str, file_path: str) -> list[Dict[str, Any]]:
@@ -1574,6 +1631,13 @@ class WorkerRuntime:
                     break
         return sorted(dict.fromkeys(blocked))
 
+    def _file_sha256(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def _validated_base_repo(self, workspace: Dict[str, Any]) -> str:
         base_repo = str(Path(workspace["base_repo_path"]).expanduser().resolve())
         return str(validate_allowed_path(base_repo, self.config.get("repositories", {}).get("allowed") or []))
@@ -1648,10 +1712,13 @@ class WorkerRuntime:
             "can_message": state not in {"starting", "working"} and bool(session_id) and workspace_available,
             "has_changes": has_changes,
             "integration_state": self._integration_state_for_jobs(jobs),
+            "workspace_location": self._workspace_location_label(workspace),
             "latest_turn": self._latest_turn_diagnostics(latest, session_id=session_id),
         }
         if not include_change_state:
             view["changes_checked"] = False
+        else:
+            view["worker_report_files"] = self._worker_report_files(jobs)
         if model:
             view["model"] = model
         if reasoning_effort:
@@ -1667,6 +1734,42 @@ class WorkerRuntime:
         )
         return view
 
+    def _workspace_location_label(self, workspace: Dict[str, Any]) -> str:
+        if workspace["mode"] == "isolated_write":
+            return "worker_worktree_only"
+        if workspace["mode"] == "shared_write":
+            return "base_checkout"
+        return "base_checkout_read_only"
+
+    def _worker_report_files(self, jobs: list[JobInfo]) -> list[Dict[str, Any]]:
+        workspace = self._workspace_for_jobs(jobs)
+        if workspace["mode"] == "read_only" or not workspace["available"]:
+            return []
+        try:
+            changed = self._changed_files(jobs)
+        except Exception:
+            return []
+        reports = [
+            path
+            for path in changed
+            if Path(path).name.lower().startswith("worker-report") and Path(path).suffix.lower() in {".md", ".txt"}
+        ]
+        location = self._workspace_location_label(workspace)
+        integrated = self._integration_state_for_jobs(jobs) == "applied_to_checkout"
+        return [
+            {
+                "file_path": path,
+                "location": location,
+                "integrated": integrated,
+                "note": (
+                    "Report file is in the isolated worker worktree until explicitly integrated or copied."
+                    if location == "worker_worktree_only" and not integrated
+                    else "Report file is in the base checkout."
+                ),
+            }
+            for path in reports[:20]
+        ]
+
     def _latest_turn_diagnostics(self, job: JobInfo, *, session_id: Optional[str]) -> Dict[str, Any]:
         diagnostics: Dict[str, Any] = {
             "state": job.state.value,
@@ -1681,6 +1784,10 @@ class WorkerRuntime:
             diagnostics["process_pid"] = int(job.process_pid)
         if job.last_heartbeat_at is not None:
             diagnostics["last_heartbeat_at"] = float(job.last_heartbeat_at)
+        if job.last_event:
+            diagnostics["last_event"] = str(job.last_event)
+        if job.progress:
+            diagnostics["progress"] = self._safe_public_text(str(job.progress), self._private_paths_for_jobs([job]))
         if job.exit_code is not None:
             diagnostics["exit_code"] = job.exit_code
         return diagnostics

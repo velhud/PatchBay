@@ -6,6 +6,7 @@ import subprocess
 import re
 import os
 import time
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -27,6 +28,15 @@ STALE_RUNNING_JOB_ERROR = (
     "Job was marked running, but no live Codex process is tracked. "
     "PatchBay marked it failed so it can be inspected or restarted."
 )
+
+
+@dataclass
+class ProcessCapture:
+    stdout: bytes
+    stderr: bytes
+    session_id: Optional[str] = None
+    session_start_timed_out: bool = False
+    total_timed_out: bool = False
 
 
 class JobExecutor:
@@ -142,6 +152,31 @@ class JobExecutor:
         if timeout <= 0:
             return None
         return timeout
+
+    def _session_start_timeout_seconds(self) -> Optional[float]:
+        server_config = self.config.get("server", {})
+        configured = server_config.get(
+            "codex_session_start_timeout_seconds",
+            server_config.get("codex_startup_timeout_seconds", 180),
+        )
+        if configured is None:
+            return None
+        if isinstance(configured, str):
+            normalized = configured.strip().lower()
+            if normalized in {"", "0", "none", "never", "unlimited", "disabled", "false"}:
+                return None
+            try:
+                timeout = float(normalized)
+            except ValueError:
+                return 180.0
+        else:
+            try:
+                timeout = float(configured)
+            except (TypeError, ValueError):
+                return 180.0
+        if timeout <= 0:
+            return None
+        return timeout
         
     async def execute_job(self, job_id: str):
         """Execute a Codex job, optionally waiting for an execution slot."""
@@ -224,19 +259,47 @@ class JobExecutor:
             logger.info("Job %s Codex process started: pid=%s", job_id, getattr(process, "pid", None))
             
             try:
-                if timeout is None:
-                    stdout, stderr = await process.communicate(input=stdin_data)
-                else:
-                    stdout, stderr = await asyncio.wait_for(
-                        process.communicate(input=stdin_data),
-                        timeout=timeout,
-                    )
-                
+                capture = await self._communicate_with_progress(
+                    job_id,
+                    process,
+                    stdin_data=stdin_data,
+                    total_timeout=timeout,
+                    session_start_timeout=self._session_start_timeout_seconds(),
+                    expect_session=bool((job.options or {}).get("json_events", True)),
+                )
+                stdout = capture.stdout
+                stderr = capture.stderr
+
                 self._write_process_artifact(stdout_log, stdout)
                 self._write_process_artifact(stderr_log, stderr)
 
                 if self._job_is_cancelled(job_id):
                     logger.info(f"Job {job_id} process exited after cancellation")
+                    return
+
+                if capture.session_start_timed_out:
+                    self.job_manager.update_job_state(
+                        job_id,
+                        JobState.FAILED,
+                        error=(
+                            "Codex process started but did not create a JSON session before the startup "
+                            "timeout. Inspect local job stdout/stderr logs for startup diagnostics."
+                        ),
+                        exit_code=process.returncode,
+                        last_heartbeat_at=time.time(),
+                    )
+                    logger.error("Job %s failed: Codex session startup timeout", job_id)
+                    return
+
+                if capture.total_timed_out:
+                    self.job_manager.update_job_state(
+                        job_id,
+                        JobState.FAILED,
+                        error=f"Job timed out after {timeout} seconds",
+                        exit_code=process.returncode,
+                        last_heartbeat_at=time.time(),
+                    )
+                    logger.error(f"Job {job_id} timed out")
                     return
                 
                 raw_stdout = stdout.decode('utf-8', errors='replace')
@@ -244,7 +307,7 @@ class JobExecutor:
                 result = await self._parse_result(stdout, result_file, job.options)
                 
                 # Extract session ID from JSON events (stdout) first, then fall back to stderr
-                session_id = self._extract_session_id_from_json_events(raw_stdout)
+                session_id = capture.session_id or self._extract_session_id_from_json_events(raw_stdout)
                 if not session_id:
                     session_id = self._extract_session_id(stderr.decode('utf-8'))
                 
@@ -270,15 +333,6 @@ class JobExecutor:
                     )
                     logger.error(f"Job {job_id} failed: exit code {process.returncode}")
                     
-            except asyncio.TimeoutError:
-                await self._terminate_process(job_id, process)
-                self.job_manager.update_job_state(
-                    job_id,
-                    JobState.FAILED,
-                    error=f"Job timed out after {timeout} seconds",
-                    last_heartbeat_at=time.time(),
-                )
-                logger.error(f"Job {job_id} timed out")
             finally:
                 self.processes.pop(job_id, None)
                 self.repo_locks.release_job(job_id)
@@ -461,6 +515,138 @@ class JobExecutor:
         if prompt and cmd and cmd[-1] == "-":
             return prompt.encode("utf-8")
         return None
+
+    async def _communicate_with_progress(
+        self,
+        job_id: str,
+        process: asyncio.subprocess.Process,
+        *,
+        stdin_data: bytes | None,
+        total_timeout: Optional[float],
+        session_start_timeout: Optional[float],
+        expect_session: bool,
+    ) -> ProcessCapture:
+        """Read Codex JSON events incrementally so session/heartbeat state is live."""
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        state: dict[str, Any] = {"session_id": None, "session_start_timed_out": False, "total_timed_out": False}
+        process_started_at = time.time()
+
+        async def feed_stdin() -> None:
+            if stdin_data is None or process.stdin is None:
+                return
+            try:
+                process.stdin.write(stdin_data)
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                try:
+                    process.stdin.close()
+                    await process.stdin.wait_closed()
+                except Exception:
+                    pass
+
+        async def read_stream(stream: asyncio.StreamReader | None, *, stream_name: str) -> None:
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.readline()
+                if not chunk:
+                    return
+                if stream_name == "stdout":
+                    stdout_chunks.append(chunk)
+                    self._observe_stdout_event(job_id, chunk, state)
+                else:
+                    stderr_chunks.append(chunk)
+                    self.job_manager.update_job_state(
+                        job_id,
+                        JobState.RUNNING,
+                        last_heartbeat_at=time.time(),
+                        last_event="stderr",
+                        progress="Codex emitted stderr output; inspect local stderr log if the turn fails.",
+                    )
+
+        stdin_task = asyncio.create_task(feed_stdin())
+        stdout_task = asyncio.create_task(read_stream(process.stdout, stream_name="stdout"))
+        stderr_task = asyncio.create_task(read_stream(process.stderr, stream_name="stderr"))
+        wait_task = asyncio.create_task(process.wait())
+        tasks = [stdin_task, stdout_task, stderr_task, wait_task]
+
+        try:
+            while not wait_task.done():
+                await asyncio.sleep(0.5)
+                now = time.time()
+                if (
+                    expect_session
+                    and session_start_timeout is not None
+                    and not state.get("session_id")
+                    and now - process_started_at >= session_start_timeout
+                ):
+                    state["session_start_timed_out"] = True
+                    await self._terminate_process(job_id, process)
+                    break
+                if total_timeout is not None and now - process_started_at >= total_timeout:
+                    state["total_timed_out"] = True
+                    await self._terminate_process(job_id, process)
+                    break
+            await wait_task
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            await asyncio.gather(stdin_task, return_exceptions=True)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+
+        return ProcessCapture(
+            stdout=b"".join(stdout_chunks),
+            stderr=b"".join(stderr_chunks),
+            session_id=state.get("session_id"),
+            session_start_timed_out=bool(state.get("session_start_timed_out")),
+            total_timed_out=bool(state.get("total_timed_out")),
+        )
+
+    def _observe_stdout_event(self, job_id: str, chunk: bytes, state: dict[str, Any]) -> None:
+        text = chunk.decode("utf-8", errors="replace").strip()
+        session_id = None
+        event_label = "stdout"
+        progress = "Codex emitted stdout output."
+        if text:
+            try:
+                event = json.loads(text)
+            except json.JSONDecodeError:
+                event = None
+            if isinstance(event, dict):
+                event_label = str(event.get("type") or "json_event")
+                progress = self._event_progress_label(event)
+                session_id = self._session_id_from_event(event)
+        updates: dict[str, Any] = {
+            "last_heartbeat_at": time.time(),
+            "last_event": event_label,
+            "progress": progress,
+        }
+        if session_id and not state.get("session_id"):
+            state["session_id"] = session_id
+            updates["session_id"] = session_id
+            updates["progress"] = "Codex session created; worker turn is now streaming events."
+        self.job_manager.update_job_state(job_id, JobState.RUNNING, **updates)
+
+    def _session_id_from_event(self, event: Dict[str, Any]) -> Optional[str]:
+        if event.get("type") == "thread.started":
+            thread_id = event.get("thread_id") or event.get("data", {}).get("thread_id")
+            if thread_id:
+                return str(thread_id)
+        thread_id = event.get("thread_id")
+        return str(thread_id) if thread_id else None
+
+    def _event_progress_label(self, event: Dict[str, Any]) -> str:
+        event_type = str(event.get("type") or "json_event")
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if item:
+            item_type = str(item.get("type") or "item")
+            status = str(item.get("status") or "").strip()
+            return f"Codex event: {event_type} ({item_type}{', ' + status if status else ''})."
+        return f"Codex event: {event_type}."
     
     def _build_env(self) -> Dict[str, str]:
         """Build a restricted environment for Codex execution."""

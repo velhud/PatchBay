@@ -695,6 +695,56 @@ async def test_list_workers_reconciles_stale_running_worker(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_worker_list_filters_active_stopped_owner_and_created_after(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    client_a = owner_context("owner_a", "client_a", "Chat A")
+    client_b = owner_context("owner_b", "client_b", "Chat B")
+
+    active = await runtime.start_worker(
+        name="Active Worker",
+        brief="Keep running.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=client_a,
+    )
+    old_timestamp = time.time() - 100
+    manager.get_job(executor.started[-1]).started_at = old_timestamp
+    manager._persist_job(manager.get_job(executor.started[-1]))
+
+    stopped = await runtime.start_worker(
+        name="Stopped Worker",
+        brief="Stop this.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=client_a,
+    )
+    manager.update_job_state(executor.started[-1], JobState.CANCELLED, error="stopped")
+
+    other = await runtime.start_worker(
+        name="Other Owner Worker",
+        brief="Owned elsewhere.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=client_b,
+    )
+
+    active_only = await runtime.list_workers(active_only=True, request_context=client_a)
+    assert [item["worker_id"] for item in active_only["workers"]] == [active["worker_id"], other["worker_id"]]
+
+    without_stopped = await runtime.list_workers(include_stopped=False, request_context=client_a)
+    assert stopped["worker_id"] not in {item["worker_id"] for item in without_stopped["workers"]}
+
+    owned = await runtime.list_workers(owned_only=True, request_context=client_a)
+    assert {item["worker_id"] for item in owned["workers"]} == {active["worker_id"], stopped["worker_id"]}
+
+    recent = await runtime.list_workers(created_after=time.time() - 10, request_context=client_a)
+    assert active["worker_id"] not in {item["worker_id"] for item in recent["workers"]}
+
+
+@pytest.mark.asyncio
 async def test_list_workers_does_not_scan_worker_changes(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -717,6 +767,50 @@ async def test_list_workers_does_not_scan_worker_changes(tmp_path, monkeypatch):
     assert result["count"] == 1
     assert result["workers"][0]["has_changes"] is False
     assert result["workers"][0]["changes_checked"] is False
+
+
+@pytest.mark.asyncio
+async def test_worker_file_view_pages_large_text_files(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["file_response_max_bytes"] = 120
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Report Writer",
+        brief="Write a report.",
+        repo_path=config["repositories"]["default"],
+    )
+    job = manager.get_job(executor.started[-1])
+    report = Path(job.worktree_path) / "worker-report-large.md"
+    report.write_text("\n".join(f"line {i} " + ("x" * 20) for i in range(1, 30)), encoding="utf-8")
+
+    first = await runtime.inspect_worker(
+        worker=started["worker_id"],
+        view="file",
+        file_path="worker-report-large.md",
+        max_bytes=90_000,
+    )
+
+    assert first["exists"] is True
+    assert first["truncated"] is True
+    assert first["max_bytes_applied"] == 120
+    assert first["next_start_line"] > first["start_line"]
+    assert "capped to 120 bytes" in first["note"]
+    assert "worker-report-large.md" in [item["file_path"] for item in first["worker_report_files"]]
+    assert first["worker_report_files"][0]["location"] == "worker_worktree_only"
+
+    second = await runtime.inspect_worker(
+        worker=started["worker_id"],
+        view="file",
+        file_path="worker-report-large.md",
+        start_line=first["next_start_line"],
+        max_bytes=120,
+    )
+
+    assert second["start_line"] == first["next_start_line"]
+    assert second["text"]
 
 
 @pytest.mark.asyncio

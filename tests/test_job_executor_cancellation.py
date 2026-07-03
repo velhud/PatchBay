@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import time
 
@@ -159,6 +160,68 @@ async def test_schedule_job_keeps_task_tracked_until_completion(tmp_path, monkey
     assert manager.get_job(job_id).state == JobState.COMPLETED
     assert job_id not in executor.tasks
     assert manager.get_job(job_id).process_started_at is not None
+
+
+@pytest.mark.asyncio
+async def test_json_events_update_session_and_heartbeat_before_completion(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "stream", config["repositories"]["default"], {"structured_output": False})
+
+    thread = json.dumps({"type": "thread.started", "thread_id": "session-live"})
+    command = (
+        "import sys,time;"
+        f"print({thread!r}, flush=True);"
+        "time.sleep(1);"
+        "print('done', flush=True)"
+    )
+
+    def fake_command(mode, prompt, cwd, options=None):
+        return [sys.executable, "-c", command]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    task = asyncio.create_task(executor.execute_job(job_id))
+    for _ in range(50):
+        job = manager.get_job(job_id)
+        if job.session_id == "session-live":
+            break
+        await asyncio.sleep(0.03)
+
+    running = manager.get_job(job_id)
+    assert running.state == JobState.RUNNING
+    assert running.session_id == "session-live"
+    assert running.last_event == "thread.started"
+    assert running.last_heartbeat_at is not None
+
+    await asyncio.wait_for(task, timeout=5)
+    completed = manager.get_job(job_id)
+    assert completed.state == JobState.COMPLETED
+    assert completed.session_id == "session-live"
+
+
+@pytest.mark.asyncio
+async def test_codex_process_without_json_session_fails_startup_timeout(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    config["server"]["job_timeout_seconds"] = 0
+    config["server"]["codex_session_start_timeout_seconds"] = 0.2
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "hang", config["repositories"]["default"], {})
+
+    def fake_command(mode, prompt, cwd, options=None):
+        return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=5)
+
+    job = manager.get_job(job_id)
+    assert job.state == JobState.FAILED
+    assert "did not create a JSON session" in job.error
+    assert job.process_pid is not None
+    assert job.completed_at is not None
 
 
 def test_zero_or_named_job_timeout_disables_codex_turn_timeout(tmp_path):

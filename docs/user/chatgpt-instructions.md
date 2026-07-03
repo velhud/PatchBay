@@ -118,6 +118,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - When ChatGPT has generated a file or zip package that local Codex should use, call `codex_worker_inbox` with `action: "import_file"` first. Then pass the returned `artifact_id` through `context_from_artifacts` on `codex_worker_start` or `codex_worker_message`.
 - Importing an artifact stores local inbox context only. It does not edit the repo, does not integrate worker output, and can be repeated for multiple files or zips in the same conversation.
 - Use `codex_worker_inspect`, `codex_worker_list`, and `codex_worker_message` instead of asking the user to track low-level job/session ids.
+- When `codex_worker_list` is noisy, use `active_only`, `include_stopped: false`, `owned_only`, or `created_after` rather than manually scanning old workers.
 - Worker names are scoped to the current workspace. The same name may exist in another repo; pass `repo_path` or use the public `worker_id` only when disambiguation is needed.
 - In shared Server URL use, read/list/inspect can show workers, jobs, and artifacts created by another ChatGPT conversation. PatchBay defaults to token-scoped ownership, so short-lived transport sessions from the same copied connector URL remain the same coordination owner. If a mutating worker or artifact call returns `takeover_required: true`, stop and confirm with the user before calling again with `takeover: true`.
 - If `codex_self_test` reports `queue_enabled: true`, extra Codex turns can remain pending until an execution slot opens.
@@ -139,7 +140,8 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - Ownership flags are coordination-owner-relative, not authentication. `owned_by_current_client: false` does not mean the user lacks permission; it means another owner last controlled that worker or artifact, so mutation requires explicit takeover.
 - A default `isolated_write` worker changes its own external worktree first. The base checkout is not changed until `codex_worker_integrate` succeeds.
 - Before accepting a worker result, inspect `view: "changes"`, targeted `view: "diff"`, and `view: "integration_preview"` when applying the result is being considered.
-- `codex_read_file` reads the base checkout. Before integration, worker-created files live in the worker workspace; read them with `codex_worker_inspect` using `view: "file"` and `file_path`.
+- `codex_read_file` reads the base checkout. Before integration, worker-created files live in the worker workspace; read them with `codex_worker_inspect` using `view: "file"` and `file_path`. Large file views are paged; if `next_start_line` is present, continue with that line instead of requesting a very large `max_bytes`.
+- Worker report files created by isolated workers are not automatically in the base checkout. Treat `worker_report_files.location: worker_worktree_only` as explicit evidence that the report exists only in that worker workspace until integrated or copied.
 - `codex_worker_integrate` applies accepted changes to the base checkout, does not commit, and preserves the worker worktree.
 - After integration or direct edits, review `codex_show_changes` or `codex_git_diff`, then run focused validation with `codex_run_command` when that tool is available. If validation cannot run, report the exact blocker.
 - Do not claim a worker changed, validated, integrated, stopped, or cleaned up anything until the matching tool result says so.
@@ -153,12 +155,12 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 5. If a worker needs a specific Codex model or reasoning effort, call `codex_worker_options` and choose from the returned menu.
 6. If ChatGPT has generated files, specs, plans, or zips for local Codex, call `codex_worker_inbox` with `action: "import_file"` for each artifact. Use `action: "list"` or `action: "inspect"` only when needed to choose or inspect artifact ids.
 7. For durable delegation, call `codex_worker_start` with a human name, natural-language brief, optional `workspace_mode`, optional `model`/`reasoning_effort`, optional `context_from_workers`, and optional `context_from_artifacts`.
-8. Inspect workers with `codex_worker_inspect` or `codex_worker_list`.
+8. Inspect workers with `codex_worker_inspect` or `codex_worker_list`; use list filters to focus on active, current-owner, non-stopped, or recently created workers.
 9. Continue the same Codex conversation by name with `codex_worker_message`; include `context_from_workers` when another worker's report or diff should be relayed, and include `context_from_artifacts` when a later imported file or zip should be added to the same worker. Use this follow-up loop before final synthesis when a report is too compressed, lacks evidence, conflicts with another worker, or leaves a clear next question.
 10. Use `codex_read_file`, `codex_search_repo`, `codex_git_status`, `codex_git_diff`, and `codex_show_changes` for focused checks, verification, and reviewing worker evidence.
 11. If the required control is not visible, call `codex_tool_mode_info`, then `codex_tool_mode_switch` only when broadening is justified. If ChatGPT does not receive the new catalog, ask the operator to refresh or reconnect the connector.
 12. Use low-level `codex_plan_job`, `codex_get_status`, `codex_get_result`, and session tools for compatibility, debugging, or explicit power-user control.
-13. For worker changes, inspect with `codex_worker_inspect` using `view: "changes"`, `view: "file"` with a workspace-relative `file_path` for worker-created file content, `view: "diff"` with a workspace-relative `file_path`, or `view: "integration_preview"` before accepting work.
+13. For worker changes, inspect with `codex_worker_inspect` using `view: "changes"`, `view: "file"` with a workspace-relative `file_path` for paged worker-created file content, `view: "diff"` with a workspace-relative `file_path`, or `view: "integration_preview"` before accepting work.
 14. Use `codex_worker_integrate` only for an explicitly accepted isolated writing worker result; review, test, and commit through the normal repository workflow afterward.
 15. For low-level one-shot changes, call `codex_apply_job` only when explicit job/diff handling is better than the worker facade.
 16. If a local terminal handoff is preferred, write `.ai-bridge/current-plan.md` with `codex_write_handoff` and let the operator run the local handoff CLI.

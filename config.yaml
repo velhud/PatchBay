@@ -4,6 +4,7 @@ server:
   max_concurrent_jobs: 10
   queue_enabled: true
   job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
+  codex_session_start_timeout_seconds: 180  # fail only if Codex starts but no JSON session appears
   stale_running_job_grace_seconds: 5
   job_cleanup_after_hours: 24
   max_request_bytes: 1048576
@@ -93,6 +94,7 @@ power_tools:
 workers:
   worktree_root: ""
   ignore_user_config: false
+  file_response_max_bytes: 25000
 
 artifacts:
   enabled: true
