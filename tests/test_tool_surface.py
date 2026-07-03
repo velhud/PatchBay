@@ -394,7 +394,8 @@ def test_prompt_surface_discourages_direct_micromanagement_loop():
     assert "default code reviewer" in SERVER_INSTRUCTIONS
     assert "Which worker or worker team should I appoint?" in SERVER_INSTRUCTIONS
     assert "up to 10 concurrent worker slots" in SERVER_INSTRUCTIONS
-    assert "Direct read/search/git/diff tools remain available" in SERVER_INSTRUCTIONS
+    assert "Direct read/search/git tools remain available" in SERVER_INSTRUCTIONS
+    assert "diff/command/file-inspection tools remain available in the modes that expose them" in SERVER_INSTRUCTIONS
     assert "Trust worker reports by default" in SERVER_INSTRUCTIONS
     assert "Managerial review means reading reports" in SERVER_INSTRUCTIONS
     assert "full tool mode does not change ChatGPT into an implementer" in SERVER_INSTRUCTIONS
