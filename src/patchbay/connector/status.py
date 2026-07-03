@@ -113,7 +113,7 @@ def connector_status(
             "public_base_url": public_base_url,
             "chatgpt_authentication": "No Authentication / None when using a query-token Server URL; Bearer token when custom headers are supported.",
             "query_token_url_redacted": policy.enabled and policy.allow_query_token and not reveal_token,
-            "tool_mode": app_config.get("tool_mode", "full"),
+            "tool_mode": app_config.get("tool_mode", "worker"),
         },
         "auth": auth_metadata,
         "power_tools": {
@@ -159,7 +159,7 @@ def connector_setup_guide(
         "server_url": server_url,
         "local_mcp_url": connection.get("local_mcp_url"),
         "authentication": connection.get("chatgpt_authentication"),
-        "tool_mode": app_config.get("tool_mode", connection.get("tool_mode", "full")),
+        "tool_mode": app_config.get("tool_mode", connection.get("tool_mode", "worker")),
         "tunnel_mode": tunnel_mode,
         "default_root": default_root,
         "allowed_roots": allowed_roots,

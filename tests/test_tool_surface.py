@@ -208,6 +208,14 @@ def test_tool_modes_filter_advertised_surface():
     assert "show_changes" not in worker
 
 
+def test_missing_tool_mode_defaults_to_worker_surface():
+    names = {tool["name"] for tool in tool_descriptors_for_mode({"app": {}, "power_tools": {}})}
+
+    assert {"codex_worker_start", "codex_worker_message", "codex_read_file", "codex_search_repo"} <= names
+    assert "read" not in names
+    assert "codex_plan_job" not in names
+
+
 def test_tool_surface_hides_runtime_disabled_power_tools_and_aliases():
     config = {
         "app": {"tool_mode": "full"},

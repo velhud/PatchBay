@@ -15,7 +15,7 @@ server:
 
 app:
   widget_domain: https://web-sandbox.oaiusercontent.com
-  tool_mode: full
+  tool_mode: worker
 
 auth:
   enabled: false

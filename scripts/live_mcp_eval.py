@@ -26,6 +26,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON only.")
     parser.add_argument("--port", type=int, help="Local port. Defaults to a free loopback port.")
     parser.add_argument("--timeout", type=float, default=20.0, help="Startup/probe timeout seconds.")
+    parser.add_argument("--tool-mode", choices=["worker", "standard", "full", "minimal"], default="worker", help="Tool surface to verify. Defaults to the ChatGPT manager surface.")
     parser.add_argument("--keep-temp", action="store_true", help="Keep the disposable repo for debugging.")
     parser.add_argument("--verbose", action="store_true", help="Print launcher/server output on failure.")
     args = parser.parse_args()
@@ -47,7 +48,7 @@ def main() -> int:
         env["PATCHBAY_HOME"] = str(temp_dir / "runtime")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
 
-        process = _start_server(repo, port, env)
+        process = _start_server(repo, port, env, tool_mode=args.tool_mode)
         _wait_for_health(port, process, output_tail, timeout=args.timeout)
         client = McpClient(f"http://127.0.0.1:{port}")
 
@@ -71,15 +72,17 @@ def main() -> int:
 
         tools_payload = client.rpc(2, "tools/list")
         tools = {tool["name"]: tool for tool in tools_payload["result"]["tools"]}
-        required_tools = {
+        required_worker_tools = {
             "codex_open_workspace",
             "codex_read_file",
             "codex_list_skills",
             "codex_load_skill",
-            "codex_workspace_snapshot",
             "codex_show_changes",
             "codex_git_status",
-            "codex_write_file",
+            "codex_git_diff",
+            "codex_repo_tree",
+            "codex_search_repo",
+            "codex_load_context",
             "codex_worker_options",
             "codex_worker_start",
             "codex_worker_message",
@@ -93,20 +96,28 @@ def main() -> int:
             "codex_pro_request_dispatch",
             "codex_pro_request_close",
             "codex_self_test",
-            "read",
-            "show_changes",
+            "codex_tool_mode_info",
+            "codex_tool_mode_switch",
         }
+        full_only_tools = {"read", "show_changes", "bash", "codex_workspace_snapshot", "codex_write_file", "codex_run_command"}
+        required_tools = set(required_worker_tools)
+        if args.tool_mode == "full":
+            required_tools |= full_only_tools
         _check(report, "tools_list", required_tools <= set(tools))
+        _check(report, "tool_mode", args.tool_mode == "full" or not (full_only_tools & set(tools)))
         _check(
             report,
             "alias_tool_descriptors",
-            tools["read"]["inputSchema"]["additionalProperties"] is False
-            and {"required": ["path"]} in tools["read"]["inputSchema"].get("anyOf", [])
-            and {"required": ["file_path"]} in tools["read"]["inputSchema"].get("anyOf", [])
-            and "path" in tools["read"]["inputSchema"]["properties"]
-            and tools["bash"]["inputSchema"]["additionalProperties"] is False
-            and {"required": ["command"]} in tools["bash"]["inputSchema"].get("anyOf", [])
-            and {"required": ["cmd"]} in tools["bash"]["inputSchema"].get("anyOf", []),
+            args.tool_mode != "full"
+            or (
+                tools["read"]["inputSchema"]["additionalProperties"] is False
+                and {"required": ["path"]} in tools["read"]["inputSchema"].get("anyOf", [])
+                and {"required": ["file_path"]} in tools["read"]["inputSchema"].get("anyOf", [])
+                and "path" in tools["read"]["inputSchema"]["properties"]
+                and tools["bash"]["inputSchema"]["additionalProperties"] is False
+                and {"required": ["command"]} in tools["bash"]["inputSchema"].get("anyOf", [])
+                and {"required": ["cmd"]} in tools["bash"]["inputSchema"].get("anyOf", [])
+            ),
         )
         _check(report, "tool_card_metadata", all(tools[name]["_meta"]["openai/outputTemplate"] == TOOL_CARD_URI for name in required_tools))
         _check(
@@ -143,17 +154,8 @@ def main() -> int:
         readme = client.call_tool(8, "codex_read_file", {"repo_path": str(repo), "file_path": "README.md"})
         _check(report, "read_file", "Probe Repo" in readme["result"]["structuredContent"]["text"])
 
-        alias_read = client.call_tool(81, "read", {"repo_path": str(repo), "path": "README.md"})
-        _check(report, "alias_read_file", "Probe Repo" in alias_read["result"]["structuredContent"]["text"])
-
         git_status = client.call_tool(82, "codex_git_status", {"repo_path": str(repo)})
         _check(report, "git_status", "##" in git_status["result"]["structuredContent"]["text"])
-
-        snapshot = client.call_tool(83, "codex_workspace_snapshot", {"repo_path": str(repo), "include_hidden": False})
-        _check(report, "workspace_snapshot", "Workspace Snapshot" in snapshot["result"]["structuredContent"]["text"])
-
-        show_changes = client.call_tool(84, "show_changes", {"repo_path": str(repo), "include_diff": True})
-        _check(report, "alias_show_changes", "Workspace Changes" in show_changes["result"]["structuredContent"]["text"])
 
         env_read = client.call_tool(9, "codex_read_file", {"repo_path": str(repo), "file_path": ".env"})
         _check(report, "env_read_allowed", "TOKEN=" in env_read["result"]["structuredContent"]["text"])
@@ -161,24 +163,34 @@ def main() -> int:
         symlink = client.call_tool(10, "codex_read_file", {"repo_path": str(repo), "file_path": "outside-link.txt"})
         _check(report, "blocked_symlink_read", "error" in symlink and "symlink" in symlink["error"]["message"])
 
-        direct_write = client.call_tool(11, "codex_write_file", {"repo_path": str(repo), "file_path": "new.txt", "content": "hello\n"})
-        _check(report, "direct_write_enabled", direct_write["result"]["structuredContent"]["changed"] is True)
+        if args.tool_mode == "full":
+            alias_read = client.call_tool(81, "read", {"repo_path": str(repo), "path": "README.md"})
+            _check(report, "alias_read_file", "Probe Repo" in alias_read["result"]["structuredContent"]["text"])
 
-        tracked_write = client.call_tool(112, "codex_write_file", {"repo_path": str(repo), "file_path": "README.md", "content": "# Probe Repo\n\ntracked change\n"})
-        _check(report, "tracked_write_for_alias_scope", tracked_write["result"]["structuredContent"]["changed"] is True)
+            snapshot = client.call_tool(83, "codex_workspace_snapshot", {"repo_path": str(repo), "include_hidden": False})
+            _check(report, "workspace_snapshot", "Workspace Snapshot" in snapshot["result"]["structuredContent"]["text"])
 
-        alias_scoped_changes = client.call_tool(113, "show_changes", {"repo_path": str(repo), "path": "README.md", "include_diff": True})
-        alias_scoped_data = alias_scoped_changes["result"]["structuredContent"]
-        _check(
-            report,
-            "alias_show_changes_path_scope",
-            alias_scoped_data["path"] == "README.md"
-            and "README.md" in alias_scoped_data["diff"]
-            and "new.txt" not in alias_scoped_data["diff"],
-        )
+            show_changes = client.call_tool(84, "show_changes", {"repo_path": str(repo), "include_diff": True})
+            _check(report, "alias_show_changes", "Workspace Changes" in show_changes["result"]["structuredContent"]["text"])
 
-        full_bash = client.call_tool(111, "codex_run_command", {"repo_path": str(repo), "command": "cat new.txt"})
-        _check(report, "full_bash_enabled", full_bash["result"]["structuredContent"]["stdout"] == "hello\n")
+            direct_write = client.call_tool(11, "codex_write_file", {"repo_path": str(repo), "file_path": "new.txt", "content": "hello\n"})
+            _check(report, "direct_write_enabled", direct_write["result"]["structuredContent"]["changed"] is True)
+
+            tracked_write = client.call_tool(112, "codex_write_file", {"repo_path": str(repo), "file_path": "README.md", "content": "# Probe Repo\n\ntracked change\n"})
+            _check(report, "tracked_write_for_alias_scope", tracked_write["result"]["structuredContent"]["changed"] is True)
+
+            alias_scoped_changes = client.call_tool(113, "show_changes", {"repo_path": str(repo), "path": "README.md", "include_diff": True})
+            alias_scoped_data = alias_scoped_changes["result"]["structuredContent"]
+            _check(
+                report,
+                "alias_show_changes_path_scope",
+                alias_scoped_data["path"] == "README.md"
+                and "README.md" in alias_scoped_data["diff"]
+                and "new.txt" not in alias_scoped_data["diff"],
+            )
+
+            full_bash = client.call_tool(111, "codex_run_command", {"repo_path": str(repo), "command": "cat new.txt"})
+            _check(report, "full_bash_enabled", full_bash["result"]["structuredContent"]["stdout"] == "hello\n")
 
         self_test = client.call_tool(12, "codex_self_test", {})
         _check(report, "self_test", self_test["result"]["structuredContent"]["ready"] is True)
@@ -335,7 +347,7 @@ def _create_disposable_repo(temp_dir: Path) -> Path:
     return repo
 
 
-def _start_server(repo: Path, port: int, env: dict[str, str]) -> subprocess.Popen[str]:
+def _start_server(repo: Path, port: int, env: dict[str, str], *, tool_mode: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
             sys.executable,
@@ -346,6 +358,8 @@ def _start_server(repo: Path, port: int, env: dict[str, str]) -> subprocess.Pope
             str(port),
             "--tunnel-mode",
             "none",
+            "--tool-mode",
+            tool_mode,
             "--no-profile",
             "--force",
         ],

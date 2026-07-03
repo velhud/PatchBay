@@ -129,7 +129,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - Use only repositories configured under `repositories.allowed`.
 - For multi-repository tasks, verify each repo is already allowed; a path-guard refusal means the launcher/config must be updated, not bypassed.
 - Start with a disposable repo until the real ChatGPT Developer Mode flow is verified.
-- The current checked-in profile is full-power. Treat direct writes, full bash, `danger-full-access`, session reads, and child-process environment inheritance as available unless the launcher/runtime config narrows them.
+- The current checked-in runtime permission profile is full-authority, but the recommended ChatGPT-facing tool mode is `worker`. Treat direct writes, full bash, `danger-full-access`, session reads, and child-process environment inheritance as available only when the runtime config enables them and the visible tool mode advertises the matching tools.
 - Use context tools before starting workers only enough to identify the workspace, constraints, and useful AGENTS/skill context. Repeated direct `codex_read_file`/`codex_search_repo` calls are a sign that ChatGPT is doing line-worker analysis itself; delegate that investigation to a worker instead.
 - Prefer `codex_worker_start` for durable delegation whenever the task needs real repository understanding, implementation, verification, or review. The default `isolated_write` mode is for implementation work in a private worktree; use `workspace_mode: "read_only"` for advisory/review workers.
 - For broad tasks, consider a worker team rather than a single worker: investigators by folder/domain, implementers by surface, a read-only reviewer, and a synthesis worker with `context_from_workers`.

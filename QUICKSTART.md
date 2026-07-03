@@ -144,8 +144,7 @@ In another terminal:
 PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
 ```
 
-This does not use ChatGPT and does not open a public tunnel. It starts a temporary server and probes MCP initialize, tool listing, resources, workspace context, aliases, path guards, and default power-tool denial.
-In the current full-power profile it also verifies direct write and full bash on the disposable repo.
+This does not use ChatGPT and does not open a public tunnel. It starts a temporary server and probes MCP initialize, tool listing, resources, workspace context, worker-mode aliases absence, path guards, and read behavior. Run it with `--tool-mode full` when you deliberately want to verify compatibility aliases, direct write, and full bash on the disposable repo.
 
 ## 7. Try Light Workspace Orientation
 
@@ -158,7 +157,7 @@ Ask ChatGPT to use:
 5. `codex_search_repo`
 6. `codex_show_changes`
 
-This path is for brief orientation and verification. It should not become the normal development loop for non-trivial work. The normal PatchBay posture is ChatGPT as lead: ask local Codex workers natural-language questions, assign them work, read their reports, and inspect direct files/diffs only when needed to verify evidence. If ChatGPT starts making repeated direct read/search calls to understand the repo, it should stop and delegate that investigation to a worker. The checked-in profile enables direct writes and full bash; using `--root "$tmpdir/repo"` keeps that power scoped to the disposable repo for this first run.
+This path is for brief orientation and verification. It should not become the normal development loop for non-trivial work. The normal PatchBay posture is ChatGPT as lead: ask local Codex workers natural-language questions, assign them work, read their reports, and inspect direct files/diffs only when needed to verify evidence. If ChatGPT starts making repeated direct read/search calls to understand the repo, it should stop and delegate that investigation to a worker. The checked-in runtime permission profile enables direct writes and full bash, but the default `worker` tool surface hides those power tools from ChatGPT until the surface is deliberately broadened. Using `--root "$tmpdir/repo"` keeps runtime authority scoped to the disposable repo for this first run.
 
 ## 8. Try A Pro Escalation Loop
 
@@ -319,4 +318,4 @@ When `codex_get_result` returns `session_ref`, keep it. Continue later with:
 - `codex_interactive_reply` for a continuation job;
 - `codex_list_sessions` to find known metadata-only session ids.
 
-Transcript bodies are available in the current full-power profile through `codex_read_session`, bounded and redacted. Disable `power_tools.codex_session_read` when you do not want ChatGPT to inspect local Codex transcripts.
+Transcript bodies are available when `power_tools.codex_session_read` is enabled and ChatGPT is deliberately switched to a tool mode that advertises `codex_read_session`, bounded and redacted. Disable `power_tools.codex_session_read` when you do not want ChatGPT to inspect local Codex transcripts.
