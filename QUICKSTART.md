@@ -224,7 +224,7 @@ Then pass the selected values only when they matter:
 }
 ```
 
-`codex_worker_start` defaults to `workspace_mode: "isolated_write"`, so the worker writes in an external private worktree. Omit `model` and `reasoning_effort` to use Codex defaults. Follow-up `codex_worker_message` calls keep the worker's prior model/reasoning unless you intentionally override them. For advisory work, ask for read-only mode explicitly:
+`codex_worker_start` defaults to `workspace_mode: "isolated_write"`, so the worker writes in an external private worktree. Omit `model` and `reasoning_effort` to use Codex defaults. Follow-up `codex_worker_message` calls keep the worker's prior model/reasoning unless you intentionally override them. Treat the worker as a continuing specialist: if the first report is too compressed, missing evidence, missing validation, contradicted by another worker, or important enough to drive a decision, message the same worker again instead of treating the first answer as final. For consequential audits or implementation, ask the worker to create a durable report file such as `worker-report-<topic>.md` or changed-file evidence in its workspace. For advisory work, ask for read-only mode explicitly:
 
 ```json
 {
@@ -241,7 +241,7 @@ Call `codex_worker_start`, then inspect with:
 {"worker": "Repository Investigator", "wait_seconds": 10}
 ```
 
-using `codex_worker_inspect`. Use `{"worker": "Repository Implementer", "view": "changes"}` to list worker changes, `{"worker": "Repository Implementer", "view": "file", "file_path": "worker-note.txt"}` to read worker-side file content before integration, and `{"worker": "Repository Implementer", "view": "diff", "file_path": "worker-note.txt"}` to inspect one file's patch. `codex_read_file` reads the base checkout, so it will not see worker-created files until after explicit integration. After restarting PatchBay, `codex_worker_list` should still show same-workspace workers, and `codex_worker_message` should continue the same Codex conversation by name when the worker has a session.
+using `codex_worker_inspect`. Use `{"worker": "Repository Implementer", "view": "changes"}` to list worker changes, `{"worker": "Repository Implementer", "view": "file", "file_path": "worker-note.txt"}` to read worker-side file content before integration, and `{"worker": "Repository Implementer", "view": "diff", "file_path": "worker-note.txt"}` to inspect one file's patch. `codex_read_file` reads the base checkout, so it will not see worker-created files until after explicit integration. After restarting PatchBay, `codex_worker_list` should still show same-workspace workers, and `codex_worker_message` should continue the same Codex conversation by name when the worker has a session. Use `context_from_workers` when a synthesis or review worker should compare prior worker reports instead of starting from scratch.
 
 For larger tasks, start several workers with separate responsibilities instead of asking ChatGPT to precompute every path:
 
