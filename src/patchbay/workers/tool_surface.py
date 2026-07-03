@@ -438,7 +438,7 @@ WORKER_TOOLS = [
         "description": (
             "Read one worker's current state and latest natural-language report. Optionally wait briefly for the "
             "current turn; this does not expose private repo paths, job ids, session ids, or raw transcripts. "
-            "Use the report as the normal management signal. Managerial review means reading the report and asking follow-up questions, not routinely opening every changed file or diff. Question the worker again with codex_worker_message "
+            "Use the report as the normal management signal. Managerial review means reading the report and asking follow-up questions, not routinely opening every changed file or diff; question the worker again with codex_worker_message "
             "when evidence is missing, output is too compressed, or another worker disagrees. Use view=changes, view=diff with file_path, view=file with file_path, or view=integration_preview only when there is a concrete escalation or integration need. codex_read_file reads the "
             "base checkout, not an isolated worker worktree."
         ),

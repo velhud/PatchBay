@@ -63,7 +63,7 @@ def test_initialize_includes_server_instructions():
 
 def test_public_tool_call_validates_schema_before_handler():
     handler = DummyToolHandler()
-    protocol = MCPProtocol({}, handler)
+    protocol = MCPProtocol(full_power_config(), handler)
 
     response = asyncio.run(
         protocol.handle_message(
@@ -86,7 +86,7 @@ def test_public_tool_call_validates_schema_before_handler():
 
 def test_public_tool_call_translates_schema_valid_arguments():
     handler = DummyToolHandler()
-    protocol = MCPProtocol({}, handler)
+    protocol = MCPProtocol(full_power_config(), handler)
 
     result = asyncio.run(
         protocol._handle_tools_call(
@@ -144,7 +144,7 @@ def test_public_tool_call_supports_legacy_handler_without_context():
             return {"ok": True}
 
     handler = LegacyToolHandler()
-    protocol = MCPProtocol({}, handler)
+    protocol = MCPProtocol(full_power_config(), handler)
 
     result = asyncio.run(
         protocol._handle_tools_call(
@@ -323,7 +323,7 @@ def test_tool_call_value_error_redacts_public_message():
         async def handle_tool_call(self, tool_name, arguments):
             raise ValueError(f"Path is outside configured allowed roots: /Users/example/private token={secret_value}")
 
-    protocol = MCPProtocol({}, PathErrorToolHandler())
+    protocol = MCPProtocol(full_power_config(), PathErrorToolHandler())
 
     response = asyncio.run(
         protocol.handle_message(
@@ -352,7 +352,7 @@ def test_tool_call_unexpected_error_is_generic():
         async def handle_tool_call(self, tool_name, arguments):
             raise RuntimeError(f"boom /Users/example/private {secret_value}")
 
-    protocol = MCPProtocol({}, RuntimeErrorToolHandler())
+    protocol = MCPProtocol(full_power_config(), RuntimeErrorToolHandler())
 
     response = asyncio.run(
         protocol.handle_message(
@@ -386,7 +386,7 @@ def test_resume_tool_call_returns_async_job_pointer():
                 "status": "Operation initiated successfully",
             }
 
-    protocol = MCPProtocol({}, ResumeToolHandler())
+    protocol = MCPProtocol(full_power_config(), ResumeToolHandler())
 
     result = asyncio.run(
         protocol._handle_tools_call(
