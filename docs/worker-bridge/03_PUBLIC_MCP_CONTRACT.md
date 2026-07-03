@@ -153,7 +153,10 @@ It should exclude:
 - compatibility aliases;
 - direct write/bash/session transcript power tools.
 
-Do not switch checked-in defaults to worker mode until real ChatGPT worker eval passes.
+The default ChatGPT-facing mode is `worker`. Full mode remains available for
+deliberate power-user and compatibility runs, but a real ChatGPT run that falls
+back into broad manual reading is evidence against advertising full mode by
+default, not evidence against worker mode.
 
 ## Why Six Tools
 

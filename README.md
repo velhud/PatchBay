@@ -267,7 +267,7 @@ server:
   enable_cors: false
 
 app:
-  tool_mode: full
+  tool_mode: worker
   widget_domain: https://web-sandbox.oaiusercontent.com
 
 auth:
@@ -433,7 +433,11 @@ python scripts/pro_context.py apply --root /path/to/repo --file plan.md --agent 
 
 ### Optional power tools
 
-These are public capabilities and the current full-power profile enables them by default. Disable them in `config.yaml` or at launch when you want a narrower run:
+These are public capabilities in `full` tool mode. The current runtime
+permission profile enables their authority by default, but the recommended
+ChatGPT-facing default is `worker`, which hides these power tools until the
+surface is deliberately broadened. Disable them in `config.yaml` or at launch
+when you want a narrower run:
 
 | Tool | Required config |
 | --- | --- |
@@ -445,8 +449,9 @@ These are public capabilities and the current full-power profile enables them by
 `tools/list` is runtime-aware for these capabilities: if a profile disables
 direct write, bash, or session transcript reads, the corresponding canonical
 tools and compatibility aliases are not advertised and calls to them are
-rejected. The checked-in profile remains intentionally full-power and continues
-to expose the full catalog.
+rejected. The checked-in profile remains intentionally full-authority at the
+runtime permission layer, while the default ChatGPT-facing catalog remains
+worker-first.
 
 ## ChatGPT Metadata And Tool Card
 
@@ -465,7 +470,11 @@ Clients can fetch it with `resources/list` and `resources/read`. The MIME type i
 PatchBay is deliberately powerful. These controls are not the product story; they are the boundary that makes it practical to aim ChatGPT at real local engineering work without hiding what is reading, writing, executing, or applying.
 
 - Keep first runs on disposable repos.
-- The checked-in profile is intentionally full-power: `/` allowed root, `danger-full-access`, direct writes, full bash, and Codex session reads.
+- The checked-in profile is intentionally full-authority at the runtime layer:
+  `/` allowed root, `danger-full-access`, direct writes, full bash, and Codex
+  session reads are available when the visible tool mode exposes them.
+- The default ChatGPT-facing tool mode is `worker`, so the app starts from the
+  manager surface instead of the full power-user catalog.
 - For public or shared runs, narrow `repositories.allowed`, set `power_tools.bash_mode: "off"` or `"safe"`, and disable `allow_dangerously_bypass`.
 - Keep CORS disabled unless a trusted local UI requires it.
 - Do not expose public URLs without `PATCHBAY_HTTP_TOKEN`.
@@ -473,7 +482,8 @@ PatchBay is deliberately powerful. These controls are not the product story; the
 - With `blocked_globs: []`, workspace tools do not block secret-like paths by glob; symlink escapes, binary files, size caps, and output redaction still apply.
 - `codex_get_diff` only returns diffs from completed apply jobs and files proven changed by git status/diff.
 - Handoff writes are scoped to `.ai-bridge`.
-- Direct writes, bash, and transcript reads are enabled in the checked-in full-power profile.
+- Direct writes, bash, and transcript reads are enabled in the checked-in
+  runtime permission profile, but hidden from the default `worker` tool surface.
 - Child Codex and bash processes inherit the full process environment when `allowed_env_keys: ["*"]`.
 - Worker model/reasoning selection uses `codex debug models` or the local Codex model cache for bounded public metadata. It returns only model ids and concise option metadata, not raw Codex config paths, prompts, provider credentials, or auth data.
 - Audit logs and job state do not store raw prompt bodies by default.

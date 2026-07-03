@@ -65,8 +65,8 @@ Verification performed for the current hybrid implementation:
 - Earlier tokenized public-tunnel MCP simulator coverage through ngrok covered health, initialize, worker-mode `tools/list`, Apps-style file-parameter metadata, artifact inbox import/list/inspect, repeated import, `file://` rejection, isolated worker artifact attachment/read, artifact-context integration exclusion, clean base preservation, and cleanup. Re-run with a configured hostname before using that as current release evidence. Real ChatGPT Developer Mode UI/tool-selection remains blocked in this session.
 - Guided setup output: `patchbay start --print-only` now prints a ChatGPT setup guide and `--json` includes `setup_guide`; focused launcher tests verify redacted tokens and Developer Mode/profile guidance.
 - Onboarding/transport coverage: tests verify installable CLI dispatch, noninteractive `patchbay setup` failure behavior, settings profile set/list/show/delete, stdio initialize/tools/list/tools/call/resources/list, explicit tunnel binary version checks, and Cloudflare release asset mapping.
-- Compatibility alias schemas: `tools/list` now exposes precise CodexPro-derived alias input schemas, validates aliases before translation, and the live MCP eval exercises alias `read` plus path-scoped `show_changes`.
-- Runtime descriptor truthfulness: disabled direct-write, bash, and transcript-read profiles hide the corresponding canonical tools and compatibility aliases, while the checked-in full-power profile still exposes 66 tools in live MCP eval.
+- Compatibility alias schemas: `tools/list` exposes precise CodexPro-derived alias input schemas and validates aliases before translation when `--tool-mode full` is deliberately selected. The default live MCP eval now verifies that worker mode does not advertise those aliases.
+- Runtime descriptor truthfulness: disabled direct-write, bash, and transcript-read profiles hide the corresponding canonical tools and compatibility aliases. The checked-in runtime permission profile remains full-authority, while the default live MCP eval verifies the worker-first ChatGPT catalog.
 - Codex session discovery: `codex_list_sessions` now merges PatchBay-known job sessions with configured Codex-home session metadata, dedupes by session id, supports bounded metadata query, and does not return transcripts, repo paths, or source paths.
 - Real `codex_plan_job` through the MCP server: passed against a disposable repo.
 - Current Codex JSONL `item.completed` / `agent_message` result parsing: passed.
@@ -258,12 +258,13 @@ Status: local handoff commands and `.ai-bridge` tooling are implemented; full Ch
 
 ### Scenario 5: Power Mode
 
-The checked-in profile is intentionally full-power, while narrower profiles can
-disable direct write, bash, and transcript reads:
+The checked-in runtime permission profile is intentionally full-authority, while
+narrower profiles can disable direct write, bash, and transcript reads:
 
-1. Run the full-power profile in a disposable repo and confirm descriptors mark the tools as mutating/open-world where appropriate.
-2. Run a disabled profile and confirm direct write, edit, bash, session-read tools, and their aliases are absent from `tools/list`.
-3. Attempt blocked paths and unsafe commands.
+1. Run `scripts/live_mcp_eval.py --json` and confirm the default worker surface hides aliases and power tools.
+2. Run a deliberate full-mode disposable profile and confirm descriptors mark power tools as mutating/open-world where appropriate.
+3. Run a disabled profile and confirm direct write, edit, bash, session-read tools, and their aliases are absent from `tools/list`.
+4. Attempt blocked paths and unsafe commands.
 
 Acceptance:
 
@@ -375,7 +376,7 @@ Before release, run scripted and manual disposable-repo evals:
 
 The eval should produce a short report suitable for release notes.
 
-Current implementation provides this as `scripts/live_mcp_eval.py`. It starts the real launcher/server in a temporary workspace, probes MCP initialize/tools/resources/context/skills, verifies blocked `.env` and symlink reads, confirms full-power direct write and command execution, and emits a compact JSON report.
+Current implementation provides this as `scripts/live_mcp_eval.py`. It starts the real launcher/server in a temporary workspace, probes MCP initialize/tools/resources/context/skills, verifies `.env` and symlink read behavior, verifies the worker-first tool surface by default, and emits a compact JSON report. Run with `--tool-mode full` for the compatibility pass that confirms aliases, direct write, and command execution.
 
 `scripts/live_mcp_eval.py` is necessary but not sufficient for public release because it intentionally does not attach to ChatGPT and does not open a real public tunnel.
 

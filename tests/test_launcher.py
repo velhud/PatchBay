@@ -220,7 +220,7 @@ def test_launcher_json_payload_is_bounded(tmp_path):
     assert "runtime_config" not in payload
     assert payload["connection"]["local_mcp_url"].endswith("/mcp")
     assert payload["setup_guide"]["server_url"] == payload["connection"]["server_url"]
-    assert payload["setup_guide"]["tool_mode"] == "full"
+    assert payload["setup_guide"]["tool_mode"] == "worker"
     assert any("Developer mode" in step for step in payload["setup_guide"]["chatgpt_steps"])
     assert any("--save-profile" in control for control in payload["setup_guide"]["controls"])
 

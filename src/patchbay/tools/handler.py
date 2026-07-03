@@ -1201,7 +1201,7 @@ class ToolHandler:
             "patchbay_config": {
                 "host": server_config.get("host", "127.0.0.1"),
                 "port": server_config.get("port"),
-                "tool_mode": app_config.get("tool_mode") or mcp_config.get("tool_mode") or server_config.get("tool_mode") or "full",
+                "tool_mode": app_config.get("tool_mode") or mcp_config.get("tool_mode") or server_config.get("tool_mode") or "worker",
                 "cors_enabled": bool(server_config.get("enable_cors", False)),
                 "access_log_enabled": bool(logging_config.get("access_log", False)),
                 "durable_job_state_enabled": bool(logging_config.get("job_state_dir")),

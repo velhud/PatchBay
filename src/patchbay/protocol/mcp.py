@@ -2304,9 +2304,9 @@ def configured_tool_mode(config: Dict[str, Any]) -> str:
         config.get("app", {}).get("tool_mode")
         or config.get("mcp", {}).get("tool_mode")
         or config.get("server", {}).get("tool_mode")
-        or "full"
+        or "worker"
     )
-    return _normalize_tool_mode(raw) or "full"
+    return _normalize_tool_mode(raw) or "worker"
 
 
 def effective_tool_mode(config: Dict[str, Any], context: Optional[RequestContext] = None) -> str:

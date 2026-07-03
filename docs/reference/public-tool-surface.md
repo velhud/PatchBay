@@ -171,7 +171,11 @@ Local terminal commands provide the CodexPro-style non-MCP side of the flow:
 
 ## Optional Power Tools
 
-These tools are part of the public surface in full tool mode. The current full-power profile enables them by default; narrower runtime profiles may disable them. They must stay clearly marked in descriptors.
+These tools are part of the public surface in full tool mode. The current
+runtime permission profile enables their authority by default, but the
+recommended ChatGPT-facing default is `worker`, which hides these power tools
+until the surface is deliberately broadened. Narrower runtime profiles may also
+disable them. They must stay clearly marked in descriptors.
 
 | Tool | Mutability | Required control |
 | --- | --- | --- |
@@ -267,8 +271,8 @@ Alias policy:
 - aliases must use precise schemas for their advertised argument names and share validation, mutability, and power controls with the canonical tools they resolve to;
 - disabling a canonical power tool also disables its alias behavior at execution time.
 - disabled canonical power tools and their aliases should be absent from
-  `tools/list`, while the checked-in full-power profile continues to expose the
-  full intended catalog.
+  `tools/list`. The checked-in permission profile can remain full-authority
+  while the default ChatGPT-facing catalog remains worker-first.
 
 Use `worker` mode for first real ChatGPT Developer Mode validation. It keeps the visible tool surface small enough for natural tool selection while still exposing the context tools needed to orient and brief workers. Use `codex_tool_mode_info` before broadening the surface, and `codex_tool_mode_switch` only when current tools are insufficient. Use `full` mode when testing or operating low-level job/session controls and power tools deliberately.
 
