@@ -15,8 +15,10 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "workspace_name": {"type": "string"},
         "workspace_mode": {"type": "string"},
         "workspace_available": {"type": "boolean"},
+        "workspace_location": {"type": "string"},
         "state": {"type": "string"},
         "report": {"type": "string"},
+        "worker_report_files": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "has_changes": {"type": "boolean"},
         "changed_files": {"type": "array", "items": {"type": "string"}},
         "change_count": {"type": "integer"},
@@ -26,8 +28,10 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "text": {"type": "string"},
         "start_line": {"type": "integer"},
         "end_line": {"type": "integer"},
+        "next_start_line": {"type": "integer"},
         "total_lines": {"type": "integer"},
         "bytes": {"type": "integer"},
+        "max_bytes_applied": {"type": "integer"},
         "sha256": {"type": "string"},
         "diff": {"type": "string"},
         "truncated": {"type": "boolean"},
@@ -66,6 +70,7 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "takeover_required": {"type": "boolean"},
         "takeover_performed": {"type": "boolean"},
         "required_action": {"type": "string"},
+        "latest_turn": {"type": "object", "additionalProperties": True},
     },
 }
 
@@ -387,6 +392,7 @@ WORKER_TOOLS = [
             "List durable Codex workers as an engineering lead would want to see them: names, human-readable "
             "state, latest report, team summary, and whether each worker can receive a follow-up. Use this to manage "
             "a small team of worker threads, after restart, or before choosing which worker to inspect, message, stop, or integrate. "
+            "Use active_only, owned_only, include_stopped=false, or created_after to reduce historical worker clutter during a specific task. "
             "If the team report shows thin, failed, stale, or conflicting work, continue the relevant named worker instead "
             "of treating first reports as final. By default ChatGPT "
             "sees workers for the current workspace, so old workers from other repos do not steal the same name."
@@ -398,7 +404,23 @@ WORKER_TOOLS = [
                 "repo_path": {
                     "type": "string",
                     "description": "Optional authorized repository path used to filter workers.",
-                }
+                },
+                "active_only": {
+                    "type": "boolean",
+                    "description": "When true, return only workers whose latest turn is starting or working.",
+                },
+                "include_stopped": {
+                    "type": "boolean",
+                    "description": "When false, omit stopped workers from the list. Default: true.",
+                },
+                "owned_only": {
+                    "type": "boolean",
+                    "description": "When true, return only workers owned by the current coordination owner.",
+                },
+                "created_after": {
+                    "type": "number",
+                    "description": "Optional Unix timestamp; return workers first created at or after this time.",
+                },
             },
             "required": [],
         },
@@ -446,7 +468,7 @@ WORKER_TOOLS = [
                 },
                 "max_bytes": {
                     "type": "integer",
-                    "description": "Maximum bytes for view=file, capped by server policy.",
+                    "description": "Maximum bytes for view=file, capped by server policy. Use start_line/end_line for pagination when a file is larger than the cap.",
                 },
             },
             "required": ["worker"],

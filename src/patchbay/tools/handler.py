@@ -298,7 +298,14 @@ class ToolHandler:
     async def _codex_worker_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List durable workers without exposing backend ids or private paths."""
         repo = self._repo_from_args(args)
-        return await self.worker_runtime.list_workers(repo_path=repo, request_context=self.current_request_context())
+        return await self.worker_runtime.list_workers(
+            repo_path=repo,
+            active_only=bool(args.get("active_only", False)),
+            include_stopped=bool(args.get("include_stopped", True)),
+            owned_only=bool(args.get("owned_only", False)),
+            created_after=args.get("created_after"),
+            request_context=self.current_request_context(),
+        )
 
     async def _codex_worker_inspect(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read one worker's current human-oriented report."""

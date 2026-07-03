@@ -73,7 +73,7 @@ Pro Request reports and responses are diagnostic evidence. Tool descriptions and
 
 One MCP Server URL is a shared local control surface. PatchBay exposes redacted coordination metadata such as `client_ref` and active MCP session count through `codex_self_test`, but it must not return raw MCP session ids. This coordination model is not authentication; access remains controlled by loopback/network binding and HTTP token policy.
 
-When multiple MCP sessions share a URL, worker and artifact ownership is coordination only, not authentication. The default token-scoped owner groups short-lived transport sessions from the same copied connector URL. Read/list/inspect remain shared, but cross-owner worker or artifact mutation must refuse until the caller explicitly retries with `takeover: true` after user confirmation. Codex turns may queue behind the configured execution concurrency limit. Base-checkout mutation paths must use per-repository mutation locks and fail fast with `repo_busy` rather than creating hidden write queues or parallel base writes.
+When multiple MCP sessions share a URL, worker and artifact ownership is coordination only, not authentication. The default token-scoped owner groups short-lived transport sessions from the same copied connector URL. Read/list/inspect remain shared, but cross-owner worker or artifact mutation must refuse until the caller explicitly retries with `takeover: true` after user confirmation. Worker list filters may hide old/stopped/other-owner entries for usability, but they must not become an access-control boundary. Codex turns may queue behind the configured execution concurrency limit. Base-checkout mutation paths must use per-repository mutation locks and fail fast with `repo_busy` rather than creating hidden write queues or parallel base writes.
 
 Pro Request ownership follows the same coordination-owner model. Reads remain shared; claim/respond/dispatch/close refuse cross-owner mutation until the caller explicitly retries with `takeover: true` after user confirmation.
 
@@ -187,6 +187,7 @@ Optional power mode:
 - command allowlist;
 - no shell expansion unless full bash is explicitly enabled;
 - timeout and output caps;
+- startup-only Codex session timeout separate from optional whole-turn timeout;
 - working directory must be workspace-contained;
 - environment allowlist;
 - explicit mutating/open-world annotations.
