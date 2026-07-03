@@ -79,7 +79,12 @@ class RecordingExecutor:
     def __init__(self, manager):
         self.manager = manager
         self.started = []
+        self.scheduled = []
         self.cancelled = []
+
+    def schedule_job(self, job_id):
+        self.scheduled.append(job_id)
+        self.started.append(job_id)
 
     async def execute_job(self, job_id):
         self.started.append(job_id)
@@ -143,6 +148,7 @@ async def test_start_worker_defaults_to_isolated_worktree_and_hides_backend_ids(
     assert job.options[WORKER_ID_OPTION] == result["worker_id"]
     assert "report back like an engineer" in job.prompt
     assert executor.started == [job.job_id]
+    assert executor.scheduled == [job.job_id]
 
 
 @pytest.mark.asyncio
@@ -272,6 +278,7 @@ async def test_worker_message_requires_takeover_for_other_owner_and_transfers_co
     assert refused["owned_by_current_client"] is False
     assert refused["required_action"] == "call again with takeover=true after user confirms this is intentional"
     assert executor.started == [first_job.job_id]
+    assert executor.scheduled == [first_job.job_id]
     assert "client_a" not in str(refused)
 
     accepted = await runtime.message_worker(
@@ -289,6 +296,7 @@ async def test_worker_message_requires_takeover_for_other_owner_and_transfers_co
     assert resume_job.options[OWNER_SESSION_HASH_OPTION] == "client_b"
     assert resume_job.options[OWNER_CLIENT_REF_OPTION] == "client_b"
     assert resume_job.options["_mcp_takeover_reason"] == "User asked this chat to continue it."
+    assert executor.scheduled[-1] == resume_job.job_id
 
     seen_by_a = await runtime.list_workers(request_context=client_a)
     assert seen_by_a["workers"][0]["owned_by_current_client"] is False
@@ -597,6 +605,7 @@ async def test_completed_worker_survives_restart_and_continues_same_session(tmp_
     assert resume_job.options["sandbox"] == "read-only"
     assert resume_job.options[WORKER_ID_OPTION] == started["worker_id"]
     assert reloaded_executor.started == [resume_job.job_id]
+    assert reloaded_executor.scheduled == [resume_job.job_id]
 
 
 @pytest.mark.asyncio

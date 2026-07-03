@@ -42,11 +42,32 @@ class JobExecutor:
         self.job_logs_dir = Path(config['logging']['job_logs_dir'])
         self.job_logs_dir.mkdir(parents=True, exist_ok=True)
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
+        self.tasks: Dict[str, asyncio.Task] = {}
         self.repo_locks = RepoMutationLockManager(config)
         server_config = config.get("server", {})
         max_concurrent = int(server_config.get("max_concurrent_jobs", 1) or 0)
         queue_enabled = bool(server_config.get("queue_enabled", False))
         self._execution_semaphore = asyncio.Semaphore(max_concurrent) if queue_enabled and max_concurrent > 0 else None
+
+    def schedule_job(self, job_id: str) -> asyncio.Task:
+        """Start a background Codex job and keep a strong task reference."""
+        existing = self.tasks.get(job_id)
+        if existing and not existing.done():
+            return existing
+        task = asyncio.create_task(self.execute_job(job_id))
+        self.tasks[job_id] = task
+        task.add_done_callback(lambda done_task, scheduled_job_id=job_id: self._job_task_done(scheduled_job_id, done_task))
+        return task
+
+    def _job_task_done(self, job_id: str, task: asyncio.Task) -> None:
+        if self.tasks.get(job_id) is task:
+            self.tasks.pop(job_id, None)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.info("Job %s execution task was cancelled", job_id)
+        except Exception as error:
+            logger.error("Job %s execution task failed: %s", job_id, internal_log_error(error))
 
     def reconcile_stale_running_jobs(
         self,
@@ -64,7 +85,7 @@ class JobExecutor:
             if job.state != JobState.RUNNING:
                 continue
             checked += 1
-            if job_id in self.processes:
+            if self._job_has_live_runtime(job_id):
                 continue
             if job.started_at is not None and current_time - float(job.started_at) < grace:
                 continue
@@ -84,6 +105,13 @@ class JobExecutor:
             "job_ids": reconciled,
             "grace_seconds": grace,
         }
+
+    def _job_has_live_runtime(self, job_id: str) -> bool:
+        process = self.processes.get(job_id)
+        if process is not None:
+            return getattr(process, "returncode", None) is None
+        task = self.tasks.get(job_id)
+        return bool(task and not task.done())
 
     def _stale_running_grace_seconds(self, override: Optional[float] = None) -> float:
         if override is not None:
@@ -117,14 +145,21 @@ class JobExecutor:
         
     async def execute_job(self, job_id: str):
         """Execute a Codex job, optionally waiting for an execution slot."""
-        if self._execution_semaphore is None:
-            await self._execute_job_now(job_id)
-            return
-        await self._execution_semaphore.acquire()
+        current_task = asyncio.current_task()
+        if current_task is not None and self.tasks.get(job_id) is not current_task:
+            self.tasks[job_id] = current_task
         try:
-            await self._execute_job_now(job_id)
+            if self._execution_semaphore is None:
+                await self._execute_job_now(job_id)
+                return
+            await self._execution_semaphore.acquire()
+            try:
+                await self._execute_job_now(job_id)
+            finally:
+                self._execution_semaphore.release()
         finally:
-            self._execution_semaphore.release()
+            if current_task is not None and self.tasks.get(job_id) is current_task:
+                self.tasks.pop(job_id, None)
 
     async def _execute_job_now(self, job_id: str):
         """Execute a Codex job asynchronously."""
@@ -139,7 +174,12 @@ class JobExecutor:
             return
         
         try:
-            self.job_manager.update_job_state(job_id, JobState.RUNNING)
+            self.job_manager.update_job_state(
+                job_id,
+                JobState.RUNNING,
+                launch_started_at=time.time(),
+                last_heartbeat_at=time.time(),
+            )
             
             # Build command and keep prompt text off argv when the Codex CLI supports stdin.
             cmd = self._build_codex_command(job.mode, job.prompt, job.worktree_path, job.options)
@@ -174,6 +214,14 @@ class JobExecutor:
                 env=self._build_env()
             )
             self.processes[job_id] = process
+            self.job_manager.update_job_state(
+                job_id,
+                JobState.RUNNING,
+                process_started_at=time.time(),
+                process_pid=getattr(process, "pid", None),
+                last_heartbeat_at=time.time(),
+            )
+            logger.info("Job %s Codex process started: pid=%s", job_id, getattr(process, "pid", None))
             
             try:
                 if timeout is None:
@@ -208,7 +256,8 @@ class JobExecutor:
                         JobState.COMPLETED,
                         result=result,
                         session_id=session_id,
-                        exit_code=0
+                        exit_code=0,
+                        last_heartbeat_at=time.time(),
                     )
                     logger.info(f"Job {job_id} completed successfully")
                 else:
@@ -216,7 +265,8 @@ class JobExecutor:
                         job_id,
                         JobState.FAILED,
                         error=f"Codex process failed with exit code {process.returncode}. Inspect local job logs for details.",
-                        exit_code=process.returncode
+                        exit_code=process.returncode,
+                        last_heartbeat_at=time.time(),
                     )
                     logger.error(f"Job {job_id} failed: exit code {process.returncode}")
                     
@@ -225,7 +275,8 @@ class JobExecutor:
                 self.job_manager.update_job_state(
                     job_id,
                     JobState.FAILED,
-                    error=f"Job timed out after {timeout} seconds"
+                    error=f"Job timed out after {timeout} seconds",
+                    last_heartbeat_at=time.time(),
                 )
                 logger.error(f"Job {job_id} timed out")
             finally:
@@ -241,7 +292,8 @@ class JobExecutor:
             self.job_manager.update_job_state(
                 job_id,
                 JobState.FAILED,
-                error=public_error_message(e, default="Job execution failed.")
+                error=public_error_message(e, default="Job execution failed."),
+                last_heartbeat_at=time.time(),
             )
             self.repo_locks.release_job(job_id)
     

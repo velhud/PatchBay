@@ -46,6 +46,10 @@ class JobInfo:
     completed_at: Optional[float] = None
     last_event: Optional[str] = None
     progress: Optional[str] = None
+    launch_started_at: Optional[float] = None
+    process_started_at: Optional[float] = None
+    process_pid: Optional[int] = None
+    last_heartbeat_at: Optional[float] = None
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     exit_code: Optional[int] = None

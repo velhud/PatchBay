@@ -176,6 +176,43 @@ def test_open_workspace_includes_skill_inventory_by_default(tmp_path):
     assert result["skill_counts"]["workspace"] == 1
 
 
+def test_workspace_alias_maps_canonical_path_to_local_copy(tmp_path):
+    init_repo(tmp_path)
+    canonical = "/operator/canonical/Documents"
+    config = make_config(tmp_path)
+    config["repositories"]["aliases"] = [
+        {
+            "canonical": canonical,
+            "local": str(tmp_path),
+            "description": "Remote copy of canonical Documents workspace",
+        }
+    ]
+
+    context = WorkspaceContext(config)
+    result = context.open_summary({"repo": canonical, "include_tree": False, "include_global_skills": False})
+
+    assert result["root"] == str(tmp_path.resolve())
+    assert result["workspace_alias"]["canonical"] == canonical
+    assert result["workspace_alias"]["local"] == str(tmp_path.resolve())
+    assert result["workspace_alias"]["description"] == "Remote copy of canonical Documents workspace"
+
+
+def test_list_workspaces_includes_configured_aliases(tmp_path):
+    init_repo(tmp_path)
+    canonical = "/operator/canonical/Documents"
+    config = make_config(tmp_path)
+    config["repositories"]["aliases"] = {canonical: str(tmp_path)}
+
+    context = WorkspaceContext(config)
+    result = context.list_workspaces({})
+
+    assert any(
+        item.get("workspace_alias", {}).get("canonical") == canonical
+        and item.get("root") == str(tmp_path.resolve())
+        for item in result["workspaces"]
+    )
+
+
 def test_load_skill_reads_only_discovered_skill_by_name(tmp_path):
     write_skill(tmp_path, "repo-skill", description="Repository skill")
 

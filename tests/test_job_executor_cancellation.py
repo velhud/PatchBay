@@ -112,6 +112,55 @@ def test_reconcile_stale_running_job_honors_process_tracking_and_grace(tmp_path)
     assert manager.get_job(grace_job_id).state == JobState.RUNNING
 
 
+@pytest.mark.asyncio
+async def test_reconcile_stale_running_job_honors_live_executor_task(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "launching", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.RUNNING)
+    manager.jobs[job_id].started_at = time.time() - 60
+    manager._persist_job(manager.jobs[job_id])
+
+    async def live_task():
+        await asyncio.sleep(30)
+
+    task = asyncio.create_task(live_task())
+    executor.tasks[job_id] = task
+    try:
+        result = executor.reconcile_stale_running_jobs(grace_seconds=0)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert result["checked"] == 1
+    assert result["reconciled"] == 0
+    assert manager.get_job(job_id).state == JobState.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_schedule_job_keeps_task_tracked_until_completion(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "quick", config["repositories"]["default"], {"structured_output": False})
+
+    def fake_command(mode, prompt, cwd, options=None):
+        return [sys.executable, "-c", "print('done')"]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    task = executor.schedule_job(job_id)
+    assert executor.tasks[job_id] is task
+    await asyncio.wait_for(task, timeout=5)
+    await asyncio.sleep(0)
+
+    assert manager.get_job(job_id).state == JobState.COMPLETED
+    assert job_id not in executor.tasks
+    assert manager.get_job(job_id).process_started_at is not None
+
+
 def test_zero_or_named_job_timeout_disables_codex_turn_timeout(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
