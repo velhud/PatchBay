@@ -92,6 +92,30 @@ def test_completed_job_clears_prior_running_error(tmp_path):
     assert persisted["error"] is None
 
 
+def test_completed_job_error_is_cleared_on_reload(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
+    manager.update_job_state(
+        job_id,
+        JobState.COMPLETED,
+        result={"summary": "done", "files_changed": []},
+        exit_code=0,
+    )
+    record_path = tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json"
+    stale_record = json.loads(record_path.read_text(encoding="utf-8"))
+    stale_record["error"] = "stale failure from an old lifecycle race"
+    record_path.write_text(json.dumps(stale_record), encoding="utf-8")
+
+    reloaded = JobManager(config)
+
+    job = reloaded.get_job(job_id)
+    assert job.state == JobState.COMPLETED
+    assert job.error is None
+    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    assert persisted["error"] is None
+
+
 def test_job_manager_marks_interrupted_running_jobs_failed_on_reload(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
