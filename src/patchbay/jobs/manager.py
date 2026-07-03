@@ -409,6 +409,8 @@ class JobManager:
                     job.state = JobState.FAILED
                     job.completed_at = time.time()
                     job.error = "Job did not finish before the server stopped."
+                elif job.state == JobState.COMPLETED:
+                    job.error = None
                 self.jobs[job.job_id] = job
                 self._persist_job(job)
                 loaded += 1
