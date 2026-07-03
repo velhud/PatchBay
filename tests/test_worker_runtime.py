@@ -1,10 +1,12 @@
 import asyncio
+import errno
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
+import patchbay.jobs.manager as job_manager_module
 from patchbay.jobs.executor import JobExecutor, STALE_RUNNING_JOB_ERROR
 from patchbay.jobs.manager import JobManager, JobState
 from patchbay.ownership import (
@@ -97,6 +99,16 @@ def request_context(client_ref: str, label: str = "") -> RequestContext:
     return RequestContext(transport_session_id=f"session-{client_ref}", client_ref=client_ref, client_label=label)
 
 
+def owner_context(owner_ref: str, client_ref: str, label: str = "") -> RequestContext:
+    return RequestContext(
+        transport_session_id=f"session-{client_ref}",
+        client_ref=client_ref,
+        owner_ref=owner_ref,
+        owner_scope="token",
+        client_label=label,
+    )
+
+
 @pytest.mark.asyncio
 async def test_start_worker_defaults_to_isolated_worktree_and_hides_backend_ids(tmp_path):
     config = make_config(tmp_path)
@@ -131,6 +143,28 @@ async def test_start_worker_defaults_to_isolated_worktree_and_hides_backend_ids(
     assert job.options[WORKER_ID_OPTION] == result["worker_id"]
     assert "report back like an engineer" in job.prompt
     assert executor.started == [job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_codex_bypass_when_configured_for_danger_full_access(tmp_path):
+    config = make_config(tmp_path)
+    config["security"]["default_sandbox"] = "danger-full-access"
+    config["security"]["allow_dangerously_bypass"] = True
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    result = await runtime.start_worker(
+        name="Unrestricted Worker",
+        brief="Inspect with unrestricted VM Codex permissions.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+
+    assert result["accepted"] is True
+    job = next(iter(manager.jobs.values()))
+    assert job.options["dangerously_bypass"] is True
+    assert job.options["sandbox"] == "workspace-write"
 
 
 @pytest.mark.asyncio
@@ -178,6 +212,33 @@ async def test_worker_owner_metadata_is_private_and_public_flags_are_session_rel
     reloaded = await reloaded_runtime.list_workers(request_context=client_b)
     assert reloaded["workers"][0]["owned_by_current_client"] is False
     assert reloaded["workers"][0]["ownership_status"] == "other_connection"
+
+
+@pytest.mark.asyncio
+async def test_stable_owner_ref_survives_short_lived_transport_sessions(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    first_transport = owner_context("owner_shared", "client_first", "ChatGPT")
+    second_transport = owner_context("owner_shared", "client_second", "ChatGPT")
+
+    await runtime.start_worker(
+        name="Stable Owner Worker",
+        brief="Inspect ownership with short-lived transport sessions.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=first_transport,
+    )
+    await asyncio.sleep(0)
+
+    job = manager.get_job(executor.started[0])
+    assert job.options[OWNER_SESSION_HASH_OPTION] == "owner_shared"
+    assert job.options[OWNER_CLIENT_REF_OPTION] == "client_first"
+
+    seen = await runtime.list_workers(request_context=second_transport)
+    assert seen["workers"][0]["owned_by_current_client"] is True
+    assert seen["workers"][0]["ownership_status"] == "current_client"
 
 
 @pytest.mark.asyncio
@@ -422,6 +483,30 @@ async def test_start_worker_rolls_back_isolated_worktree_when_job_creation_fails
         text=True,
     )
     assert branches.stdout.strip() == ""
+
+
+def test_create_worker_worktree_reports_full_filesystem(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+
+    class FakeGit:
+        def worktree(self, *args):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    class FakeCommit:
+        hexsha = "abc123"
+
+    class FakeHead:
+        commit = FakeCommit()
+
+    class FakeRepo:
+        head = FakeHead()
+        git = FakeGit()
+
+    monkeypatch.setattr(job_manager_module.git, "Repo", lambda repo_path: FakeRepo())
+
+    with pytest.raises(ValueError, match="Worker worktree could not be created: host filesystem is full"):
+        manager.create_worker_worktree("worker-full-disk", config["repositories"]["default"])
 
 
 @pytest.mark.asyncio

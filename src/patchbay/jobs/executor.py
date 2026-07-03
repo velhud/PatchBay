@@ -43,6 +43,10 @@ class JobExecutor:
         self.job_logs_dir.mkdir(parents=True, exist_ok=True)
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
         self.repo_locks = RepoMutationLockManager(config)
+        server_config = config.get("server", {})
+        max_concurrent = int(server_config.get("max_concurrent_jobs", 1) or 0)
+        queue_enabled = bool(server_config.get("queue_enabled", False))
+        self._execution_semaphore = asyncio.Semaphore(max_concurrent) if queue_enabled and max_concurrent > 0 else None
 
     def reconcile_stale_running_jobs(
         self,
@@ -89,8 +93,40 @@ class JobExecutor:
         except (TypeError, ValueError):
             configured = 5.0
         return max(0.0, configured)
+
+    def _job_timeout_seconds(self) -> Optional[float]:
+        configured = self.config.get("server", {}).get("job_timeout_seconds", 1800)
+        if configured is None:
+            return None
+        if isinstance(configured, str):
+            normalized = configured.strip().lower()
+            if normalized in {"", "0", "none", "never", "unlimited", "disabled", "false"}:
+                return None
+            try:
+                timeout = float(normalized)
+            except ValueError:
+                return 1800.0
+        else:
+            try:
+                timeout = float(configured)
+            except (TypeError, ValueError):
+                return 1800.0
+        if timeout <= 0:
+            return None
+        return timeout
         
     async def execute_job(self, job_id: str):
+        """Execute a Codex job, optionally waiting for an execution slot."""
+        if self._execution_semaphore is None:
+            await self._execute_job_now(job_id)
+            return
+        await self._execution_semaphore.acquire()
+        try:
+            await self._execute_job_now(job_id)
+        finally:
+            self._execution_semaphore.release()
+
+    async def _execute_job_now(self, job_id: str):
         """Execute a Codex job asynchronously."""
         job = self.job_manager.get_job(job_id)
         if not job:
@@ -127,7 +163,7 @@ class JobExecutor:
             stderr_log = self.job_logs_dir / f"{job_id}_stderr.log"
             result_file = self.job_logs_dir / f"{job_id}_result.json"
             
-            timeout = self.config['server']['job_timeout_seconds']
+            timeout = self._job_timeout_seconds()
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -140,10 +176,13 @@ class JobExecutor:
             self.processes[job_id] = process
             
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(input=stdin_data),
-                    timeout=timeout
-                )
+                if timeout is None:
+                    stdout, stderr = await process.communicate(input=stdin_data)
+                else:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(input=stdin_data),
+                        timeout=timeout,
+                    )
                 
                 self._write_process_artifact(stdout_log, stdout)
                 self._write_process_artifact(stderr_log, stderr)

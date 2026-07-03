@@ -135,9 +135,10 @@ def job_requires_repo_mutation_lock(
 ) -> bool:
     """Return whether a Codex job can mutate the base checkout directly."""
     options = options or {}
+    worker_workspace_mode = str(options.get("_worker_workspace_mode") or "").strip().lower()
+    if worker_workspace_mode:
+        return worker_workspace_mode == "shared_write"
     if options.get("_worker_worktree_path"):
-        return False
-    if str(options.get("_worker_workspace_mode") or "") == "isolated_write":
         return False
     if mode == "apply":
         return False

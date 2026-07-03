@@ -110,3 +110,59 @@ def test_reconcile_stale_running_job_honors_process_tracking_and_grace(tmp_path)
     assert result["reconciled"] == 0
     assert manager.get_job(tracked_job_id).state == JobState.RUNNING
     assert manager.get_job(grace_job_id).state == JobState.RUNNING
+
+
+def test_zero_or_named_job_timeout_disables_codex_turn_timeout(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+
+    config["server"]["job_timeout_seconds"] = 0
+    assert executor._job_timeout_seconds() is None
+
+    config["server"]["job_timeout_seconds"] = "unlimited"
+    assert executor._job_timeout_seconds() is None
+
+    config["server"]["job_timeout_seconds"] = 12
+    assert executor._job_timeout_seconds() == 12.0
+
+
+def test_queue_enabled_creates_execution_semaphore(tmp_path):
+    config = make_config(tmp_path)
+    config["server"]["queue_enabled"] = True
+    config["server"]["max_concurrent_jobs"] = 2
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+
+    assert executor._execution_semaphore is not None
+
+
+@pytest.mark.asyncio
+async def test_queue_enabled_waits_for_execution_slot(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    config["server"]["queue_enabled"] = True
+    config["server"]["max_concurrent_jobs"] = 1
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    first_id = manager.create_job("plan", "first", config["repositories"]["default"], {"structured_output": False})
+    second_id = manager.create_job("plan", "second", config["repositories"]["default"], {"structured_output": False})
+
+    def fake_command(mode, prompt, cwd, options=None):
+        return [sys.executable, "-c", "import time; time.sleep(0.25); print('done')"]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    first_task = asyncio.create_task(executor.execute_job(first_id))
+    second_task = asyncio.create_task(executor.execute_job(second_id))
+    for _ in range(50):
+        if first_id in executor.processes:
+            break
+        await asyncio.sleep(0.02)
+
+    assert manager.get_job(first_id).state == JobState.RUNNING
+    assert manager.get_job(second_id).state == JobState.PENDING
+
+    await asyncio.gather(first_task, second_task)
+
+    assert manager.get_job(first_id).state == JobState.COMPLETED
+    assert manager.get_job(second_id).state == JobState.COMPLETED

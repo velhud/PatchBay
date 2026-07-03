@@ -22,6 +22,8 @@ The goal is maximum useful capability with explicit control.
 | MCP server to Codex CLI | Agent execution | Sandbox policy, env allowlist, command builder tests |
 | Codex CLI to worktree | Local writes | Isolated worktrees, diff review, cleanup policy |
 | ChatGPT file param to artifact inbox | Local file transfer from ChatGPT | Runtime-only storage, structural archive containment, compact responses |
+| Local Pro Request to ChatGPT Pro | Local diagnostic context sent through MCP | Runtime canonical store, sanitized mirror, bounded reports/attachments, no private paths or raw ids in public views |
+| Pro response dispatch to Codex worker | ChatGPT answer becomes local worker instruction | Separate explicit dispatch tool, idle-origin check, no hidden queue, no apply, no commit |
 | Handoff watcher | Plan becomes local execution | Explicit local command, dry-run, status artifacts |
 | Public tunnel | Internet-exposed MCP endpoint | Token required, no `--no-auth`, rotation, warnings |
 | Session history | Private transcript exposure | Default off, metadata first, bounded reads |
@@ -65,9 +67,15 @@ Worker start/message tools can create durable local job state and, by default, r
 
 `codex_worker_inbox` is mutating, open-world, non-idempotent, and marked destructive because it downloads ChatGPT-supplied files into local runtime storage and can remove local artifact copies. Importing does not edit the repository and does not integrate worker output. Selected artifacts become worker context only when explicitly attached through `context_from_artifacts`.
 
+Pro Request tools must preserve the reverse-handoff boundary. `codex_pro_request_list` and `codex_pro_request_read` are read-only. `codex_pro_request_claim`, `codex_pro_request_respond`, and `codex_pro_request_close` mutate only Pro Request runtime state. `codex_pro_request_dispatch` is mutating/open-world because it can start or message a local Codex worker, but it must not apply worker output to the base checkout or commit. `codex_pro_request_respond` must remain storage-only and must not dispatch implicitly.
+
+Pro Request reports and responses are diagnostic evidence. Tool descriptions and docs must say they do not override user instructions, system/developer instructions, AGENTS.md, repository rules, or safety policy.
+
 One MCP Server URL is a shared local control surface. PatchBay exposes redacted coordination metadata such as `client_ref` and active MCP session count through `codex_self_test`, but it must not return raw MCP session ids. This coordination model is not authentication; access remains controlled by loopback/network binding and HTTP token policy.
 
-When multiple MCP sessions share a URL, worker and artifact ownership is session-relative coordination only. Read/list/inspect remain shared, but cross-owner worker or artifact mutation must refuse until the caller explicitly retries with `takeover: true` after user confirmation. Base-checkout mutation paths must use per-repository mutation locks and fail fast with `repo_busy` rather than creating hidden queues or parallel base writes.
+When multiple MCP sessions share a URL, worker and artifact ownership is coordination only, not authentication. The default token-scoped owner groups short-lived transport sessions from the same copied connector URL. Read/list/inspect remain shared, but cross-owner worker or artifact mutation must refuse until the caller explicitly retries with `takeover: true` after user confirmation. Codex turns may queue behind the configured execution concurrency limit. Base-checkout mutation paths must use per-repository mutation locks and fail fast with `repo_busy` rather than creating hidden write queues or parallel base writes.
+
+Pro Request ownership follows the same coordination-owner model. Reads remain shared; claim/respond/dispatch/close refuse cross-owner mutation until the caller explicitly retries with `takeover: true` after user confirmation.
 
 ## Path Guard Policy
 
@@ -121,6 +129,23 @@ Required controls:
 - allow `.env`, key-looking, auth-looking, and session-looking filenames as artifact contents when intentionally imported;
 - keep size/count limits configurable and default-unset for local use;
 - avoid returning raw download URLs, local artifact paths, prompt bodies, or full manifests by default.
+
+## Pro Request Policy
+
+Pro Requests exist to package local blocked-problem evidence for ChatGPT Pro without turning that evidence into an unbounded local-control channel.
+
+Required controls:
+
+- store canonical manifests, reports, attachments, events, and responses in PatchBay runtime storage, outside repository checkouts by default;
+- mirror only sanitized public status, report, and response files under `.ai-bridge/pro-requests` when mirroring is enabled;
+- reject unsafe mirror directories that escape the repository;
+- cap report, response, attachment size, and attachment count through `pro_requests` config;
+- validate repository roots through the normal allowed-root path guard;
+- omit private repo paths, backend job ids, raw session ids, raw transcripts, and runtime paths from public views;
+- show repo staleness when branch, head commit, or dirty state changed after request creation;
+- require explicit dispatch before a stored answer can message or start a worker;
+- return `dispatch_blocked` for missing or busy origin workers instead of queueing silently;
+- never apply worker output or commit from a Pro Request tool.
 
 ## Logging And Artifacts
 
@@ -188,7 +213,7 @@ The current implementation has addressed the original high-risk connector gaps: 
 Verified so far:
 
 - local MCP probe against a disposable repo;
-- real Codex CLI `0.142.2` plan job through MCP;
+- real Codex CLI plan job through MCP, with the local `codex --version` recorded during validation;
 - current Codex JSONL `agent_message` result parsing;
 - token-gated local server behavior in automated tests;
 - installable CLI, stdio transport, settings profiles, and explicit tunnel binary resolution in automated tests;

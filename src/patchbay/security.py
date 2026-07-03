@@ -20,7 +20,9 @@ PATH_DETAIL_PREFIXES = (
     "Workspace root does not exist",
     "Workspace root is not a directory",
     "Not a git repository",
+    "Job worktree could not be created",
     "Worker worktree already exists",
+    "Worker worktree could not be created",
     "Worker worktree path is outside worker root",
     "cwd is not a directory",
 )
@@ -39,6 +41,8 @@ SAFE_VALIDATION_PREFIXES = (
     "No allowed repository roots configured",
     "No workspace path provided",
     "Maximum active jobs",
+    "Job worktree could not be created",
+    "Worker worktree could not be created",
     "dangerously_bypass is disabled",
     "config_overrides are disabled",
     "Config override is not allowed",

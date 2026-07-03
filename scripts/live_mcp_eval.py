@@ -86,6 +86,12 @@ def main() -> int:
             "codex_worker_list",
             "codex_worker_inspect",
             "codex_worker_stop",
+            "codex_pro_request_list",
+            "codex_pro_request_read",
+            "codex_pro_request_claim",
+            "codex_pro_request_respond",
+            "codex_pro_request_dispatch",
+            "codex_pro_request_close",
             "codex_self_test",
             "read",
             "show_changes",
@@ -176,6 +182,67 @@ def main() -> int:
 
         self_test = client.call_tool(12, "codex_self_test", {})
         _check(report, "self_test", self_test["result"]["structuredContent"]["ready"] is True)
+
+        pro_report_path = temp_dir / "pro-escalation-report.md"
+        pro_report_path.write_text(
+            "# Pro Escalation Request\n\n"
+            "## One-sentence problem\n\n"
+            "Live eval needs ChatGPT Pro guidance.\n\n"
+            "## What I need from ChatGPT Pro\n\n"
+            "Return a worker-ready plan.\n",
+            encoding="utf-8",
+        )
+        created = _create_pro_request(repo, pro_report_path, env)
+        request_id = created["id"]
+        _check(report, "pro_request_cli_create", request_id.startswith("proreq_") and created["repo_path_returned"] is False)
+
+        pro_list = client.call_tool(13, "codex_pro_request_list", {"repo_path": str(repo)})
+        pro_list_data = pro_list["result"]["structuredContent"]
+        _check(report, "pro_request_mcp_list", any(item["id"] == request_id for item in pro_list_data["requests"]))
+
+        pro_read = client.call_tool(14, "codex_pro_request_read", {"request_id": request_id})
+        pro_read_data = pro_read["result"]["structuredContent"]
+        _check(
+            report,
+            "pro_request_mcp_read",
+            "Live eval needs ChatGPT Pro guidance" in pro_read_data["report_markdown"]
+            and pro_read_data["request"]["repo_path_returned"] is False,
+        )
+
+        pro_claim = client.call_tool(15, "codex_pro_request_claim", {"request_id": request_id, "note": "Live eval ChatGPT Pro claim"})
+        _check(report, "pro_request_mcp_claim", pro_claim["result"]["structuredContent"]["accepted"] is True)
+
+        pro_response = client.call_tool(
+            16,
+            "codex_pro_request_respond",
+            {
+                "request_id": request_id,
+                "response_kind": "live_eval_plan",
+                "response_markdown": "# ChatGPT Pro Response\n\nUse the safe explicit dispatch path.",
+                "worker_message_markdown": "Use the safe explicit dispatch path. Do not commit.",
+            },
+        )
+        pro_response_data = pro_response["result"]["structuredContent"]
+        _check(
+            report,
+            "pro_request_mcp_respond",
+            pro_response_data["accepted"] is True
+            and pro_response_data["dispatched"] is False
+            and "Response stored only" in pro_response_data["note"],
+        )
+
+        local_response = _read_pro_response(request_id, env)
+        _check(report, "pro_request_cli_response", "safe explicit dispatch path" in local_response["response_markdown"])
+
+        pro_dispatch = client.call_tool(17, "codex_pro_request_dispatch", {"request_id": request_id, "target": "origin_worker"})
+        pro_dispatch_data = pro_dispatch["result"]["structuredContent"]
+        _check(
+            report,
+            "pro_request_dispatch_blocked_no_origin",
+            pro_dispatch_data["accepted"] is False
+            and pro_dispatch_data["request"]["status"] == "dispatch_blocked"
+            and "no origin worker" in pro_dispatch_data["dispatch_result"]["note"],
+        )
 
         report.update(
             {
@@ -288,6 +355,63 @@ def _start_server(repo: Path, port: int, env: dict[str, str]) -> subprocess.Pope
         stderr=subprocess.STDOUT,
         text=True,
     )
+
+
+def _create_pro_request(repo: Path, report_path: Path, env: dict[str, str]) -> dict[str, Any]:
+    cli_env = _cli_env(env)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "patchbay.cli",
+            "pro-request",
+            "create",
+            "--repo",
+            str(repo),
+            "--title",
+            "Live eval Pro escalation",
+            "--origin-kind",
+            "terminal_codex",
+            "--report",
+            str(report_path),
+            "--desired-output",
+            "Root cause, plan, tests, risks, worker-ready instruction",
+            "--json",
+        ],
+        cwd=ROOT,
+        env=cli_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"pro-request create failed: {completed.stderr or completed.stdout}")
+    return json.loads(completed.stdout)
+
+
+def _read_pro_response(request_id: str, env: dict[str, str]) -> dict[str, Any]:
+    cli_env = _cli_env(env)
+    completed = subprocess.run(
+        [sys.executable, "-m", "patchbay.cli", "pro-request", "response", request_id, "--json"],
+        cwd=ROOT,
+        env=cli_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"pro-request response failed: {completed.stderr or completed.stdout}")
+    return json.loads(completed.stdout)
+
+
+def _cli_env(env: dict[str, str]) -> dict[str, str]:
+    result = dict(env)
+    entries = [entry for entry in result.get("PYTHONPATH", "").split(os.pathsep) if entry]
+    source = str(ROOT / "src")
+    if source not in entries:
+        entries.insert(0, source)
+    result["PYTHONPATH"] = os.pathsep.join(entries)
+    return result
 
 
 def _wait_for_health(port: int, process: subprocess.Popen[str], output_tail: list[str], *, timeout: float) -> None:

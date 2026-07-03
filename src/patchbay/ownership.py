@@ -3,7 +3,7 @@
 Ownership here is accidental-interference protection, not authentication. The
 HTTP bearer/query token is still the authentication boundary; these helpers only
 let shared MCP clients see whether a worker, job, or artifact was last controlled
-by the current MCP transport session.
+by the current coordination owner.
 """
 from __future__ import annotations
 
@@ -38,6 +38,8 @@ def owner_hash_for_context(context: RequestContext | None) -> str:
     """Return the private comparable owner hash for a request context."""
     if context is None:
         return ""
+    if context.owner_ref and context.owner_ref != ANONYMOUS_CLIENT_REF:
+        return context.owner_ref
     if not context.has_transport_session or context.client_ref == ANONYMOUS_CLIENT_REF:
         return ""
     return context.client_ref

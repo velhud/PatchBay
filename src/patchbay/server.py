@@ -16,7 +16,13 @@ import yaml
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from patchbay.auth import AuthConfigurationError, auth_public_metadata, build_auth_policy, request_is_authorized
+from patchbay.auth import (
+    AuthConfigurationError,
+    auth_public_metadata,
+    build_auth_policy,
+    request_is_authorized,
+    request_token,
+)
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -136,6 +142,29 @@ def _request_context_for_session(session_id: str) -> RequestContext:
     )
 
 
+def _ownership_scope() -> str:
+    raw = (config.get("ownership") or {}).get("scope") if isinstance(config.get("ownership"), dict) else None
+    scope = str(raw or "token").strip().lower().replace("-", "_")
+    if scope in {"transport", "transport_session", "session", "mcp_session"}:
+        return "transport_session"
+    if scope in {"server", "shared", "single_user"}:
+        return "server"
+    return "token"
+
+
+def _owner_ref_for_request(request: Request, session_id: str) -> tuple[str, str]:
+    scope = _ownership_scope()
+    if scope == "transport_session":
+        return make_client_ref(session_id, salt=_SESSION_REF_SALT), scope
+
+    if scope == "token":
+        token = request_token(request.headers, request.query_params, auth_policy)
+        if token:
+            return make_client_ref(f"token:{token}", salt=_SESSION_REF_SALT), scope
+
+    return make_client_ref("server-owner", salt=_SESSION_REF_SALT), "server"
+
+
 def _max_request_bytes() -> int:
     configured = int(config.get("server", {}).get("max_request_bytes", 1_048_576))
     return max(1, configured)
@@ -243,9 +272,12 @@ async def mcp_endpoint(request: Request):
         # New session - generate ID
         session_id = str(uuid.uuid4())
         is_new_session = True
+        owner_ref, owner_scope = _owner_ref_for_request(request, session_id)
         sessions[session_id] = {
             "created_at": asyncio.get_event_loop().time(),
-            "last_activity": asyncio.get_event_loop().time()
+            "last_activity": asyncio.get_event_loop().time(),
+            "owner_ref": owner_ref,
+            "owner_scope": owner_scope,
         }
         logger.info("New MCP session created: %s", make_client_ref(session_id, salt=_SESSION_REF_SALT))
     elif session_id not in sessions:
@@ -254,6 +286,9 @@ async def mcp_endpoint(request: Request):
     else:
         # Update last activity
         sessions[session_id]["last_activity"] = asyncio.get_event_loop().time()
+        owner_ref, owner_scope = _owner_ref_for_request(request, session_id)
+        sessions[session_id]["owner_ref"] = owner_ref
+        sessions[session_id]["owner_scope"] = owner_scope
     request_context = _request_context_for_session(session_id)
     
     # Parse request body

@@ -60,6 +60,7 @@ The unit suite verifies:
 - multi-worker context relay through `context_from_workers` and `context_detail`;
 - worker integration preview, dirty-base refusal, blocked-path refusal, artifact-context exclusion, conflict reporting, and explicit accepted-result application;
 - worker tool descriptors and worker-only mode;
+- Pro Request store behavior, sanitized mirrors, ownership/takeover, CLI create/list/show/response/dispatch/close, MCP list/read/claim/respond/dispatch/close descriptors, and blocked/busy/new-worker dispatch behavior;
 - durable real MCP worker trial evidence writer, sanitizer, and negative cases;
 - optional direct workspace write/edit and command power tools;
 - runtime descriptor truthfulness for disabled direct write, bash, and transcript-read profiles;
@@ -110,6 +111,7 @@ The eval creates a temporary git repo with `AGENTS.md`, source files, `.env`, a 
 - blocked symlink read;
 - enabled direct write and command execution in the full-power profile;
 - `codex_self_test`.
+- Pro Request CLI create plus MCP list/read/claim/respond and blocked dispatch when no origin worker exists.
 
 This test proves the local MCP surface behaves like a compact ChatGPT-style client, but it does not prove ChatGPT Developer Mode itself.
 
@@ -154,7 +156,7 @@ For execution changes, run a disposable real-Codex plan job through MCP. The exp
 5. call `codex_get_result`;
 6. confirm a clean structured summary and `session_ref` when Codex returns one.
 
-Current manual verification used Codex CLI `0.142.2` and confirmed PatchBay parses the current JSONL `item.completed` / `agent_message` result shape. Worker verification should record the current local `codex --version`.
+Current final validation recorded Codex CLI `0.142.2` and confirmed PatchBay parses the current JSONL `item.completed` / `agent_message` result shape. Worker verification should always record the current local `codex --version`.
 
 ## Real Codex Worker Continuity
 

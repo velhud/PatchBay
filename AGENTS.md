@@ -23,11 +23,10 @@ The repo still supports local maintainer workflows, but do not describe the app 
 - Keep the app self-describing enough that a future coding agent can update configuration, docs, tool metadata, and examples from repository context without needing private oral history.
 - Do not replace concrete setup steps with vague philosophy. Add the rationale, then keep the exact command, ChatGPT connector step, expected tool result, and verification command.
 
-## Private Campaign Routing
+## Local Maintainer Notes
 
-- When the user invokes a campaign workflow, read `.architect/README.md` and `.architect/indexes/active_campaigns.md` before acting.
-- Treat exactly one active campaign as operational truth. Completed campaigns are reference evidence only unless the user explicitly reopens them.
-- The onboarding/transport campaign is complete. Treat `.architect/campaigns/patchbay-onboarding-transport-2026-06-27/` and its repo-local skills as reference unless the user explicitly starts a new continuation campaign.
+- Keep machine-specific paths, private source-pack locations, local campaign state, and personal maintainer instructions out of this public file.
+- Local/private instructions may live under gitignored `.agents/` or `.architect/` paths. They can guide local maintenance, but they are not part of the public project contract.
 
 ## Rules For Agents
 
@@ -127,6 +126,7 @@ When changing anything ChatGPT sees through MCP, preserve these prompt-surface r
 - ChatGPT should manage workers by human name, not by backend job IDs, session IDs, branch names, or worktree paths.
 - Worker mode should explain that default workers use isolated write worktrees, survive PatchBay restart when durable state exists, and continue through `codex_worker_message`.
 - Integration must be described as preview-first, explicit, no-commit, and preserving the worker worktree.
+- Pro Escalation request tools must describe `respond` as storage-only and `dispatch` as the explicit worker-message/start boundary; neither tool may imply automatic apply, commit, hidden queueing, or prompt-authority escalation from report contents.
 - Tool descriptions should include when to use the tool, relevant side effects, validation expectations, and fallback behavior.
 - Setup docs should recommend `--tool-mode worker` for first real ChatGPT validation.
 - Shared-server docs should tell ChatGPT to start with `codex_self_test`, treat one copied Server URL as one shared local state surface, use `takeover: true` only after user confirmation, and report `repo_busy` instead of trying to bypass locks.

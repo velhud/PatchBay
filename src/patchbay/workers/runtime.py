@@ -642,6 +642,12 @@ class WorkerRuntime:
             "structured_output": True,
             "json_events": True,
         }
+        security = self.config.get("security", {})
+        if (
+            security.get("allow_dangerously_bypass", False)
+            and str(security.get("default_sandbox", "")).strip().lower() == "danger-full-access"
+        ):
+            options["dangerously_bypass"] = True
         if model:
             options["model"] = model
             options[WORKER_MODEL_OPTION] = model
