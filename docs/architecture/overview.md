@@ -213,7 +213,7 @@ The worker facade provides:
 
 The artifact inbox lets ChatGPT import generated files or zips into PatchBay runtime storage, then attach artifact ids to isolated workers through `context_from_artifacts`. Imported artifacts are copied into `.ai-bridge/imported-artifacts/` inside the worker worktree as source material and excluded from changed-file reporting, diffs, integration preview, and apply.
 
-Default `isolated_write` workers use durable external worktrees, same-session/same-worktree continuation after PatchBay restart, on-demand changed-file inspection, one-file worker diffs, and explicit isolated workspace cleanup. Worker start/message calls can include bounded peer-worker report/change/diff context, and worker list returns a compact `team_report`. Worker integration is preview-first: ChatGPT can inspect whether the worker patch applies, then explicitly apply the accepted result into the base checkout without committing. Current lifecycle handling reconciles stale durable `running` jobs that no longer have a tracked Codex subprocess into a redacted failed report before public worker/status views.
+Default `isolated_write` workers use durable external worktrees, same-session/same-worktree continuation after PatchBay restart, on-demand changed-file inspection, one-file worker diffs, and explicit isolated workspace cleanup. Worker start/message calls can include bounded peer-worker report/change/diff context, and worker list returns a compact `team_report`. Worker integration is preview-first: ChatGPT can inspect whether the worker patch applies, then explicitly apply the accepted result into the base checkout without committing. Job launch is owned by `JobExecutor`: background Codex turns are scheduled through executor-tracked asyncio tasks, subprocess metadata is recorded when launch succeeds, and stale durable `running` jobs are reconciled only when neither the executor task nor the tracked subprocess is live after the grace window. Public worker/status views expose bounded lifecycle diagnostics without raw prompts, transcripts, job ids, or paths.
 
 For shared MCP Server URLs, the runtime treats ownership as coordination rather than authentication. Tool mode is session-local, worker/artifact views include owner-relative coordination flags, the default token-scoped owner lets short-lived transport sessions from one copied connector URL continue the same workers, cross-owner mutation requires explicit `takeover: true`, Codex turns can queue behind the configured execution concurrency limit, and base-checkout mutation paths use per-repository locks that fail fast with `repo_busy`. No separate worker database, mailbox, transcript copy, role system, automatic reviewer chain, automatic commit, or automatic merge/promotion flow exists. Future work can add optional app-server backend evaluation.
 
@@ -239,6 +239,7 @@ Generic `read`, `write`, `edit`, or `bash` handlers must enter this boundary onl
 PatchBay's workspace layer provides:
 
 - active workspace selection from configured allowed roots;
+- optional canonical-to-local workspace aliases for remote copies or mounts;
 - path guard with realpath checks and symlink escape rejection;
 - blocked glob defaults for `.env`, private keys, `.git`, dependency/build output, cache folders, and configured secret paths;
 - bounded tree listing;

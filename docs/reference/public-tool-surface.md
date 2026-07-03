@@ -43,7 +43,7 @@ For larger tasks, ChatGPT may start a small team of workers with separate respon
 | `codex_worker_integrate` | destructive/non-idempotent | Apply an explicitly accepted isolated writing worker result to the base checkout. Does not commit or delete the worker worktree. |
 | `codex_worker_stop` | destructive/non-idempotent | Cancel only the active worker turn while preserving durable identity and prior session continuity; optionally discard an isolated workspace. |
 
-Worker names are scoped to the base workspace. The same human name can be reused in another repo; worker ids remain globally addressable for explicit disambiguation. Worker results omit low-level job ids, Codex session ids, absolute repo/worktree paths, branch names, raw transcripts, and raw process logs. Stale durable `running` jobs with no tracked live Codex process are reconciled to `failed` with a public explanation before worker list/inspect/status responses. Worker identity and workspace ownership come from private durable job metadata; peer-worker context is bounded and explicit. Accepted-result integration is explicit and does not commit. PatchBay can queue pending Codex turns behind `max_concurrent_jobs`, but it does not add a worker database, mailbox, queued worker-message delivery, transcript copy, role engine, automatic reviewer chain, automatic commits, or a merge queue.
+Worker names are scoped to the base workspace. The same human name can be reused in another repo; worker ids remain globally addressable for explicit disambiguation. Worker results omit low-level job ids, Codex session ids, absolute repo/worktree paths, branch names, raw transcripts, and raw process logs. Public worker views include bounded latest-turn diagnostics such as launch/process/session timestamps, tracked process id, exit code, timeout state, and last heartbeat when available. Stale durable `running` jobs are reconciled to `failed` only after the grace window and only when PatchBay has neither a live executor task nor a tracked live Codex subprocess for that job. Worker identity and workspace ownership come from private durable job metadata; peer-worker context is bounded and explicit. Accepted-result integration is explicit and does not commit. PatchBay can queue pending Codex turns behind `max_concurrent_jobs`, but it does not add a worker database, mailbox, queued worker-message delivery, transcript copy, role engine, automatic reviewer chain, automatic commits, or a merge queue.
 
 Worker workspace modes:
 
@@ -119,6 +119,7 @@ Dispatch rules:
 | `codex_list_skills` | read-only | List skill names/descriptions without exposing local install paths. |
 | `codex_load_skill` | read-only | Load a bounded `SKILL.md` by known skill name. |
 
+If `repositories.aliases` is configured, workspace tools and worker `repo_path` arguments may accept a canonical operator path and resolve it to the local mounted or copied path before validation. Responses can include `workspace_alias` metadata so ChatGPT can say which canonical path was requested and which local workspace is actually in use.
 
 ### Worker peer context
 

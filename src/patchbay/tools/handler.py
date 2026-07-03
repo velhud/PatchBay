@@ -611,7 +611,7 @@ class ToolHandler:
 
     def _repo_from_args(self, args: Dict[str, Any]) -> str:
         repo = args.get('repo') or args.get('repo_path') or self.default_repo
-        return str(validate_allowed_path(repo, self._allowed_roots()))
+        return str(self.workspace_context.open_workspace(str(repo)).root)
 
     def _worker_file_hint(self, args: Dict[str, Any]) -> str:
         file_path = str(args.get("file_path") or "").strip()
@@ -693,7 +693,7 @@ class ToolHandler:
                 options,
                 operation="codex_plan_job",
             )
-            asyncio.create_task(self.job_executor.execute_job(job_id))
+            self.job_executor.schedule_job(job_id)
             
             return {
                 "job_id": job_id,
@@ -731,7 +731,7 @@ class ToolHandler:
                 options,
                 operation="codex_apply_job",
             )
-            asyncio.create_task(self.job_executor.execute_job(job_id))
+            self.job_executor.schedule_job(job_id)
             
             job = self.job_manager.get_job(job_id)
             
@@ -770,6 +770,10 @@ class ToolHandler:
             result["last_event"] = job.last_event
         if job.progress:
             result["progress"] = job.progress
+
+        diagnostics = self._job_lifecycle_diagnostics(job)
+        if diagnostics:
+            result["diagnostics"] = diagnostics
         
         if job.state == JobState.RUNNING:
             result["message"] = "Operation in progress"
@@ -783,6 +787,24 @@ class ToolHandler:
                 result["error"] = self._public_error(job.error, default="Operation encountered an issue.", allow_details=True)
         
         return result
+
+    def _job_lifecycle_diagnostics(self, job: Any) -> Dict[str, Any]:
+        diagnostics: Dict[str, Any] = {}
+        if getattr(job, "launch_started_at", None) is not None:
+            diagnostics["launch_started_at"] = float(job.launch_started_at)
+        if getattr(job, "process_started_at", None) is not None:
+            diagnostics["process_started_at"] = float(job.process_started_at)
+            diagnostics["process_started"] = True
+        else:
+            diagnostics["process_started"] = False
+        if getattr(job, "process_pid", None) is not None:
+            diagnostics["process_pid"] = int(job.process_pid)
+        if getattr(job, "last_heartbeat_at", None) is not None:
+            diagnostics["last_heartbeat_at"] = float(job.last_heartbeat_at)
+        if getattr(job, "exit_code", None) is not None:
+            diagnostics["exit_code"] = job.exit_code
+        diagnostics["session_created"] = bool(getattr(job, "session_id", None))
+        return diagnostics
     
     async def _codex_get_result(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get operation result, blocking until complete"""
@@ -1057,7 +1079,7 @@ class ToolHandler:
                 options,
                 operation="codex_resume",
             )
-            asyncio.create_task(self.job_executor.execute_job(job_id))
+            self.job_executor.schedule_job(job_id)
             return {
                 "job_id": job_id,
                 "mode": "resume",
@@ -1090,7 +1112,7 @@ class ToolHandler:
                 options,
                 operation="codex_interactive",
             )
-            asyncio.create_task(self.job_executor.execute_job(job_id))
+            self.job_executor.schedule_job(job_id)
             return {
                 "job_id": job_id,
                 "mode": "interactive",
@@ -1128,7 +1150,7 @@ class ToolHandler:
                 options,
                 operation="codex_interactive_reply",
             )
-            asyncio.create_task(self.job_executor.execute_job(job_id))
+            self.job_executor.schedule_job(job_id)
             return {
                 "job_id": job_id,
                 "mode": "resume",

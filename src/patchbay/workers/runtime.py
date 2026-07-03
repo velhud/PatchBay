@@ -162,7 +162,7 @@ class WorkerRuntime:
         except Exception:
             self._discard_prepared_workspace(workspace)
             raise
-        asyncio.create_task(self.job_executor.execute_job(job_id))
+        self._schedule_job(job_id)
 
         view = self._public_view(self._jobs_for_worker(worker_id), request_context=request_context)
         view.update(
@@ -301,7 +301,7 @@ class WorkerRuntime:
             view = self._public_view(jobs, request_context=request_context)
             view.update({"accepted": False, **busy.public_payload()})
             return view
-        asyncio.create_task(self.job_executor.execute_job(job_id))
+        self._schedule_job(job_id)
 
         view = self._public_view(self._jobs_for_worker(worker_id), request_context=request_context)
         view.update(
@@ -550,6 +550,13 @@ class WorkerRuntime:
             reconcile()
         except Exception as error:
             logger.warning("Failed to reconcile active worker jobs: %s", error)
+
+    def _schedule_job(self, job_id: str) -> None:
+        scheduler = getattr(self.job_executor, "schedule_job", None)
+        if callable(scheduler):
+            scheduler(job_id)
+            return
+        asyncio.create_task(self.job_executor.execute_job(job_id))
 
     def _owner_takeover_refusal(
         self,
@@ -1637,6 +1644,7 @@ class WorkerRuntime:
             "can_message": state not in {"starting", "working"} and bool(session_id) and workspace_available,
             "has_changes": has_changes,
             "integration_state": self._integration_state_for_jobs(jobs),
+            "latest_turn": self._latest_turn_diagnostics(latest, session_id=session_id),
         }
         if model:
             view["model"] = model
@@ -1652,6 +1660,24 @@ class WorkerRuntime:
             )
         )
         return view
+
+    def _latest_turn_diagnostics(self, job: JobInfo, *, session_id: Optional[str]) -> Dict[str, Any]:
+        diagnostics: Dict[str, Any] = {
+            "state": job.state.value,
+            "process_started": bool(job.process_started_at),
+            "session_created": bool(session_id),
+        }
+        if job.launch_started_at is not None:
+            diagnostics["launch_started_at"] = float(job.launch_started_at)
+        if job.process_started_at is not None:
+            diagnostics["process_started_at"] = float(job.process_started_at)
+        if job.process_pid is not None:
+            diagnostics["process_pid"] = int(job.process_pid)
+        if job.last_heartbeat_at is not None:
+            diagnostics["last_heartbeat_at"] = float(job.last_heartbeat_at)
+        if job.exit_code is not None:
+            diagnostics["exit_code"] = job.exit_code
+        return diagnostics
 
     def _public_state(self, state: JobState) -> str:
         return {

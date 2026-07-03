@@ -145,6 +145,8 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/external_chatgpt_style_validation.py --
 
 The harness writes `calls.jsonl`, `results.json`, and `summary.md` under `.local/validation/external_chatgpt_style/<timestamp>/`. It starts PatchBay through the compatibility launcher path `scripts/start.py`, uses disposable repositories, creates separate MCP clients to simulate separate ChatGPT conversations, records `codex --version`, and redacts temporary paths and token-like values in evidence. Real ChatGPT Developer Mode UI validation remains a separate manual gate.
 
+For worker lifecycle regressions, add focused tests proving a durable `running` job is not marked stale while an executor-owned asyncio task is still alive, and proving worker start/message code schedules jobs through `JobExecutor.schedule_job` instead of orphaned background tasks.
+
 ## Real Codex CLI Through MCP
 
 For execution changes, run a disposable real-Codex plan job through MCP. The expected path is:

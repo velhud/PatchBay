@@ -52,6 +52,8 @@ DEFAULT_BLOCKED_GLOBS = [
 class Workspace:
     id: str
     root: Path
+    requested_root: str = ""
+    alias: Optional[Dict[str, str]] = None
 
 
 @dataclass(frozen=True)
@@ -84,12 +86,50 @@ class WorkspaceContext:
     def _allowed_roots(self) -> list[str]:
         return self.config.get("repositories", {}).get("allowed") or []
 
+    def _workspace_aliases(self) -> list[Dict[str, str]]:
+        raw_aliases = self.config.get("repositories", {}).get("aliases") or []
+        if isinstance(raw_aliases, dict):
+            raw_aliases = [
+                {"canonical": canonical, "local": local}
+                for canonical, local in raw_aliases.items()
+            ]
+        aliases: list[Dict[str, str]] = []
+        for raw in raw_aliases:
+            if not isinstance(raw, dict):
+                continue
+            canonical = str(raw.get("canonical") or raw.get("from") or raw.get("source") or "").rstrip("/")
+            local = str(raw.get("local") or raw.get("to") or raw.get("target") or "").rstrip("/")
+            if not canonical or not local:
+                continue
+            aliases.append(
+                {
+                    "canonical": canonical,
+                    "local": local,
+                    "description": str(raw.get("description") or raw.get("note") or "").strip(),
+                }
+            )
+        return aliases
+
+    def _resolve_workspace_alias(self, requested: str) -> tuple[str, Optional[Dict[str, str]]]:
+        raw = str(requested)
+        normalized = raw.rstrip("/")
+        for alias in self._workspace_aliases():
+            canonical = alias["canonical"]
+            if normalized == canonical:
+                return alias["local"], alias
+            prefix = canonical + "/"
+            if normalized.startswith(prefix):
+                suffix = normalized[len(prefix):]
+                return str(Path(alias["local"]) / suffix), alias
+        return raw, None
+
     def open_workspace(self, repo_path: Optional[str] = None) -> Workspace:
         requested = repo_path or self.config.get("repositories", {}).get("default")
         if not requested:
             raise ValueError("No workspace path provided and no default repository configured")
 
-        root = validate_allowed_path(str(requested), self._allowed_roots())
+        resolved_requested, alias = self._resolve_workspace_alias(str(requested))
+        root = validate_allowed_path(str(resolved_requested), self._allowed_roots())
         if not root.exists():
             raise ValueError(f"Workspace root does not exist: {repo_path or requested}")
         if not root.is_dir():
@@ -97,7 +137,12 @@ class WorkspaceContext:
 
         real_root = root.resolve()
         digest = hashlib.sha256(str(real_root).encode("utf-8")).hexdigest()[:24]
-        return Workspace(id=f"ws_{digest}", root=real_root)
+        return Workspace(
+            id=f"ws_{digest}",
+            root=real_root,
+            requested_root=str(requested),
+            alias=alias,
+        )
 
     def is_blocked_relative_path(self, rel_path: str) -> bool:
         rel = self._normalize_rel(rel_path)
@@ -188,7 +233,7 @@ class WorkspaceContext:
             "skill_inventory": [],
             "skill_counts": self._skill_counts([]),
         }
-        return {
+        result = {
             "workspace_id": workspace.id,
             "root": str(workspace.root),
             "git": self.git_summary(workspace),
@@ -199,6 +244,14 @@ class WorkspaceContext:
             "blocked_globs_count": len(self.blocked_globs),
             "tree": tree,
         }
+        if workspace.alias:
+            result["workspace_alias"] = {
+                "requested": workspace.requested_root,
+                "canonical": workspace.alias["canonical"],
+                "local": str(workspace.root),
+                "description": workspace.alias.get("description", ""),
+            }
+        return result
 
     def list_skills(self, args: Dict[str, Any]) -> Dict[str, Any]:
         workspace = self.open_workspace(args.get("repo"))
@@ -570,16 +623,22 @@ class WorkspaceContext:
         for root in roots[:50]:
             try:
                 workspace = self.open_workspace(str(root))
-                workspaces.append(
-                    {
-                        "workspace_id": workspace.id,
-                        "root": str(workspace.root),
-                        "default": str(Path(default_root).expanduser().resolve()) == str(workspace.root)
-                        if default_root
-                        else False,
-                        "git": self.git_summary(workspace),
+                item = {
+                    "workspace_id": workspace.id,
+                    "root": str(workspace.root),
+                    "default": str(Path(default_root).expanduser().resolve()) == str(workspace.root)
+                    if default_root
+                    else False,
+                    "git": self.git_summary(workspace),
+                }
+                if workspace.alias:
+                    item["workspace_alias"] = {
+                        "requested": workspace.requested_root,
+                        "canonical": workspace.alias["canonical"],
+                        "local": str(workspace.root),
+                        "description": workspace.alias.get("description", ""),
                     }
-                )
+                workspaces.append(item)
             except Exception as error:
                 workspaces.append(
                     {
@@ -587,6 +646,40 @@ class WorkspaceContext:
                         "root": str(root),
                         "default": str(root) == str(default_root),
                         "error": public_error_message(error, default="Workspace could not be opened.", allow_details=True),
+                    }
+                )
+        for alias in self._workspace_aliases():
+            if alias["canonical"] in roots:
+                continue
+            try:
+                workspace = self.open_workspace(alias["canonical"])
+                workspaces.append(
+                    {
+                        "workspace_id": workspace.id,
+                        "root": str(workspace.root),
+                        "default": False,
+                        "git": self.git_summary(workspace),
+                        "workspace_alias": {
+                            "requested": alias["canonical"],
+                            "canonical": alias["canonical"],
+                            "local": str(workspace.root),
+                            "description": alias.get("description", ""),
+                        },
+                    }
+                )
+            except Exception as error:
+                workspaces.append(
+                    {
+                        "workspace_id": "",
+                        "root": alias["local"],
+                        "default": False,
+                        "workspace_alias": {
+                            "requested": alias["canonical"],
+                            "canonical": alias["canonical"],
+                            "local": alias["local"],
+                            "description": alias.get("description", ""),
+                        },
+                        "error": public_error_message(error, default="Workspace alias could not be opened.", allow_details=True),
                     }
                 )
         return {

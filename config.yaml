@@ -48,6 +48,13 @@ repositories:
   default: /
   allowed:
     - /
+  # Optional canonical-to-local workspace mappings. Use this when a remote
+  # PatchBay host works from a mounted or copied checkout but ChatGPT tasks name
+  # the operator's canonical path.
+  # aliases:
+  #   - canonical: /operator/canonical/workspace
+  #     local: /srv/workspace-copy
+  #     description: Remote copy of the canonical workspace
 
 security:
   require_git_repo: false
