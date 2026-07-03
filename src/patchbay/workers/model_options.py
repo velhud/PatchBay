@@ -19,6 +19,59 @@ MAX_MODEL_ID_CHARS = 160
 MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,159}$")
 
 
+MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
+    "summary": (
+        "Choose the worker model by task complexity, context size, and decision authority. "
+        "This is advisory guidance for intelligent delegation, not a hard router or prompt filter."
+    ),
+    "default_ladder": [
+        {
+            "model_family": "Spark",
+            "role": (
+                "Default for small workers: compact reading, straightforward repo checks, direct bounded tasks, "
+                "small code/test/exploration work, and fast helper lanes."
+            ),
+            "reasoning": "Use medium or high for ordinary compact work; use higher reasoning only when the brief is still small but judgment matters.",
+            "caveats": (
+                "Prefer Spark over GPT-5.4 Mini when available because it is much faster and effectively free, "
+                "but watch for smaller context and occasional quota depletion."
+            ),
+        },
+        {
+            "model_family": "GPT-5.4 Mini",
+            "role": (
+                "Small reliable worker for many low/moderate-risk tasks, especially when Spark is unavailable, "
+                "quota-limited, too context-constrained, or when OpenAI-compatible behavior is useful."
+            ),
+            "reasoning": "Use medium or high for routine trusted worker tasks.",
+            "caveats": "Good for many tasks, but not the first choice for complex decision-heavy work.",
+        },
+        {
+            "model_family": "GPT-5.4",
+            "role": (
+                "Main serious worker for normal above-average tasks: substantial repository work, multi-step analysis, "
+                "implementation planning, debugging, verification, and decisions that need a very good model but not frontier authority."
+            ),
+            "reasoning": "Use medium/high for most serious work; use xhigh when the task is hard enough to justify deeper thought.",
+            "caveats": "Do not treat GPT-5.4 as merely a fallback; it is the major model for serious ordinary worker lanes.",
+        },
+        {
+            "model_family": "GPT-5.5",
+            "role": (
+                "Highest-authority model for innovation, creative architecture, difficult synthesis, unresolved problems, "
+                "sensitive or final judgment, and work where the best reasoning quality matters more than speed."
+            ),
+            "reasoning": "Use high or xhigh for serious final/creative/authority work.",
+            "caveats": "Do not spend GPT-5.5 as the main worker for every case; delegate ordinary serious work to GPT-5.4.",
+        },
+    ],
+    "manager_rule": (
+        "For worker teams, use Spark or GPT-5.4 Mini for compact helper lanes, GPT-5.4 for the main serious workers, "
+        "and GPT-5.5 for the final authority, creative architecture, or unusually hard synthesis lane."
+    ),
+}
+
+
 def validate_worker_model(value: Optional[str]) -> str:
     """Return a safe model id or an empty string for default Codex model."""
     model = str(value or "").strip()
@@ -82,6 +135,7 @@ def worker_option_menu(
         "models": models[:max_models],
         "model_count": len(models),
         "models_truncated": len(models) > max_models,
+        "model_selection_guidance": MODEL_SELECTION_GUIDANCE,
         "allows_custom_model_string": True,
         "worker_start_fields": {
             "model": "Optional string. Omit to use Codex default; otherwise pass one of the returned model ids or a current Codex model id.",

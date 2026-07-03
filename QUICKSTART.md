@@ -208,19 +208,19 @@ First, if the task needs a specific Codex model or reasoning depth, call `codex_
 
 ```json
 {
-  "model": "gpt-5.5"
+  "model": "gpt-5.3-codex-spark"
 }
 ```
 
-Then pass the selected values only when they matter:
+Then pass the selected values only when they matter. Spark is the default for compact small workers because it is fast and effectively free; GPT-5.4 Mini is the small reliable alternative; GPT-5.4 is the main serious worker for normal above-average tasks; GPT-5.5 is for highest-authority, creative, unresolved, sensitive, or final-judgment work.
 
 ```json
 {
   "name": "Repository Implementer",
   "brief": "Create a tiny note file named worker-note.txt, run the smallest useful verification, and report what changed.",
   "repo_path": "/absolute/path/to/disposable/repo",
-  "model": "gpt-5.5",
-  "reasoning_effort": "high"
+  "model": "gpt-5.3-codex-spark",
+  "reasoning_effort": "medium"
 }
 ```
 

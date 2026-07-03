@@ -53,6 +53,17 @@ Full mode does not change this role. It only exposes additional emergency, compa
 
 If ChatGPT completes a non-trivial repository or document task without using any worker, it should be able to explain which exception applied. "I could do it faster myself" is not a valid default explanation for broad work.
 
+## Worker Model Selection
+
+PatchBay model choice is an advisory management decision, not a hard route or prompt filter. Call `codex_worker_options` when the model or reasoning depth matters, then choose a worker model by task complexity, context size, speed, and authority:
+
+- Spark is the default for compact small workers. Prefer it for small reading tasks, straightforward repository checks, direct bounded fixes, tests, and exploration because it is much faster and effectively free. Be careful with its smaller context window and occasional quota depletion.
+- GPT-5.4 Mini is a similarly small reliable worker for many low/moderate-risk tasks. Use it when Spark is unavailable, quota-limited, too context-constrained, or when a compatible small OpenAI model is useful. It is good for many tasks, but not for the most complex decision-heavy work.
+- GPT-5.4 is the main serious worker for normal above-average tasks. Do not treat it as merely a fallback. Use it for substantial repository work, multi-step analysis, implementation planning, debugging, verification, and decisions that need a very good model but not frontier authority.
+- GPT-5.5 is the highest-authority model. Use it for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and work where the best reasoning quality matters more than speed. Do not spend it as the main worker for every ordinary case.
+
+For worker teams, a normal pattern is Spark or GPT-5.4 Mini for compact helper lanes, GPT-5.4 for the main serious implementer/investigator lanes, and GPT-5.5 for the final authority, creative architecture, or unusually hard synthesis lane.
+
 ## Endpoint
 
 Local development endpoint:
@@ -139,7 +150,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - Prefer `codex_worker_start` for durable delegation whenever the task needs real repository understanding, implementation, verification, or review. The default `isolated_write` mode is for implementation work in a private worktree; use `workspace_mode: "read_only"` for advisory/review workers.
 - For broad tasks, consider a worker team rather than a single worker: investigators by folder/domain, implementers by surface, a read-only reviewer, and a synthesis worker with `context_from_workers`.
 - For important worker assignments, include an explicit deliverable such as `Create worker-report-<topic>.md at the worker workspace root and report what you inspected, changed, verified, and what remains uncertain.` Use a durable file when the user may need to inspect, compare, or reuse the result later.
-- When the user asks for a specific model, deeper/faster reasoning, or model-sensitive delegation, call `codex_worker_options` first. Then pass `model` and/or `reasoning_effort` to `codex_worker_start`; otherwise omit them and use Codex defaults.
+- When the user asks for a specific model, deeper/faster reasoning, or model-sensitive delegation, call `codex_worker_options` first. Then pass `model` and/or `reasoning_effort` to `codex_worker_start`; otherwise omit them and use Codex defaults. Treat Spark as the default for compact fast workers, GPT-5.4 Mini as the small reliable alternative, GPT-5.4 as the main serious worker, and GPT-5.5 as the highest-authority lane.
 - When ChatGPT has generated a file or zip package that local Codex should use, call `codex_worker_inbox` with `action: "import_file"` first. Then pass the returned `artifact_id` through `context_from_artifacts` on `codex_worker_start` or `codex_worker_message`.
 - Importing an artifact stores local inbox context only. It does not edit the repo, does not integrate worker output, and can be repeated for multiple files or zips in the same conversation.
 - Use `codex_worker_inspect`, `codex_worker_list`, and `codex_worker_message` instead of asking the user to track low-level job/session ids.

@@ -100,6 +100,7 @@ WORKER_OPTIONS_SCHEMA: Dict[str, Any] = {
         "models": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "model_count": {"type": "integer"},
         "models_truncated": {"type": "boolean"},
+        "model_selection_guidance": {"type": "object", "additionalProperties": True},
         "allows_custom_model_string": {"type": "boolean"},
         "worker_start_fields": {"type": "object", "additionalProperties": True},
         "next_step": {"type": "string"},
@@ -183,8 +184,9 @@ WORKER_TOOLS = [
         "description": (
             "Read-only progressive setup menu for worker execution choices. Call this when ChatGPT needs to "
             "choose a Codex model or reasoning effort before starting or continuing a worker. It loads bounded "
-            "model metadata from the installed Codex runtime/catalog and explains which fields to pass to "
-            "codex_worker_start or codex_worker_message."
+            "model metadata from the installed Codex runtime/catalog, returns advisory model-selection guidance "
+            "for Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5, and explains which fields to pass to "
+            "codex_worker_start or codex_worker_message. The guidance is a judgment aid, not a hard router."
         ),
         "inputSchema": {
             "type": "object",

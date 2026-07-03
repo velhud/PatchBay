@@ -72,10 +72,17 @@ Worker workspace modes:
 
 Worker execution options use progressive disclosure:
 
-- `codex_worker_options` is the read-only menu tool. It can load the current Codex model catalog through `codex debug models` or the local Codex model cache, then returns only bounded public metadata.
+- `codex_worker_options` is the read-only menu tool. It can load the current Codex model catalog through `codex debug models` or the local Codex model cache, then returns only bounded public metadata plus advisory model-selection guidance.
 - `codex_worker_start` accepts optional `model` and `reasoning_effort`; omit them to use Codex defaults.
 - `codex_worker_message` inherits the worker's prior `model` and `reasoning_effort` unless a follow-up intentionally overrides one of them.
 - Reasoning is restricted to Codex config-supported values: `minimal`, `low`, `medium`, `high`, and `xhigh`.
+
+Model-selection guidance is not a hard router. It should help ChatGPT manage worker teams intelligently:
+
+- Spark is the default for compact small workers: small reading tasks, straightforward checks, direct bounded fixes, tests, and exploration. It is preferred over GPT-5.4 Mini when available because it is much faster and effectively free, but it has a smaller context window and quota can deplete.
+- GPT-5.4 Mini is the small reliable alternative for many low/moderate-risk tasks, especially when Spark is unavailable, quota-limited, too context-constrained, or when a compatible small OpenAI model is useful.
+- GPT-5.4 is the main serious worker, not merely a fallback. Use it for normal above-average repository work, multi-step analysis, implementation planning, debugging, verification, and decisions that need a very good model but not frontier authority.
+- GPT-5.5 is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and work where the best reasoning quality matters more than speed.
 
 Worker file inspection:
 
@@ -226,7 +233,7 @@ These descriptors are not only API documentation; they are part of the model pro
 - what should be inspected before a mutating follow-up;
 - what validation or blocked-state behavior ChatGPT should report after the tool result.
 - when consequential worker assignments should request durable report files or changed-file evidence instead of relying on a compressed chat/tool summary.
-- when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool.
+- when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool, including the advisory Spark / GPT-5.4 Mini / GPT-5.4 / GPT-5.5 worker-selection ladder.
 - that paging, byte caps, and bounded result fields are response-stability controls, not an instruction to save tokens or avoid necessary evidence.
 
 The canonical names remain `codex_*`. Compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` may be advertised depending on `app.tool_mode`, but they must resolve to canonical handlers rather than duplicate execution paths. Their descriptors should advertise the alias names ChatGPT can actually call, such as `path` for `read`/`write`/`edit` and `cmd` or `command` for `bash`, then translate those names into the canonical handler arguments.
