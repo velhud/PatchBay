@@ -77,8 +77,13 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert by_name["codex_worker_status"]["readOnlyHint"] is True
     assert "worker_lines" in by_name["codex_worker_status"]["outputSchema"]["properties"]
     assert "since_last_check" in by_name["codex_worker_status"]["outputSchema"]["properties"]
+    assert "recommended_next_poll_seconds" in by_name["codex_worker_status"]["outputSchema"]["properties"]
+    assert "minimum_next_poll_seconds" in by_name["codex_worker_status"]["outputSchema"]["properties"]
+    assert "poll_guidance" in by_name["codex_worker_status"]["outputSchema"]["properties"]
     assert "compact pull-based worker team status bar" in by_name["codex_worker_status"]["description"]
     assert "active/quiet/stale/lost" in by_name["codex_worker_status"]["description"]
+    assert "20-30 seconds" in by_name["codex_worker_status"]["description"]
+    assert "do not poll every few seconds" in by_name["codex_worker_status"]["description"]
     assert "report" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "liveness" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "status_line" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]

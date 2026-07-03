@@ -112,6 +112,9 @@ WORKER_STATUS_SCHEMA: Dict[str, Any] = {
         "suggested_action": {"type": "string"},
         "worker_lines": {"type": "array", "items": {"type": "string"}},
         "counts": {"type": "object", "additionalProperties": True},
+        "minimum_next_poll_seconds": {"type": "integer"},
+        "recommended_next_poll_seconds": {"type": "integer"},
+        "poll_guidance": {"type": "string"},
         "workers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "count": {"type": "integer"},
         "active": {"type": "integer"},
@@ -439,6 +442,7 @@ WORKER_TOOLS = [
             "state, compact liveness/status lines, activity deltas since the last status check, latest report/checkpoints, team summary, and whether each worker can receive a follow-up. Use this to manage "
             "a worker team, after restart, or before choosing which worker to inspect, message, stop, or integrate. "
             "For long-running teams, read team_status/status_line first: active or quiet workers with recent activity are not failed just because no final report is ready. "
+            "Respect the returned polling guidance: normal worker monitoring means waiting about 20-30 seconds before the next status check, not polling every few seconds. "
             "Use active_only, owned_only, include_stopped=false, or created_after to reduce historical worker clutter during a specific task. "
             "If the team report shows thin, failed, stale, or conflicting work, continue the relevant named worker instead "
             "of treating first reports as final. By default ChatGPT "
@@ -479,7 +483,10 @@ WORKER_TOOLS = [
             "Return the compact pull-based worker team status bar. Use this while workers are running to see "
             "active/quiet/stale/lost/completed/failed counts, deltas since the last check, and one short line per "
             "worker without raw logs or long reports. This is the default liveness check before stopping a worker: "
-            "if events/output/partial notes are changing, wait; if a worker is stale or lost, inspect it deliberately."
+            "if events/output/partial notes are changing, wait; if a worker is stale or lost, inspect it deliberately. "
+            "For normal monitoring, wait about 20-30 seconds between status calls and follow "
+            "recommended_next_poll_seconds in the result; do not poll every few seconds unless the user explicitly "
+            "asked for near-real-time monitoring or the last result needs immediate recovery."
         ),
         "inputSchema": {
             "type": "object",

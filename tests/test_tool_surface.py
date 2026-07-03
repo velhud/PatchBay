@@ -363,6 +363,8 @@ def test_high_value_output_schemas_describe_structured_results():
     assert "report" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "workers" in by_name["codex_worker_list"]["outputSchema"]["properties"]
     assert "worker_lines" in by_name["codex_worker_status"]["outputSchema"]["properties"]
+    assert "recommended_next_poll_seconds" in by_name["codex_worker_status"]["outputSchema"]["properties"]
+    assert "poll_guidance" in by_name["codex_worker_status"]["outputSchema"]["properties"]
     assert "diff" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "can_apply" in by_name["codex_worker_integrate"]["outputSchema"]["properties"]
     assert "connection" in by_name["codex_self_test"]["outputSchema"]["properties"]

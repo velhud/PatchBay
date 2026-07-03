@@ -108,7 +108,7 @@ Required test groups:
 - worker changed-file and one-file diff views;
 - worker resume command ordering with `--sandbox` and `--cd` before `resume`.
 - peer-worker context relay using reports, changed files, or bounded diffs;
-- compact team status from `codex_worker_status` / `codex_worker_list.team_status`, including activity deltas and one-line worker status output.
+- compact team status from `codex_worker_status` / `codex_worker_list.team_status`, including activity deltas, one-line worker status output, and recommended polling cadence.
 
 ## MCP Protocol Smoke Tests
 
@@ -189,7 +189,7 @@ Status: pending real resume/interactive continuation verification.
 2. Inspect the report with `codex_worker_inspect`.
 3. Restart/reconstruct PatchBay runtime.
 4. List workers and find the same human name.
-5. Call `codex_worker_status` and verify compact status lines are present.
+5. Call `codex_worker_status` and verify compact status lines plus 20-30 second polling guidance are present.
 6. Continue with `codex_worker_message`.
 
 Acceptance:

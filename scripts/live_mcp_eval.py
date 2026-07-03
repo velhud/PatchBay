@@ -131,6 +131,8 @@ def main() -> int:
             and "model" in tools["codex_worker_start"]["inputSchema"]["properties"]
             and "reasoning_effort" in tools["codex_worker_start"]["inputSchema"]["properties"]
             and "worker_lines" in tools["codex_worker_status"]["outputSchema"]["properties"]
+            and "recommended_next_poll_seconds" in tools["codex_worker_status"]["outputSchema"]["properties"]
+            and "poll_guidance" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "view" in tools["codex_worker_inspect"]["inputSchema"]["properties"]
             and "cleanup_workspace" in tools["codex_worker_stop"]["inputSchema"]["properties"],
         )
