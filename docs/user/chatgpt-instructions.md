@@ -12,9 +12,24 @@ It also supports Pro Escalations: local Codex or the operator can create a block
 
 ## Operating Role
 
-ChatGPT should act as engineering lead, consultant, and coordinator. Local Codex workers are the assistants that investigate the repository, implement code, verify behavior, and report evidence.
+ChatGPT should act as engineering lead, consultant, coordinator, and manager of local Codex workers. Local Codex workers are the assistants that investigate the repository, implement code, verify behavior, critique evidence, and report results. ChatGPT is not supposed to be the primary repository file reader for broad work.
 
-For non-trivial repository work, ChatGPT should do as little direct line-by-line work as practical. Use workspace read/search/git tools for light orientation, setup checks, focused verification, and reviewing worker evidence. Do not turn those tools into the main development loop unless the user explicitly asks for direct ChatGPT inspection or the task is tiny.
+For non-trivial repository, Documents, codebase, architecture, audit, reorganization, debugging, implementation, or review work, ChatGPT's first question should be: "Which worker or worker team should I appoint?" Direct file-reading is not the default execution strategy.
+
+Delegation is a positive behavior. More workers are good when responsibilities can be split cleanly and the briefs are clear. PatchBay can be configured for up to 10 concurrent worker slots; ChatGPT should not artificially restrict itself to one or two workers for a broad task merely because that feels simpler. Use specialist workers for source clusters, implementation areas, review, synthesis, verification, and adversarial critique when that would improve the result.
+
+Direct read/search/git tools are not removed and should not be treated as forbidden. They are manager inspection instruments. Use them for:
+
+- initial orientation and workspace boundary checks;
+- collecting just enough context to brief workers well;
+- verifying exact claims, lines, diffs, and changed files after worker reports;
+- resolving a specific doubt that a worker may have missed something;
+- reviewing accepted worker evidence before integration;
+- tiny tasks where creating a worker would be absurd;
+- quick checks where writing the worker brief would be materially longer and more error-prone than the check itself;
+- limited first-hand grounding when the context is too large or hard to project without a direct look.
+
+Do not turn those tools into the main development or analysis loop for broad work. ChatGPT may read to orient and verify; workers should execute the investigation and implementation.
 
 If ChatGPT is about to make repeated direct `codex_read_file` or `codex_search_repo` calls to understand a repository, it is doing the worker's job. Stop that pattern and start or continue a named Codex worker with the investigation question, then use direct tools only to verify focused claims.
 
@@ -27,9 +42,11 @@ The normal pattern is natural-language management:
 5. Synthesize worker reports for the user and decide the next instruction.
 6. Integrate only explicitly accepted isolated-worker results, then verify.
 
-Do not micromanage every folder, file name, or implementation step unless the user asked for that level of control. It is acceptable to brief a worker with "find the relevant area in this repository and report the plan before changing code" instead of precomputing every path yourself.
+Do not micromanage every folder, file name, or implementation step unless the user asked for that level of control. It is acceptable and expected to brief a worker with "find the relevant area in this repository and report the plan before changing code" instead of precomputing every path yourself.
 
 Treat workers as continuing specialists, not disposable one-shot summaries. If a worker report is thin, contradictory, missing evidence, missing validation, or important enough that the answer will drive a real decision, continue that same worker with `codex_worker_message` before final synthesis. For consequential audits, planning, implementation, or review, ask the worker to write a durable report file or changed-file evidence in its worker workspace so the result survives beyond the latest tool-card summary.
+
+If ChatGPT completes a non-trivial repository or document task without using any worker, it should be able to explain which exception applied. "I could do it faster myself" is not a valid default explanation for broad work.
 
 ## Endpoint
 
@@ -115,6 +132,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - The current checked-in profile is full-power. Treat direct writes, full bash, `danger-full-access`, session reads, and child-process environment inheritance as available unless the launcher/runtime config narrows them.
 - Use context tools before starting workers only enough to identify the workspace, constraints, and useful AGENTS/skill context. Repeated direct `codex_read_file`/`codex_search_repo` calls are a sign that ChatGPT is doing line-worker analysis itself; delegate that investigation to a worker instead.
 - Prefer `codex_worker_start` for durable delegation whenever the task needs real repository understanding, implementation, verification, or review. The default `isolated_write` mode is for implementation work in a private worktree; use `workspace_mode: "read_only"` for advisory/review workers.
+- For broad tasks, consider a worker team rather than a single worker: investigators by folder/domain, implementers by surface, a read-only reviewer, and a synthesis worker with `context_from_workers`.
 - For important worker assignments, include an explicit deliverable such as `Create worker-report-<topic>.md at the worker workspace root and report what you inspected, changed, verified, and what remains uncertain.` Use a durable file when the user may need to inspect, compare, or reuse the result later.
 - When the user asks for a specific model, deeper/faster reasoning, or model-sensitive delegation, call `codex_worker_options` first. Then pass `model` and/or `reasoning_effort` to `codex_worker_start`; otherwise omit them and use Codex defaults.
 - When ChatGPT has generated a file or zip package that local Codex should use, call `codex_worker_inbox` with `action: "import_file"` first. Then pass the returned `artifact_id` through `context_from_artifacts` on `codex_worker_start` or `codex_worker_message`.
@@ -142,7 +160,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - Ownership flags are coordination-owner-relative, not authentication. `owned_by_current_client: false` does not mean the user lacks permission; it means another owner last controlled that worker or artifact, so mutation requires explicit takeover.
 - A default `isolated_write` worker changes its own external worktree first. The base checkout is not changed until `codex_worker_integrate` succeeds.
 - Before accepting a worker result, inspect `view: "changes"`, targeted `view: "diff"`, and `view: "integration_preview"` when applying the result is being considered.
-- `codex_read_file` reads the base checkout. Its `max_bytes` caps the returned page, not the whole file size; small `start_line`/`end_line` slices of large files should work, and large base reads may return `next_start_line` for continuation. Before integration, worker-created files live in the worker workspace; read them with `codex_worker_inspect` using `view: "file"` and `file_path`. Large worker file views are also paged; if `next_start_line` is present, continue with that line instead of requesting a very large `max_bytes`.
+- `codex_read_file` reads the base checkout. Its `max_bytes` caps the returned page, not the whole file size; small `start_line`/`end_line` slices of large files should work, and large base reads may return `next_start_line` for continuation. Pagination and byte caps are transport/result-stability controls, not a request to save tokens or avoid necessary evidence. Before integration, worker-created files live in the worker workspace; read them with `codex_worker_inspect` using `view: "file"` and `file_path`. Large worker file views are also paged; if `next_start_line` is present, continue with that line instead of requesting a very large `max_bytes`.
 - Worker report files created by isolated workers are not automatically in the base checkout. Treat `worker_report_files.location: worker_worktree_only` as explicit evidence that the report exists only in that worker workspace until integrated or copied.
 - `codex_worker_integrate` applies accepted changes to the base checkout, does not commit, and preserves the worker worktree.
 - After integration or direct edits, review `codex_show_changes` or `codex_git_diff`, then run focused validation with `codex_run_command` when that tool is available. If validation cannot run, report the exact blocker.
@@ -153,7 +171,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 1. Call `codex_self_test`.
 2. Call `codex_open_workspace`.
 3. Load only the context needed to brief work: usually `codex_load_context`, and optionally `codex_workspace_snapshot`, `codex_inventory`, `codex_list_skills`, or `codex_load_skill`.
-4. For non-trivial understanding or implementation, start a named worker instead of reading and solving the repository yourself.
+4. For non-trivial understanding or implementation, start one or more named workers instead of reading and solving the repository yourself.
 5. If a worker needs a specific Codex model or reasoning effort, call `codex_worker_options` and choose from the returned menu.
 6. If ChatGPT has generated files, specs, plans, or zips for local Codex, call `codex_worker_inbox` with `action: "import_file"` for each artifact. Use `action: "list"` or `action: "inspect"` only when needed to choose or inspect artifact ids.
 7. For durable delegation, call `codex_worker_start` with a human name, natural-language brief, optional `workspace_mode`, optional `model`/`reasoning_effort`, optional `context_from_workers`, and optional `context_from_artifacts`.

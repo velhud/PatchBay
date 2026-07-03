@@ -34,15 +34,18 @@ def test_initialize_includes_server_instructions():
     assert result["serverInfo"]["name"] == "patchbay"
     assert result["serverInfo"]["version"] == "0.1.0"
     assert "instructions" in result
-    assert "engineering lead, consultant, and coordinator" in result["instructions"]
-    assert "do as little line-by-line work yourself as practical" in result["instructions"]
+    assert "manager, engineering lead, and coordinator" in result["instructions"]
+    assert "not the primary repository file reader" in result["instructions"]
+    assert "Which worker or worker team should I appoint?" in result["instructions"]
+    assert "Direct read/search/git tools remain available" in result["instructions"]
+    assert "up to 10 concurrent worker slots" in result["instructions"]
     assert "one shared local server" in result["instructions"]
     assert "repo_busy" in result["instructions"]
     assert "raw MCP session ids" in result["instructions"]
     assert "codex_self_test" in result["instructions"]
     assert "codex_open_workspace" in result["instructions"]
     assert "Use read-only context tools for light orientation" in result["instructions"]
-    assert "ask workers natural questions" in result["instructions"]
+    assert "communicate with them in normal engineering language" in result["instructions"]
     assert "split responsibilities across multiple isolated_write workers" in result["instructions"]
     assert "continuing specialists" in result["instructions"]
     assert "durable report file" in result["instructions"]

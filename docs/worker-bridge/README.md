@@ -6,7 +6,7 @@ This directory defines the worker layer for `patchbay`.
 
 The current application exposes a local Streamable HTTP MCP bridge that lets ChatGPT inspect configured repositories, launch local Codex jobs, and manage named Codex workers. The worker layer makes the normal product abstraction human: ChatGPT briefs named local Codex colleagues, continues them by name, imports generated files or zips as artifact context, inspects reports and diffs, passes bounded context between workers, previews integration, and explicitly applies accepted work through exact git mechanics.
 
-The intended ChatGPT posture is active management, not one-shot delegation. Named workers are continuing specialists. For important work, ChatGPT should ask workers for durable report files or changed-file evidence, inspect results, then use `codex_worker_message` for follow-up questions when reports are thin, contradictory, missing validation, or need another worker's context.
+The intended ChatGPT posture is active management, not one-shot delegation and not direct manual repository reading. For non-trivial work, ChatGPT should first decide which worker or worker team to appoint. Named workers are continuing specialists. For important work, ChatGPT should ask workers for durable report files or changed-file evidence, inspect results, then use `codex_worker_message` for follow-up questions when reports are thin, contradictory, missing validation, or need another worker's context. Direct read/search tools remain available for orientation, focused verification, exact line/diff checks, and tiny exceptions, but broad investigation and implementation should flow through workers.
 
 ## Read Order
 
@@ -49,7 +49,8 @@ The existing workspace, low-level job, session, handoff, and power-tool surfaces
 The ChatGPT-facing prompt surface is the combination of MCP `initialize.instructions`, `tools/list` descriptors, annotations, output schemas, the passive tool card, and the setup docs. Keep it worker-first for first real ChatGPT validation:
 
 - launch with `--tool-mode worker`;
-- keep ChatGPT in the lead/consultant role: use direct context tools for light orientation and verification, and delegate non-trivial repository work to workers instead of doing a manual line-by-line implementation loop;
+- keep ChatGPT in the lead/manager/consultant role: use direct context tools for light orientation, worker briefing context, focused verification, and tiny exceptions, and delegate non-trivial repository work to workers instead of doing a manual line-by-line implementation loop;
+- encourage worker teams for broad work. PatchBay can expose up to 10 concurrent worker slots depending on configuration, and ChatGPT should use parallel investigators, implementers, reviewers, verification workers, and synthesis workers when responsibilities are clear;
 - use `codex_tool_mode_info` and `codex_tool_mode_switch` only for explicit, temporary broadening; ChatGPT may need connector refresh before newly exposed tools appear;
 - start with `codex_self_test` and `codex_open_workspace`;
 - treat one copied Server URL as one shared local state surface and use coordination-owner-relative ownership/takeover signals instead of assuming a private app instance; `active_mcp_sessions` is transport-session churn, not proof of worker ownership by itself;
