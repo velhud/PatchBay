@@ -52,6 +52,16 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
     assert result["codex_version"] == "codex-cli 0.test"
     assert result["default_model"] == "gpt-5.5"
     assert result["selected_model"]["id"] == "gpt-5.5"
+    guidance = result["model_selection_guidance"]
+    assert "hard router" in guidance["summary"]
+    ladder = {item["model_family"]: item for item in guidance["default_ladder"]}
+    assert "Default for small workers" in ladder["Spark"]["role"]
+    assert "much faster and effectively free" in ladder["Spark"]["caveats"]
+    assert "not the first choice for complex decision-heavy work" in ladder["GPT-5.4 Mini"]["caveats"]
+    assert "Main serious worker" in ladder["GPT-5.4"]["role"]
+    assert "as merely a fallback" in ladder["GPT-5.4"]["caveats"]
+    assert "Highest-authority model" in ladder["GPT-5.5"]["role"]
+    assert "Do not spend GPT-5.5 as the main worker" in ladder["GPT-5.5"]["caveats"]
     assert result["selected_model"]["reasoning_efforts"] == [
         {"effort": "low", "description": "Fast"},
         {"effort": "high", "description": "Deep"},
