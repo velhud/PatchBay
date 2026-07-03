@@ -12,7 +12,13 @@ import pytest
 
 from patchbay.jobs.executor import JobExecutor
 from patchbay.jobs.manager import JobManager, JobState
-from patchbay.ownership import OWNER_CLIENT_REF_OPTION, OWNER_SESSION_HASH_OPTION
+from patchbay.ownership import (
+    CURRENT_OWNER_SCHEMA,
+    OWNER_CLIENT_REF_OPTION,
+    OWNER_SCHEMA_OPTION,
+    OWNER_SCOPE_OPTION,
+    OWNER_SESSION_HASH_OPTION,
+)
 from patchbay.protocol.context import RequestContext
 from patchbay.tools.handler import ToolHandler
 from patchbay.workers.runtime import WorkerRuntime
@@ -165,6 +171,8 @@ async def test_worker_inbox_owner_metadata_is_private_and_session_relative(tmp_p
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata[OWNER_SESSION_HASH_OPTION] == "client_a"
     assert metadata[OWNER_CLIENT_REF_OPTION] == "client_a"
+    assert metadata[OWNER_SCOPE_OPTION] == "transport_session"
+    assert metadata[OWNER_SCHEMA_OPTION] == CURRENT_OWNER_SCHEMA
 
     listed = await handler.handle_tool_call("codex_worker_inbox", {"action": "list"}, context=client_b)
     assert listed["artifacts"][0]["owned_by_current_client"] is False

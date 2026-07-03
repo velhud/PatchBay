@@ -18,6 +18,9 @@ OWNER_CLIENT_REF_OPTION = "_mcp_owner_client_ref"
 OWNER_LABEL_OPTION = "_mcp_owner_label"
 OWNER_CREATED_AT_OPTION = "_mcp_owner_created_at"
 OWNER_LAST_SEEN_AT_OPTION = "_mcp_owner_last_seen_at"
+OWNER_SCOPE_OPTION = "_mcp_owner_scope"
+OWNER_SCHEMA_OPTION = "_mcp_owner_schema"
+CURRENT_OWNER_SCHEMA = "patchbay-owner-v2"
 
 OWNER_METADATA_KEYS = {
     OWNER_SESSION_HASH_OPTION,
@@ -25,6 +28,8 @@ OWNER_METADATA_KEYS = {
     OWNER_LABEL_OPTION,
     OWNER_CREATED_AT_OPTION,
     OWNER_LAST_SEEN_AT_OPTION,
+    OWNER_SCOPE_OPTION,
+    OWNER_SCHEMA_OPTION,
 }
 MAX_TAKEOVER_REASON_CHARS = 500
 
@@ -45,6 +50,17 @@ def owner_hash_for_context(context: RequestContext | None) -> str:
     return context.client_ref
 
 
+def owner_scope_for_context(context: RequestContext | None) -> str:
+    """Return the comparable owner scope for a request context."""
+    if context is None:
+        return ""
+    if context.owner_scope:
+        return context.owner_scope
+    if context.has_transport_session and context.client_ref != ANONYMOUS_CLIENT_REF:
+        return "transport_session"
+    return ""
+
+
 def owner_metadata_from_context(
     context: RequestContext | None,
     *,
@@ -62,6 +78,8 @@ def owner_metadata_from_context(
     return {
         OWNER_SESSION_HASH_OPTION: owner_hash,
         OWNER_CLIENT_REF_OPTION: context.client_ref if context else "",
+        OWNER_SCOPE_OPTION: owner_scope_for_context(context),
+        OWNER_SCHEMA_OPTION: CURRENT_OWNER_SCHEMA,
         OWNER_LABEL_OPTION: _clean_label(context.client_label if context else ""),
         OWNER_CREATED_AT_OPTION: float(created_at),
         OWNER_LAST_SEEN_AT_OPTION: timestamp,
@@ -88,6 +106,12 @@ def stored_owner_hash(metadata: Mapping[str, Any] | None) -> str:
     return str(metadata.get(OWNER_SESSION_HASH_OPTION) or metadata.get(OWNER_CLIENT_REF_OPTION) or "")
 
 
+def stored_owner_scope(metadata: Mapping[str, Any] | None) -> str:
+    if not metadata:
+        return ""
+    return str(metadata.get(OWNER_SCOPE_OPTION) or "")
+
+
 def public_ownership(
     metadata: Mapping[str, Any] | None,
     context: RequestContext | None,
@@ -97,6 +121,8 @@ def public_ownership(
     """Return safe ownership flags without exposing raw/private owner fields."""
     owner_hash = stored_owner_hash(metadata)
     current_hash = owner_hash_for_context(context)
+    owner_scope = stored_owner_scope(metadata)
+    current_scope = owner_scope_for_context(context)
     owner_label = _clean_label((metadata or {}).get(OWNER_LABEL_OPTION))
 
     result: dict[str, Any] = {}
@@ -114,14 +140,42 @@ def public_ownership(
         result["ownership_status"] = "current_client"
     else:
         result["owned_by_current_client"] = False if current_hash else None
-        result["ownership_status"] = "other_connection" if current_hash else "unknown_current_connection"
-        result["ownership_note"] = (
-            "This item was created or last controlled by a different PatchBay coordination owner. "
-            "In token-scoped ownership, short-lived MCP transport sessions that use the same copied Server URL "
-            "should normally remain the same owner; if this appears to be the same ChatGPT task, the item may "
-            "be legacy metadata or the request may have arrived with different authentication. "
-            f"Use takeover=true only after the user confirms {mutation_name} is intentional."
-        )
+        if not current_hash:
+            result["ownership_status"] = "unknown_current_connection"
+            result["ownership_note"] = (
+                "PatchBay cannot identify the current MCP coordination owner. "
+                f"{mutation_name} may require takeover=true after user confirmation."
+            )
+        elif not owner_scope:
+            result["ownership_status"] = "legacy_connection"
+            result["ownership_note"] = (
+                "This item has owner metadata from an older PatchBay version that did not record whether the "
+                "owner was a transport session, token, or server-scoped owner. It may be from the same ChatGPT "
+                "workflow, an older short-lived MCP session, or an earlier token. "
+                f"Use takeover=true only after the user confirms {mutation_name} is intentional; that will "
+                "rewrite the item's owner metadata using the current scoped owner model."
+            )
+        elif owner_scope != current_scope:
+            result["ownership_status"] = "different_owner_scope"
+            result["ownership_note"] = (
+                f"This item was last controlled under {owner_scope!r} ownership, while the current request uses "
+                f"{current_scope!r} ownership. This usually means PatchBay configuration or authentication changed. "
+                f"Use takeover=true only after the user confirms {mutation_name} is intentional."
+            )
+        elif owner_scope == "token":
+            result["ownership_status"] = "other_token_owner"
+            result["ownership_note"] = (
+                "This item was last controlled by a different token-scoped PatchBay owner. Short-lived MCP "
+                "transport sessions using the same copied Server URL should normally share one token owner, so "
+                "this usually means a different tokenized URL or a token rotation. "
+                f"Use takeover=true only after the user confirms {mutation_name} is intentional."
+            )
+        else:
+            result["ownership_status"] = "other_connection"
+            result["ownership_note"] = (
+                "This item was created or last controlled by a different PatchBay coordination owner. "
+                f"Use takeover=true only after the user confirms {mutation_name} is intentional."
+            )
     if owner_label:
         result["owner_label"] = owner_label
     return result

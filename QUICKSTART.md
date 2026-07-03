@@ -130,6 +130,7 @@ Expected result:
 - `codex_self_test` reports `name: patchbay`, readiness, the active tool mode, and shared-server coordination metadata.
 - `codex_open_workspace` reports the disposable repo, branch, git status, AGENTS/context hints, and next suggested tools.
 - In worker mode, ChatGPT should see `codex_worker_*` tools plus the context tools needed to brief workers.
+- Shared worker and artifact views may show ownership statuses. `current_client` means the current scoped owner matches, `legacy_connection` means an older durable record lacks owner-scope metadata, and `other_token_owner` means the item came from a different tokenized Server URL. Mutating another owner still requires user-confirmed `takeover: true`.
 
 During a run, `codex_tool_mode_info` can compare `worker`, `standard`, `full`, and `minimal`; `codex_tool_mode_switch` can request a session-local mode change. Direct MCP clients that re-run `tools/list` on the same MCP session see the new catalog, while other sessions keep their own mode. ChatGPT Developer Mode may still require refreshing or reconnecting the connector before newly exposed tools appear.
 
