@@ -695,6 +695,31 @@ async def test_list_workers_reconciles_stale_running_worker(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_workers_does_not_scan_worker_changes(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    await runtime.start_worker(
+        name="Large Workspace Worker",
+        brief="Inspect a large workspace.",
+        repo_path=config["repositories"]["default"],
+    )
+
+    def fail_if_called(jobs):
+        raise AssertionError("worker list must not scan git changes")
+
+    monkeypatch.setattr(runtime, "_changed_files", fail_if_called)
+
+    result = await runtime.list_workers()
+
+    assert result["count"] == 1
+    assert result["workers"][0]["has_changes"] is False
+    assert result["workers"][0]["changes_checked"] is False
+
+
+@pytest.mark.asyncio
 async def test_duplicate_worker_names_are_rejected_case_insensitively(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
