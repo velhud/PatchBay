@@ -25,3 +25,17 @@ def test_request_context_public_metadata_excludes_private_session_id():
     assert public["active_mcp_sessions"] == 2
     assert public["has_mcp_session"] is True
     assert "private-session-id" not in str(public)
+
+
+def test_request_context_can_use_stable_owner_ref_separate_from_transport_session():
+    context = RequestContext.from_session(
+        "short-lived-transport-session",
+        {"owner_ref": "client_stableowner", "owner_scope": "token"},
+        salt="test-salt",
+    )
+
+    public = context.public_metadata()
+    assert context.client_ref != context.owner_ref
+    assert public["owner_ref"] == "client_stableowner"
+    assert public["owner_scope"] == "token"
+    assert "short-lived-transport-session" not in str(public)

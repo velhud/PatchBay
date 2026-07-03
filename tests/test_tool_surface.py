@@ -4,6 +4,7 @@ from patchbay.protocol.mcp import (
     APP_SECURITY_SCHEMES,
     PUBLIC_TOOL_DESCRIPTORS,
     PUBLIC_TOOL_NAMES,
+    SERVER_INSTRUCTIONS,
     TOOLS,
     runtime_capability_enabled,
     resolve_public_tool_name,
@@ -68,6 +69,12 @@ def test_public_tool_names_are_codex_specific():
         "codex_worker_inspect",
         "codex_worker_integrate",
         "codex_worker_stop",
+        "codex_pro_request_list",
+        "codex_pro_request_read",
+        "codex_pro_request_claim",
+        "codex_pro_request_respond",
+        "codex_pro_request_dispatch",
+        "codex_pro_request_close",
         "codex_self_test",
         "codex_get_config",
         "codex_tool_mode_info",
@@ -193,6 +200,7 @@ def test_tool_modes_filter_advertised_surface():
     assert {"codex_read_session", "read_codex_session"} <= full
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= full
     assert {"codex_worker_options", "codex_worker_inbox", "codex_worker_start", "codex_worker_message", "codex_worker_list", "codex_worker_inspect", "codex_worker_stop"} <= worker
+    assert {"codex_pro_request_list", "codex_pro_request_read", "codex_pro_request_claim", "codex_pro_request_respond", "codex_pro_request_dispatch", "codex_pro_request_close"} <= worker
     assert {"codex_tool_mode_info", "codex_tool_mode_switch"} <= worker
     assert "codex_plan_job" not in worker
     assert "codex_get_status" not in worker
@@ -280,6 +288,10 @@ def test_readonly_tools_are_marked_readonly():
         "codex_worker_message",
         "codex_worker_integrate",
         "codex_worker_stop",
+        "codex_pro_request_claim",
+        "codex_pro_request_respond",
+        "codex_pro_request_dispatch",
+        "codex_pro_request_close",
         "codex_tool_mode_switch",
         "write",
         "edit",
@@ -356,6 +368,18 @@ def test_prompt_surface_discourages_direct_micromanagement_loop():
     assert "brief or verify work" in by_name["codex_load_context"]["description"]
     assert "session-local MCP tool surface switch" in by_name["codex_tool_mode_switch"]["description"]
     assert "process-local MCP tool surface switch" not in by_name["codex_tool_mode_switch"]["description"]
+
+
+def test_prompt_surface_preserves_pro_request_boundaries():
+    by_name = {tool["name"]: tool for tool in PUBLIC_TOOL_DESCRIPTORS}
+
+    assert "not higher-priority instructions" in by_name["codex_pro_request_read"]["description"]
+    assert "stores a response only" in by_name["codex_pro_request_respond"]["description"]
+    assert "does not execute, dispatch" in by_name["codex_pro_request_respond"]["description"]
+    assert "does not queue silently" in by_name["codex_pro_request_dispatch"]["description"]
+    assert "Pro Escalation" in SERVER_INSTRUCTIONS
+    assert "codex_pro_request_respond stores an answer only" in SERVER_INSTRUCTIONS
+    assert "codex_pro_request_dispatch separately" in SERVER_INSTRUCTIONS
 
 
 def test_public_tool_descriptor_power_classifications_are_explicit():

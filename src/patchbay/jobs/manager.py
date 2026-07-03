@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import errno
 from typing import Dict, Optional, Any
 from pathlib import Path
 from enum import Enum
@@ -90,6 +91,7 @@ class JobManager:
         self.jobs: Dict[str, JobInfo] = {}
         self._admission_lock = threading.Lock()
         self.max_concurrent = config['server']['max_concurrent_jobs']
+        self.queue_enabled = bool(config.get("server", {}).get("queue_enabled", False))
         self.job_timeout = config['server']['job_timeout_seconds']
         self.cleanup_after_hours = config['server'].get('job_cleanup_after_hours', 24)
         logging_config = config.get('logging', {})
@@ -99,10 +101,12 @@ class JobManager:
         self.job_state_dir.mkdir(parents=True, exist_ok=True)
         self._load_jobs()
         
+        timeout_label = "disabled" if str(self.job_timeout).strip().lower() in {"", "0", "none", "never", "unlimited", "disabled", "false"} else f"{self.job_timeout}s"
         logger.info(
-            "JobManager initialized: max_concurrent=%s, timeout=%ss",
+            "JobManager initialized: max_concurrent=%s, queue_enabled=%s, timeout=%s",
             self.max_concurrent,
-            self.job_timeout,
+            self.queue_enabled,
+            timeout_label,
         )
     
     def create_job(self, mode: str, prompt: str, repo_path: str, options: Optional[Dict] = None) -> str:
@@ -128,7 +132,7 @@ class JobManager:
             job_id: Unique job identifier
         """
         # Check concurrent limit (0 = unlimited)
-        if self.max_concurrent > 0:
+        if not self.queue_enabled and self.max_concurrent > 0:
             active_count = self.active_job_count()
             if active_count >= self.max_concurrent:
                 raise RuntimeError(
@@ -202,7 +206,10 @@ class JobManager:
         Returns:
             (worktree_path, branch_name)
         """
-        repo = git.Repo(repo_path)
+        try:
+            repo = git.Repo(repo_path)
+        except git.InvalidGitRepositoryError as error:
+            raise ValueError("Job worktree could not be created: base repository is not a git repository") from error
         
         # Generate unique branch name
         branch_name = f"codex/job-{job_id[:8]}"
@@ -211,8 +218,11 @@ class JobManager:
         worktree_path = self.worktrees_dir / f"job-{job_id[:8]}"
         
         # Add worktree
-        repo.git.worktree('add', str(worktree_path), '-b', branch_name)
-        
+        try:
+            repo.git.worktree('add', str(worktree_path), '-b', branch_name)
+        except Exception as error:
+            raise self._worktree_creation_error("Job worktree could not be created", error) from error
+
         return worktree_path, branch_name
 
     def worker_worktrees_dir(self) -> Path:
@@ -233,16 +243,34 @@ class JobManager:
         """Create one external durable worktree for a named worker."""
         repo_path = str(Path(repo_path).expanduser().resolve())
         self._validate_repo_allowed(repo_path)
-        repo = git.Repo(repo_path)
+        try:
+            repo = git.Repo(repo_path)
+        except git.InvalidGitRepositoryError as error:
+            raise ValueError("Worker worktree could not be created: base repository is not a git repository") from error
         base_revision = repo.head.commit.hexsha
         suffix = "".join(ch if ch.isalnum() else "-" for ch in worker_id.lower()).strip("-")[:32]
         branch_name = f"codex/worker-{suffix}"
         worktree_path = self.worker_worktrees_dir() / f"worker-{suffix}"
         if worktree_path.exists():
             raise ValueError(f"Worker worktree already exists: {worktree_path}")
-        repo.git.worktree("add", str(worktree_path), "-b", branch_name)
+        try:
+            repo.git.worktree("add", str(worktree_path), "-b", branch_name)
+        except Exception as error:
+            raise self._worktree_creation_error("Worker worktree could not be created", error) from error
         logger.info("Created worker worktree for worker %s", worker_id)
         return worktree_path.resolve(), branch_name, base_revision
+
+    def _worktree_creation_error(self, prefix: str, error: Exception) -> ValueError:
+        text = str(error).lower()
+        if isinstance(error, OSError) and getattr(error, "errno", None) == errno.ENOSPC:
+            return ValueError(f"{prefix}: host filesystem is full")
+        if "no space left on device" in text:
+            return ValueError(f"{prefix}: host filesystem is full")
+        if "not a git repository" in text:
+            return ValueError(f"{prefix}: base repository is not a git repository")
+        if "already exists" in text:
+            return ValueError(f"{prefix}: target worktree already exists")
+        return ValueError(f"{prefix}: git worktree command failed; inspect server logs for details")
 
     def remove_worker_worktree(self, repo_path: str, worktree_path: str, branch_name: Optional[str] = None) -> None:
         """Remove an external durable worker worktree and its private branch."""

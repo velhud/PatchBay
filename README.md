@@ -21,6 +21,7 @@ Use it when the best context already lives in ChatGPT web/Pro, Projects, memory,
 | ChatGPT context becomes executable | Reuse a deep ChatGPT conversation, project instructions, memory, and generated files as source material for local Codex work. |
 | No copy-paste bridge | Move briefs, artifacts, reports, diffs, and follow-up instructions through MCP instead of manually shuttling text between apps. |
 | Durable local worker loops | Start named Codex workers, continue them after restart, pass context between workers, and inspect their reports or diffs from ChatGPT. |
+| Reverse Pro escalation loop | Package a local blocked problem for ChatGPT Pro, store the answer durably, then explicitly dispatch it to an idle origin worker or a new isolated worker. |
 | Local execution stays local | Codex still runs on your machine against your repo, git state, toolchain, and configured Codex account. |
 | Explicit power boundary | Isolated worktrees, tool modes, tokens, metadata, and integration previews keep powerful actions visible and reviewable. |
 
@@ -41,10 +42,11 @@ This branch is **pre-release verified**, not public-release complete.
 
 | Area | Status |
 | --- | --- |
-| Codex CLI baseline | Verified with `codex-cli 0.142.2` |
+| Codex CLI baseline | Current local verification recorded `codex-cli 0.142.2` |
 | Python checks | `compileall` passes |
-| Test suite | `260` tests pass |
+| Test suite | `281` tests pass |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
+| Pro Escalation request loop | Unit tests and the live MCP probe cover CLI create, MCP list/read/claim/respond, CLI response readback, and blocked origin-worker dispatch |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |
 | Isolated writing worker eval | `scripts/worker_phase2_eval.py --timeout 900` passes real Codex isolated write/restart/continue/diff/cleanup |
 | Multi-worker coordination eval | `scripts/worker_phase3_eval.py --timeout 900` passes real Codex peer diff/report relay |
@@ -69,6 +71,7 @@ This branch is **pre-release verified**, not public-release complete.
 | Workspace context | tree, read, search, git status/diff, AGENTS, skills, context packs |
 | Codex orchestration | plan, apply, status, result, diff, cancel, review, interactive, resume |
 | Durable worker facade | discover worker model/reasoning options, import generated artifact context, start/message/list/inspect/stop named Codex colleagues, use isolated writing worktrees by default, and include bounded peer-worker context |
+| Pro Escalation requests | create local-to-ChatGPT blocked-problem requests, read/claim/respond through MCP, and explicitly dispatch stored answers to workers |
 | Repository boundary | allowed roots, path guard, blocked globs, worktree apply jobs |
 | Handoff | `.ai-bridge` plan/status/diff and local execute/watch scripts |
 | Power modes | direct write, exact edit, safe/full bash, bounded transcript reads |
@@ -255,8 +258,9 @@ Important defaults:
 server:
   host: 127.0.0.1
   port: 8000
-  max_concurrent_jobs: 1
-  job_timeout_seconds: 1800
+  max_concurrent_jobs: 10
+  queue_enabled: true
+  job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
   stale_running_job_grace_seconds: 5
   max_request_bytes: 1048576
   enable_cors: false
@@ -272,6 +276,9 @@ auth:
   require_for_non_loopback: true
   require_for_tunnel: true
   tunnel_mode: none
+
+ownership:
+  scope: token
 
 repositories:
   default: /
@@ -299,6 +306,15 @@ logging:
 
 workers:
   worktree_root: ""
+
+pro_requests:
+  root:
+  mirror_enabled: true
+  mirror_dir: ".ai-bridge/pro-requests"
+  max_report_bytes: 200000
+  max_response_bytes: 200000
+  max_attachment_bytes: 2000000
+  max_attachments_per_request: 10
 ```
 
 Blank logging paths resolve outside the checkout under `PATCHBAY_HOME/runtime`
@@ -343,7 +359,20 @@ Workers are derived from persisted job records and Codex sessions. Human worker 
 
 Default writing workers use durable external worktrees with on-demand changed-file, file-content, and one-file diff inspection. Before integration, `codex_read_file` reads only the base checkout; use `codex_worker_inspect(view="file", file_path="...")` to read a worker-created file from its isolated worktree. Imported artifacts are copied into `.ai-bridge/imported-artifacts/` inside the isolated worker worktree and excluded from changes, diffs, integration previews, and applies. Worker start/message calls can include bounded report/change/diff context from other workers, and `codex_worker_list` returns a concise `team_report`.
 
-If multiple ChatGPT conversations share one Server URL, worker and artifact views include session-relative ownership flags. Read/list/inspect remain shared, but mutating another connection's worker or artifact requires an explicit `takeover: true` call after user confirmation. Base-checkout mutation paths, including direct writes, command execution, shared-write workers, and worker integration, use per-repository mutation locks and return `repo_busy` instead of queueing hidden writes. PatchBay does not add a worker database, message bus, transcript copy, role engine, automatic reviewer chain, automatic commits, automatic queue, or automatic merge queue.
+If multiple ChatGPT conversations share one Server URL, worker and artifact views include owner-relative coordination flags. By default `ownership.scope: token` treats calls using the same bearer/query token as the same coordination owner, so short-lived transport sessions from the same copied connector URL can continue the same workers without takeover. Read/list/inspect remain shared, but mutating another owner's worker or artifact requires an explicit `takeover: true` call after user confirmation. When `queue_enabled: true`, Codex turns above `max_concurrent_jobs` remain pending until an execution slot opens. Base-checkout mutation paths, including direct writes, command execution, shared-write workers, and worker integration, still use per-repository mutation locks and return `repo_busy` instead of queueing hidden writes. PatchBay does not add a worker database, message bus, transcript copy, role engine, automatic reviewer chain, automatic commits, or automatic merge queue.
+
+### Pro Escalation requests
+
+| Tool | Purpose | Read-only |
+| --- | --- | --- |
+| `codex_pro_request_list` | List open or recent local-to-ChatGPT Pro requests | yes |
+| `codex_pro_request_read` | Read one bounded report, response, attachment index, and repo staleness check | yes |
+| `codex_pro_request_claim` | Claim the request for the current MCP connection | no |
+| `codex_pro_request_respond` | Store ChatGPT Pro's answer only; no execution, dispatch, edit, apply, or commit | no |
+| `codex_pro_request_dispatch` | Explicitly send the stored answer to an idle origin worker or start a new isolated worker | no |
+| `codex_pro_request_close` | Close, cancel, or supersede a request | no |
+
+Local creation and operator inspection use `patchbay pro-request create/list/show/response/dispatch/close`. The canonical store lives in PatchBay runtime storage; `.ai-bridge/pro-requests/<request-id>/` is a sanitized mirror for local visibility. Dispatch is deliberate and never integrates worker output into the base checkout. See [docs/pro-escalations/USER_FLOW.md](docs/pro-escalations/USER_FLOW.md) and [docs/pro-escalations/ARCHITECTURE.md](docs/pro-escalations/ARCHITECTURE.md).
 
 ### Core Codex jobs
 
@@ -475,6 +504,8 @@ That direct MCP trial uses two logical MCP sessions against a disposable repo. I
 - [docs/architecture/overview.md](docs/architecture/overview.md): current hybrid architecture.
 - [docs/reference/public-tool-surface.md](docs/reference/public-tool-surface.md): tool tiers, schemas, aliases, and metadata policy.
 - [docs/worker-bridge/README.md](docs/worker-bridge/README.md): natural-language worker bridge architecture and implementation history.
+- [docs/pro-escalations/ARCHITECTURE.md](docs/pro-escalations/ARCHITECTURE.md): reverse local-to-ChatGPT Pro request architecture.
+- [docs/pro-escalations/USER_FLOW.md](docs/pro-escalations/USER_FLOW.md): operator and ChatGPT flow for Pro Requests.
 - [docs/reference/context-and-handoff.md](docs/reference/context-and-handoff.md): AGENTS, skills, context packs, and `.ai-bridge`.
 - [docs/project/why-patchbay.md](docs/project/why-patchbay.md): product purpose and value proposition.
 - [SECURITY.md](SECURITY.md): vulnerability reporting and operator warnings.

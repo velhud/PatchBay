@@ -12,6 +12,7 @@ from patchbay.artifacts import ArtifactStore
 from patchbay.auth import auth_public_metadata, build_auth_policy
 from patchbay.jobs.sessions import CodexSessionReader
 from patchbay.ownership import merge_owner_metadata
+from patchbay.pro_requests import ProRequestStore
 from patchbay.protocol.context import RequestContext
 from patchbay.repo_locks import (
     RepoMutationBusy,
@@ -87,6 +88,7 @@ class ToolHandler:
         self.power_tools = PowerToolRunner(config, self.workspace_context, repo_locks=self.repo_locks)
         self.codex_sessions = CodexSessionReader(config)
         self.artifact_store = ArtifactStore(config)
+        self.pro_request_store = ProRequestStore(config)
         self.worker_runtime = WorkerRuntime(config, job_manager, job_executor, repo_locks=self.repo_locks)
         # Track interactive conversations
         self.conversations: Dict[str, Dict[str, Any]] = {}
@@ -147,6 +149,12 @@ class ToolHandler:
             "codex_worker_inspect": self._codex_worker_inspect,
             "codex_worker_integrate": self._codex_worker_integrate,
             "codex_worker_stop": self._codex_worker_stop,
+            "codex_pro_request_list": self._codex_pro_request_list,
+            "codex_pro_request_read": self._codex_pro_request_read,
+            "codex_pro_request_claim": self._codex_pro_request_claim,
+            "codex_pro_request_respond": self._codex_pro_request_respond,
+            "codex_pro_request_dispatch": self._codex_pro_request_dispatch,
+            "codex_pro_request_close": self._codex_pro_request_close,
             "codex_self_test": self._codex_self_test,
             "codex_get_config": self._codex_get_config,
         }
@@ -194,6 +202,8 @@ class ToolHandler:
             "shared_server": True,
             "client": context.public_metadata(),
             "client_ref": context.client_ref,
+            "owner_ref": context.owner_ref,
+            "owner_scope": context.owner_scope,
             "active_mcp_sessions": context.active_mcp_sessions,
             "raw_session_ids_returned": False,
             "ownership_model": "coordination_not_authentication",
@@ -207,7 +217,7 @@ class ToolHandler:
             "active_jobs": self._active_job_count(),
             "max_concurrent_jobs": getattr(self.job_manager, "max_concurrent", self.config.get("server", {}).get("max_concurrent_jobs")),
             "active_job_definition": "pending_plus_running",
-            "queue_enabled": False,
+            "queue_enabled": bool(self.config.get("server", {}).get("queue_enabled", False)),
         }
         return status
 
@@ -324,6 +334,128 @@ class ToolHandler:
             request_context=self.current_request_context(),
             takeover=bool(args.get("takeover", False)),
             takeover_reason=args.get("takeover_reason", ""),
+        )
+
+    async def _codex_pro_request_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        return self.pro_request_store.list_requests(
+            repo_path=args.get("repo_path"),
+            statuses=args.get("status") or [],
+            include_closed=bool(args.get("include_closed", False)),
+            limit=int(args.get("limit") or 10),
+            request_context=self.current_request_context(),
+        )
+
+    async def _codex_pro_request_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        return self.pro_request_store.read_request(
+            request_id=args["request_id"],
+            include_report=args.get("include_report", True) is not False,
+            include_response=args.get("include_response", True) is not False,
+            include_events=bool(args.get("include_events", False)),
+            max_report_bytes=args.get("max_report_bytes"),
+            max_response_bytes=args.get("max_response_bytes"),
+            request_context=self.current_request_context(),
+        )
+
+    async def _codex_pro_request_claim(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        return self.pro_request_store.claim_request(
+            request_id=args["request_id"],
+            note=args.get("note", ""),
+            request_context=self.current_request_context(),
+            takeover=bool(args.get("takeover", False)),
+        )
+
+    async def _codex_pro_request_respond(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        return self.pro_request_store.respond_request(
+            request_id=args["request_id"],
+            response_kind=args.get("response_kind", "analysis"),
+            response_markdown=args["response_markdown"],
+            recommended_next_action=args.get("recommended_next_action", ""),
+            worker_message_markdown=args.get("worker_message_markdown", ""),
+            request_context=self.current_request_context(),
+            takeover=bool(args.get("takeover", False)),
+        )
+
+    async def _codex_pro_request_dispatch(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        target = str(args.get("target") or "origin_worker")
+        manifest, refusal = self.pro_request_store.mark_dispatch_requested(
+            request_id=args["request_id"],
+            target=target,
+            request_context=self.current_request_context(),
+            takeover=bool(args.get("takeover", False)),
+        )
+        if refusal:
+            return {"accepted": False, "request_id": manifest["id"], **refusal}
+        read = self.pro_request_store.read_request(
+            request_id=args["request_id"],
+            include_report=True,
+            include_response=True,
+            request_context=self.current_request_context(),
+        )
+        response_text = read.get("response_markdown") or ""
+        if not response_text:
+            result = {"accepted": False, "note": "This Pro Request has no stored response to dispatch."}
+            public = self.pro_request_store.finish_dispatch(
+                request_id=args["request_id"],
+                accepted=False,
+                target=target,
+                dispatch_result=result,
+                request_context=self.current_request_context(),
+            )
+            return {**result, "request": public}
+        message = response_text
+        if str(args.get("message_source") or "worker_message_markdown") == "worker_message_markdown":
+            worker_message = (((manifest.get("response") or {}).get("worker_message_markdown")) or "").strip()
+            if worker_message:
+                message = worker_message
+        staleness = read.get("repo_state_check") or {}
+        if staleness.get("warning"):
+            message = f"Repository state warning from PatchBay: {staleness['warning']}\n\n{message}"
+        if target == "new_worker":
+            worker_result = await self.worker_runtime.start_worker(
+                name=args.get("new_worker_name") or "Pro Solution Implementer",
+                brief=message,
+                repo_path=(manifest.get("workspace") or {}).get("repo_path_private") or self.default_repo,
+                workspace_mode=args.get("workspace_mode", "isolated_write"),
+                request_context=self.current_request_context(),
+            )
+        else:
+            origin = manifest.get("origin") or {}
+            worker_name = origin.get("worker_name")
+            if not worker_name:
+                worker_result = {"accepted": False, "note": "This Pro Request has no origin worker to dispatch to."}
+            else:
+                worker_result = await self.worker_runtime.message_worker(
+                    worker=worker_name,
+                    message=message,
+                    repo_path=(manifest.get("workspace") or {}).get("repo_path_private") or self.default_repo,
+                    request_context=self.current_request_context(),
+                    takeover=bool(args.get("takeover", False)),
+                    takeover_reason=args.get("takeover_reason", ""),
+                )
+        accepted = bool(worker_result.get("accepted"))
+        public = self.pro_request_store.finish_dispatch(
+            request_id=args["request_id"],
+            accepted=accepted,
+            target=target,
+            dispatch_result=worker_result,
+            request_context=self.current_request_context(),
+        )
+        return {
+            "accepted": accepted,
+            "dispatched": accepted,
+            "request": public,
+            "dispatch_result": worker_result,
+            "repo_state_check": staleness,
+            "note": "Dispatch never applies worker results to the base checkout and never commits.",
+        }
+
+    async def _codex_pro_request_close(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        return self.pro_request_store.close_request(
+            request_id=args["request_id"],
+            reason=args.get("reason", ""),
+            status=args.get("status", "closed"),
+            request_context=self.current_request_context(),
+            takeover=bool(args.get("takeover", False)),
         )
 
     async def _codex_open_workspace(self, args: Dict[str, Any]) -> Dict[str, Any]:

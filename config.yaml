@@ -1,8 +1,9 @@
 server:
   host: 127.0.0.1
   port: 8000
-  max_concurrent_jobs: 1
-  job_timeout_seconds: 1800  # 30 minutes
+  max_concurrent_jobs: 10
+  queue_enabled: true
+  job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
   stale_running_job_grace_seconds: 5
   job_cleanup_after_hours: 24
   max_request_bytes: 1048576
@@ -25,6 +26,11 @@ auth:
   require_for_non_loopback: true
   require_for_tunnel: true
   tunnel_mode: none
+
+ownership:
+  # token: same bearer/query token is one coordination owner; if no token is
+  # present, fall back to one shared server owner for local single-user runs.
+  scope: token
 
 tunnel:
   hostname: ""
@@ -92,6 +98,16 @@ artifacts:
   max_unpacked_bytes:
   max_file_count:
   max_single_file_bytes:
+
+pro_requests:
+  root:
+  mirror_enabled: true
+  mirror_dir: ".ai-bridge/pro-requests"
+  max_report_bytes: 200000
+  max_response_bytes: 200000
+  max_attachment_bytes: 2000000
+  max_attachments_per_request: 10
+  retention_days: 30
 
 logging:
   level: INFO

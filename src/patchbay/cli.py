@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -49,6 +50,10 @@ from patchbay.connector.tunnels import (
     wait_for_http_ready,
     spawn_logged,
 )
+from patchbay.pro_requests import ProRequestStore
+from patchbay.jobs.executor import JobExecutor
+from patchbay.jobs.manager import JobManager
+from patchbay.tools.handler import ToolHandler
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -81,6 +86,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "stable": stable_main,
         "install-cloudflared": install_cloudflared_main,
         "stdio": stdio_main,
+        "pro-request": pro_request_main,
     }
     handler = handlers.get(command)
     if handler is None:
@@ -299,6 +305,153 @@ def stdio_main(argv: Iterable[str] | None = None) -> int:
     from patchbay.stdio import main as run_stdio_main
 
     return run_stdio_main(argv)
+
+
+def pro_request_main(argv: Iterable[str] | None = None) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if not args or args[0] in {"-h", "--help"}:
+        print(_pro_request_help())
+        return 0
+    command, rest = args[0], args[1:]
+    if command == "create":
+        parser = argparse.ArgumentParser(description="Create a PatchBay Pro Escalation Request.")
+        _add_pro_request_common(parser)
+        parser.add_argument("--repo", required=True, help="Authorized repository path.")
+        parser.add_argument("--title", required=True)
+        parser.add_argument("--kind", default="debugging")
+        parser.add_argument("--priority", default="normal")
+        parser.add_argument("--origin-kind", default="human")
+        parser.add_argument("--origin-worker", default="")
+        parser.add_argument("--report", required=True, help="Markdown report path.")
+        parser.add_argument("--attach", action="append", default=[], help="Bounded text/log/diff attachment. Repeat as needed.")
+        parser.add_argument("--desired-output", default="")
+        parsed = parser.parse_args(rest)
+        store = ProRequestStore(load_config(parsed.config))
+        result = store.create_request(
+            repo_path=parsed.repo,
+            title=parsed.title,
+            kind=parsed.kind,
+            priority=parsed.priority,
+            origin_kind=parsed.origin_kind,
+            origin_worker=parsed.origin_worker,
+            report_path=parsed.report,
+            attachments=parsed.attach,
+            desired_output=parsed.desired_output,
+        )
+        _print_pro_request_result(result, json_output=parsed.json)
+        return 0
+    if command == "list":
+        parser = argparse.ArgumentParser(description="List PatchBay Pro Escalation Requests.")
+        _add_pro_request_common(parser)
+        parser.add_argument("--repo", help="Authorized repository path filter.")
+        parser.add_argument("--status", action="append", default=[], help="Status filter. Repeat as needed.")
+        parser.add_argument("--include-closed", action="store_true")
+        parser.add_argument("--limit", type=int, default=10)
+        parsed = parser.parse_args(rest)
+        store = ProRequestStore(load_config(parsed.config))
+        result = store.list_requests(
+            repo_path=parsed.repo,
+            statuses=parsed.status,
+            include_closed=parsed.include_closed,
+            limit=parsed.limit,
+        )
+        _print_pro_request_result(result, json_output=parsed.json)
+        return 0
+    if command == "show":
+        parser = argparse.ArgumentParser(description="Show one PatchBay Pro Escalation Request.")
+        _add_pro_request_common(parser)
+        parser.add_argument("request_id")
+        parser.add_argument("--no-report", action="store_true")
+        parser.add_argument("--include-events", action="store_true")
+        parsed = parser.parse_args(rest)
+        store = ProRequestStore(load_config(parsed.config))
+        result = store.read_request(
+            request_id=parsed.request_id,
+            include_report=not parsed.no_report,
+            include_events=parsed.include_events,
+        )
+        _print_pro_request_result(result, json_output=parsed.json)
+        return 0
+    if command == "response":
+        parser = argparse.ArgumentParser(description="Read the stored response for one Pro Request.")
+        _add_pro_request_common(parser)
+        parser.add_argument("request_id")
+        parsed = parser.parse_args(rest)
+        store = ProRequestStore(load_config(parsed.config))
+        result = store.response_text(parsed.request_id)
+        _print_pro_request_result(result, json_output=parsed.json)
+        return 0 if result.get("exists") else 1
+    if command == "dispatch":
+        parser = argparse.ArgumentParser(description="Dispatch a stored Pro response through the MCP server or ToolHandler path.")
+        _add_pro_request_common(parser)
+        parser.add_argument("request_id")
+        parser.add_argument("--target", choices=["origin_worker", "new_worker"], default="origin_worker")
+        parser.add_argument("--new-worker-name", default="Pro Solution Implementer")
+        parser.add_argument("--message-source", choices=["worker_message_markdown", "response_markdown"], default="worker_message_markdown")
+        parser.add_argument("--workspace-mode", choices=["isolated_write", "read_only"], default="isolated_write")
+        parsed = parser.parse_args(rest)
+        config = load_config(parsed.config)
+        manager = JobManager(config)
+        executor = JobExecutor(config, manager)
+        handler = ToolHandler(config, manager, executor)
+        result = asyncio.run(
+            handler.handle_tool_call(
+                "codex_pro_request_dispatch",
+                {
+                    "request_id": parsed.request_id,
+                    "target": parsed.target,
+                    "new_worker_name": parsed.new_worker_name,
+                    "message_source": parsed.message_source,
+                    "workspace_mode": parsed.workspace_mode,
+                },
+            )
+        )
+        _print_pro_request_result(result, json_output=parsed.json)
+        return 0 if result.get("accepted") else 1
+    if command == "close":
+        parser = argparse.ArgumentParser(description="Close, cancel, or supersede a Pro Request.")
+        _add_pro_request_common(parser)
+        parser.add_argument("request_id")
+        parser.add_argument("--reason", default="")
+        parser.add_argument("--status", choices=["closed", "cancelled", "superseded"], default="closed")
+        parsed = parser.parse_args(rest)
+        store = ProRequestStore(load_config(parsed.config))
+        result = store.close_request(request_id=parsed.request_id, reason=parsed.reason, status=parsed.status)
+        _print_pro_request_result(result, json_output=parsed.json)
+        return 0 if result.get("accepted") else 1
+    print(f"Unknown pro-request command: {command}\n\n{_pro_request_help()}", file=sys.stderr)
+    return 2
+
+
+def _add_pro_request_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+
+def _print_pro_request_result(result: dict[str, Any], *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    if "requests" in result:
+        for request in result["requests"]:
+            print(f"{request['id']}  {request['status']}  {request.get('repo_name', '')}  {request.get('title', '')}")
+        if not result["requests"]:
+            print("No Pro Escalation Requests found.")
+        return
+    request = result.get("request") or result
+    if request.get("id"):
+        print(f"Pro Request: {request['id']}")
+        print(f"Status: {request.get('status')}")
+        print(f"Title: {request.get('title', '')}")
+        print(f"Repo: {request.get('repo_name', '')}")
+    if result.get("report_markdown"):
+        print("\n--- report.md ---")
+        print(result["report_markdown"])
+    if result.get("response_markdown"):
+        print("\n--- response.md ---")
+        print(result["response_markdown"])
+    if result.get("note"):
+        print(result["note"])
 
 
 def _add_start_args(parser: argparse.ArgumentParser, *, include_runtime_flags: bool = True) -> None:
@@ -631,12 +784,27 @@ Usage:
   patchbay start --root <repo> --tool-mode worker
   patchbay doctor --json
   patchbay settings list
+  patchbay pro-request list
   patchbay stdio --config config.yaml
   patchbay ngrok --root <repo> --hostname <reserved-domain>
   patchbay stable --root <repo> --hostname <host> --tunnel-name <name>
   patchbay install-cloudflared
 
 Run `patchbay <command> --help` for command-specific options."""
+
+
+def _pro_request_help() -> str:
+    return """PatchBay Pro Escalation Requests
+
+Usage:
+  patchbay pro-request create --repo <repo> --title <title> --report <report.md>
+  patchbay pro-request list [--repo <repo>] [--status open] [--json]
+  patchbay pro-request show <proreq_id> [--json]
+  patchbay pro-request response <proreq_id> [--json]
+  patchbay pro-request dispatch <proreq_id> [--target origin_worker]
+  patchbay pro-request close <proreq_id> [--reason <text>]
+
+Worker dispatch uses the same ToolHandler/WorkerRuntime path as codex_pro_request_dispatch."""
 
 
 def _settings_help() -> str:

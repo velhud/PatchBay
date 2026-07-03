@@ -159,7 +159,37 @@ Ask ChatGPT to use:
 
 This path is for brief orientation and verification. It should not become the normal development loop for non-trivial work. The normal PatchBay posture is ChatGPT as lead: ask local Codex workers natural-language questions, assign them work, read their reports, and inspect direct files/diffs only when needed to verify evidence. The checked-in profile enables direct writes and full bash; using `--root "$tmpdir/repo"` keeps that power scoped to the disposable repo for this first run.
 
-## 8. Try ChatGPT With A Named Worker
+## 8. Try A Pro Escalation Loop
+
+Use this when local Codex has prepared a blocked-problem report for ChatGPT Pro.
+
+From the PatchBay repo, create a small report:
+
+```bash
+cat > "$tmpdir/pro-request.md" <<'EOF'
+# Pro Escalation
+
+Need a concise plan for the disposable repo.
+EOF
+
+patchbay pro-request create \
+  --repo "$tmpdir/repo" \
+  --title "Disposable Pro request" \
+  --report "$tmpdir/pro-request.md" \
+  --json
+```
+
+In ChatGPT, call:
+
+1. `codex_self_test`
+2. `codex_pro_request_list`
+3. `codex_pro_request_read`
+4. `codex_pro_request_claim`
+5. `codex_pro_request_respond`
+
+`codex_pro_request_respond` stores the answer only. It does not message a worker, edit files, apply code, or commit. Use `codex_pro_request_dispatch` only when the user explicitly wants the stored answer sent to an idle origin worker or a new isolated worker.
+
+## 9. Try ChatGPT With A Named Worker
 
 Use this for durable isolated implementation:
 
@@ -259,7 +289,7 @@ patchbay start --root "$tmpdir/repo" --tool-mode worker
 
 This hides low-level job/session controls and compatibility aliases while keeping worker tools and the read-only context tools needed to brief them.
 
-## 9. Try ChatGPT As Codex Controller
+## 10. Try ChatGPT As Codex Controller
 
 Call `codex_plan_job`:
 
@@ -280,7 +310,7 @@ with `codex_get_status` and `codex_get_result`.
 
 For an implementation test, call `codex_apply_job` only on the disposable repo and inspect diffs with `codex_get_diff` before copying or merging anything.
 
-## 10. Resume Flow
+## 11. Resume Flow
 
 When `codex_get_result` returns `session_ref`, keep it. Continue later with:
 

@@ -47,9 +47,9 @@ These confirm the source material remains buildable if more behavior is ported.
 Verification performed for the current hybrid implementation:
 
 - PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests`: passed.
-- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 252 tests at the time this section was updated.
+- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 281 tests at the time this section was updated.
 - PatchBay `python scripts/live_mcp_eval.py --json`: passed against a disposable local repo with no ChatGPT and no public tunnel.
-- Codex CLI `0.142.2`: verified locally.
+- Codex CLI: current local validation recorded `0.142.2`.
 - Real read-only worker continuity eval `scripts/worker_phase1_eval.py --timeout 600`: passed.
 - Real isolated writing worker continuity eval `scripts/worker_phase2_eval.py --timeout 900`: passed.
 - Real multi-worker peer-context eval `scripts/worker_phase3_eval.py --timeout 900`: passed.

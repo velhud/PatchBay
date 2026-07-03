@@ -120,6 +120,19 @@ def test_job_creation_admission_is_thread_safe(tmp_path):
     assert len(manager.jobs) == 1
 
 
+def test_job_creation_can_queue_when_enabled(tmp_path):
+    config = make_config(tmp_path)
+    config["server"]["queue_enabled"] = True
+    manager = JobManager(config)
+
+    first = manager.create_job("plan", "inspect 1", config["repositories"]["default"], {})
+    second = manager.create_job("plan", "inspect 2", config["repositories"]["default"], {})
+
+    assert first != second
+    assert len(manager.jobs) == 2
+    assert manager.active_job_count() == 2
+
+
 def test_cleanup_old_jobs_removes_persisted_record(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

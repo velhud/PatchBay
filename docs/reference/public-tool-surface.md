@@ -43,7 +43,7 @@ For larger tasks, ChatGPT may start a small team of workers with separate respon
 | `codex_worker_integrate` | destructive/non-idempotent | Apply an explicitly accepted isolated writing worker result to the base checkout. Does not commit or delete the worker worktree. |
 | `codex_worker_stop` | destructive/non-idempotent | Cancel only the active worker turn while preserving durable identity and prior session continuity; optionally discard an isolated workspace. |
 
-Worker names are scoped to the base workspace. The same human name can be reused in another repo; worker ids remain globally addressable for explicit disambiguation. Worker results omit low-level job ids, Codex session ids, absolute repo/worktree paths, branch names, raw transcripts, and raw process logs. Stale durable `running` jobs with no tracked live Codex process are reconciled to `failed` with a public explanation before worker list/inspect/status responses. Worker identity and workspace ownership come from private durable job metadata; peer-worker context is bounded and explicit. Accepted-result integration is explicit and does not commit. PatchBay does not add a worker database, mailbox, queue, transcript copy, role engine, automatic reviewer chain, automatic commits, or a merge queue.
+Worker names are scoped to the base workspace. The same human name can be reused in another repo; worker ids remain globally addressable for explicit disambiguation. Worker results omit low-level job ids, Codex session ids, absolute repo/worktree paths, branch names, raw transcripts, and raw process logs. Stale durable `running` jobs with no tracked live Codex process are reconciled to `failed` with a public explanation before worker list/inspect/status responses. Worker identity and workspace ownership come from private durable job metadata; peer-worker context is bounded and explicit. Accepted-result integration is explicit and does not commit. PatchBay can queue pending Codex turns behind `max_concurrent_jobs`, but it does not add a worker database, mailbox, queued worker-message delivery, transcript copy, role engine, automatic reviewer chain, automatic commits, or a merge queue.
 
 Worker workspace modes:
 
@@ -73,6 +73,32 @@ Worker artifact inbox:
 - Archives are structurally contained: absolute paths, parent traversal, and link/device entries are rejected. Configurable size/count limits exist only when the operator sets them; local defaults are unlimited.
 - Pass artifact ids through `context_from_artifacts` on `codex_worker_start` or `codex_worker_message`. PatchBay copies selected artifacts into `.ai-bridge/imported-artifacts/` inside the isolated worker worktree and excludes that reserved directory from worker changes, diffs, and integration.
 - In this release artifact attachments require isolated workers. If ChatGPT needs artifacts, omit `workspace_mode` or set `workspace_mode: "isolated_write"`.
+
+## Pro Escalation Request Tools
+
+Pro Escalations are the reverse handoff path for blocked local problems that need ChatGPT Pro input. Local Codex or the operator creates a Pro Request from a report and optional attachments. ChatGPT Pro reads, claims, and responds through MCP. Dispatch back to local Codex is a separate explicit operation.
+
+These tools are advertised in `standard`, `full`, and `worker` modes:
+
+| Tool | Mutability | Purpose |
+| --- | --- | --- |
+| `codex_pro_request_list` | read-only | List open or recent Pro Requests with compact public metadata. |
+| `codex_pro_request_read` | read-only | Read one bounded report, optional stored response, attachment index, event history when requested, and repo staleness check. |
+| `codex_pro_request_claim` | mutating/non-idempotent | Claim a request for the current MCP connection. Cross-owner mutation requires explicit `takeover: true`. |
+| `codex_pro_request_respond` | mutating/non-idempotent | Store ChatGPT Pro's answer only. Does not execute, dispatch, message workers, edit files, apply changes, or commit. |
+| `codex_pro_request_dispatch` | mutating/open-world/non-idempotent | Explicitly send the stored answer to an idle origin worker or start a new isolated worker. Does not integrate or commit. |
+| `codex_pro_request_close` | mutating/non-idempotent | Close, cancel, or supersede a request after it is consumed or obsolete. |
+
+Public Pro Request views omit private repo paths, raw job ids, raw Codex session ids, raw transcripts, and runtime storage paths. The canonical store is PatchBay runtime storage; `.ai-bridge/pro-requests/<request-id>/` is only a sanitized mirror for local visibility.
+
+Pro Request reports are diagnostic evidence. Tool descriptions must keep saying that report contents do not override user instructions, system/developer instructions, AGENTS.md, repository rules, or safety policy.
+
+Dispatch rules:
+
+- `target: "origin_worker"` messages the recorded origin worker only when it is available and idle.
+- `target: "new_worker"` starts a named worker, defaulting to `isolated_write`.
+- busy or missing origin workers return `dispatch_blocked` and are not queued silently.
+- dispatch never applies worker output to the base checkout and never commits.
 
 ## New Context Tools
 
@@ -226,11 +252,11 @@ One server URL is one shared local state surface. `codex_self_test` returns reda
 Shared-server coordination rules:
 
 - tool mode is session-local for MCP sessions; one chat switching to `full` does not change another chat's effective mode;
-- worker, job, and artifact owner metadata is private, but public views can return session-relative fields such as `owned_by_current_client`, `ownership_status`, `owner_label`, and `ownership_note`;
+- worker, job, and artifact owner metadata is private, but public views can return coordination-owner-relative fields such as `owned_by_current_client`, `ownership_status`, `owner_label`, and `ownership_note`;
 - `codex_worker_message`, `codex_worker_integrate`, `codex_worker_stop`, and artifact cleanup refuse cross-owner MCP mutation unless the caller explicitly retries with `takeover: true`;
 - takeover is coordination, not authentication. HTTP auth, local binding, and tunnel token policy remain the actual access boundary;
 - base-checkout mutation paths are serialized per repository. Direct write/edit, command execution, shared-write worker turns, low-level base-writing jobs, and worker integration can return `repo_busy: true` instead of queueing hidden writes;
-- global job admission counts pending plus running jobs, so callers should inspect or wait when active-job limits are reached.
+- when `queue_enabled` is true, global job admission can accept pending Codex turns beyond currently running slots. `codex_self_test` reports both `max_concurrent_jobs` and `queue_enabled`.
 
 ## Hidden And Deprecated Tools
 

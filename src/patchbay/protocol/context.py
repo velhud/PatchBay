@@ -28,6 +28,8 @@ class RequestContext:
 
     transport_session_id: str | None = field(default=None, repr=False)
     client_ref: str = ANONYMOUS_CLIENT_REF
+    owner_ref: str = ""
+    owner_scope: str = ""
     client_label: str = ""
     tool_mode: str | None = None
     active_mcp_sessions: int | None = None
@@ -49,6 +51,8 @@ class RequestContext:
         return cls(
             transport_session_id=session_id,
             client_ref=make_client_ref(session_id, salt=salt),
+            owner_ref=str(session_data.get("owner_ref") or ""),
+            owner_scope=str(session_data.get("owner_scope") or ""),
             client_label=str(session_data.get("client_label") or ""),
             tool_mode=session_data.get("tool_mode"),
             active_mcp_sessions=active_mcp_sessions,
@@ -66,6 +70,10 @@ class RequestContext:
         }
         if self.client_label:
             data["client_label"] = self.client_label
+        if self.owner_ref:
+            data["owner_ref"] = self.owner_ref
+        if self.owner_scope:
+            data["owner_scope"] = self.owner_scope
         if self.tool_mode:
             data["tool_mode"] = self.tool_mode
         if self.active_mcp_sessions is not None:

@@ -9,17 +9,20 @@ The repository root keeps the practical entrypoints: `README.md`,
 - [Quick Start](../QUICKSTART.md)
 - [ChatGPT MCP client instructions](user/chatgpt-instructions.md)
 - [Worker bridge guide](worker-bridge/README.md)
+- [Pro Escalations user flow](pro-escalations/USER_FLOW.md)
 - [Multi-chat concurrency model](worker-bridge/MULTI_CHAT_CONCURRENCY_PLAN.md)
 
 ## Architecture
 
 - [Architecture overview](architecture/overview.md)
+- [Pro Escalations architecture](pro-escalations/ARCHITECTURE.md)
 - [Runtime decision](architecture/runtime-decision.md)
 
 ## Reference
 
 - [Public tool surface](reference/public-tool-surface.md)
 - [Context and handoff specification](reference/context-and-handoff.md)
+- [Pro Escalation skill copies](pro-escalations/skill-copies/)
 
 ## Security
 

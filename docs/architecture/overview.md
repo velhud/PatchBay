@@ -13,11 +13,12 @@ The intended user experience is:
 3. Open an allowed local workspace.
 4. Load repository context, AGENTS instructions, selected files, skills, git status, and diffs.
 5. Import ChatGPT-generated files or zips as local worker context when needed.
-6. Delegate investigations or isolated implementation work to named Codex workers and continue them by human name after restart.
-7. Pass reports, changed-file context, and diffs between workers.
-8. Inspect job status, results, changed files, diffs, and integration previews from ChatGPT.
-9. Apply accepted worker output without automatic commits.
-10. Optionally enable direct workspace tools such as edit, bash, or session transcript reads behind explicit power-mode controls.
+6. Read and answer local-to-ChatGPT Pro Escalation requests when local Codex needs Pro-level guidance.
+7. Delegate investigations or isolated implementation work to named Codex workers and continue them by human name after restart.
+8. Pass reports, changed-file context, and diffs between workers.
+9. Inspect job status, results, changed files, diffs, and integration previews from ChatGPT.
+10. Apply accepted worker output without automatic commits.
+11. Optionally enable direct workspace tools such as edit, bash, or session transcript reads behind explicit power-mode controls.
 
 The product is not trying to preserve either current architecture for its own sake. PatchBay repository remains the final application because that is the desired release target.
 
@@ -53,6 +54,7 @@ flowchart TD
     Handler --> Workspace["WorkspaceContext<br/>allowed roots, path guard, tree/read/search, git, AGENTS, skills, .ai-bridge"]
     Handler --> Workers["WorkerRuntime<br/>named workers, model/reasoning options, peer context, inspect/integrate/stop"]
     Handler --> Inbox["ArtifactStore<br/>ChatGPT file params, zip/file import, manifests, cleanup"]
+    Handler --> ProRequests["ProRequestStore<br/>local-to-ChatGPT blocked-problem requests, responses, explicit dispatch"]
     Handler --> Jobs["JobManager + JobExecutor<br/>durable jobs, Codex command builder, JSONL parsing, cancellation"]
     Handler --> Power["PowerToolRunner<br/>direct write/edit, command execution, transcript reads"]
     Handler --> Locks["RepoMutationLockManager<br/>async + file locks, repo_busy fast-fail"]
@@ -78,6 +80,7 @@ The important boundary is not one monolithic "wrapper." PatchBay is a set of coo
 - durable jobs and Codex subprocess execution in `patchbay.jobs`;
 - named worker orchestration in `patchbay.workers`;
 - ChatGPT file/zip import in `patchbay.artifacts`;
+- local-to-ChatGPT Pro Escalation requests in `patchbay.pro_requests`;
 - direct power tools in `patchbay.tools`;
 - runtime profiles, status files, artifacts, and locks under `PATCHBAY_HOME` or `~/.patchbay`.
 
@@ -118,7 +121,7 @@ Low-level tools for explicit job/session control:
 - `codex_interactive_reply`
 - `codex_get_config`
 
-These remain available for compatibility and power-user control. The normal ChatGPT-first path should prefer the worker facade when the user wants durable named local Codex colleagues. Current Codex CLI `0.142.2` JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
+These remain available for compatibility and power-user control. The normal ChatGPT-first path should prefer the worker facade when the user wants durable named local Codex colleagues. Current validation records Codex CLI `0.142.2` for this branch; JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
 
 `codex_resume`, `codex_interactive`, and `codex_interactive_reply` are async job starters classified as mutating/open-world in the public descriptors because they can continue sessions that write locally or call Codex externally. `codex_plan_job` remains locally read-only, but is not idempotent because it creates job state and can invoke Codex.
 
@@ -140,6 +143,19 @@ Preferred tools for ChatGPT-driven Codex work:
 - `codex_worker_stop`
 
 These let ChatGPT use its current conversation/project context to brief named local Codex workers, attach generated files or zips, pass reports between workers, inspect diffs, and apply accepted results without asking the user to manage backend job ids, session ids, branch names, or worktree paths.
+
+### Tier 2B: Pro Escalation Requests
+
+Reverse-handoff tools for local blocked problems that need ChatGPT Pro:
+
+- `codex_pro_request_list`
+- `codex_pro_request_read`
+- `codex_pro_request_claim`
+- `codex_pro_request_respond`
+- `codex_pro_request_dispatch`
+- `codex_pro_request_close`
+
+These keep the answer lifecycle explicit. `respond` stores ChatGPT Pro's answer only. `dispatch` is the separate operation that may message an idle origin worker or start a new isolated worker. Dispatch does not integrate worker output and does not commit. Missing or busy origin workers return `dispatch_blocked`; PatchBay does not silently queue Pro responses.
 
 ### Tier 3: Workspace Context
 
@@ -199,7 +215,7 @@ The artifact inbox lets ChatGPT import generated files or zips into PatchBay run
 
 Default `isolated_write` workers use durable external worktrees, same-session/same-worktree continuation after PatchBay restart, on-demand changed-file inspection, one-file worker diffs, and explicit isolated workspace cleanup. Worker start/message calls can include bounded peer-worker report/change/diff context, and worker list returns a compact `team_report`. Worker integration is preview-first: ChatGPT can inspect whether the worker patch applies, then explicitly apply the accepted result into the base checkout without committing. Current lifecycle handling reconciles stale durable `running` jobs that no longer have a tracked Codex subprocess into a redacted failed report before public worker/status views.
 
-For shared MCP Server URLs, the runtime treats ownership as coordination rather than authentication. Tool mode is session-local, worker/artifact views include session-relative ownership flags, cross-owner mutation requires explicit `takeover: true`, and base-checkout mutation paths use per-repository locks that fail fast with `repo_busy`. No separate worker database, queue, mailbox, transcript copy, role system, automatic reviewer chain, automatic commit, or automatic merge/promotion flow exists. Future work can add optional app-server backend evaluation.
+For shared MCP Server URLs, the runtime treats ownership as coordination rather than authentication. Tool mode is session-local, worker/artifact views include owner-relative coordination flags, the default token-scoped owner lets short-lived transport sessions from one copied connector URL continue the same workers, cross-owner mutation requires explicit `takeover: true`, Codex turns can queue behind the configured execution concurrency limit, and base-checkout mutation paths use per-repository locks that fail fast with `repo_busy`. No separate worker database, mailbox, transcript copy, role system, automatic reviewer chain, automatic commit, or automatic merge/promotion flow exists. Future work can add optional app-server backend evaluation.
 
 The worker bridge does not replace the security boundary. It should reuse the same typed registry, path guard, power-mode controls, auth policy, artifact caps, and redaction rules used by the current public surface.
 
@@ -211,6 +227,7 @@ The execution boundary is organized around explicit services:
 - `JobManager`: durable job records, active-job admission, apply-job worktrees, worker worktree creation/removal, and persisted state.
 - `WorkerRuntime`: job-derived worker identity, worker continuation, peer-worker context, artifact materialization, worktree inspection, integration preview, and accepted-result application.
 - `ArtifactStore`: runtime-only ChatGPT file/zip imports, manifests, bounded inspection, workspace scoping, and materialization into isolated workers.
+- `ProRequestStore`: runtime-only Pro Request manifests, reports, attachments, responses, ownership metadata, sanitized `.ai-bridge/pro-requests` mirrors, repo staleness checks, and explicit dispatch state.
 - `RepoMutationLockManager`: per-repository async and file locks for base-checkout writes, direct command/write paths, shared-write workers, and integration.
 - `WorkspaceContext`: repository orientation, path validation, AGENTS and skills, git state, `.ai-bridge`, and direct write/edit helpers.
 - `PowerToolRunner`: configured direct command execution with timeout/output controls and optional session gating.
@@ -256,7 +273,7 @@ CodexPro is MIT-licensed source material and product inspiration, not an upstrea
 Verified:
 
 - local Streamable HTTP MCP startup and probing against disposable repos;
-- real Codex CLI `0.142.2` `codex_plan_job` through MCP;
+- real Codex CLI plan/job validation through MCP, with current local version recorded during each validation run;
 - current Codex JSONL structured result parsing;
 - token-gated auth and tunnel fail-closed behavior in automated tests;
 - installable CLI entry points for `patchbay` and `patchbay-stdio`, with
