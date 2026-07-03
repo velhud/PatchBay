@@ -276,9 +276,9 @@ WORKER_TOOLS = [
     {
         "name": "codex_worker_start",
         "description": (
-            "Appoint a durable named Codex colleague for autonomous investigation, implementation, review, "
+            "Appoint a durable named Codex colleague for autonomous investigation, architecture analysis, planning, implementation, review, "
             "or verification. Use this as the normal path for non-trivial repository work so ChatGPT acts as "
-            "manager instead of primary file reader or line-by-line coder. Delegation is expected: when work can "
+            "manager instead of primary file reader, routine code reviewer, or line-by-line coder. Delegation is expected: when work can "
             "be split cleanly, start a small team of workers rather than one shallow worker or a long manual "
             "read/search loop. Give goals, context, constraints, deliverables, and expected report "
             "in the natural-language brief; let the worker find relevant files unless exact paths matter. "
@@ -345,7 +345,7 @@ WORKER_TOOLS = [
         "description": (
             "Continue, question, or redirect an existing named Codex worker in natural language, preserving its "
             "session and worker worktree when available. Use this for follow-up, review feedback, clarification, "
-            "or revision of the same worker's task, not for a new independent colleague. Prefer asking the worker "
+            "or revision of the same worker's task, not for a new independent colleague. Trust worker reports as competent employee reports by default; when uncertain, ask the worker "
             "to investigate, compare, verify, or adjust over ChatGPT doing a manual file-by-file implementation loop. "
             "A manager should keep talking to the worker until the evidence is usable instead of replacing worker "
             "conversation with direct reads. Use follow-up "
@@ -438,9 +438,8 @@ WORKER_TOOLS = [
         "description": (
             "Read one worker's current state and latest natural-language report. Optionally wait briefly for the "
             "current turn; this does not expose private repo paths, job ids, session ids, or raw transcripts. "
-            "Use the report as the normal management signal, but question the worker again with codex_worker_message "
-            "when evidence is missing, output is too compressed, or another worker disagrees. Use view=changes, view=diff with file_path, view=file with file_path for worker-created files before "
-            "integration, or view=integration_preview when verifying an accepted worker result. codex_read_file reads the "
+            "Use the report as the normal management signal. Managerial review means reading the report and asking follow-up questions, not routinely opening every changed file or diff. Question the worker again with codex_worker_message "
+            "when evidence is missing, output is too compressed, or another worker disagrees. Use view=changes, view=diff with file_path, view=file with file_path, or view=integration_preview only when there is a concrete escalation or integration need. codex_read_file reads the "
             "base checkout, not an isolated worker worktree."
         ),
         "inputSchema": {

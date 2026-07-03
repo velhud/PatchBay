@@ -130,3 +130,31 @@ Switch back to `worker` afterward when the host can see the refreshed catalog.
 If a real ChatGPT session again performs broad work with many direct reads/searches
 and few worker starts/messages, treat that as a product-surface regression first,
 not as a reason to remove reader tools.
+
+## Balance Addendum
+
+After the first worker-mode deployment, the user clarified that full tool access
+must remain available. The target is not to forbid ChatGPT from using full mode
+or direct tools. The target is to make the manager posture dominant even when
+full mode is available.
+
+Balanced rule:
+
+- `worker` remains the default ChatGPT app surface because it makes the intended
+  behavior natural.
+- `full` remains available for deliberate compatibility, emergency, and
+  power-user controls.
+- Direct read/search/git/diff tools remain available where advertised.
+- Full mode does not make ChatGPT the default implementer, default code reviewer,
+  or file-level investigator.
+- Worker reports are trusted by default as competent employee reports.
+- Managerial review means reading reports, comparing them with assignments,
+  asking follow-up questions, and deciding the next assignment.
+- Direct file/diff/command inspection is escalation: concrete contradiction,
+  missing evidence after follow-up, failed validation, risky migration,
+  security-sensitive/destructive change, worker request, user-requested direct
+  inspection, tiny task, or a quick check where worker briefing would be worse
+  than the check.
+
+This preserves power and avoids primitive deterministic blocking while making
+natural-language worker management the default operating personality.
