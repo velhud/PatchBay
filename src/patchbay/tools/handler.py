@@ -192,7 +192,8 @@ class ToolHandler:
 
     async def _codex_self_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return connector readiness checks and ChatGPT connection metadata."""
-        status = connector_status(
+        status = await asyncio.to_thread(
+            connector_status,
             self.config,
             public_base_url=args.get("public_base_url"),
             reveal_token=False,
@@ -467,77 +468,77 @@ class ToolHandler:
 
     async def _codex_open_workspace(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Open an allowed workspace and return bounded orientation."""
-        return self.workspace_context.open_summary(args)
+        return await asyncio.to_thread(self.workspace_context.open_summary, args)
 
     async def _codex_repo_tree(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return a bounded repository tree."""
-        return self.workspace_context.repo_tree(args)
+        return await asyncio.to_thread(self.workspace_context.repo_tree, args)
 
     async def _codex_read_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read a bounded workspace file slice."""
         try:
-            return self.workspace_context.read_file(args)
+            return await asyncio.to_thread(self.workspace_context.read_file, args)
         except ValueError as error:
-            hint = self._worker_file_hint(args)
+            hint = await asyncio.to_thread(self._worker_file_hint, args)
             if hint:
                 raise ValueError(f"{error}. {hint}") from error
             raise
 
     async def _codex_search_repo(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Search an allowed workspace."""
-        return self.workspace_context.search_repo(args)
+        return await asyncio.to_thread(self.workspace_context.search_repo, args)
 
     async def _codex_load_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Load Codex-ready workspace context."""
-        return self.workspace_context.load_context(args)
+        return await asyncio.to_thread(self.workspace_context.load_context, args)
 
     async def _codex_export_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Export Codex-ready context under .ai-bridge."""
-        return self.workspace_context.export_context(args)
+        return await asyncio.to_thread(self.workspace_context.export_context, args)
 
     async def _codex_list_skills(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List discovered workspace/user/plugin skills with sanitized paths."""
-        return self.workspace_context.list_skills(args)
+        return await asyncio.to_thread(self.workspace_context.list_skills, args)
 
     async def _codex_load_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Load a bounded discovered SKILL.md body by name/source/path."""
-        return self.workspace_context.load_skill(args)
+        return await asyncio.to_thread(self.workspace_context.load_skill, args)
 
     async def _codex_write_handoff(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Write a .ai-bridge handoff plan without executing local commands."""
-        return self.workspace_context.write_handoff(args)
+        return await asyncio.to_thread(self.workspace_context.write_handoff, args)
 
     async def _codex_get_handoff_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read .ai-bridge handoff status files."""
-        return self.workspace_context.read_handoff_status(args)
+        return await asyncio.to_thread(self.workspace_context.read_handoff_status, args)
 
     async def _codex_get_handoff_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read .ai-bridge implementation diff."""
-        return self.workspace_context.read_handoff_diff(args)
+        return await asyncio.to_thread(self.workspace_context.read_handoff_diff, args)
 
     async def _codex_list_workspaces(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List configured workspaces known to this connector."""
-        return self.workspace_context.list_workspaces(args)
+        return await asyncio.to_thread(self.workspace_context.list_workspaces, args)
 
     async def _codex_workspace_snapshot(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return a CodexPro-style workspace snapshot."""
-        return self.workspace_context.workspace_snapshot(args)
+        return await asyncio.to_thread(self.workspace_context.workspace_snapshot, args)
 
     async def _codex_inventory(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return connector/workspace capability inventory."""
-        return self.workspace_context.inventory(args)
+        return await asyncio.to_thread(self.workspace_context.inventory, args)
 
     async def _codex_git_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return git status without using bash."""
-        return self.workspace_context.git_status_text(args)
+        return await asyncio.to_thread(self.workspace_context.git_status_text, args)
 
     async def _codex_git_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return a bounded git diff without using bash."""
-        return self.workspace_context.git_diff_tool(args)
+        return await asyncio.to_thread(self.workspace_context.git_diff_tool, args)
 
     async def _codex_show_changes(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return review-oriented status, stats, and diff."""
-        return self.workspace_context.show_changes(args)
+        return await asyncio.to_thread(self.workspace_context.show_changes, args)
 
     async def _codex_write_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Create or overwrite a workspace file when direct writes are enabled."""
