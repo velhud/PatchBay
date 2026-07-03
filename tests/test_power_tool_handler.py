@@ -107,5 +107,7 @@ async def test_self_test_includes_shared_server_coordination_without_raw_session
     assert coordination["client"]["tool_mode"] == "worker"
     assert coordination["client"]["client_label"] == "planning"
     assert coordination["active_mcp_sessions"] == 2
+    assert "transport sessions" in coordination["note"]
+    assert "not this count by itself" in coordination["note"]
     assert coordination["raw_session_ids_returned"] is False
     assert "private-session-id" not in json.dumps(result)

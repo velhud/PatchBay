@@ -100,6 +100,8 @@ def public_ownership(
     owner_label = _clean_label((metadata or {}).get(OWNER_LABEL_OPTION))
 
     result: dict[str, Any] = {}
+    if context and context.owner_scope:
+        result["ownership_scope"] = context.owner_scope
     if not owner_hash:
         result["owned_by_current_client"] = None
         result["ownership_status"] = "unknown_previous_connection"
@@ -114,7 +116,10 @@ def public_ownership(
         result["owned_by_current_client"] = False if current_hash else None
         result["ownership_status"] = "other_connection" if current_hash else "unknown_current_connection"
         result["ownership_note"] = (
-            "This item was created or last controlled by another MCP connection. "
+            "This item was created or last controlled by a different PatchBay coordination owner. "
+            "In token-scoped ownership, short-lived MCP transport sessions that use the same copied Server URL "
+            "should normally remain the same owner; if this appears to be the same ChatGPT task, the item may "
+            "be legacy metadata or the request may have arrived with different authentication. "
             f"Use takeover=true only after the user confirms {mutation_name} is intentional."
         )
     if owner_label:

@@ -339,6 +339,9 @@ def test_high_value_output_schemas_describe_structured_results():
 
     assert "workspace_id" in by_name["codex_open_workspace"]["outputSchema"]["properties"]
     assert "matches" in by_name["codex_search_repo"]["outputSchema"]["properties"]
+    assert "next_start_line" in by_name["codex_read_file"]["outputSchema"]["properties"]
+    assert "max_bytes_applied" in by_name["codex_read_file"]["outputSchema"]["properties"]
+    assert "requested_end_line" in by_name["codex_read_file"]["outputSchema"]["properties"]
     assert "skill_inventory" in by_name["codex_list_skills"]["outputSchema"]["properties"]
     assert "skill" in by_name["codex_load_skill"]["outputSchema"]["properties"]
     assert "diff" in by_name["codex_write_file"]["outputSchema"]["properties"]
@@ -364,7 +367,10 @@ def test_prompt_surface_discourages_direct_micromanagement_loop():
     assert "brief setup step before delegating" in by_name["codex_open_workspace"]["description"]
     assert "For broad architecture mapping, prefer a read-only Codex worker" in by_name["codex_repo_tree"]["description"]
     assert "not as the main development loop" in by_name["codex_read_file"]["description"]
+    assert "next_start_line" in by_name["codex_read_file"]["description"]
+    assert "start or continue a Codex worker" in by_name["codex_read_file"]["description"]
     assert "For broad investigation, ask a read-only Codex worker" in by_name["codex_search_repo"]["description"]
+    assert "Repeated direct read/search calls" in SERVER_INSTRUCTIONS
     assert "brief or verify work" in by_name["codex_load_context"]["description"]
     assert "session-local MCP tool surface switch" in by_name["codex_tool_mode_switch"]["description"]
     assert "process-local MCP tool surface switch" not in by_name["codex_tool_mode_switch"]["description"]

@@ -79,6 +79,45 @@ def test_read_file_returns_line_slice_and_redacts_secret_like_text(tmp_path):
     assert "dummy-secret-for-test" not in result["text"]
 
 
+def test_read_file_line_slice_does_not_require_max_bytes_above_whole_file_size(tmp_path):
+    target = tmp_path / "large-notes.txt"
+    target.write_text("\n".join(f"line {i} " + ("x" * 200) for i in range(1, 80)), encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.read_file(
+        {
+            "file_path": "large-notes.txt",
+            "start_line": 10,
+            "end_line": 10,
+            "max_bytes": 4000,
+        }
+    )
+
+    assert result["bytes"] > 4000
+    assert result["start_line"] == 10
+    assert result["end_line"] == 10
+    assert result["requested_end_line"] == 10
+    assert result["max_bytes_applied"] == 4000
+    assert "10 | line 10" in result["text"]
+    assert "next_start_line" not in result
+
+
+def test_read_file_full_large_file_is_paged_by_returned_slice(tmp_path):
+    target = tmp_path / "large-notes.txt"
+    target.write_text("\n".join(f"line {i} " + ("x" * 40) for i in range(1, 80)), encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+    result = context.read_file({"file_path": "large-notes.txt", "max_bytes": 260})
+
+    assert result["bytes"] > 260
+    assert result["start_line"] == 1
+    assert result["end_line"] < result["total_lines"]
+    assert result["requested_end_line"] == result["total_lines"]
+    assert result["truncated"] is True
+    assert result["next_start_line"] == result["end_line"] + 1
+    assert len(result["text"].encode("utf-8")) <= 260
+
+
 def test_blocked_file_read_is_rejected(tmp_path):
     (tmp_path / ".env").write_text("hidden secret\n", encoding="utf-8")
 

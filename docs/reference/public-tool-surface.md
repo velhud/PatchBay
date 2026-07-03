@@ -6,6 +6,8 @@ PatchBay should expose tools as product capabilities, not implementation conveni
 
 The primary ChatGPT posture is lead/manager/consultant, not line-by-line repository implementer. The worker-first surface should encourage ChatGPT to do as little detailed code investigation and implementation itself as practical: use direct context tools for light orientation, focused checks, and verification; use named Codex workers for broad repository understanding, implementation, review, and validation. Tool descriptions should make it natural for ChatGPT to ask workers natural-language questions and assign deliverables rather than precomputing every path or command.
 
+Repeated direct `codex_read_file` or `codex_search_repo` calls are a negative signal for non-trivial work. They should push ChatGPT back to the manager posture: start or continue a worker, ask it the evidence question, and use direct reads only to verify focused claims or inspect accepted worker evidence.
+
 The manager posture is stateful. ChatGPT should treat named workers as continuing specialists, not disposable one-shot summaries. For consequential work, prompts should ask workers for durable evidence such as report files, changed files, diffs, validation notes, or open-question lists. When a report is thin, contradictory, missing evidence, or decision-critical, ChatGPT should continue the same worker with `codex_worker_message` and use `context_from_workers` for synthesis or cross-review instead of manually copying summaries.
 
 The same public tool surface is served through Streamable HTTP `/mcp` and the stdio entry point (`patchbay stdio` / `patchbay-stdio`). Stdio is a transport compatibility layer; it must not fork tool policy, hidden-tool filtering, schema validation, or session-local tool mode behavior.
@@ -73,7 +75,7 @@ Worker execution options use progressive disclosure:
 
 Worker file inspection:
 
-- `codex_read_file` reads the base checkout only.
+- `codex_read_file` reads the base checkout only. It is paged: `max_bytes` caps the returned page, not the whole file, and large reads may return `next_start_line`.
 - Before integration, files created only in an isolated worker worktree are read with `codex_worker_inspect(view="file", file_path="...")`.
 - `view="file"` returns bounded chunks with line numbers. Use `start_line`, `end_line`, and returned `next_start_line` for pagination instead of asking for one large `max_bytes` response.
 - Report files created in isolated worktrees are labeled as worker-worktree-only until explicitly integrated or copied into the base checkout.
@@ -265,12 +267,12 @@ Alias policy:
 
 Use `worker` mode for first real ChatGPT Developer Mode validation. It keeps the visible tool surface small enough for natural tool selection while still exposing the context tools needed to orient and brief workers. Use `codex_tool_mode_info` before broadening the surface, and `codex_tool_mode_switch` only when current tools are insufficient. Use `full` mode when testing or operating low-level job/session controls and power tools deliberately.
 
-One server URL is one shared local state surface. `codex_self_test` returns redacted coordination metadata such as `client_ref`, `active_mcp_sessions`, and `shared_server`; it does not return raw MCP session ids. Read/list/inspect tools may expose shared local state to connected clients.
+One server URL is one shared local state surface. `codex_self_test` returns redacted coordination metadata such as `client_ref`, `active_mcp_sessions`, and `shared_server`; it does not return raw MCP session ids. `active_mcp_sessions` is transport-session churn, not proof of worker ownership by itself. Read/list/inspect tools may expose shared local state to connected clients.
 
 Shared-server coordination rules:
 
 - tool mode is session-local for MCP sessions; one chat switching to `full` does not change another chat's effective mode;
-- worker, job, and artifact owner metadata is private, but public views can return coordination-owner-relative fields such as `owned_by_current_client`, `ownership_status`, `owner_label`, and `ownership_note`;
+- worker, job, and artifact owner metadata is private, but public views can return coordination-owner-relative fields such as `owned_by_current_client`, `ownership_status`, `ownership_scope`, `owner_label`, and `ownership_note`;
 - `codex_worker_message`, `codex_worker_integrate`, `codex_worker_stop`, and artifact cleanup refuse cross-owner MCP mutation unless the caller explicitly retries with `takeover: true`;
 - takeover is coordination, not authentication. HTTP auth, local binding, and tunnel token policy remain the actual access boundary;
 - base-checkout mutation paths are serialized per repository. Direct write/edit, command execution, shared-write worker turns, low-level base-writing jobs, and worker integration can return `repo_busy: true` instead of queueing hidden writes;

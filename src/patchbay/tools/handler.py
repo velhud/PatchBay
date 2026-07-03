@@ -211,7 +211,9 @@ class ToolHandler:
             "note": (
                 "This server URL shares local worker, job, artifact, and repository state across connected "
                 "ChatGPT conversations and MCP clients. Read/list/inspect may show shared state; cross-owner "
-                "mutations require explicit takeover when ownership checks apply."
+                "mutations require explicit takeover when ownership checks apply. active_mcp_sessions counts "
+                "known transport sessions, and ChatGPT may create many short sessions; worker ownership is "
+                "based on owner_scope/client owner metadata, not this count by itself."
             ),
         }
         status["jobs"] = {
