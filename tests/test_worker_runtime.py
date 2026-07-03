@@ -10,10 +10,13 @@ import patchbay.jobs.manager as job_manager_module
 from patchbay.jobs.executor import JobExecutor, STALE_RUNNING_JOB_ERROR
 from patchbay.jobs.manager import JobManager, JobState
 from patchbay.ownership import (
+    CURRENT_OWNER_SCHEMA,
     OWNER_CLIENT_REF_OPTION,
     OWNER_CREATED_AT_OPTION,
     OWNER_LABEL_OPTION,
     OWNER_LAST_SEEN_AT_OPTION,
+    OWNER_SCHEMA_OPTION,
+    OWNER_SCOPE_OPTION,
     OWNER_SESSION_HASH_OPTION,
 )
 from patchbay.protocol.context import RequestContext
@@ -200,6 +203,8 @@ async def test_worker_owner_metadata_is_private_and_public_flags_are_session_rel
     job = manager.get_job(executor.started[0])
     assert job.options[OWNER_SESSION_HASH_OPTION] == "client_a"
     assert job.options[OWNER_CLIENT_REF_OPTION] == "client_a"
+    assert job.options[OWNER_SCOPE_OPTION] == "transport_session"
+    assert job.options[OWNER_SCHEMA_OPTION] == CURRENT_OWNER_SCHEMA
     assert job.options[OWNER_LABEL_OPTION] == "Chat A"
     assert isinstance(job.options[OWNER_CREATED_AT_OPTION], float)
     assert isinstance(job.options[OWNER_LAST_SEEN_AT_OPTION], float)
@@ -242,11 +247,76 @@ async def test_stable_owner_ref_survives_short_lived_transport_sessions(tmp_path
     job = manager.get_job(executor.started[0])
     assert job.options[OWNER_SESSION_HASH_OPTION] == "owner_shared"
     assert job.options[OWNER_CLIENT_REF_OPTION] == "client_first"
+    assert job.options[OWNER_SCOPE_OPTION] == "token"
+    assert job.options[OWNER_SCHEMA_OPTION] == CURRENT_OWNER_SCHEMA
 
     seen = await runtime.list_workers(request_context=second_transport)
     assert seen["workers"][0]["owned_by_current_client"] is True
     assert seen["workers"][0]["ownership_status"] == "current_client"
     assert seen["workers"][0]["ownership_scope"] == "token"
+
+
+@pytest.mark.asyncio
+async def test_legacy_owner_metadata_is_reported_separately_from_known_other_owner(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    legacy_client = request_context("client_a", "Old Chat")
+    current_client = owner_context("owner_shared", "client_current", "ChatGPT")
+
+    started = await runtime.start_worker(
+        name="Legacy Owner Worker",
+        brief="Inspect legacy ownership.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=legacy_client,
+    )
+    await asyncio.sleep(0)
+
+    job = manager.get_job(executor.started[0])
+    job.options.pop(OWNER_SCOPE_OPTION, None)
+    job.options.pop(OWNER_SCHEMA_OPTION, None)
+    manager._persist_job(job)
+
+    listed = await runtime.list_workers(request_context=current_client)
+    worker = listed["workers"][0]
+    assert worker["worker_id"] == started["worker_id"]
+    assert worker["owned_by_current_client"] is False
+    assert worker["ownership_status"] == "legacy_connection"
+    assert worker["ownership_scope"] == "token"
+    assert "older PatchBay version" in worker["ownership_note"]
+    assert "rewrite the item's owner metadata" in worker["ownership_note"]
+    assert OWNER_SESSION_HASH_OPTION not in str(worker)
+    assert "client_a" not in str(worker)
+
+    refused = await runtime.message_worker(
+        worker=started["worker_id"],
+        message="Continue after ownership migration.",
+        request_context=current_client,
+    )
+    assert refused["accepted"] is False
+    assert refused["takeover_required"] is True
+    assert refused["ownership_status"] == "legacy_connection"
+
+    first_job = manager.get_job(executor.started[0])
+    manager.update_job_state(first_job.job_id, JobState.COMPLETED, result={"summary": "ready"}, session_id="session-a")
+    accepted = await runtime.message_worker(
+        worker=started["worker_id"],
+        message="Continue after ownership migration.",
+        request_context=current_client,
+        takeover=True,
+        takeover_reason="User confirmed this is the same PatchBay task.",
+    )
+    await asyncio.sleep(0)
+
+    assert accepted["accepted"] is True
+    assert accepted["takeover_performed"] is True
+    resume_job = manager.get_job(executor.started[-1])
+    assert resume_job.options[OWNER_SESSION_HASH_OPTION] == "owner_shared"
+    assert resume_job.options[OWNER_CLIENT_REF_OPTION] == "client_current"
+    assert resume_job.options[OWNER_SCOPE_OPTION] == "token"
+    assert resume_job.options[OWNER_SCHEMA_OPTION] == CURRENT_OWNER_SCHEMA
 
 
 @pytest.mark.asyncio

@@ -385,7 +385,7 @@ def main() -> int:
         init_repo(repo)
         port = args.port or free_port()
         server_url = f"http://127.0.0.1:{port}/mcp"
-        trial_config = write_trial_config(repo, runtime, tool_mode=args.tool_mode)
+        trial_config = write_trial_config(repo, runtime, tool_mode=args.tool_mode, multi_client=args.multi_client)
         env = dict(os.environ)
         env["PATCHBAY_HOME"] = str(runtime)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -1115,7 +1115,7 @@ def ensure_text_file(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def write_trial_config(repo: Path, runtime: Path, *, tool_mode: str) -> Path:
+def write_trial_config(repo: Path, runtime: Path, *, tool_mode: str, multi_client: bool = False) -> Path:
     runtime.mkdir(parents=True, exist_ok=True)
     config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
     config.setdefault("repositories", {})["default"] = str(repo)
@@ -1123,6 +1123,12 @@ def write_trial_config(repo: Path, runtime: Path, *, tool_mode: str) -> Path:
     config.setdefault("app", {})["tool_mode"] = tool_mode
     config.setdefault("auth", {})["tunnel_mode"] = "none"
     config.setdefault("server", {})["max_concurrent_jobs"] = 1
+    if multi_client:
+        # The trial intentionally needs two logical MCP clients to be different
+        # coordination owners so it can exercise takeover refusal/transfer.
+        # Production defaults still use token scope with server-owner fallback
+        # when no token is present.
+        config.setdefault("ownership", {})["scope"] = "transport_session"
     security = config.setdefault("security", {})
     if not security.get("blocked_globs"):
         security["blocked_globs"] = [

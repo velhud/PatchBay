@@ -278,7 +278,9 @@ Shared-server coordination rules:
 
 - tool mode is session-local for MCP sessions; one chat switching to `full` does not change another chat's effective mode;
 - worker, job, and artifact owner metadata is private, but public views can return coordination-owner-relative fields such as `owned_by_current_client`, `ownership_status`, `ownership_scope`, `owner_label`, and `ownership_note`;
+- `ownership_status` values are diagnostic coordination labels, not identity claims: `current_client` means the current scoped owner matches; `legacy_connection` means an older durable record has an owner hash but no owner-scope metadata; `other_token_owner` means a different token-scoped owner; `different_owner_scope` means the owner mode changed; `other_connection` covers same-scope non-token owner differences;
 - `codex_worker_message`, `codex_worker_integrate`, `codex_worker_stop`, and artifact cleanup refuse cross-owner MCP mutation unless the caller explicitly retries with `takeover: true`;
+- explicit takeover rewrites worker/artifact owner metadata to the current scoped owner model, which is the intended migration path for legacy records after user confirmation;
 - takeover is coordination, not authentication. HTTP auth, local binding, and tunnel token policy remain the actual access boundary;
 - base-checkout mutation paths are serialized per repository. Direct write/edit, command execution, shared-write worker turns, low-level base-writing jobs, and worker integration can return `repo_busy: true` instead of queueing hidden writes;
 - when `queue_enabled` is true, global job admission can accept pending Codex turns beyond currently running slots. `codex_self_test` reports both `max_concurrent_jobs` and `queue_enabled`.

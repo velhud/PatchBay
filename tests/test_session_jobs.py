@@ -4,7 +4,13 @@ import pytest
 
 from patchbay.jobs.executor import JobExecutor
 from patchbay.jobs.manager import JobManager, JobState
-from patchbay.ownership import OWNER_CLIENT_REF_OPTION, OWNER_SESSION_HASH_OPTION
+from patchbay.ownership import (
+    CURRENT_OWNER_SCHEMA,
+    OWNER_CLIENT_REF_OPTION,
+    OWNER_SCHEMA_OPTION,
+    OWNER_SCOPE_OPTION,
+    OWNER_SESSION_HASH_OPTION,
+)
 from patchbay.protocol.context import RequestContext
 from patchbay.tools.handler import ToolHandler
 
@@ -88,6 +94,8 @@ async def test_low_level_job_stores_private_owner_metadata_when_context_is_avail
     job = manager.get_job(result["job_id"])
     assert job.options[OWNER_SESSION_HASH_OPTION] == "client_a"
     assert job.options[OWNER_CLIENT_REF_OPTION] == "client_a"
+    assert job.options[OWNER_SCOPE_OPTION] == "transport_session"
+    assert job.options[OWNER_SCHEMA_OPTION] == CURRENT_OWNER_SCHEMA
     assert OWNER_SESSION_HASH_OPTION not in str(result)
     assert "client_a" not in str(result)
 

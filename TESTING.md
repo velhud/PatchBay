@@ -246,7 +246,7 @@ Run the multi-client variant to cover one shared MCP server URL with two logical
 PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json
 ```
 
-The multi-client variant verifies session-local tool modes, safe shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, preview-before-integrate, no automatic commit, connector/OAuth stderr noise scanning, and sanitized private evidence under `.local/validation/real_mcp_trial/<timestamp>/`.
+The multi-client variant verifies session-local tool modes, safe shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, preview-before-integrate, no automatic commit, connector/OAuth stderr noise scanning, and sanitized private evidence under `.local/validation/real_mcp_trial/<timestamp>/`. Unit coverage also verifies that new worker/job/artifact owner metadata stores owner scope and schema, and that old unscoped records report `legacy_connection` until explicit takeover migrates them to the current scoped owner model.
 
 Start the server:
 
