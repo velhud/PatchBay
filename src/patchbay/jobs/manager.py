@@ -319,6 +319,9 @@ class JobManager:
             job.started_at = time.time()
         elif state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
             job.completed_at = time.time()
+
+        if state in (JobState.RUNNING, JobState.COMPLETED) and "error" not in kwargs:
+            job.error = None
         
         # Update other fields
         for key, value in kwargs.items():

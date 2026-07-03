@@ -70,6 +70,28 @@ def test_job_manager_persists_redacted_completed_job(tmp_path):
     }
 
 
+def test_completed_job_clears_prior_running_error(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.RUNNING)
+    manager.update_job_state(job_id, JobState.FAILED, error="temporary stale marker")
+
+    manager.update_job_state(
+        job_id,
+        JobState.COMPLETED,
+        result={"summary": "done", "files_changed": []},
+        exit_code=0,
+    )
+
+    job = manager.get_job(job_id)
+    assert job.state == JobState.COMPLETED
+    assert job.error is None
+    persisted = json.loads((tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json").read_text(encoding="utf-8"))
+    assert persisted["state"] == "completed"
+    assert persisted["error"] is None
+
+
 def test_job_manager_marks_interrupted_running_jobs_failed_on_reload(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

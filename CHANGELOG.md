@@ -15,6 +15,7 @@
 - Added shared-server coordination for multiple ChatGPT/MCP sessions: session-local tool modes, session-relative ownership flags, explicit worker/artifact takeover, per-repository mutation locks, and multi-client trial coverage.
 - Added installable onboarding/transport commands: `patchbay`, `patchbay-stdio`, `patchbay setup`, `patchbay settings`, stdio MCP transport, explicit `patchbay install-cloudflared`, ngrok/stable tunnel shortcuts, and URL copy/open controls.
 - Clarified multi-repository launcher behavior: `--root` narrows the allowed root set and every additional repository must be passed with `--allow-root` or configured under `repositories.allowed`.
+- Fixed worker lifecycle reconciliation so a job is not falsely marked failed while its executor task is still parsing a just-exited Codex process, and successful completion now clears stale transient error text from durable job records.
 - Verified local MCP probing, real worker phase evals, real `codex_plan_job` execution, and direct tokenized public-tunnel MCP artifact worker simulation with Codex CLI `0.142.2`.
 - Added CodexPro attribution in `NOTICE` and README.
 - Public release remains pending real ChatGPT Developer Mode natural tool selection, ChatGPT-originated worker flow through a token-gated tunnel when advertised, apply-job, and resume evals on disposable repos.
