@@ -27,6 +27,8 @@ The normal pattern is natural-language management:
 
 Do not micromanage every folder, file name, or implementation step unless the user asked for that level of control. It is acceptable to brief a worker with "find the relevant area in this repository and report the plan before changing code" instead of precomputing every path yourself.
 
+Treat workers as continuing specialists, not disposable one-shot summaries. If a worker report is thin, contradictory, missing evidence, missing validation, or important enough that the answer will drive a real decision, continue that same worker with `codex_worker_message` before final synthesis. For consequential audits, planning, implementation, or review, ask the worker to write a durable report file or changed-file evidence in its worker workspace so the result survives beyond the latest tool-card summary.
+
 ## Endpoint
 
 Local development endpoint:
@@ -111,6 +113,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - The current checked-in profile is full-power. Treat direct writes, full bash, `danger-full-access`, session reads, and child-process environment inheritance as available unless the launcher/runtime config narrows them.
 - Use context tools before starting workers only enough to identify the workspace, constraints, and useful AGENTS/skill context.
 - Prefer `codex_worker_start` for durable delegation whenever the task needs real repository understanding, implementation, verification, or review. The default `isolated_write` mode is for implementation work in a private worktree; use `workspace_mode: "read_only"` for advisory/review workers.
+- For important worker assignments, include an explicit deliverable such as `Create worker-report-<topic>.md at the worker workspace root and report what you inspected, changed, verified, and what remains uncertain.` Use a durable file when the user may need to inspect, compare, or reuse the result later.
 - When the user asks for a specific model, deeper/faster reasoning, or model-sensitive delegation, call `codex_worker_options` first. Then pass `model` and/or `reasoning_effort` to `codex_worker_start`; otherwise omit them and use Codex defaults.
 - When ChatGPT has generated a file or zip package that local Codex should use, call `codex_worker_inbox` with `action: "import_file"` first. Then pass the returned `artifact_id` through `context_from_artifacts` on `codex_worker_start` or `codex_worker_message`.
 - Importing an artifact stores local inbox context only. It does not edit the repo, does not integrate worker output, and can be repeated for multiple files or zips in the same conversation.
@@ -151,7 +154,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 6. If ChatGPT has generated files, specs, plans, or zips for local Codex, call `codex_worker_inbox` with `action: "import_file"` for each artifact. Use `action: "list"` or `action: "inspect"` only when needed to choose or inspect artifact ids.
 7. For durable delegation, call `codex_worker_start` with a human name, natural-language brief, optional `workspace_mode`, optional `model`/`reasoning_effort`, optional `context_from_workers`, and optional `context_from_artifacts`.
 8. Inspect workers with `codex_worker_inspect` or `codex_worker_list`.
-9. Continue the same Codex conversation by name with `codex_worker_message`; include `context_from_workers` when another worker's report or diff should be relayed, and include `context_from_artifacts` when a later imported file or zip should be added to the same worker.
+9. Continue the same Codex conversation by name with `codex_worker_message`; include `context_from_workers` when another worker's report or diff should be relayed, and include `context_from_artifacts` when a later imported file or zip should be added to the same worker. Use this follow-up loop before final synthesis when a report is too compressed, lacks evidence, conflicts with another worker, or leaves a clear next question.
 10. Use `codex_read_file`, `codex_search_repo`, `codex_git_status`, `codex_git_diff`, and `codex_show_changes` for focused checks, verification, and reviewing worker evidence.
 11. If the required control is not visible, call `codex_tool_mode_info`, then `codex_tool_mode_switch` only when broadening is justified. If ChatGPT does not receive the new catalog, ask the operator to refresh or reconnect the connector.
 12. Use low-level `codex_plan_job`, `codex_get_status`, `codex_get_result`, and session tools for compatibility, debugging, or explicit power-user control.
@@ -182,6 +185,15 @@ Then continue naturally:
 {
   "worker": "Repository Investigator",
   "message": "Focus on the authentication flow and tell me where a fix would probably belong. Do not patch yet; report the smallest safe implementation plan."
+}
+```
+
+If the report is useful but incomplete, do not replace the worker with a new one. Continue the same specialist:
+
+```json
+{
+  "worker": "Repository Investigator",
+  "message": "Your first report is useful but too high-level. Pick the two most likely code paths, cite the exact files or functions, and say which one should be tested first. Do not edit files."
 }
 ```
 
@@ -217,6 +229,18 @@ When reports come back, use `context_from_workers` to pass bounded context rathe
   "context_from_workers": ["Backend Implementer", "Review And Verification"],
   "context_detail": "report",
   "message": "Reconcile your UI work with the backend report and the review risks. Adjust if needed, then report remaining integration gaps."
+}
+```
+
+For important synthesis, start or continue a dedicated synthesis worker with peer context:
+
+```json
+{
+  "name": "Integration Synthesizer",
+  "workspace_mode": "read_only",
+  "context_from_workers": ["Backend Implementer", "UI Implementer", "Review And Verification"],
+  "context_detail": "report",
+  "brief": "Synthesize the worker reports into a decision: what is ready to integrate, what conflicts remain, which files or diffs must be inspected, and what validation should run next. Do not edit files."
 }
 ```
 

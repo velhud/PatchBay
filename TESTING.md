@@ -59,7 +59,7 @@ The unit suite verifies:
 - isolated worker worktree creation, same-worktree resume, change/file/diff views, workspace-scoped worker names, and explicit cleanup;
 - multi-worker context relay through `context_from_workers` and `context_detail`;
 - worker integration preview, dirty-base refusal, blocked-path refusal, artifact-context exclusion, conflict reporting, and explicit accepted-result application;
-- worker tool descriptors and worker-only mode;
+- worker tool descriptors, worker-only mode, initialize instructions, and ChatGPT-facing manager-loop guidance for continuing workers, durable evidence, and follow-up messages;
 - Pro Request store behavior, sanitized mirrors, ownership/takeover, CLI create/list/show/response/dispatch/close, MCP list/read/claim/respond/dispatch/close descriptors, and blocked/busy/new-worker dispatch behavior;
 - durable real MCP worker trial evidence writer, sanitizer, and negative cases;
 - optional direct workspace write/edit and command power tools;

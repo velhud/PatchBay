@@ -52,7 +52,7 @@ Future app-store or multi-user use should implement OAuth 2.1 rather than treati
 
 Tool metadata must match behavior.
 
-The ChatGPT-facing prompt surface must also preserve the product role boundary: ChatGPT is the lead/manager/consultant, while local Codex workers perform non-trivial repository investigation, implementation, verification, and reporting. Direct read/search/git tools are still necessary for light orientation and evidence checks, but their descriptors and server instructions should not encourage ChatGPT to become the primary line-by-line implementer by default.
+The ChatGPT-facing prompt surface must also preserve the product role boundary: ChatGPT is the lead/manager/consultant, while local Codex workers perform non-trivial repository investigation, implementation, verification, and reporting. Direct read/search/git tools are still necessary for light orientation and evidence checks, but their descriptors and server instructions should not encourage ChatGPT to become the primary line-by-line implementer by default. Worker descriptors and server instructions should present named workers as continuing specialists, encourage `codex_worker_message` follow-up when evidence is weak or contradictory, and ask for durable report files or changed-file evidence on consequential work.
 
 - Read-only means no file write, no process execution with write potential, no network publishing, and no external side effects.
 - Mutating means source/worktree/artifact changes are possible.

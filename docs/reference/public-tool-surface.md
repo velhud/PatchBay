@@ -6,6 +6,8 @@ PatchBay should expose tools as product capabilities, not implementation conveni
 
 The primary ChatGPT posture is lead/manager/consultant, not line-by-line repository implementer. The worker-first surface should encourage ChatGPT to do as little detailed code investigation and implementation itself as practical: use direct context tools for light orientation, focused checks, and verification; use named Codex workers for broad repository understanding, implementation, review, and validation. Tool descriptions should make it natural for ChatGPT to ask workers natural-language questions and assign deliverables rather than precomputing every path or command.
 
+The manager posture is stateful. ChatGPT should treat named workers as continuing specialists, not disposable one-shot summaries. For consequential work, prompts should ask workers for durable evidence such as report files, changed files, diffs, validation notes, or open-question lists. When a report is thin, contradictory, missing evidence, or decision-critical, ChatGPT should continue the same worker with `codex_worker_message` and use `context_from_workers` for synthesis or cross-review instead of manually copying summaries.
+
 The same public tool surface is served through Streamable HTTP `/mcp` and the stdio entry point (`patchbay stdio` / `patchbay-stdio`). Stdio is a transport compatibility layer; it must not fork tool policy, hidden-tool filtering, schema validation, or session-local tool mode behavior.
 
 Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps canonical `codex_*` names as the durable API, while `app.tool_mode` can advertise compatibility aliases for ChatGPT live use. Aliases are tool-selection aids, not separate or safer execution paths; they resolve to canonical handlers and use precise alias-specific schemas instead of open generic argument bags.
@@ -44,6 +46,17 @@ For larger tasks, ChatGPT may start a small team of workers with separate respon
 | `codex_worker_stop` | destructive/non-idempotent | Cancel only the active worker turn while preserving durable identity and prior session continuity; optionally discard an isolated workspace. |
 
 Worker names are scoped to the base workspace. The same human name can be reused in another repo; worker ids remain globally addressable for explicit disambiguation. Worker results omit low-level job ids, Codex session ids, absolute repo/worktree paths, branch names, raw transcripts, and raw process logs. Public worker views include bounded latest-turn diagnostics such as launch/process/session timestamps, tracked process id, exit code, timeout state, and last heartbeat when available. `codex_worker_list` is a lightweight coordination view and does not scan worker worktrees for exact change state; use `codex_worker_inspect` change, diff, file, or integration-preview views when exact worker changes matter. Stale durable `running` jobs are reconciled to `failed` only after the grace window and only when PatchBay has neither a live executor task nor a tracked live Codex subprocess for that job. Worker identity and workspace ownership come from private durable job metadata; peer-worker context is bounded and explicit. Accepted-result integration is explicit and does not commit. PatchBay can queue pending Codex turns behind `max_concurrent_jobs`, but it does not add a worker database, mailbox, queued worker-message delivery, transcript copy, role engine, automatic reviewer chain, automatic commits, or a merge queue.
+
+Recommended ChatGPT worker-management loop:
+
+1. Start with `codex_self_test` and `codex_open_workspace`.
+2. Use read-only context tools only enough to understand the allowed workspace and constraints.
+3. Start one or more named workers with outcome, context, constraints, deliverables, and report format.
+4. For important work, ask workers to create a durable report file or changed-file evidence in the worker workspace.
+5. Inspect worker reports and exact changes.
+6. Continue the same worker with `codex_worker_message` when evidence is weak, contradictory, missing validation, or needs another worker's report.
+7. Use `context_from_workers` for synthesis, review handoff, and cross-worker reconciliation.
+8. Preview integration before applying accepted isolated-worker work.
 
 Worker workspace modes:
 
@@ -191,12 +204,14 @@ Every public descriptor must include:
 These descriptors are not only API documentation; they are part of the model prompt surface ChatGPT uses for tool selection. Keep descriptions outcome-first and explicit about:
 
 - ChatGPT's manager/consultant role and the expectation that non-trivial repo work is delegated to workers;
+- the expectation that named workers are reusable continuing specialists, and that `codex_worker_message` is the normal follow-up path when worker output is incomplete, contradictory, or decision-critical;
 - when to use the tool and when another worker/context tool is better;
 - when direct read/search tools are only for light orientation or verification rather than the primary implementation loop;
 - whether the tool reads, writes, starts a process, stops work, or applies changes;
 - whether state is durable across PatchBay restart;
 - what should be inspected before a mutating follow-up;
 - what validation or blocked-state behavior ChatGPT should report after the tool result.
+- when consequential worker assignments should request durable report files or changed-file evidence instead of relying on a compressed chat/tool summary.
 - when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool.
 
 The canonical names remain `codex_*`. Compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` may be advertised depending on `app.tool_mode`, but they must resolve to canonical handlers rather than duplicate execution paths. Their descriptors should advertise the alias names ChatGPT can actually call, such as `path` for `read`/`write`/`edit` and `cmd` or `command` for `bash`, then translate those names into the canonical handler arguments.

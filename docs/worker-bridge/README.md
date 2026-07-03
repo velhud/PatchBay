@@ -6,6 +6,8 @@ This directory defines the worker layer for `patchbay`.
 
 The current application exposes a local Streamable HTTP MCP bridge that lets ChatGPT inspect configured repositories, launch local Codex jobs, and manage named Codex workers. The worker layer makes the normal product abstraction human: ChatGPT briefs named local Codex colleagues, continues them by name, imports generated files or zips as artifact context, inspects reports and diffs, passes bounded context between workers, previews integration, and explicitly applies accepted work through exact git mechanics.
 
+The intended ChatGPT posture is active management, not one-shot delegation. Named workers are continuing specialists. For important work, ChatGPT should ask workers for durable report files or changed-file evidence, inspect results, then use `codex_worker_message` for follow-up questions when reports are thin, contradictory, missing validation, or need another worker's context.
+
 ## Read Order
 
 1. [00 Overview](00_ARCHITECTURAL_OVERVIEW.md)
@@ -52,6 +54,8 @@ The ChatGPT-facing prompt surface is the combination of MCP `initialize.instruct
 - start with `codex_self_test` and `codex_open_workspace`;
 - treat one copied Server URL as one shared local state surface and use session-relative ownership/takeover signals instead of assuming a private app instance;
 - manage workers by human name instead of backend IDs;
+- treat workers as continuing specialists and use `codex_worker_message` for follow-up before final synthesis when evidence is weak, contradictory, or decision-critical;
+- ask for durable report files or changed-file evidence for consequential audits, implementation, review, or synthesis;
 - inspect reports, changes, diffs, and `integration_preview` before integration;
 - report `repo_busy` or path-guard setup failures directly instead of trying to bypass local controls;
 - describe integration as explicit, no-commit, and preserving the worker worktree;
