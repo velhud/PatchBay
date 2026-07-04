@@ -68,6 +68,14 @@ def main() -> int:
             }
         )
         _check(report, "initialize", bool(session_id) and initialize["result"]["serverInfo"]["name"] == "patchbay")
+        instructions = initialize["result"].get("instructions", "")
+        _check(
+            report,
+            "initialize_manager_instructions",
+            "Which worker or worker team should I appoint?" in instructions
+            and "Do not precompute file paths" in instructions
+            and "Find the relevant files yourself" in instructions,
+        )
         client.session_id = session_id
 
         tools_payload = client.rpc(2, "tools/list")
@@ -83,6 +91,7 @@ def main() -> int:
             "codex_repo_tree",
             "codex_search_repo",
             "codex_load_context",
+            "codex_list_workspaces",
             "codex_worker_options",
             "codex_worker_start",
             "codex_worker_message",
@@ -116,9 +125,11 @@ def main() -> int:
                 and {"required": ["path"]} in tools["read"]["inputSchema"].get("anyOf", [])
                 and {"required": ["file_path"]} in tools["read"]["inputSchema"].get("anyOf", [])
                 and "path" in tools["read"]["inputSchema"]["properties"]
+                and "Same manager-first policy" in tools["read"]["description"]
                 and tools["bash"]["inputSchema"]["additionalProperties"] is False
                 and {"required": ["command"]} in tools["bash"]["inputSchema"].get("anyOf", [])
                 and {"required": ["cmd"]} in tools["bash"]["inputSchema"].get("anyOf", [])
+                and "Same manager-first policy" in tools["bash"]["description"]
             ),
         )
         _check(report, "tool_card_metadata", all(tools[name]["_meta"]["openai/outputTemplate"] == TOOL_CARD_URI for name in required_tools))
@@ -131,6 +142,7 @@ def main() -> int:
             and "workspace_mode" in tools["codex_worker_start"]["inputSchema"]["properties"]
             and "model" in tools["codex_worker_start"]["inputSchema"]["properties"]
             and "reasoning_effort" in tools["codex_worker_start"]["inputSchema"]["properties"]
+            and "Up to 10 workers" in tools["codex_worker_start"]["inputSchema"]["properties"]["context_from_workers"]["description"]
             and "worker_lines" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "recommended_next_poll_seconds" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "poll_guidance" in tools["codex_worker_status"]["outputSchema"]["properties"]
@@ -139,6 +151,15 @@ def main() -> int:
             and "wait_seconds" in tools["codex_worker_wait"]["inputSchema"]["properties"]
             and "view" in tools["codex_worker_inspect"]["inputSchema"]["properties"]
             and "cleanup_workspace" in tools["codex_worker_stop"]["inputSchema"]["properties"],
+        )
+        _check(
+            report,
+            "workspace_discovery_descriptors",
+            "query" in tools["codex_list_workspaces"]["inputSchema"]["properties"]
+            and "discover" in tools["codex_list_workspaces"]["inputSchema"]["properties"]
+            and "do not guess many absolute paths" in tools["codex_list_workspaces"]["description"]
+            and "timeout_ms" in tools["codex_search_repo"]["inputSchema"]["properties"]
+            and "timed_out" in tools["codex_search_repo"]["outputSchema"]["properties"],
         )
 
         resources = client.rpc(3, "resources/list")

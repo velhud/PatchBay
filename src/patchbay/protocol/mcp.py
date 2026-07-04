@@ -28,6 +28,7 @@ Manager-first operating contract:
 7. Repeated direct codex_read_file, codex_search_repo, codex_git_diff, or codex_show_changes calls on broad work are a workflow smell: ChatGPT has started acting like the line worker or routine reviewer. Stop, appoint or continue a worker with the evidence question, and ask follow-up questions before escalating to direct inspection.
 8. If no worker is used for a non-trivial repository or document task, state why the task fit an exception. Do not use "I can do it faster myself" as the default reason.
 9. Pagination, max_bytes, and bounded result fields are transport and stability controls, not a token-saving philosophy. Continue paged reads when evidence requires it, but prefer workers for broad investigation because they are the intended intelligence layer.
+10. Do not precompute file paths, folder maps, or implementation locations for a worker unless exact paths are already known and useful. A good worker brief can say: "Find the relevant files yourself, cite evidence, and report the smallest safe plan." Repeated path-finding calls before delegation are usually a sign ChatGPT is doing the worker's job.
 
 One copied Server URL is one shared local server for every ChatGPT conversation or MCP client using that URL. Read/list/inspect tools can see shared local worker, job, artifact, and repository state. Ownership is coordination, not authentication; the server may group short-lived transport sessions by the same connector token. Mutating another owner's worker or artifact requires explicit takeover when ownership checks apply. Base-checkout writes and integration are serialized per repository and may return repo_busy; report repo_busy instead of trying to bypass locks. Never ask the user for raw MCP session ids.
 
@@ -138,7 +139,7 @@ CODEX_COMMON_PARAMS = {
 TOOLS = [
     {
         "name": "codex_open_workspace",
-        "description": "Open an allowed local workspace and return bounded orientation: git state, AGENTS files, blocked-glob count, and optional tree. Use this as a brief setup step before delegating substantial work to Codex workers.",
+        "description": "Open an allowed local workspace and return bounded orientation: git state, AGENTS files, blocked-glob count, and optional tree. Use this as a brief setup step before delegating substantial work to Codex workers, only enough to identify the workspace and constraints; do not use tree loops to pre-map broad work for a worker.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -182,7 +183,7 @@ TOOLS = [
     },
     {
         "name": "codex_repo_tree",
-        "description": "Return a bounded tree for focused orientation or verification, excluding blocked secret/cache/build paths. For broad architecture mapping, prefer a read-only Codex worker.",
+        "description": "Return a bounded tree for focused orientation or verification, excluding blocked secret/cache/build paths. Use this only enough to identify workspace shape and constraints. For broad architecture mapping, prefer a read-only Codex worker instead of tree/search loops.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -246,7 +247,7 @@ TOOLS = [
     },
     {
         "name": "codex_search_repo",
-        "description": "Search an allowed workspace for a focused manager question with ripgrep when available and a Python fallback. Use it for orientation, locating a target before briefing a worker, tiny checks, or escalation when worker reports leave a concrete unresolved doubt. Results are bounded and redacted for response stability, not to discourage thorough work. For broad investigation, ask one or more Codex workers to inspect and synthesize instead of manually searching through the repository yourself; if uncertain, ask a worker follow-up before expanding direct searches.",
+        "description": "Search an allowed workspace for a focused manager question with ripgrep when available and a Python fallback. path is workspace-relative. Use it for orientation, locating a target before briefing a worker, tiny checks, or escalation when worker reports leave a concrete unresolved doubt. Results are bounded and redacted for response stability, not to discourage thorough work. If a broad search times out, narrow path/glob, raise timeout_ms intentionally, or delegate the broad search to a worker. For broad investigation, ask one or more Codex workers to inspect and synthesize instead of manually searching through the repository yourself; if uncertain, ask a worker follow-up before expanding direct searches.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -278,6 +279,10 @@ TOOLS = [
                 "max_results": {
                     "type": "integer",
                     "description": "Maximum search results, capped by server policy.",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Search timeout in milliseconds. Default 10000; capped by server policy. Timeout returns a structured partial result instead of making broad search look like a tool crash.",
                 },
             },
             "required": ["query"],
@@ -509,11 +514,28 @@ TOOLS = [
     },
     {
         "name": "codex_list_workspaces",
-        "description": "List configured workspaces known to this connector, with bounded git orientation.",
+        "description": "List configured and explicitly discoverable workspaces known to this connector, with bounded git orientation. Use this when a repo name/path is unclear; do not guess many absolute paths. Returned roots can be passed as repo_path to worker tools.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {},
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Optional case-insensitive workspace name/path filter, for example RetailMind.",
+                },
+                "discover": {
+                    "type": "boolean",
+                    "description": "Also scan configured repositories.discovery_roots for likely workspaces. Default: true.",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Maximum discovery depth under configured discovery roots. Capped by server policy.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum discovered workspaces to return. Capped by server policy.",
+                },
+            },
             "required": [],
         },
         "readOnlyHint": True,
@@ -1162,7 +1184,14 @@ ALIAS_INPUT_SCHEMAS = {
             "bootstrap_context": _boolean_arg("Deprecated compatibility flag; ignored by PatchBay."),
         }
     ),
-    "list_workspaces": _alias_input_schema({}),
+    "list_workspaces": _alias_input_schema(
+        {
+            "query": _string_arg("Optional case-insensitive workspace name/path filter."),
+            "discover": _boolean_arg("Also scan configured repositories.discovery_roots for likely workspaces. Default: true."),
+            "max_depth": _integer_arg("Maximum discovery depth under configured discovery roots. Capped by server policy."),
+            "max_results": _integer_arg("Maximum discovered workspaces to return. Capped by server policy."),
+        }
+    ),
     "workspace_snapshot": _alias_input_schema(
         {
             **_repo_selector_properties(),
@@ -1192,6 +1221,7 @@ ALIAS_INPUT_SCHEMAS = {
             "regex": _boolean_arg("Treat query as a regular expression. Default: false."),
             "include_hidden": _boolean_arg("Include hidden files when not blocked by safety rules. Default: false."),
             "max_results": _integer_arg("Maximum search results, capped by server policy."),
+            "timeout_ms": _integer_arg("Search timeout in milliseconds. Default: server policy."),
         },
         required=("query",),
     ),
@@ -1594,6 +1624,10 @@ TOOL_OUTPUT_SCHEMAS = {
             },
             "truncated": {"type": "boolean"},
             "used": {"type": "string"},
+            "searched_path": {"type": "string"},
+            "timed_out": {"type": "boolean"},
+            "timeout_ms": {"type": "integer"},
+            "suggested_next": {"type": "string"},
         },
     },
     "codex_load_context": {
@@ -1671,8 +1705,13 @@ TOOL_OUTPUT_SCHEMAS = {
         "properties": {
             "workspaces": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
             "count": {"type": "integer"},
+            "configured_count": {"type": "integer"},
+            "discovered_count": {"type": "integer"},
             "truncated": {"type": "boolean"},
             "paths_returned": {"type": "string"},
+            "discovery_roots": {"type": "array", "items": {"type": "string"}},
+            "query": {"type": "string"},
+            "note": {"type": "string"},
         },
     },
     "codex_workspace_snapshot": {
@@ -2000,11 +2039,15 @@ def alias_tool_descriptor(alias_name: str, canonical_name: str) -> Dict[str, Any
     """Expose compatibility names without making them the internal architecture."""
     canonical = TOOLS_BY_NAME[canonical_name]
     input_schema = ALIAS_INPUT_SCHEMAS.get(alias_name, canonical["inputSchema"])
+    canonical_description = str(canonical.get("description") or "")
     descriptor = enrich_tool_descriptor(
         {
             "name": alias_name,
             "title": _alias_title(alias_name),
-            "description": f"Compatibility alias for {canonical_name}, with CodexPro-derived argument names adapted to PatchBay.",
+            "description": (
+                f"Compatibility alias for {canonical_name}. Same manager-first policy and side effects as "
+                f"{canonical_name}: {canonical_description} Argument names are adapted for this alias."
+            ),
             "inputSchema": copy.deepcopy(input_schema),
             "readOnlyHint": canonical["readOnlyHint"],
         }

@@ -56,6 +56,11 @@ repositories:
   #   - canonical: /operator/canonical/workspace
   #     local: /srv/workspace-copy
   #     description: Remote copy of the canonical workspace
+  # Optional shallow discovery roots for codex_list_workspaces. Use these to
+  # expose known multi-repo folders without forcing ChatGPT to guess paths.
+  discovery_roots: []
+  max_discovery_depth: 3
+  max_discovery_results: 50
 
 security:
   require_git_repo: false
@@ -70,6 +75,8 @@ security:
   max_write_bytes: 500000
   max_diff_bytes: 200000
   max_search_results: 100
+  search_timeout_ms: 10000
+  max_search_timeout_ms: 60000
   max_tree_entries: 500
   max_skill_count: 120
   max_skill_bytes: 40000

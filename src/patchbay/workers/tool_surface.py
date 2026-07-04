@@ -363,7 +363,8 @@ WORKER_TOOLS = [
                     "items": {"type": "string"},
                     "description": (
                         "Optional worker names or ids whose reports/changes/diffs should be included as "
-                        "natural-language peer context for this worker turn. Capped by server policy."
+                        "natural-language peer context for this worker turn. Up to 10 workers can be attached; "
+                        "for more, split into batches or start a synthesis worker first."
                     ),
                 },
                 "context_from_artifacts": {
@@ -418,7 +419,8 @@ WORKER_TOOLS = [
                     "items": {"type": "string"},
                     "description": (
                         "Optional worker names or ids whose reports/changes/diffs should be included as "
-                        "natural-language peer context for this worker turn. Capped by server policy."
+                        "natural-language peer context for this worker turn. Up to 10 workers can be attached; "
+                        "for more, split into batches or start a synthesis worker first."
                     ),
                 },
                 "context_from_artifacts": {
@@ -692,6 +694,7 @@ WORKER_MODE_TOOLS = {
     "codex_read_file",
     "codex_search_repo",
     "codex_load_context",
+    "codex_list_workspaces",
     "codex_list_skills",
     "codex_load_skill",
     "codex_git_status",

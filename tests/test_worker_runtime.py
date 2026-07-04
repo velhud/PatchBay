@@ -1011,6 +1011,70 @@ async def test_stop_worker_waits_briefly_for_partial_report_artifact(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stop_worker_existing_checkpoint_does_not_skip_partial_result_wait(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["stop_artifact_wait_seconds"] = 1
+    manager = JobManager(config)
+    executor = DelayedPartialCancelExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Checkpoint Before Stop",
+        brief="Start then stop after checkpoint.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-checkpoint-before-stop",
+        process_started_at=time.time(),
+        last_heartbeat_at=time.time(),
+        checkpoints=[{"kind": "agent_message", "at": time.time(), "summary": "Earlier checkpoint."}],
+    )
+
+    view = await runtime.stop_worker(worker=started["worker_id"])
+
+    assert view["stopped"] is True
+    assert "Partial evidence attached after stop" in view["report"]
+    assert view["report_artifacts"][0]["partial"] is True
+    assert view["latest_checkpoints"][0]["summary"] == "Earlier checkpoint."
+
+
+@pytest.mark.asyncio
+async def test_public_worker_last_activity_tracks_heartbeat_not_start_time(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Live Activity Worker",
+        brief="Keep running.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    started_at = time.time() - 600
+    heartbeat_at = time.time()
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        started_at=started_at,
+        process_started_at=started_at + 1,
+        last_heartbeat_at=heartbeat_at,
+        last_stdout_at=heartbeat_at,
+        session_id="session-live-activity",
+    )
+
+    view = await runtime.inspect_worker(worker=started["worker_id"], view="status")
+
+    assert view["last_activity_at"] >= heartbeat_at - 0.01
+    assert view["last_activity_at"] > started_at + 500
+
+
+@pytest.mark.asyncio
 async def test_inspect_reconciles_stale_running_worker_without_waiting(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

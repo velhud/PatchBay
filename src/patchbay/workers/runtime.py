@@ -54,7 +54,7 @@ MAX_WORKER_NAME_CHARS = 120
 MAX_WORKER_MESSAGE_CHARS = 200_000
 MAX_PUBLIC_REPORT_CHARS = 24_000
 MAX_INSPECT_WAIT_SECONDS = 30
-MAX_CONTEXT_WORKERS = 6
+MAX_CONTEXT_WORKERS = 10
 MAX_CONTEXT_REPORT_CHARS = 8_000
 MAX_CONTEXT_DIFF_BYTES = 120_000
 MAX_INTEGRATION_PATCH_BYTES = 2_000_000
@@ -617,14 +617,17 @@ class WorkerRuntime:
     async def _wait_for_cancelled_turn_artifacts(self, job_id: str) -> None:
         """Give the executor a short chance to attach partial evidence after stop."""
         deadline = time.time() + self._stop_artifact_wait_seconds()
+        short_untracked_deadline = min(deadline, time.time() + 0.25)
         while time.time() < deadline:
             job = self.job_manager.get_job(job_id)
             if not job:
                 return
-            if job.last_event == "process.cancelled" or job.result or job.checkpoints:
+            if job.last_event == "process.cancelled" or job.result:
                 return
             task = getattr(self.job_executor, "tasks", {}).get(job_id)
             if task is not None and getattr(task, "done", lambda: True)():
+                return
+            if task is None and time.time() >= short_untracked_deadline:
                 return
             await asyncio.sleep(0.05)
 
@@ -2154,7 +2157,7 @@ class WorkerRuntime:
         repo_path = workspace["base_repo_path"]
         workspace_id = "ws_" + hashlib.sha256(repo_path.encode("utf-8")).hexdigest()[:24]
         state = self._public_state(latest.state)
-        timestamp = latest.completed_at or latest.started_at
+        timestamp = self._latest_activity_timestamp(latest)
         workspace_available = bool(workspace["available"])
         has_changes = self._has_changes(jobs) if include_change_state and workspace_available else False
         model, reasoning_effort = self._worker_execution_choices(jobs)
@@ -2220,6 +2223,31 @@ class WorkerRuntime:
         if workspace["mode"] == "shared_write":
             return "base_checkout"
         return "base_checkout_read_only"
+
+    def _latest_activity_timestamp(self, job: JobInfo) -> Optional[float]:
+        timestamps = [
+            value
+            for value in (
+                job.completed_at,
+                job.last_heartbeat_at,
+                job.last_stdout_at,
+                job.last_stderr_at,
+                job.last_command_completed_at,
+                job.process_started_at,
+                job.launch_started_at,
+                job.started_at,
+            )
+            if value is not None
+        ]
+        checkpoints = job.checkpoints if isinstance(job.checkpoints, list) else []
+        for checkpoint in checkpoints:
+            if not isinstance(checkpoint, dict):
+                continue
+            try:
+                timestamps.append(float(checkpoint.get("at") or 0))
+            except (TypeError, ValueError):
+                continue
+        return max(float(value) for value in timestamps) if timestamps else None
 
     def _worker_report_files(self, jobs: list[JobInfo]) -> list[Dict[str, Any]]:
         workspace = self._workspace_for_jobs(jobs)

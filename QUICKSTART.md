@@ -152,10 +152,11 @@ Ask ChatGPT to use:
 
 1. `codex_self_test`
 2. `codex_open_workspace`
-3. `codex_workspace_snapshot`
-4. `codex_read_file`
-5. `codex_search_repo`
-6. `codex_show_changes`
+3. `codex_list_workspaces` when the repo name/path is unclear
+4. `codex_repo_tree`
+5. `codex_read_file`
+6. `codex_search_repo`
+7. `codex_show_changes` when the visible tool mode exposes it
 
 This path is for brief orientation and verification. It should not become the normal development loop for non-trivial work. The normal PatchBay posture is ChatGPT as lead: ask local Codex workers natural-language questions, assign them work, read their reports, and inspect direct files/diffs only when needed to verify evidence. If ChatGPT starts making repeated direct read/search calls to understand the repo, it should stop and delegate that investigation to a worker. The checked-in runtime permission profile enables direct writes and full bash, but the default `worker` tool surface hides those power tools from ChatGPT until the surface is deliberately broadened. Using `--root "$tmpdir/repo"` keeps runtime authority scoped to the disposable repo for this first run.
 

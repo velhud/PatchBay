@@ -348,6 +348,7 @@ def test_high_value_output_schemas_describe_structured_results():
 
     assert "workspace_id" in by_name["codex_open_workspace"]["outputSchema"]["properties"]
     assert "matches" in by_name["codex_search_repo"]["outputSchema"]["properties"]
+    assert "timed_out" in by_name["codex_search_repo"]["outputSchema"]["properties"]
     assert "next_start_line" in by_name["codex_read_file"]["outputSchema"]["properties"]
     assert "max_bytes_applied" in by_name["codex_read_file"]["outputSchema"]["properties"]
     assert "requested_end_line" in by_name["codex_read_file"]["outputSchema"]["properties"]
@@ -368,6 +369,7 @@ def test_high_value_output_schemas_describe_structured_results():
     assert "diff" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "can_apply" in by_name["codex_worker_integrate"]["outputSchema"]["properties"]
     assert "connection" in by_name["codex_self_test"]["outputSchema"]["properties"]
+    assert "discovered_count" in by_name["codex_list_workspaces"]["outputSchema"]["properties"]
     assert "patchbay_config" in by_name["codex_get_config"]["outputSchema"]["properties"]
     assert "modes" in by_name["codex_tool_mode_info"]["outputSchema"]["properties"]
     assert "current_mode" in by_name["codex_tool_mode_switch"]["outputSchema"]["properties"]
@@ -391,6 +393,11 @@ def test_prompt_surface_discourages_direct_micromanagement_loop():
     assert "response-stability boundary, not a token-saving instruction" in by_name["codex_read_file"]["description"]
     assert "focused manager question" in by_name["codex_search_repo"]["description"]
     assert "one or more Codex workers" in by_name["codex_search_repo"]["description"]
+    assert "broad search times out" in by_name["codex_search_repo"]["description"]
+    assert "timeout_ms" in by_name["codex_search_repo"]["inputSchema"]["properties"]
+    assert "discoverable workspaces" in by_name["codex_list_workspaces"]["description"]
+    assert "do not guess many absolute paths" in by_name["codex_list_workspaces"]["description"]
+    assert {"query", "discover", "max_depth", "max_results"} <= set(by_name["codex_list_workspaces"]["inputSchema"]["properties"])
     assert "direct diff reading as the default manager workflow" in by_name["codex_git_diff"]["description"]
     assert "routine substitute for worker reports" in by_name["codex_show_changes"]["description"]
     assert "manager, engineering lead, and coordinator" in SERVER_INSTRUCTIONS
@@ -405,10 +412,23 @@ def test_prompt_surface_discourages_direct_micromanagement_loop():
     assert "full tool mode does not change ChatGPT into an implementer" in SERVER_INSTRUCTIONS
     assert "tiny task where creating a worker would be absurd" in SERVER_INSTRUCTIONS
     assert "transport and stability controls, not a token-saving philosophy" in SERVER_INSTRUCTIONS
+    assert "Do not precompute file paths" in SERVER_INSTRUCTIONS
+    assert "Find the relevant files yourself" in SERVER_INSTRUCTIONS
     assert "brief or verify work" in by_name["codex_load_context"]["description"]
     assert "session-local MCP tool surface switch" in by_name["codex_tool_mode_switch"]["description"]
     assert "does not change ChatGPT's manager-first role" in by_name["codex_tool_mode_switch"]["description"]
     assert "process-local MCP tool surface switch" not in by_name["codex_tool_mode_switch"]["description"]
+
+
+def test_full_mode_aliases_inherit_manager_first_descriptions():
+    by_name = {tool["name"]: tool for tool in PUBLIC_TOOL_DESCRIPTORS}
+
+    for alias in ("read", "search", "tree", "show_changes", "git_diff", "bash"):
+        assert "Same manager-first policy" in by_name[alias]["description"]
+        assert "Compatibility alias" in by_name[alias]["description"]
+
+    assert "manager's inspection instrument" in by_name["read"]["description"]
+    assert "one or more Codex workers" in by_name["search"]["description"]
 
 
 def test_prompt_surface_preserves_pro_request_boundaries():

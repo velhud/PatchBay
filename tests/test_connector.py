@@ -50,6 +50,8 @@ def test_connector_setup_guide_describes_chatgpt_connection_without_secret():
     assert guide["server_url"] == "https://bridge.example/mcp?patchbay_token=%3Credacted%3E"
     assert guide["profile"]["used"] is True
     assert any("Developer mode" in step for step in guide["chatgpt_steps"])
+    assert any("manager of local Codex workers" in step for step in guide["chatgpt_steps"])
+    assert any("codex_list_workspaces" in step for step in guide["chatgpt_steps"])
     assert any("token protected" in warning for warning in guide["warnings"])
     assert token_value not in json.dumps(guide)
     assert "ChatGPT setup" in text

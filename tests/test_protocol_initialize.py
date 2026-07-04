@@ -46,6 +46,8 @@ def test_initialize_includes_server_instructions():
     assert "codex_open_workspace" in result["instructions"]
     assert "Use read-only context tools for light orientation" in result["instructions"]
     assert "communicate with them in normal engineering language" in result["instructions"]
+    assert "Do not precompute file paths" in result["instructions"]
+    assert "Find the relevant files yourself" in result["instructions"]
     assert "split responsibilities across multiple isolated_write workers" in result["instructions"]
     assert "continuing specialists" in result["instructions"]
     assert "durable report file" in result["instructions"]

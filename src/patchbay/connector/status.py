@@ -180,6 +180,8 @@ def connector_setup_guide(
             "Paste the Server URL from this guide.",
             "Use No Authentication / None for a query-token Server URL, or Bearer token only when your ChatGPT UI supports custom headers.",
             "Open a new chat, add the PatchBay connector, then start with codex_self_test and codex_open_workspace.",
+            "Act as manager of local Codex workers, not as the primary file reader; after self-test/orientation, appoint workers for non-trivial repository work.",
+            "If a repo name is unclear, use codex_list_workspaces with query/discover instead of guessing paths.",
         ],
         "operator_commands": [
             "patchbay doctor --json",

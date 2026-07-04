@@ -872,7 +872,20 @@ class ToolHandler:
             }
         
         if job.state == JobState.CANCELLED:
-            return {"reference_id": job_id, "state": "cancelled"}
+            result = {"reference_id": job_id, "state": "cancelled"}
+            if job.result:
+                for k, v in job.result.items():
+                    if not k.startswith('_'):
+                        result[k] = v
+            else:
+                result["partial_artifact_pending"] = bool((job.options or {}).get("_worker_id"))
+                result["note"] = (
+                    "This worker-tagged job is cancelled but no partial result has been attached yet. "
+                    "Use codex_worker_inspect or codex_get_result again after a short wait."
+                    if result["partial_artifact_pending"]
+                    else "The job was cancelled before a result was attached."
+                )
+            return result
         
         result = {
             "reference_id": job_id,
@@ -912,7 +925,28 @@ class ToolHandler:
 
     async def _codex_cancel_job(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Cancel a pending or running Codex job."""
-        return await self.job_executor.cancel_job(args["job_id"])
+        job_id = args["job_id"]
+        result = await self.job_executor.cancel_job(job_id)
+        job = self.job_manager.get_job(job_id)
+        if result.get("cancelled") and job and (job.options or {}).get("_worker_id"):
+            for _ in range(10):
+                job = self.job_manager.get_job(job_id)
+                if not job or job.result or job.last_event == "process.cancelled":
+                    break
+                await asyncio.sleep(0.05)
+            job = self.job_manager.get_job(job_id)
+            result["worker_tagged"] = True
+            result["partial_artifact_ready"] = bool(job and job.result)
+            result["partial_artifact_pending"] = bool(job and not job.result)
+            if job and job.result:
+                result["partial"] = bool(job.result.get("partial"))
+                result["summary"] = job.result.get("summary", "")
+            else:
+                result["note"] = (
+                    "Cancellation was accepted. PatchBay is still waiting for Codex process output to settle; "
+                    "inspect the worker or get the result again before treating evidence as lost."
+                )
+        return result
     
     async def _codex_review(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run content change analysis"""

@@ -150,6 +150,28 @@ def test_search_repo_omits_blocked_files(tmp_path):
     assert all(match["path"] != ".env" for match in result["matches"])
 
 
+def test_search_repo_timeout_returns_structured_partial_result(tmp_path, monkeypatch):
+    (tmp_path / "README.md").write_text("needle in readme\n", encoding="utf-8")
+
+    context = WorkspaceContext(make_config(tmp_path))
+
+    monkeypatch.setattr("patchbay.workspace.context.shutil.which", lambda name: "/usr/bin/rg")
+
+    def fake_run(*args, **kwargs):
+        error = subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout"))
+        error.stdout = f"{tmp_path / 'README.md'}:1:needle in readme\n"
+        raise error
+
+    monkeypatch.setattr("patchbay.workspace.context.subprocess.run", fake_run)
+
+    result = context.search_repo({"query": "needle", "timeout_ms": 1000})
+
+    assert result["timed_out"] is True
+    assert result["timeout_ms"] == 1000
+    assert result["matches"][0]["path"] == "README.md"
+    assert "delegate the broad repository search" in result["suggested_next"]
+
+
 def test_read_binary_file_is_rejected(tmp_path):
     (tmp_path / "data.bin").write_bytes(b"abc\x00def")
 
@@ -250,6 +272,51 @@ def test_list_workspaces_includes_configured_aliases(tmp_path):
         and item.get("root") == str(tmp_path.resolve())
         for item in result["workspaces"]
     )
+
+
+def test_list_workspaces_discovers_repositories_under_configured_roots(tmp_path):
+    base = tmp_path / "github"
+    retail = base / "RetailMind"
+    retail.mkdir(parents=True)
+    init_repo(retail)
+    (retail / "AGENTS.md").write_text("project rules\n", encoding="utf-8")
+    (base / "node_modules" / "IgnoredRepo").mkdir(parents=True)
+    (base / "node_modules" / "IgnoredRepo" / "README.md").write_text("ignored\n", encoding="utf-8")
+
+    config = make_config(base)
+    config["repositories"]["default"] = str(base)
+    config["repositories"]["allowed"] = [str(base)]
+    config["repositories"]["discovery_roots"] = [str(base)]
+    context = WorkspaceContext(config)
+
+    result = context.list_workspaces({"query": "retail", "discover": True})
+
+    discovered = [item for item in result["workspaces"] if item.get("source") == "discovered"]
+    assert result["discovered_count"] == 1
+    assert discovered[0]["root"] == str(retail.resolve())
+    assert discovered[0]["name"] == "RetailMind"
+    assert ".git" in discovered[0]["markers"]
+    assert "IgnoredRepo" not in str(result)
+    assert result["paths_returned"] == "configured-and-discovered"
+
+
+def test_open_workspace_missing_name_suggests_discovered_repo(tmp_path):
+    base = tmp_path / "github"
+    retail = base / "RetailMind"
+    retail.mkdir(parents=True)
+    init_repo(retail)
+    config = make_config(base)
+    config["repositories"]["allowed"] = [str(base)]
+    config["repositories"]["discovery_roots"] = [str(base)]
+    context = WorkspaceContext(config)
+
+    with pytest.raises(ValueError) as error:
+        context.open_workspace("RetailMind")
+
+    message = str(error.value)
+    assert "Candidate workspace(s)" in message
+    assert str(retail.resolve()) in message
+    assert "repo_path" in message
 
 
 def test_load_skill_reads_only_discovered_skill_by_name(tmp_path):

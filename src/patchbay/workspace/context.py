@@ -8,6 +8,7 @@ import difflib
 import shutil
 import subprocess
 from dataclasses import dataclass
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -47,6 +48,33 @@ DEFAULT_BLOCKED_GLOBS = [
     "worktrees/**",
 ]
 
+DEFAULT_WORKSPACE_DISCOVERY_MARKERS = [
+    ".git",
+    "AGENTS.md",
+    "README.md",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+]
+
+DEFAULT_WORKSPACE_DISCOVERY_SKIP_NAMES = {
+    ".git",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "logs",
+    "node_modules",
+    "target",
+    "venv",
+    "worktrees",
+}
+
 
 @dataclass(frozen=True)
 class Workspace:
@@ -78,10 +106,15 @@ class WorkspaceContext:
         self.max_read_bytes = int(security.get("max_read_bytes", 200_000))
         self.max_write_bytes = int(security.get("max_write_bytes", 500_000))
         self.max_search_results = int(security.get("max_search_results", 100))
+        self.default_search_timeout_ms = int(security.get("search_timeout_ms", 10_000))
+        self.max_search_timeout_ms = int(security.get("max_search_timeout_ms", 60_000))
         self.max_tree_entries = int(security.get("max_tree_entries", 500))
         self.max_skill_count = int(security.get("max_skill_count", 120))
         self.max_skill_bytes = int(security.get("max_skill_bytes", 40_000))
         self.context_dir = str(security.get("context_dir", ".ai-bridge")).strip() or ".ai-bridge"
+        repositories = config.get("repositories", {})
+        self.max_workspace_discovery_depth = int(repositories.get("max_discovery_depth", 3))
+        self.max_workspace_discovery_results = int(repositories.get("max_discovery_results", 50))
 
     def _allowed_roots(self) -> list[str]:
         return self.config.get("repositories", {}).get("allowed") or []
@@ -129,9 +162,19 @@ class WorkspaceContext:
             raise ValueError("No workspace path provided and no default repository configured")
 
         resolved_requested, alias = self._resolve_workspace_alias(str(requested))
-        root = validate_allowed_path(str(resolved_requested), self._allowed_roots())
+        try:
+            root = validate_allowed_path(str(resolved_requested), self._allowed_roots())
+        except ValueError as error:
+            hint = self._workspace_suggestion_hint(str(requested))
+            if hint:
+                raise ValueError(f"{error}. {hint}") from error
+            raise
         if not root.exists():
-            raise ValueError(f"Workspace root does not exist: {repo_path or requested}")
+            hint = self._workspace_suggestion_hint(str(requested))
+            message = f"Workspace root does not exist: {repo_path or requested}"
+            if hint:
+                message = f"{message}. {hint}"
+            raise ValueError(message)
         if not root.is_dir():
             raise ValueError(f"Workspace root is not a directory: {repo_path or requested}")
 
@@ -468,10 +511,16 @@ class WorkspaceContext:
         include_hidden = bool(args.get("include_hidden", False))
         max_results = max(1, min(int(args.get("max_results") or self.max_search_results), self.max_search_results))
         glob = args.get("glob")
+        timeout_ms = self._bounded_int(
+            args.get("timeout_ms"),
+            self.default_search_timeout_ms,
+            1_000,
+            max(1_000, self.max_search_timeout_ms),
+        )
 
         if shutil.which("rg"):
-            return self._search_with_rg(workspace, root, query, regex, include_hidden, max_results, glob)
-        return self._search_with_python(workspace, root, query, regex, include_hidden, max_results, glob)
+            return self._search_with_rg(workspace, root, query, regex, include_hidden, max_results, glob, timeout_ms)
+        return self._search_with_python(workspace, root, query, regex, include_hidden, max_results, glob, timeout_ms)
 
     def load_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
         workspace = self.open_workspace(args.get("repo"))
@@ -644,10 +693,24 @@ class WorkspaceContext:
             }
 
     def list_workspaces(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Return configured workspaces without exposing arbitrary local paths."""
+        """Return configured and explicitly discoverable workspaces."""
         workspaces = []
         roots = list(self._allowed_roots())
         default_root = self.config.get("repositories", {}).get("default")
+        query = str(args.get("query") or "").strip()
+        discover = bool(args.get("discover", True))
+        max_results = self._bounded_int(
+            args.get("max_results"),
+            self.max_workspace_discovery_results,
+            1,
+            max(1, self.max_workspace_discovery_results),
+        )
+        max_depth = self._bounded_int(
+            args.get("max_depth"),
+            self.max_workspace_discovery_depth,
+            0,
+            max(0, self.max_workspace_discovery_depth),
+        )
         if default_root and default_root not in roots:
             roots.insert(0, default_root)
 
@@ -713,11 +776,28 @@ class WorkspaceContext:
                         "error": public_error_message(error, default="Workspace alias could not be opened.", allow_details=True),
                     }
                 )
+        discovered: list[Dict[str, Any]] = []
+        if discover:
+            known = {str(item.get("root") or "") for item in workspaces if item.get("root")}
+            for item in self._discover_workspaces(query=query, max_depth=max_depth, max_results=max_results):
+                if item["root"] in known:
+                    continue
+                known.add(item["root"])
+                discovered.append(item)
+                workspaces.append(item)
         return {
             "workspaces": workspaces,
             "count": len(workspaces),
-            "truncated": len(roots) > 50,
-            "paths_returned": "configured-only",
+            "configured_count": len(workspaces) - len(discovered),
+            "discovered_count": len(discovered),
+            "truncated": len(roots) > 50 or (discover and len(discovered) >= max_results),
+            "paths_returned": "configured-and-discovered" if discovered else "configured-only",
+            "discovery_roots": [str(root) for root in self._workspace_discovery_roots()],
+            "query": query,
+            "note": (
+                "Use discovered root values as repo_path for worker starts/messages. "
+                "Configure repositories.aliases for canonical paths that should resolve directly."
+            ),
         }
 
     def workspace_snapshot(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1265,6 +1345,7 @@ class WorkspaceContext:
         include_hidden: bool,
         max_results: int,
         glob: Optional[str],
+        timeout_ms: int,
     ) -> Dict[str, Any]:
         args = ["rg", "--line-number", "--no-heading", "--color=never", "--max-columns", "500"]
         if not regex:
@@ -1277,7 +1358,40 @@ class WorkspaceContext:
             args.extend(["-g", f"!{pattern}"])
         args.extend([query, str(root)])
 
-        completed = subprocess.run(args, cwd=workspace.root, capture_output=True, text=True, timeout=10)
+        try:
+            completed = subprocess.run(
+                args,
+                cwd=workspace.root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_ms / 1000,
+            )
+        except subprocess.TimeoutExpired as error:
+            stdout = error.stdout or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            matches = []
+            for line in str(stdout).splitlines():
+                parsed = self._parse_rg_line(workspace, line)
+                if not parsed:
+                    continue
+                matches.append(parsed)
+                if len(matches) >= max_results:
+                    break
+            result = self._format_search_result(
+                workspace,
+                matches,
+                "ripgrep",
+                True,
+                searched_path=self._display_path(root, workspace.root),
+                timeout_ms=timeout_ms,
+                timed_out=True,
+            )
+            result["suggested_next"] = (
+                "The search timed out before rg finished. Narrow path or glob, raise timeout_ms if the broad "
+                "search is intentional, or delegate the broad repository search to a Codex worker."
+            )
+            return result
         if completed.returncode not in (0, 1):
             raise ValueError("Search failed")
 
@@ -1290,7 +1404,15 @@ class WorkspaceContext:
             if len(matches) >= max_results:
                 break
 
-        return self._format_search_result(workspace, matches, "ripgrep", len(completed.stdout.splitlines()) > len(matches))
+        return self._format_search_result(
+            workspace,
+            matches,
+            "ripgrep",
+            len(completed.stdout.splitlines()) > len(matches),
+            searched_path=self._display_path(root, workspace.root),
+            timeout_ms=timeout_ms,
+            timed_out=False,
+        )
 
     def _search_with_python(
         self,
@@ -1301,12 +1423,19 @@ class WorkspaceContext:
         include_hidden: bool,
         max_results: int,
         glob: Optional[str],
+        timeout_ms: int,
     ) -> Dict[str, Any]:
         import re
+        import time
 
         matcher = re.compile(query) if regex else None
         matches = []
+        deadline = time.time() + (timeout_ms / 1000)
+        timed_out = False
         for path in self._iter_files(workspace, root, include_hidden, glob):
+            if time.time() >= deadline:
+                timed_out = True
+                break
             if len(matches) >= max_results:
                 break
             try:
@@ -1323,7 +1452,21 @@ class WorkspaceContext:
                             break
             except Exception:
                 continue
-        return self._format_search_result(workspace, matches, "python", len(matches) >= max_results)
+        result = self._format_search_result(
+            workspace,
+            matches,
+            "python",
+            timed_out or len(matches) >= max_results,
+            searched_path=self._display_path(root, workspace.root),
+            timeout_ms=timeout_ms,
+            timed_out=timed_out,
+        )
+        if timed_out:
+            result["suggested_next"] = (
+                "The search timed out before Python fallback finished. Narrow path or glob, raise timeout_ms, "
+                "or delegate the broad search to a Codex worker."
+            )
+        return result
 
     def _iter_files(self, workspace: Workspace, root: Path, include_hidden: bool, glob: Optional[str]) -> Iterable[Path]:
         if root.is_file():
@@ -1352,15 +1495,131 @@ class WorkspaceContext:
             return None
         return {"path": rel, "line": int(line_part), "text": redact_text(text[:500])}
 
-    def _format_search_result(self, workspace: Workspace, matches: list[Dict[str, Any]], used: str, truncated: bool) -> Dict[str, Any]:
+    def _format_search_result(
+        self,
+        workspace: Workspace,
+        matches: list[Dict[str, Any]],
+        used: str,
+        truncated: bool,
+        *,
+        searched_path: str = ".",
+        timeout_ms: Optional[int] = None,
+        timed_out: bool = False,
+    ) -> Dict[str, Any]:
         text = "\n".join(f"{item['path']}:{item['line']}: {item['text']}" for item in matches) or "No matches."
-        return {
+        result = {
             "workspace_id": workspace.id,
             "text": text,
             "matches": matches,
             "truncated": truncated,
             "used": used,
+            "searched_path": searched_path,
+            "timed_out": timed_out,
         }
+        if timeout_ms is not None:
+            result["timeout_ms"] = timeout_ms
+        return result
+
+    def _workspace_discovery_roots(self) -> list[Path]:
+        repositories = self.config.get("repositories", {})
+        raw_roots = repositories.get("discovery_roots") or []
+        if isinstance(raw_roots, str):
+            raw_roots = [raw_roots]
+        roots: list[Path] = []
+        seen = set()
+        for raw in raw_roots:
+            if not raw:
+                continue
+            try:
+                root = validate_allowed_path(str(raw), self._allowed_roots())
+            except Exception:
+                continue
+            if not root.exists() or not root.is_dir():
+                continue
+            resolved = root.resolve()
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            roots.append(resolved)
+        return roots
+
+    def _workspace_markers(self, path: Path) -> list[str]:
+        markers = []
+        for marker in DEFAULT_WORKSPACE_DISCOVERY_MARKERS:
+            if (path / marker).exists():
+                markers.append(marker)
+        return markers
+
+    def _discover_workspaces(self, *, query: str = "", max_depth: int = 3, max_results: int = 50) -> list[Dict[str, Any]]:
+        query_normalized = query.casefold()
+        results: list[Dict[str, Any]] = []
+        visited: set[str] = set()
+        for discovery_root in self._workspace_discovery_roots():
+            queue = deque([(discovery_root, 0)])
+            while queue and len(results) < max_results:
+                path, depth = queue.popleft()
+                try:
+                    resolved = path.resolve()
+                except Exception:
+                    continue
+                key = str(resolved)
+                if key in visited:
+                    continue
+                visited.add(key)
+                if path.name in DEFAULT_WORKSPACE_DISCOVERY_SKIP_NAMES and path != discovery_root:
+                    continue
+                markers = self._workspace_markers(resolved)
+                query_match = not query_normalized or query_normalized in resolved.name.casefold() or query_normalized in key.casefold()
+                if markers and query_match:
+                    try:
+                        workspace = self.open_workspace(str(resolved))
+                        results.append(
+                            {
+                                "workspace_id": workspace.id,
+                                "root": str(workspace.root),
+                                "name": workspace.root.name or str(workspace.root),
+                                "default": False,
+                                "source": "discovered",
+                                "discovery_root": str(discovery_root),
+                                "markers": markers,
+                                "git": self.git_summary(workspace),
+                            }
+                        )
+                    except Exception:
+                        pass
+                if depth >= max_depth:
+                    continue
+                try:
+                    children = sorted(path.iterdir(), key=lambda item: item.name.casefold())
+                except Exception:
+                    continue
+                for child in children:
+                    if not child.is_dir() or child.is_symlink():
+                        continue
+                    if child.name in DEFAULT_WORKSPACE_DISCOVERY_SKIP_NAMES:
+                        continue
+                    queue.append((child, depth + 1))
+        return results
+
+    def _workspace_suggestion_hint(self, requested: str) -> str:
+        raw = str(requested or "").strip()
+        if not raw:
+            return ""
+        query = Path(raw).name or raw
+        if query in {"", ".", "/"}:
+            return ""
+        matches = self._discover_workspaces(query=query, max_depth=self.max_workspace_discovery_depth, max_results=5)
+        if not matches:
+            return (
+                "Call codex_list_workspaces with discover=true to see configured/discoverable workspaces, "
+                "or configure repositories.discovery_roots / repositories.aliases."
+            )
+        roots = ", ".join(item["root"] for item in matches[:5])
+        return (
+            f"Candidate workspace(s): {roots}. Use one of these as repo_path, or call "
+            f"codex_list_workspaces with query={query!r} and discover=true."
+        )
 
     def _assert_text_file(self, path: Path, max_bytes: int | None = None) -> None:
         if not path.is_file():

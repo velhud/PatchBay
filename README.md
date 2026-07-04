@@ -285,6 +285,11 @@ repositories:
   default: /
   allowed:
     - /
+  # Optional: folders that codex_list_workspaces may scan shallowly for known
+  # repositories when ChatGPT knows a repo name but not the exact path.
+  discovery_roots: []
+  max_discovery_depth: 3
+  max_discovery_results: 50
 
 security:
   require_git_repo: false
@@ -292,6 +297,8 @@ security:
   allow_dangerously_bypass: true
   allowed_env_keys:
     - "*"
+  search_timeout_ms: 10000
+  max_search_timeout_ms: 60000
 
 power_tools:
   direct_write: true
