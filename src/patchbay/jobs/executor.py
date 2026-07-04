@@ -42,6 +42,24 @@ class ProcessCapture:
     total_timed_out: bool = False
 
 
+@dataclass
+class StartupGateLease:
+    """Held while a Codex process passes through auth/session startup."""
+
+    key: str
+    lock: asyncio.Lock
+    acquired_at: float
+    released: bool = False
+    release_reason: str = ""
+
+    def release(self, reason: str = "") -> None:
+        if self.released:
+            return
+        self.released = True
+        self.release_reason = reason
+        self.lock.release()
+
+
 class JobExecutor:
     """
     Executes Codex jobs with conservative defaults.
@@ -61,6 +79,7 @@ class JobExecutor:
         max_concurrent = int(server_config.get("max_concurrent_jobs", 1) or 0)
         queue_enabled = bool(server_config.get("queue_enabled", False))
         self._execution_semaphore = asyncio.Semaphore(max_concurrent) if queue_enabled and max_concurrent > 0 else None
+        self._codex_startup_locks: Dict[str, asyncio.Lock] = {}
 
     def schedule_job(self, job_id: str) -> asyncio.Task:
         """Start a background Codex job and keep a strong task reference."""
@@ -192,6 +211,52 @@ class JobExecutor:
             return None
         return timeout
 
+    def _codex_startup_gate_enabled(self) -> bool:
+        configured = self.config.get("server", {}).get("codex_startup_serialization_enabled", True)
+        if isinstance(configured, str):
+            return configured.strip().lower() not in {"", "0", "false", "off", "disabled", "no"}
+        return bool(configured)
+
+    def _codex_startup_gate_key(self) -> str:
+        configured = self.config.get("power_tools", {}).get("codex_home") or os.environ.get("CODEX_HOME")
+        if configured:
+            try:
+                return str(Path(str(configured)).expanduser().resolve())
+            except Exception:
+                return str(configured)
+        home = os.environ.get("HOME")
+        if home:
+            try:
+                return str((Path(home).expanduser() / ".codex").resolve())
+            except Exception:
+                return str(Path(home).expanduser() / ".codex")
+        return "default-codex-home"
+
+    async def _acquire_codex_startup_gate(self, job_id: str) -> StartupGateLease | None:
+        """Serialize the auth-sensitive part of Codex startup without serializing full turns."""
+        if not self._codex_startup_gate_enabled():
+            return None
+        key = self._codex_startup_gate_key()
+        lock = self._codex_startup_locks.setdefault(key, asyncio.Lock())
+        if lock.locked():
+            self.job_manager.update_job_state(
+                job_id,
+                JobState.RUNNING,
+                last_heartbeat_at=time.time(),
+                current_phase="waiting_for_codex_startup_gate",
+                progress="Waiting for another Codex process to finish auth/session startup.",
+            )
+        await lock.acquire()
+        lease = StartupGateLease(key=key, lock=lock, acquired_at=time.time())
+        self.job_manager.update_job_state(
+            job_id,
+            JobState.RUNNING,
+            last_heartbeat_at=time.time(),
+            current_phase="launching_codex_process",
+            progress="Codex startup/auth gate acquired; launching Codex process.",
+        )
+        return lease
+
     def _session_start_timeout_seconds(self) -> Optional[float]:
         server_config = self.config.get("server", {})
         configured = server_config.get(
@@ -278,26 +343,36 @@ class JobExecutor:
             result_file = self.job_logs_dir / f"{job_id}_result.json"
             
             timeout = self._job_timeout_seconds()
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=job.worktree_path,
-                stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._build_env()
-            )
-            self.processes[job_id] = process
-            self.job_manager.update_job_state(
-                job_id,
-                JobState.RUNNING,
-                process_started_at=time.time(),
-                process_pid=getattr(process, "pid", None),
-                last_heartbeat_at=time.time(),
-            )
-            logger.info("Job %s Codex process started: pid=%s", job_id, getattr(process, "pid", None))
+            startup_gate = await self._acquire_codex_startup_gate(job_id)
             
             try:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    cwd=job.worktree_path,
+                    stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=self._build_env()
+                )
+                self.processes[job_id] = process
+                self.job_manager.update_job_state(
+                    job_id,
+                    JobState.RUNNING,
+                    process_started_at=time.time(),
+                    process_pid=getattr(process, "pid", None),
+                    last_heartbeat_at=time.time(),
+                    current_phase="codex_process_started_waiting_for_session",
+                    progress="Codex process started; waiting for session creation.",
+                )
+                logger.info("Job %s Codex process started: pid=%s", job_id, getattr(process, "pid", None))
+            except Exception:
+                if startup_gate is not None:
+                    startup_gate.release("process_launch_failed")
+                raise
+            
+            try:
+                if not bool((job.options or {}).get("json_events", True)) and startup_gate is not None:
+                    startup_gate.release("json_events_disabled")
                 capture = await self._communicate_with_progress(
                     job_id,
                     process,
@@ -305,7 +380,10 @@ class JobExecutor:
                     total_timeout=timeout,
                     session_start_timeout=self._session_start_timeout_seconds(),
                     expect_session=bool((job.options or {}).get("json_events", True)),
+                    startup_gate=startup_gate,
                 )
+                if startup_gate is not None:
+                    startup_gate.release("process_completed_before_session_gate_release")
                 stdout = capture.stdout
                 stderr = capture.stderr
 
@@ -397,16 +475,28 @@ class JobExecutor:
                     )
                     logger.info(f"Job {job_id} completed successfully")
                 else:
+                    failure = self._classify_codex_failure(stdout, stderr, process.returncode)
+                    if failure:
+                        result = self._attach_failure_diagnostic(result, failure)
+                        self._write_result_file(result_file, result)
+                    error_message = (
+                        failure.get("public_message")
+                        if failure
+                        else f"Codex process failed with exit code {process.returncode}. Inspect local job logs for details."
+                    )
                     self.job_manager.update_job_state(
                         job_id,
                         JobState.FAILED,
-                        error=f"Codex process failed with exit code {process.returncode}. Inspect local job logs for details.",
+                        result=result,
+                        error=error_message,
                         exit_code=process.returncode,
                         last_heartbeat_at=time.time(),
                     )
-                    logger.error(f"Job {job_id} failed: exit code {process.returncode}")
+                    logger.error("Job %s failed: exit code %s%s", job_id, process.returncode, f" ({failure['category']})" if failure else "")
                     
             finally:
+                if startup_gate is not None:
+                    startup_gate.release("job_finally")
                 self.processes.pop(job_id, None)
                 self.repo_locks.release_job(job_id)
                 
@@ -598,6 +688,7 @@ class JobExecutor:
         total_timeout: Optional[float],
         session_start_timeout: Optional[float],
         expect_session: bool,
+        startup_gate: StartupGateLease | None = None,
     ) -> ProcessCapture:
         """Read Codex JSON events incrementally so session/heartbeat state is live."""
         stdout_chunks: list[bytes] = []
@@ -629,7 +720,9 @@ class JobExecutor:
                     return
                 if stream_name == "stdout":
                     stdout_chunks.append(chunk)
-                    self._observe_stdout_event(job_id, chunk, state)
+                    session_started = self._observe_stdout_event(job_id, chunk, state)
+                    if session_started and startup_gate is not None:
+                        startup_gate.release("session_created")
                 else:
                     stderr_chunks.append(chunk)
                     now = time.time()
@@ -684,7 +777,7 @@ class JobExecutor:
             total_timed_out=bool(state.get("total_timed_out")),
         )
 
-    def _observe_stdout_event(self, job_id: str, chunk: bytes, state: dict[str, Any]) -> None:
+    def _observe_stdout_event(self, job_id: str, chunk: bytes, state: dict[str, Any]) -> bool:
         text = chunk.decode("utf-8", errors="replace").strip()
         session_id = None
         event_label = "stdout"
@@ -727,7 +820,11 @@ class JobExecutor:
             updates["session_id"] = session_id
             updates["progress"] = "Codex session created; worker turn is now streaming events."
             updates["current_phase"] = "model_reasoning"
+            session_started = True
+        else:
+            session_started = False
         self.job_manager.update_job_state(job_id, JobState.RUNNING, **updates)
+        return session_started
 
     def _activity_updates_from_event(
         self,
@@ -1070,6 +1167,66 @@ class JobExecutor:
             "raw_output_available": bool(stdout_text),
             "stdout_preview": redact_text(stdout_text[:2000]) if stdout_text else "",
         }
+
+    def _classify_codex_failure(self, stdout: bytes, stderr: bytes, exit_code: Optional[int]) -> Dict[str, Any] | None:
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        combined = f"{stderr_text}\n{stdout_text}"
+        normalized = combined.lower()
+        if (
+            "refresh_token_reused" in normalized
+            or "refresh token was already used" in normalized
+            or "access token could not be refreshed" in normalized
+            or ("token_expired" in normalized and "codex" in normalized)
+        ):
+            return {
+                "category": "codex_auth_refresh_failed",
+                "exit_code": exit_code,
+                "public_message": (
+                    "Codex authentication failed before the worker could run: the local Codex access token "
+                    "could not be refreshed. Log in to Codex again on this host, then retry the worker."
+                ),
+                "manager_guidance": (
+                    "Do not treat this as a repository or worker-brief failure. The host Codex login is invalid; "
+                    "operator re-authentication is required before more workers can run."
+                ),
+                "operator_action": "Run `codex login` for the same user/CODEX_HOME used by PatchBay, then retry a small worker.",
+                "retry_without_operator_action": False,
+            }
+        if "not inside a trusted directory" in normalized and "skip-git-repo-check" in normalized:
+            return {
+                "category": "codex_workspace_trust_failed",
+                "exit_code": exit_code,
+                "public_message": (
+                    "Codex refused to run because the working directory is not trusted or not accepted by the current Codex CLI."
+                ),
+                "manager_guidance": "Check the repo path/trust setup or run from an allowed git workspace before retrying.",
+                "operator_action": "Open or trust the workspace for Codex, or configure the job to run in a valid repository.",
+                "retry_without_operator_action": False,
+            }
+        if "unknown model" in normalized or "model not found" in normalized or "invalid model" in normalized:
+            return {
+                "category": "codex_model_unavailable",
+                "exit_code": exit_code,
+                "public_message": "Codex rejected the selected model before the worker could run.",
+                "manager_guidance": "Call codex_worker_options and retry with a model id returned by the current Codex runtime.",
+                "operator_action": "Choose a currently available Codex model.",
+                "retry_without_operator_action": True,
+            }
+        return None
+
+    def _attach_failure_diagnostic(self, result: Dict[str, Any], failure: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(result) if isinstance(result, dict) else {"summary": str(result), "files_changed": []}
+        summary = str(payload.get("summary") or "").strip()
+        if not summary or summary == "No final structured worker report was captured.":
+            payload["summary"] = failure["public_message"]
+        payload.setdefault("files_changed", [])
+        payload["failure_diagnostic"] = redact_sensitive_output(failure)
+        notes = str(payload.get("notes") or "").strip()
+        guidance = str(failure.get("manager_guidance") or "").strip()
+        if guidance and guidance not in notes:
+            payload["notes"] = f"{notes}\n\n{guidance}".strip() if notes else guidance
+        return payload
 
     def _latest_agent_message_result(self, lines: list[str]) -> Optional[Dict[str, Any]]:
         """Return the latest agent message as a result-shaped payload."""

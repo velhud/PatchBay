@@ -443,3 +443,134 @@ async def test_queue_enabled_waits_for_execution_slot(tmp_path, monkeypatch):
 
     assert manager.get_job(first_id).state == JobState.COMPLETED
     assert manager.get_job(second_id).state == JobState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_codex_startup_gate_serializes_launch_until_session_created(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    config["server"]["queue_enabled"] = True
+    config["server"]["max_concurrent_jobs"] = 2
+    config["server"]["codex_session_start_timeout_seconds"] = 3
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    first_id = manager.create_job("plan", "first", config["repositories"]["default"], {"structured_output": False})
+    second_id = manager.create_job("plan", "second", config["repositories"]["default"], {"structured_output": False})
+    starts = tmp_path / "starts.jsonl"
+
+    def script(name: str, delay_before_session: float) -> str:
+        thread = json.dumps({"type": "thread.started", "thread_id": f"session-{name}"})
+        return (
+            "import pathlib,time\n"
+            f"pathlib.Path({str(starts)!r}).open('a').write({name!r} + ' ' + str(time.time()) + '\\n')\n"
+            f"time.sleep({delay_before_session})\n"
+            f"print({thread!r}, flush=True)\n"
+            "time.sleep(0.1)\n"
+            f"print({name!r} + ' done', flush=True)\n"
+        )
+
+    def fake_command(mode, prompt, cwd, options=None):
+        if prompt == "first":
+            return [sys.executable, "-u", "-c", script("first", 0.45)]
+        return [sys.executable, "-u", "-c", script("second", 0.0)]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    first_task = asyncio.create_task(executor.execute_job(first_id))
+    await asyncio.sleep(0.05)
+    second_task = asyncio.create_task(executor.execute_job(second_id))
+
+    await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=6)
+
+    entries = []
+    for line in starts.read_text(encoding="utf-8").splitlines():
+        name, timestamp = line.split()
+        entries.append((name, float(timestamp)))
+    assert [name for name, _ in entries] == ["first", "second"]
+    assert entries[1][1] - entries[0][1] >= 0.35
+    assert manager.get_job(first_id).session_id == "session-first"
+    assert manager.get_job(second_id).session_id == "session-second"
+    assert manager.get_job(first_id).state == JobState.COMPLETED
+    assert manager.get_job(second_id).state == JobState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_codex_startup_gate_releases_when_process_exits_before_session(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    config["server"]["queue_enabled"] = True
+    config["server"]["max_concurrent_jobs"] = 2
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    first_id = manager.create_job("plan", "first", config["repositories"]["default"], {"structured_output": False})
+    second_id = manager.create_job("plan", "second", config["repositories"]["default"], {"structured_output": False})
+
+    first_script = "import sys; sys.stderr.write('startup failed before session\\n'); sys.exit(1)"
+    second_thread = json.dumps({"type": "thread.started", "thread_id": "session-second"})
+    second_script = f"print({second_thread!r}, flush=True); print('ok', flush=True)"
+
+    def fake_command(mode, prompt, cwd, options=None):
+        if prompt == "first":
+            return [sys.executable, "-u", "-c", first_script]
+        return [sys.executable, "-u", "-c", second_script]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            asyncio.create_task(executor.execute_job(first_id)),
+            asyncio.create_task(executor.execute_job(second_id)),
+        ),
+        timeout=6,
+    )
+
+    assert manager.get_job(first_id).state == JobState.FAILED
+    assert manager.get_job(second_id).state == JobState.COMPLETED
+    assert manager.get_job(second_id).session_id == "session-second"
+
+
+@pytest.mark.asyncio
+async def test_codex_auth_refresh_failure_is_classified_and_reported(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "auth failure", config["repositories"]["default"], {})
+
+    stdout_events = [
+        {"type": "thread.started", "thread_id": "session-auth-failed"},
+        {"type": "turn.started"},
+        {
+            "type": "error",
+            "message": "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+        },
+        {
+            "type": "turn.failed",
+            "error": {
+                "message": "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+            },
+        },
+    ]
+    script = (
+        "import json,sys\n"
+        "events = " + repr(stdout_events) + "\n"
+        "for event in events:\n"
+        "    print(json.dumps(event), flush=True)\n"
+        "sys.stderr.write('code: refresh_token_reused\\n')\n"
+        "sys.exit(1)\n"
+    )
+
+    def fake_command(mode, prompt, cwd, options=None):
+        return [sys.executable, "-u", "-c", script]
+
+    monkeypatch.setattr(executor, "_build_codex_command", fake_command)
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=5)
+
+    job = manager.get_job(job_id)
+    result_file = tmp_path / "logs" / "jobs" / f"{job_id}_result.json"
+    persisted = json.loads(result_file.read_text(encoding="utf-8"))
+    assert job.state == JobState.FAILED
+    assert job.session_id == "session-auth-failed"
+    assert "Codex authentication failed" in job.error
+    assert job.result["failure_diagnostic"]["category"] == "codex_auth_refresh_failed"
+    assert job.result["failure_diagnostic"]["retry_without_operator_action"] is False
+    assert "operator re-authentication is required" in job.result["notes"]
+    assert persisted["failure_diagnostic"]["category"] == "codex_auth_refresh_failed"

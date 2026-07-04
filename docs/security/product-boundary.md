@@ -221,6 +221,7 @@ Verified so far:
 - power tools denied by default;
 - Phase 2 named worker descriptors, job-derived identity, isolated worktree ownership, privacy behavior, and worker-only tool mode in automated tests;
 - worker model/reasoning option discovery, sanitized output, and inherited worker execution settings in automated tests;
+- Codex auth/session startup serialization and redacted `codex_auth_refresh_failed` diagnostics in automated tests;
 - artifact inbox import/list/inspect, repeated imports, structural archive rejection, worker materialization, and integration exclusion in automated tests;
 - direct tokenized public-tunnel MCP artifact worker flow through ngrok.
 - direct two-client MCP trial for session-local tool modes, shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, integration preview, no automatic commit, and sanitized local evidence.

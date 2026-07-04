@@ -2691,6 +2691,15 @@ class WorkerRuntime:
             diagnostics["last_stderr_age_seconds"] = self._elapsed_since(job.last_stderr_at)
         if job.progress:
             diagnostics["progress"] = self._safe_public_text(str(job.progress), self._private_paths_for_jobs([job]))
+        if isinstance(job.result, dict) and isinstance(job.result.get("failure_diagnostic"), dict):
+            diagnostic = job.result["failure_diagnostic"]
+            diagnostics["failure_category"] = str(diagnostic.get("category") or "")
+            diagnostics["failure_retry_without_operator_action"] = bool(diagnostic.get("retry_without_operator_action"))
+            if diagnostic.get("operator_action"):
+                diagnostics["failure_operator_action"] = self._safe_public_text(
+                    str(diagnostic["operator_action"]),
+                    self._private_paths_for_jobs([job]),
+                )
         checkpoints = latest_checkpoints if latest_checkpoints is not None else self._latest_checkpoints_for_jobs([job])
         if checkpoints:
             diagnostics["latest_checkpoint"] = checkpoints[-1]

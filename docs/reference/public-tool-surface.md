@@ -83,6 +83,8 @@ Worker execution options use progressive disclosure:
 - `codex_worker_start` accepts optional `model` and `reasoning_effort`; omit them to use Codex defaults.
 - `codex_worker_message` inherits the worker's prior `model` and `reasoning_effort` unless a follow-up intentionally overrides one of them.
 - Reasoning is restricted to Codex config-supported values: `minimal`, `low`, `medium`, `high`, and `xhigh`.
+- PatchBay may serialize the auth/session-start segment of `codex exec` per Codex home while keeping full worker turns concurrent after session creation. This avoids rotating-token races and is separate from `max_concurrent_jobs`.
+- If `latest_turn.failure_category` is `codex_auth_refresh_failed`, ChatGPT should report that local Codex re-authentication is required and should not keep launching replacement workers until the host login is repaired.
 
 Model-selection guidance is not a hard router. It should help ChatGPT manage worker teams intelligently:
 
@@ -242,6 +244,7 @@ These descriptors are not only API documentation; they are part of the model pro
 - when consequential worker assignments should request durable report files or changed-file evidence instead of relying on a compressed chat/tool summary.
 - when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool, including the advisory Spark / GPT-5.4 Mini / GPT-5.4 / GPT-5.5 worker-selection ladder.
 - that paging, byte caps, and bounded result fields are response-stability controls, not an instruction to save tokens or avoid necessary evidence.
+- that worker failure diagnostics such as `codex_auth_refresh_failed` are manager-facing operational facts, not repository-analysis conclusions.
 
 The canonical names remain `codex_*`. Compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` may be advertised depending on `app.tool_mode`, but they must resolve to canonical handlers rather than duplicate execution paths. Their descriptors should advertise the alias names ChatGPT can actually call, such as `path` for `read`/`write`/`edit` and `cmd` or `command` for `bash`, then translate those names into the canonical handler arguments.
 

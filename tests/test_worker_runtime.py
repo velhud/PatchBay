@@ -1075,6 +1075,52 @@ async def test_public_worker_last_activity_tracks_heartbeat_not_start_time(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_failed_worker_public_view_exposes_auth_diagnostic(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    job_id = manager.create_job(
+        "interactive",
+        "inspect",
+        config["repositories"]["default"],
+        {
+            WORKER_ID_OPTION: "wrk_auth_failed",
+            WORKER_NAME_OPTION: "Auth Failed Worker",
+            WORKER_MODE_OPTION: "read_only",
+            WORKER_BASE_REPO_OPTION: config["repositories"]["default"],
+            "sandbox": "read-only",
+        },
+    )
+    manager.update_job_state(
+        job_id,
+        JobState.FAILED,
+        error=(
+            "Codex authentication failed before the worker could run: the local Codex access token "
+            "could not be refreshed. Log in to Codex again on this host, then retry the worker."
+        ),
+        result={
+            "summary": "Codex authentication failed before the worker could run.",
+            "files_changed": [],
+            "failure_diagnostic": {
+                "category": "codex_auth_refresh_failed",
+                "operator_action": "Run `codex login` for the same user/CODEX_HOME used by PatchBay, then retry a small worker.",
+                "retry_without_operator_action": False,
+            },
+        },
+        exit_code=1,
+    )
+
+    view = await runtime.inspect_worker(worker="Auth Failed Worker", view="status")
+
+    assert view["state"] == "failed"
+    assert "Codex authentication failed" in view["report"]
+    assert view["latest_turn"]["failure_category"] == "codex_auth_refresh_failed"
+    assert view["latest_turn"]["failure_retry_without_operator_action"] is False
+    assert "codex login" in view["latest_turn"]["failure_operator_action"]
+
+
+@pytest.mark.asyncio
 async def test_inspect_reconciles_stale_running_worker_without_waiting(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
