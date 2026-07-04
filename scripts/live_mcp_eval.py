@@ -88,6 +88,7 @@ def main() -> int:
             "codex_worker_message",
             "codex_worker_list",
             "codex_worker_status",
+            "codex_worker_wait",
             "codex_worker_inspect",
             "codex_worker_stop",
             "codex_pro_request_list",
@@ -133,6 +134,9 @@ def main() -> int:
             and "worker_lines" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "recommended_next_poll_seconds" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "poll_guidance" in tools["codex_worker_status"]["outputSchema"]["properties"]
+            and "poll_too_early" in tools["codex_worker_status"]["outputSchema"]["properties"]
+            and "waited_seconds" in tools["codex_worker_wait"]["outputSchema"]["properties"]
+            and "wait_seconds" in tools["codex_worker_wait"]["inputSchema"]["properties"]
             and "view" in tools["codex_worker_inspect"]["inputSchema"]["properties"]
             and "cleanup_workspace" in tools["codex_worker_stop"]["inputSchema"]["properties"],
         )
@@ -198,6 +202,28 @@ def main() -> int:
 
         self_test = client.call_tool(12, "codex_self_test", {})
         _check(report, "self_test", self_test["result"]["structuredContent"]["ready"] is True)
+
+        status_first = client.call_tool(121, "codex_worker_status", {"repo_path": str(repo)})
+        status_first_data = status_first["result"]["structuredContent"]
+        status_second = client.call_tool(122, "codex_worker_status", {"repo_path": str(repo)})
+        status_second_data = status_second["result"]["structuredContent"]
+        _check(
+            report,
+            "worker_status_poll_cooldown",
+            status_first_data["status_current"] is True
+            and status_first_data["poll_too_early"] is False
+            and status_second_data["status_current"] is False
+            and status_second_data["poll_too_early"] is True,
+        )
+        waited_status = client.call_tool(123, "codex_worker_wait", {"repo_path": str(repo), "wait_seconds": 1})
+        waited_status_data = waited_status["result"]["structuredContent"]
+        _check(
+            report,
+            "worker_wait_fresh_status",
+            waited_status_data["status_current"] is True
+            and waited_status_data["poll_too_early"] is False
+            and waited_status_data["waited_seconds"] >= 1,
+        )
 
         pro_report_path = temp_dir / "pro-escalation-report.md"
         pro_report_path.write_text(

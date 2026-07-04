@@ -59,7 +59,7 @@ The unit suite verifies:
 - isolated worker worktree creation, same-worktree resume, change/file/diff views, workspace-scoped worker names, and explicit cleanup;
 - multi-worker context relay through `context_from_workers` and `context_detail`;
 - worker integration preview, dirty-base refusal, blocked-path refusal, artifact-context exclusion, conflict reporting, and explicit accepted-result application;
-- worker tool descriptors, worker-only mode, initialize instructions, ChatGPT-facing manager-loop guidance, direct-tool exception wording, multi-worker encouragement, worker status/list filtering, compact team status, activity deltas since last status check, status polling guidance, paged base and worker file inspection, durable evidence location labels, ownership-scope wording, live Codex session/heartbeat diagnostics, liveness/checkpoint views, configurable liveness display thresholds, broader Codex agent-message event parsing, and partial report preservation after cancellation;
+- worker tool descriptors, worker-only mode, initialize instructions, ChatGPT-facing manager-loop guidance, direct-tool exception wording, multi-worker encouragement, worker status/list filtering, compact team status, activity deltas since last status check, status polling guidance, status soft-cooldown responses, `codex_worker_wait`, paged base and worker file inspection, durable evidence location labels, ownership-scope wording, live Codex session/heartbeat diagnostics, liveness/checkpoint views, terminal command cleanup, fallback result persistence, configurable liveness display thresholds, broader Codex agent-message event parsing, and partial report preservation after cancellation;
 - Pro Request store behavior, sanitized mirrors, ownership/takeover, CLI create/list/show/response/dispatch/close, MCP list/read/claim/respond/dispatch/close descriptors, and blocked/busy/new-worker dispatch behavior;
 - durable real MCP worker trial evidence writer, sanitizer, and negative cases;
 - optional direct workspace write/edit and command power tools;
@@ -145,7 +145,7 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/external_chatgpt_style_validation.py --
 
 The harness writes `calls.jsonl`, `results.json`, and `summary.md` under `.local/validation/external_chatgpt_style/<timestamp>/`. It starts PatchBay through the compatibility launcher path `scripts/start.py`, uses disposable repositories, creates separate MCP clients to simulate separate ChatGPT conversations, records `codex --version`, and redacts temporary paths and token-like values in evidence. Real ChatGPT Developer Mode UI validation remains a separate manual gate.
 
-For worker lifecycle regressions, add focused tests proving a durable `running` job is not marked stale while an executor-owned asyncio task is still alive, proving worker start/message code schedules jobs through `JobExecutor.schedule_job` instead of orphaned background tasks, proving running workers expose compact `codex_worker_status` lines, activity deltas, liveness/checkpoints, and latest partial notes to ChatGPT, proving liveness thresholds are configurable display policy rather than task limits, proving Codex `agent_message` content variants parse into reports/checkpoints, and proving cancellation preserves captured partial reports/checkpoints.
+For worker lifecycle regressions, add focused tests proving a durable `running` job is not marked stale while an executor-owned asyncio task, tracked subprocess, live process pid, or recent heartbeat still indicates life; proving worker start/message code schedules jobs through `JobExecutor.schedule_job` instead of orphaned background tasks; proving running workers expose compact `codex_worker_status` lines, activity deltas, liveness/checkpoints, and latest partial notes to ChatGPT; proving rapid repeated status calls return a soft cooldown instead of resetting deltas; proving `codex_worker_wait` returns a fresh status after a bounded wait; proving liveness thresholds are configurable display policy rather than task limits; proving terminal jobs clear live-only command state; proving Codex `agent_message` content variants parse into reports/checkpoints; proving fallback results are persisted when the final structured result is missing; and proving cancellation preserves captured partial reports/checkpoints.
 
 ## Real Codex CLI Through MCP
 
@@ -215,7 +215,7 @@ The Phase 3 eval should:
 4. verify the reviewer receives bounded diff context without private paths;
 5. send the reviewer report back to the implementer with `context_detail="report"`;
 6. verify the implementer keeps the same session and worktree;
-7. verify `codex_worker_status` and `codex_worker_list` return useful compact team status / `team_report`;
+7. verify `codex_worker_status`, `codex_worker_wait`, and `codex_worker_list` return useful compact team status / `team_report`, including soft cooldown fields for rapid polling;
 8. keep the base checkout clean.
 
 ## Manual Curl Smoke

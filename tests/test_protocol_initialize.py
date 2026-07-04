@@ -106,6 +106,7 @@ def test_public_tool_call_translates_schema_valid_arguments():
     assert handler.calls == [("codex_get_status", {"job_id": "job-123"})]
     assert result["structuredContent"] == {
         "tool_name": "codex_get_status",
+        "tool_id": "get_status",
         "arguments": {"job_id": "job-123"},
     }
     assert "job-123" in result["content"][0]["text"]
@@ -136,6 +137,7 @@ def test_public_tool_call_passes_request_context_to_handler():
     )
 
     assert result["result"]["structuredContent"]["tool_name"] == "codex_get_status"
+    assert result["result"]["structuredContent"]["tool_id"] == "get_status"
     assert handler.contexts == [context]
     assert "private-session-id" not in result["result"]["content"][0]["text"]
 
@@ -162,7 +164,11 @@ def test_public_tool_call_supports_legacy_handler_without_context():
         )
     )
 
-    assert result["structuredContent"] == {"ok": True}
+    assert result["structuredContent"] == {
+        "ok": True,
+        "tool_name": "codex_get_status",
+        "tool_id": "get_status",
+    }
     assert handler.calls == [("codex_get_status", {"job_id": "job-123"})]
 
 
@@ -318,7 +324,11 @@ def test_tool_call_returns_redacted_structured_content():
         )
     )
 
-    assert result["structuredContent"] == {"output": "token=[REDACTED_POSSIBLE_SECRET]"}
+    assert result["structuredContent"] == {
+        "output": "token=[REDACTED_POSSIBLE_SECRET]",
+        "tool_name": "codex_get_config",
+        "tool_id": "get_config",
+    }
     assert secret_value not in result["content"][0]["text"]
 
 
@@ -406,6 +416,8 @@ def test_resume_tool_call_returns_async_job_pointer():
     assert result["structuredContent"]["operation_type"] == "codex_resume"
     assert result["structuredContent"]["job_id"] == "job-123"
     assert result["structuredContent"]["session_id"] == "session-123"
+    assert result["structuredContent"]["tool_name"] == "codex_resume"
+    assert result["structuredContent"]["tool_id"] == "resume"
     assert "codex_get_status" in result["structuredContent"]["note"]
 
 
@@ -419,7 +431,7 @@ def test_resources_list_exposes_tool_card_template():
                 "uri": TOOL_CARD_URI,
                 "name": "patchbay-tool-card",
                 "title": "PatchBay Tool Card",
-                "description": "Rich ChatGPT Apps card for PatchBay worker, artifact, job, diff, and power-tool results.",
+                "description": "Compact ChatGPT Apps receipt for PatchBay tool results.",
                 "mimeType": TOOL_CARD_MIME_TYPE,
             }
         ]

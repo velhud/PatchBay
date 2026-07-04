@@ -115,6 +115,12 @@ WORKER_STATUS_SCHEMA: Dict[str, Any] = {
         "minimum_next_poll_seconds": {"type": "integer"},
         "recommended_next_poll_seconds": {"type": "integer"},
         "poll_guidance": {"type": "string"},
+        "poll_too_early": {"type": "boolean"},
+        "status_current": {"type": "boolean"},
+        "seconds_since_last_poll": {"type": ["integer", "null"]},
+        "retry_after_seconds": {"type": "integer"},
+        "waited_seconds": {"type": "integer"},
+        "wait_guidance": {"type": "string"},
         "workers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "count": {"type": "integer"},
         "active": {"type": "integer"},
@@ -512,6 +518,52 @@ WORKER_TOOLS = [
                     "type": "number",
                     "description": "Optional Unix timestamp; return workers first created at or after this time.",
                 },
+                "force_refresh": {
+                    "type": "boolean",
+                    "description": "When true, bypass the soft polling cooldown for deliberate recovery or user-requested near-real-time monitoring. Default: false.",
+                },
+            },
+            "required": [],
+        },
+        "readOnlyHint": True,
+    },
+    {
+        "name": "codex_worker_wait",
+        "description": (
+            "Wait once, then return a fresh compact worker team status. Use this instead of repeatedly calling "
+            "codex_worker_status every few seconds while workers are active or quiet. The normal manager pattern "
+            "is: assign workers, wait about 20-30 seconds, read compact status, then either wait again, ask a "
+            "worker a natural-language follow-up after its turn completes, or inspect only when there is a real "
+            "concern. This tool does not expose raw logs and does not interrupt workers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional authorized repository path used to filter workers.",
+                },
+                "active_only": {
+                    "type": "boolean",
+                    "description": "When true, return only workers whose latest turn is starting or working.",
+                },
+                "include_stopped": {
+                    "type": "boolean",
+                    "description": "When true, include stopped/cancelled workers. Default: false.",
+                },
+                "owned_only": {
+                    "type": "boolean",
+                    "description": "When true, return only workers owned by the current coordination owner.",
+                },
+                "created_after": {
+                    "type": "number",
+                    "description": "Optional Unix timestamp; return workers first created at or after this time.",
+                },
+                "wait_seconds": {
+                    "type": "integer",
+                    "description": "Seconds to wait before refreshing status. Default follows recommended_next_poll_seconds; capped by server policy.",
+                },
             },
             "required": [],
         },
@@ -686,6 +738,7 @@ def install_worker_tool_surface(
             "codex_worker_message": ("Messaging worker", "Message delivered"),
             "codex_worker_list": ("Listing workers", "Workers ready"),
             "codex_worker_status": ("Checking worker status", "Worker status ready"),
+            "codex_worker_wait": ("Waiting on workers", "Worker status ready"),
             "codex_worker_inspect": ("Checking worker", "Worker report ready"),
             "codex_worker_integrate": ("Integrating worker", "Worker result applied"),
             "codex_worker_stop": ("Stopping worker", "Worker stopped"),
@@ -700,6 +753,7 @@ def install_worker_tool_surface(
             "codex_worker_message": deepcopy(WORKER_VIEW_SCHEMA),
             "codex_worker_list": deepcopy(WORKER_LIST_SCHEMA),
             "codex_worker_status": deepcopy(WORKER_STATUS_SCHEMA),
+            "codex_worker_wait": deepcopy(WORKER_STATUS_SCHEMA),
             "codex_worker_inspect": deepcopy(WORKER_VIEW_SCHEMA),
             "codex_worker_integrate": deepcopy(WORKER_VIEW_SCHEMA),
             "codex_worker_stop": deepcopy(WORKER_VIEW_SCHEMA),
