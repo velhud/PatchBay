@@ -100,6 +100,8 @@ class JobExecutor:
             checked += 1
             if self._job_has_live_runtime(job_id):
                 continue
+            if job.last_heartbeat_at is not None and current_time - float(job.last_heartbeat_at) < max(grace, 10.0):
+                continue
             if job.started_at is not None and current_time - float(job.started_at) < grace:
                 continue
 
@@ -126,7 +128,39 @@ class JobExecutor:
         process = self.processes.get(job_id)
         if process is not None:
             return getattr(process, "returncode", None) is None
+        job = self.job_manager.get_job(job_id)
+        if job and job.process_pid and self._recorded_process_pid_is_trustworthy(job) and self._process_pid_is_live(int(job.process_pid)):
+            return True
         return False
+
+    def _recorded_process_pid_is_trustworthy(self, job: Any) -> bool:
+        """Avoid trusting an old persisted pid forever after process tracking is lost."""
+        timestamps = [
+            value
+            for value in (getattr(job, "last_heartbeat_at", None), getattr(job, "process_started_at", None), getattr(job, "started_at", None))
+            if value is not None
+        ]
+        if not timestamps:
+            return False
+        try:
+            newest = max(float(value) for value in timestamps)
+            trust_seconds = float(self.config.get("server", {}).get("stale_running_pid_trust_seconds", 3600))
+        except (TypeError, ValueError):
+            return False
+        return time.time() - newest <= max(0.0, trust_seconds)
+
+    def _process_pid_is_live(self, pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
 
     def _stale_running_grace_seconds(self, override: Optional[float] = None) -> float:
         if override is not None:
@@ -299,7 +333,7 @@ class JobExecutor:
                         error=str(cancel_reason),
                         last_heartbeat_at=time.time(),
                         last_event="process.cancelled",
-                        progress="Codex process was stopped; PatchBay preserved the latest partial worker checkpoint.",
+                        progress=self._cancelled_progress_label(partial_result),
                     )
                     logger.info(f"Job {job_id} process exited after cancellation")
                     return
@@ -940,20 +974,20 @@ class JobExecutor:
             
             # If structured output was disabled, return raw
             if not options.get('structured_output', True):
-                return {
+                return self._write_result_file(result_file, {
                     "summary": redact_text(stdout_text),
                     "raw_output": True,
                     "files_changed": []
-                }
+                })
             
             # Parse JSONL - look for structured result
             lines = [line for line in stdout_text.split('\n') if line.strip()]
             
             if not lines:
-                return {
+                return self._write_result_file(result_file, {
                     "summary": "No output received",
                     "files_changed": []
-                }
+                })
             
             # Try to find the structured result in JSON events
             result = None
@@ -977,6 +1011,9 @@ class JobExecutor:
                                         result = {"summary": str(message_result), "files_changed": []}
                                 except json.JSONDecodeError:
                                     result = {"summary": text, "files_changed": []}
+                                if isinstance(result, dict):
+                                    result.setdefault("result_source", "latest_agent_message")
+                                    result.setdefault("final_structured_result", False)
                                 break
                         elif 'summary' in parsed:
                             result = parsed
@@ -985,24 +1022,84 @@ class JobExecutor:
                     continue
             
             if result:
-                safe_result = redact_sensitive_output(result)
-                result_file.write_text(json.dumps(safe_result, indent=2))
-                return safe_result
+                return self._write_result_file(result_file, result)
             
-            # Fallback: return raw summary
-            return {
-                "summary": redact_text(stdout_text[:2000]),
-                "files_changed": [],
-                "notes": "Could not extract structured result"
-            }
+            return self._write_result_file(
+                result_file,
+                self._fallback_result_from_stdout(
+                    stdout_text,
+                    lines,
+                    note="Could not extract a final structured Codex result event.",
+                ),
+            )
             
         except json.JSONDecodeError as e:
             logger.error("Failed to parse Codex result: %s", internal_log_error(e))
-            return {
-                "summary": redact_text(stdout.decode('utf-8', errors='replace')[:2000]),
-                "files_changed": [],
-                "notes": "Could not parse Codex JSON output"
-            }
+            stdout_text = stdout.decode('utf-8', errors='replace')
+            return self._write_result_file(
+                result_file,
+                self._fallback_result_from_stdout(
+                    stdout_text,
+                    [line for line in stdout_text.split('\n') if line.strip()],
+                    note="Could not parse Codex JSON output.",
+                ),
+            )
+
+    def _write_result_file(self, result_file: Path, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a redacted result payload and return the same public payload."""
+        safe_result = redact_sensitive_output(result)
+        if isinstance(safe_result, dict):
+            safe_result.setdefault("files_changed", [])
+        result_file.write_text(json.dumps(safe_result, indent=2), encoding="utf-8")
+        return safe_result
+
+    def _fallback_result_from_stdout(self, stdout_text: str, lines: list[str], *, note: str) -> Dict[str, Any]:
+        """Build a manager-usable report when Codex did not emit the final schema."""
+        latest_agent_result = self._latest_agent_message_result(lines)
+        if latest_agent_result:
+            latest_agent_result.setdefault("files_changed", [])
+            latest_agent_result.setdefault("notes", note)
+            latest_agent_result["result_source"] = "latest_agent_message"
+            latest_agent_result["final_structured_result"] = False
+            return latest_agent_result
+        return {
+            "summary": "No final structured worker report was captured.",
+            "files_changed": [],
+            "notes": note,
+            "final_structured_result": False,
+            "raw_output_available": bool(stdout_text),
+            "stdout_preview": redact_text(stdout_text[:2000]) if stdout_text else "",
+        }
+
+    def _latest_agent_message_result(self, lines: list[str]) -> Optional[Dict[str, Any]]:
+        """Return the latest agent message as a result-shaped payload."""
+        for line in reversed(lines):
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            item = self._agent_item_from_event(parsed)
+            text = self._text_from_agent_item(item) if item else ""
+            if not text:
+                continue
+            try:
+                message_result = json.loads(text)
+            except json.JSONDecodeError:
+                return {"summary": text, "files_changed": []}
+            if isinstance(message_result, dict):
+                return dict(message_result)
+            return {"summary": str(message_result), "files_changed": []}
+        return None
+
+    def _cancelled_progress_label(self, result: Dict[str, Any]) -> str:
+        """Describe exactly what was preserved when a running worker is stopped."""
+        if result.get("summary") and result.get("summary") != "Worker turn was stopped before a final report. No partial worker message was captured.":
+            return "Codex process was stopped; PatchBay preserved a partial worker report."
+        if result.get("raw_output_available"):
+            return "Codex process was stopped; PatchBay preserved bounded raw output but no partial worker report."
+        return "Codex process was stopped before PatchBay captured a partial worker report."
 
     async def _parse_partial_result(
         self,

@@ -342,9 +342,22 @@ class JobManager:
         for key, value in kwargs.items():
             if hasattr(job, key):
                 setattr(job, key, value)
+
+        if state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+            self._normalize_terminal_job(job)
         
         logger.debug(f"Job {job_id} state updated: {state}")
         self._persist_job(job)
+
+    def _normalize_terminal_job(self, job: JobInfo) -> None:
+        """Clear live-only activity fields once a job reaches a terminal state."""
+        if job.current_command_preview:
+            job.last_command_preview = job.current_command_preview
+        job.current_phase = None
+        job.current_item_type = None
+        job.current_item_status = None
+        job.current_command_preview = None
+        job.current_command_started_at = None
     
     def get_job(self, job_id: str) -> Optional[JobInfo]:
         """Get job info by ID"""
@@ -426,6 +439,8 @@ class JobManager:
                     job.error = "Job did not finish before the server stopped."
                 elif job.state == JobState.COMPLETED:
                     job.error = None
+                if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                    self._normalize_terminal_job(job)
                 self.jobs[job.job_id] = job
                 self._persist_job(job)
                 loaded += 1

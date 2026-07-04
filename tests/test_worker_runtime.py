@@ -877,7 +877,7 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
         ],
     )
 
-    second = await runtime.worker_status(repo_path=config["repositories"]["default"], include_stopped=True)
+    second = await runtime.worker_status(repo_path=config["repositories"]["default"], include_stopped=True, force_refresh=True)
 
     assert second["since_last_check"]["first_check"] is False
     assert second["since_last_check"]["events_delta"] == 4
@@ -1273,6 +1273,65 @@ async def test_stop_cancels_active_turn_but_preserves_worker(tmp_path):
     assert executor.cancelled == [job.job_id]
     listed = await runtime.list_workers()
     assert listed["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_status_soft_cooldown_does_not_reset_deltas(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["status_minimum_poll_seconds"] = 20
+    config["workers"]["status_recommended_poll_seconds"] = 30
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Polling Worker",
+        brief="Inspect the repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[-1])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-polling",
+        last_heartbeat_at=time.time(),
+        event_count=1,
+    )
+
+    first = await runtime.worker_status(repo_path=config["repositories"]["default"])
+    second = await runtime.worker_status(repo_path=config["repositories"]["default"])
+
+    assert first["poll_too_early"] is False
+    assert first["status_current"] is True
+    assert second["poll_too_early"] is True
+    assert second["status_current"] is False
+    assert second["retry_after_seconds"] >= 1
+    assert second["workers"][0]["worker_id"] == started["worker_id"]
+
+
+@pytest.mark.asyncio
+async def test_worker_wait_returns_fresh_status_after_delay(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["status_minimum_poll_seconds"] = 20
+    config["workers"]["status_recommended_poll_seconds"] = 30
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    await runtime.start_worker(
+        name="Wait Worker",
+        brief="Inspect the repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+
+    result = await runtime.worker_wait(repo_path=config["repositories"]["default"], wait_seconds=1)
+
+    assert result["status_current"] is True
+    assert result["poll_too_early"] is False
+    assert result["waited_seconds"] >= 1
+    assert "patient manager path" in result["wait_guidance"]
 
 
 @pytest.mark.asyncio

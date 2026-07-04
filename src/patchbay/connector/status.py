@@ -37,8 +37,12 @@ def connector_status(
     checks: list[dict[str, str]] = []
     _check(checks, "python", "pass", f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 
-    codex_path = shutil.which("codex")
-    _check(checks, "codex_cli", "pass" if codex_path else "warn", "available on PATH" if codex_path else "not found on PATH")
+    path_env = str(_mapping(environ).get("PATH", "")) if environ is not None else None
+    _binary_check(checks, "codex_cli", "codex", path=path_env, missing_status="warn")
+    _binary_check(checks, "git", "git", path=path_env, missing_status="warn")
+    _binary_check(checks, "bash", "bash", path=path_env, missing_status="warn")
+    _binary_check(checks, "ripgrep", "rg", path=path_env, missing_status="warn")
+    _binary_check(checks, "python3", "python3", path=path_env, missing_status="warn")
 
     host = str(server_config.get("host") or "127.0.0.1")
     if is_loopback_host(host):
@@ -270,6 +274,23 @@ def format_doctor_json(status: Mapping[str, Any]) -> str:
 
 def _check(checks: list[dict[str, str]], name: str, status: str, detail: str) -> None:
     checks.append({"name": name, "status": status, "detail": detail})
+
+
+def _binary_check(
+    checks: list[dict[str, str]],
+    name: str,
+    binary: str,
+    *,
+    path: str | None,
+    missing_status: str = "warn",
+) -> None:
+    resolved = shutil.which(binary, path=path)
+    _check(
+        checks,
+        name,
+        "pass" if resolved else missing_status,
+        f"available on PATH: {resolved}" if resolved else f"{binary} not found on PATH",
+    )
 
 
 def _mapping(value: object) -> Mapping[str, Any]:

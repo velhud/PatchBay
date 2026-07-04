@@ -8,6 +8,7 @@ history through its session id, and git remains the code-state store.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import fnmatch
 import hashlib
 import logging
@@ -118,6 +119,7 @@ class WorkerRuntime:
             job_executor.repo_locks = self.repo_locks
         self.artifact_store = ArtifactStore(config)
         self._status_poll_snapshots: dict[str, dict[str, Dict[str, Any]]] = {}
+        self._status_poll_responses: dict[str, Dict[str, Any]] = {}
 
     async def start_worker(
         self,
@@ -450,9 +452,42 @@ class WorkerRuntime:
         include_stopped: bool = False,
         owned_only: bool = False,
         created_after: Optional[float] = None,
+        force_refresh: bool = False,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         """Return the compact pull-based manager status bar for a worker team."""
+        poll_policy = self._status_poll_policy()
+        poll_key = self._status_response_key(
+            repo_path=repo_path,
+            active_only=active_only,
+            include_stopped=include_stopped,
+            owned_only=owned_only,
+            created_after=created_after,
+            request_context=request_context,
+        )
+        now = time.time()
+        cached = self._status_poll_responses.get(poll_key)
+        minimum = int(poll_policy["minimum_next_poll_seconds"])
+        if cached and not force_refresh:
+            elapsed = max(0.0, now - float(cached.get("at") or 0))
+            if elapsed < minimum:
+                retry_after = max(1, int(round(minimum - elapsed)))
+                payload = deepcopy(cached.get("payload") or {})
+                payload.update(
+                    {
+                        "poll_too_early": True,
+                        "status_current": False,
+                        "seconds_since_last_poll": int(elapsed),
+                        "retry_after_seconds": retry_after,
+                        "poll_guidance": (
+                            f"Status was checked {int(elapsed)}s ago. For normal worker monitoring, wait "
+                            f"about {minimum}-{poll_policy['recommended_next_poll_seconds']} seconds between "
+                            "checks. This cached response did not reset activity deltas."
+                        ),
+                    }
+                )
+                return payload
+
         listed = await self.list_workers(
             repo_path=repo_path,
             active_only=active_only,
@@ -462,7 +497,7 @@ class WorkerRuntime:
             request_context=request_context,
         )
         team_status = listed["team_status"]
-        return {
+        payload = {
             "summary": team_status["summary"],
             "since_last_check": team_status["since_last_check"],
             "since_last_check_line": team_status["since_last_check_line"],
@@ -475,7 +510,47 @@ class WorkerRuntime:
             "workers": [self._compact_worker_view(worker) for worker in listed["workers"]],
             "count": listed["count"],
             "active": listed["active"],
+            "poll_too_early": False,
+            "status_current": True,
+            "seconds_since_last_poll": None,
+            "retry_after_seconds": team_status["recommended_next_poll_seconds"],
         }
+        self._status_poll_responses[poll_key] = {"at": now, "payload": deepcopy(payload)}
+        return payload
+
+    async def worker_wait(
+        self,
+        *,
+        repo_path: Optional[str] = None,
+        active_only: bool = False,
+        include_stopped: bool = False,
+        owned_only: bool = False,
+        created_after: Optional[float] = None,
+        wait_seconds: Optional[int] = None,
+        request_context: Optional[RequestContext] = None,
+    ) -> Dict[str, Any]:
+        """Wait a bounded interval, then return a fresh worker status payload."""
+        policy = self._status_poll_policy()
+        if wait_seconds is None:
+            wait_seconds = int(policy["recommended_next_poll_seconds"])
+        wait_seconds = max(1, min(120, int(wait_seconds)))
+        started = time.time()
+        await asyncio.sleep(wait_seconds)
+        payload = await self.worker_status(
+            repo_path=repo_path,
+            active_only=active_only,
+            include_stopped=include_stopped,
+            owned_only=owned_only,
+            created_after=created_after,
+            force_refresh=True,
+            request_context=request_context,
+        )
+        payload["waited_seconds"] = int(time.time() - started)
+        payload["wait_guidance"] = (
+            "This tool is the patient manager path: it waits once, then returns a fresh compact status. "
+            "Use it instead of repeated rapid codex_worker_status calls while workers are normally active or quiet."
+        )
+        return payload
 
     async def stop_worker(
         self,
@@ -1225,6 +1300,27 @@ class WorkerRuntime:
             if request_context.client_ref:
                 return f"client:{request_context.client_ref}"
         return "anonymous"
+
+    def _status_response_key(
+        self,
+        *,
+        repo_path: Optional[str],
+        active_only: bool,
+        include_stopped: bool,
+        owned_only: bool,
+        created_after: Optional[float],
+        request_context: Optional[RequestContext],
+    ) -> str:
+        return "|".join(
+            [
+                self._status_poll_key(request_context),
+                str(Path(repo_path).expanduser().resolve()) if repo_path else "",
+                f"active={bool(active_only)}",
+                f"stopped={bool(include_stopped)}",
+                f"owned={bool(owned_only)}",
+                f"after={created_after if created_after is not None else ''}",
+            ]
+        )
 
     def _annotate_worker_deltas(
         self,
@@ -2417,8 +2513,8 @@ class WorkerRuntime:
             "event_count": int(job.event_count or 0),
             "stdout_bytes_seen": int(job.stdout_bytes_seen or 0),
             "stderr_bytes_seen": int(job.stderr_bytes_seen or 0),
-            "current_command_preview": str(job.current_command_preview or ""),
-            "current_command_elapsed_seconds": self._elapsed_since(job.current_command_started_at),
+            "current_command_preview": str(job.current_command_preview or "") if job.state == JobState.RUNNING else "",
+            "current_command_elapsed_seconds": self._elapsed_since(job.current_command_started_at) if job.state == JobState.RUNNING else None,
             "status": "unknown",
             "suggested_action": "inspect",
             "manager_guidance": "",
@@ -2549,9 +2645,9 @@ class WorkerRuntime:
             diagnostics["current_item_type"] = str(job.current_item_type)
         if job.current_item_status:
             diagnostics["current_item_status"] = str(job.current_item_status)
-        if job.current_command_preview:
+        if job.state == JobState.RUNNING and job.current_command_preview:
             diagnostics["current_command_preview"] = str(job.current_command_preview)
-        if job.current_command_started_at is not None:
+        if job.state == JobState.RUNNING and job.current_command_started_at is not None:
             diagnostics["current_command_started_at"] = float(job.current_command_started_at)
             diagnostics["current_command_elapsed_seconds"] = self._elapsed_since(job.current_command_started_at)
         if job.last_command_preview:

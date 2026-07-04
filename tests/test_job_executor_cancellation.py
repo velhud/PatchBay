@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 import time
 
@@ -122,6 +123,31 @@ async def test_cancelled_json_worker_preserves_partial_report_and_checkpoints(tm
 
 
 @pytest.mark.asyncio
+async def test_parse_result_persists_fallback_from_latest_agent_message(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    result_file = tmp_path / "logs" / "jobs" / "fallback_result.json"
+    agent_message = json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "agent_message",
+                "status": "completed",
+                "text": "I checked the UI surface and found no blocker.",
+            },
+        }
+    )
+
+    result = await executor._parse_result(agent_message.encode("utf-8"), result_file, {"structured_output": True})
+
+    assert result["summary"] == "I checked the UI surface and found no blocker."
+    assert result["result_source"] == "latest_agent_message"
+    assert result["final_structured_result"] is False
+    assert json.loads(result_file.read_text(encoding="utf-8"))["summary"] == result["summary"]
+
+
+@pytest.mark.asyncio
 async def test_cancel_job_marks_cancelled_before_waiting_for_process_exit(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -178,6 +204,24 @@ def test_reconcile_stale_running_job_marks_failed(tmp_path):
     assert job.state == JobState.FAILED
     assert job.completed_at is not None
     assert job.error == STALE_RUNNING_JOB_ERROR
+
+
+def test_reconcile_stale_running_job_honors_live_process_pid(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.RUNNING)
+    manager.jobs[job_id].started_at = time.time() - 60
+    manager.jobs[job_id].last_heartbeat_at = time.time()
+    manager.jobs[job_id].process_pid = os.getpid()
+    manager._persist_job(manager.jobs[job_id])
+
+    result = executor.reconcile_stale_running_jobs(grace_seconds=0)
+
+    assert result["checked"] == 1
+    assert result["reconciled"] == 0
+    assert manager.get_job(job_id).state == JobState.RUNNING
 
 
 def test_reconcile_stale_running_job_honors_process_tracking_and_grace(tmp_path):

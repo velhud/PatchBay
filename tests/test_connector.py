@@ -29,6 +29,8 @@ def test_connector_status_local_ready_without_token():
     status = connector_status(base_config(), environ={})
 
     assert status["ready"] is True
+    check_names = {check["name"] for check in status["checks"]}
+    assert {"python", "codex_cli", "git", "bash", "ripgrep", "python3"} <= check_names
     assert status["connection"]["local_mcp_url"] == "http://127.0.0.1:8000/mcp"
     assert status["connection"]["server_url"] == "http://127.0.0.1:8000/mcp"
     assert status["auth"]["enabled"] is False

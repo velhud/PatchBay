@@ -25,7 +25,7 @@ def test_tool_card_resource_contract():
             "uri": TOOL_CARD_URI,
             "name": "patchbay-tool-card",
             "title": "PatchBay Tool Card",
-            "description": "Rich ChatGPT Apps card for PatchBay worker, artifact, job, diff, and power-tool results.",
+            "description": "Compact ChatGPT Apps receipt for PatchBay tool results.",
             "mimeType": TOOL_CARD_MIME_TYPE,
         }
     ]
@@ -69,25 +69,31 @@ def test_tool_card_html_has_no_machine_specific_paths_or_tokens():
         assert fragment not in TOOL_CARD_HTML
 
 
-def test_tool_card_widget_has_patchbay_specific_rich_renderers():
+def test_tool_card_widget_is_compact_receipt_renderer():
     expected_fragments = [
-        "renderWorkerList",
-        "renderWorker",
-        "renderArtifact",
-        "renderJob",
-        "renderRepoBusy",
-        "renderCommand",
-        "renderDiffCard",
+        "renderReceipt",
+        "toolId",
+        "statusFor",
+        "detailFor",
         "openai:set_globals",
         "ui/notifications/tool-result",
         "repo_busy",
-        "takeover_required",
-        "integration_state",
-        "artifact_id",
     ]
 
     for fragment in expected_fragments:
         assert fragment in TOOL_CARD_HTML
+
+    heavy_fragments = [
+        "Structured result",
+        "details class=\"fold\"",
+        "codebox",
+        "renderWorkerList",
+        "renderDiffCard",
+        "skeleton",
+        "box-shadow",
+    ]
+    for fragment in heavy_fragments:
+        assert fragment not in TOOL_CARD_HTML
 
 
 def test_tool_card_javascript_is_syntax_valid(tmp_path):
@@ -140,6 +146,16 @@ def _render_tool_card_with_node(tmp_path, *, tool_output=None, tool_response_met
     return result.stdout
 
 
+def _assert_compact_receipt(html):
+    assert "Waiting for tool result" not in html
+    assert "Structured result" not in html
+    assert "details class=\"fold\"" not in html
+    assert "<pre>" not in html
+    assert "class=\"receipt" in html
+    assert html.count("class=\"line\"") == 1
+    assert html.count("class=\"detail\"") == 1
+
+
 def test_tool_card_renders_direct_window_openai_tool_output(tmp_path):
     html = _render_tool_card_with_node(
         tmp_path,
@@ -151,10 +167,9 @@ def test_tool_card_renders_direct_window_openai_tool_output(tmp_path):
         },
     )
 
-    assert "Waiting for tool result" not in html
-    assert "Workspace" in html
-    assert "ws_test" in html
-    assert "README.md" in html
+    _assert_compact_receipt(html)
+    assert "workspace" in html
+    assert "PatchBay" in html
 
 
 def test_tool_card_renders_standard_tool_result_notification(tmp_path):
@@ -172,9 +187,9 @@ def test_tool_card_renders_standard_tool_result_notification(tmp_path):
         },
     )
 
-    assert "Waiting for tool result" not in html
+    _assert_compact_receipt(html)
+    assert "worker" in html
     assert "Card Hydration Worker" in html
-    assert "Rendered from ui notification." in html
 
 
 def test_tool_card_falls_back_from_empty_tool_output_to_response_metadata(tmp_path):
@@ -193,9 +208,8 @@ def test_tool_card_falls_back_from_empty_tool_output_to_response_metadata(tmp_pa
         },
     )
 
-    assert "Waiting for tool result" not in html
+    _assert_compact_receipt(html)
     assert "Metadata Workspace" in html
-    assert "metadata.md" in html
 
 
 def test_tool_card_renders_worker_options_direct_tool_output(tmp_path):
@@ -215,10 +229,9 @@ def test_tool_card_renders_worker_options_direct_tool_output(tmp_path):
         },
     )
 
-    assert "Waiting for tool result" not in html
-    assert "Worker options" in html
+    _assert_compact_receipt(html)
+    assert "worker_options" in html
     assert "gpt-5.4" in html
-    assert "spark" in html
 
 
 def test_tool_card_renders_tool_mode_direct_tool_output(tmp_path):
@@ -237,7 +250,58 @@ def test_tool_card_renders_tool_mode_direct_tool_output(tmp_path):
         },
     )
 
-    assert "Waiting for tool result" not in html
-    assert "Tool modes" in html
-    assert "worker - 8 tools" in html
-    assert "Refresh connector" in html
+    _assert_compact_receipt(html)
+    assert "tool_mode" in html
+    assert "worker" in html
+
+
+def test_tool_card_renders_worker_list_compactly(tmp_path):
+    html = _render_tool_card_with_node(
+        tmp_path,
+        tool_output={
+            "tool_id": "worker_list",
+            "count": 3,
+            "active": 2,
+            "workers": [
+                {"name": "Reader", "state": "working"},
+                {"name": "Verifier", "state": "working"},
+                {"name": "Synthesizer", "state": "idle"},
+            ],
+            "team_report": "Two workers active, one idle.",
+        },
+    )
+
+    _assert_compact_receipt(html)
+    assert "worker_list" in html
+    assert "2 active" in html
+    assert "3 workers" in html
+
+
+def test_tool_card_renders_command_error_and_repo_busy_compactly(tmp_path):
+    command = _render_tool_card_with_node(
+        tmp_path,
+        tool_output={
+            "tool_id": "run_command",
+            "command": "pytest",
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+    )
+    error = _render_tool_card_with_node(
+        tmp_path,
+        tool_output={"tool_id": "read_file", "error": "File is outside allowed roots"},
+    )
+    busy = _render_tool_card_with_node(
+        tmp_path,
+        tool_output={"tool_id": "worker_integrate", "repo_busy": True, "operation": "integrate", "note": "Repository is locked."},
+    )
+
+    for html in (command, error, busy):
+        _assert_compact_receipt(html)
+    assert "run_command" in command
+    assert "passed" in command
+    assert "read_file" in error
+    assert "error" in error
+    assert "worker_integrate" in busy
+    assert "busy" in busy

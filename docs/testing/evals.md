@@ -119,7 +119,7 @@ Extend the MCP probe to capture:
 - `tools/list` descriptors;
 - annotations;
 - `_meta.securitySchemes`;
-- resource list and rich v2 tool-card resource;
+- resource list and compact v2 tool-card receipt resource;
 - unauthenticated request behavior;
 - authenticated request behavior;
 - missing/invalid token errors;

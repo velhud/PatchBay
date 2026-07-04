@@ -147,6 +147,7 @@ class ToolHandler:
             "codex_worker_message": self._codex_worker_message,
             "codex_worker_list": self._codex_worker_list,
             "codex_worker_status": self._codex_worker_status,
+            "codex_worker_wait": self._codex_worker_wait,
             "codex_worker_inspect": self._codex_worker_inspect,
             "codex_worker_integrate": self._codex_worker_integrate,
             "codex_worker_stop": self._codex_worker_stop,
@@ -320,6 +321,20 @@ class ToolHandler:
             include_stopped=bool(args.get("include_stopped", False)),
             owned_only=bool(args.get("owned_only", False)),
             created_after=args.get("created_after"),
+            force_refresh=bool(args.get("force_refresh", False)),
+            request_context=self.current_request_context(),
+        )
+
+    async def _codex_worker_wait(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Wait patiently, then return a fresh compact worker-team status bar."""
+        repo = self._repo_from_args(args)
+        return await self.worker_runtime.worker_wait(
+            repo_path=repo,
+            active_only=bool(args.get("active_only", False)),
+            include_stopped=bool(args.get("include_stopped", False)),
+            owned_only=bool(args.get("owned_only", False)),
+            created_after=args.get("created_after"),
+            wait_seconds=args.get("wait_seconds"),
             request_context=self.current_request_context(),
         )
 

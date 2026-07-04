@@ -116,6 +116,36 @@ def test_completed_job_error_is_cleared_on_reload(tmp_path):
     assert persisted["error"] is None
 
 
+def test_terminal_job_clears_live_current_command_state(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
+    manager.update_job_state(
+        job_id,
+        JobState.RUNNING,
+        current_phase="command_running",
+        current_item_type="command_execution",
+        current_item_status="started",
+        current_command_preview="rg RetailMind",
+        current_command_started_at=time.time() - 30,
+    )
+
+    manager.update_job_state(job_id, JobState.COMPLETED, result={"summary": "done", "files_changed": []})
+
+    job = manager.get_job(job_id)
+    assert job.current_phase is None
+    assert job.current_item_type is None
+    assert job.current_item_status is None
+    assert job.current_command_preview is None
+    assert job.current_command_started_at is None
+    assert job.last_command_preview == "rg RetailMind"
+
+    reloaded = JobManager(config)
+    reloaded_job = reloaded.get_job(job_id)
+    assert reloaded_job.current_command_preview is None
+    assert reloaded_job.last_command_preview == "rg RetailMind"
+
+
 def test_job_manager_marks_interrupted_running_jobs_failed_on_reload(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

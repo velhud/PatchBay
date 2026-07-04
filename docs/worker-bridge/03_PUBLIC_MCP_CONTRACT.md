@@ -15,6 +15,7 @@ codex_worker_start
 codex_worker_message
 codex_worker_list
 codex_worker_status
+codex_worker_wait
 codex_worker_inspect
 codex_worker_integrate
 codex_worker_stop
@@ -120,7 +121,30 @@ Output fields:
 - `minimum_next_poll_seconds`, `recommended_next_poll_seconds`, and `poll_guidance`
   so ChatGPT waits about 20-30 seconds between normal status checks instead of
   polling every few seconds;
+- `poll_too_early`, `status_current`, `seconds_since_last_poll`, and
+  `retry_after_seconds` when the caller checks too soon. Too-early responses are
+  cached and must not reset the activity-delta baseline;
 - compact worker records with latest partial note, phase, and read-only report-file explanation.
+
+### `codex_worker_wait`
+
+Purpose: wait once, then return a fresh compact manager status bar.
+
+Input:
+
+```json
+{
+  "wait_seconds": 30,
+  "repo_path": "/optional/allowed/repo"
+}
+```
+
+Behavior:
+
+- sleeps for a bounded interval, defaulting to the recommended status cadence;
+- returns the same compact shape as `codex_worker_status`;
+- marks the response as current and includes `waited_seconds`;
+- does not interrupt workers and does not expose raw logs.
 
 ### `codex_worker_inspect`
 

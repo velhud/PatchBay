@@ -50,7 +50,7 @@ flowchart TD
     Auth --> Context["RequestContext<br/>client_ref, active sessions, session-local tool_mode"]
     Context --> Protocol["MCP protocol<br/>initialize, tools/list, tools/call, resources/list/read"]
     Protocol --> Registry["Tool registry and descriptors<br/>schemas, aliases, annotations, Apps metadata"]
-    Protocol --> Card["Rich passive Apps tool card<br/>ui://widget/patchbay-tool-card-v2.html"]
+    Protocol --> Card["Compact passive Apps receipt<br/>ui://widget/patchbay-tool-card-v2.html"]
 
     Registry --> Handler["ToolHandler service graph"]
     Handler --> Workspace["WorkspaceContext<br/>allowed roots, path guard, tree/read/search, git, AGENTS, skills, .ai-bridge"]
@@ -314,7 +314,7 @@ Remaining work is additive:
 - complete the real ChatGPT UI release evals, including ChatGPT-originated token-gated tunnel paths when advertised;
 - richer auth modes beyond tokenized local/tunnel use if this becomes multi-user;
 - deeper schema coverage for future tools as they are added;
-- interactive ChatGPT card actions beyond the current rich passive result card, if real ChatGPT evidence shows they are useful;
+- interactive ChatGPT card actions beyond the current compact passive receipt, if real ChatGPT evidence shows they are useful;
 - broader Codex CLI compatibility probes across installed versions;
 - CORS policy only if a trusted standalone local UI is added.
 
