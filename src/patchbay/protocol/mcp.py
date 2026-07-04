@@ -2615,12 +2615,10 @@ class MCPProtocol:
         ):
             result = create_pointer_response(result, internal_tool_name)
         result = redact_sensitive_output(result)
-        if isinstance(result, dict):
-            result = {
-                **result,
-                "tool_name": internal_tool_name,
-                "tool_id": _tool_display_id(internal_tool_name),
-            }
+        result_meta = {
+            "patchbay/tool_name": internal_tool_name,
+            "patchbay/tool_id": _tool_display_id(internal_tool_name),
+        }
 
         return {
             "structuredContent": result,
@@ -2629,7 +2627,8 @@ class MCPProtocol:
                     "type": "text",
                     "text": json.dumps(result, indent=2),
                 }
-            ]
+            ],
+            "_meta": result_meta,
         }
 
     async def _handle_resources_list(

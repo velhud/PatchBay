@@ -2,6 +2,7 @@ import re
 import json
 import shutil
 import subprocess
+from html import unescape
 
 import pytest
 
@@ -72,9 +73,9 @@ def test_tool_card_html_has_no_machine_specific_paths_or_tokens():
 def test_tool_card_widget_is_compact_receipt_renderer():
     expected_fragments = [
         "renderReceipt",
-        "toolId",
-        "statusFor",
-        "detailFor",
+        "humanToolLabel",
+        "humanStatusLabel",
+        "humanDetailLine",
         "openai:set_globals",
         "ui/notifications/tool-result",
         "repo_busy",
@@ -156,19 +157,39 @@ def _assert_compact_receipt(html):
     assert html.count("class=\"detail\"") == 1
 
 
+def _visible_receipt_text(rendered_html):
+    fragments = re.findall(
+        r'<span class="(?:tool|status|dot|pill [^"]+)">(.*?)</span>|<div class="detail">(.*?)</div>',
+        rendered_html,
+    )
+    return " ".join(unescape(left or right) for left, right in fragments)
+
+
+def _assert_human_receipt_text(rendered_html):
+    visible = _visible_receipt_text(rendered_html)
+    assert "_" not in visible
+    for forbidden in ["codex_", "worker_start", "worker_list", "read_file", "tool_mode", "repo_busy"]:
+        assert forbidden not in visible
+    return visible
+
+
 def test_tool_card_renders_direct_window_openai_tool_output(tmp_path):
     html = _render_tool_card_with_node(
         tmp_path,
         tool_output={
-            "workspace_id": "ws_test",
-            "workspace_name": "PatchBay",
-            "root": "/repo",
-            "tree": "README.md\nsrc/patchbay/protocol/resources.py",
+            "structuredContent": {
+                "workspace_id": "ws_test",
+                "workspace_name": "PatchBay",
+                "root": "/repo",
+                "tree": "README.md\nsrc/patchbay/protocol/resources.py",
+            },
+            "_meta": {"patchbay/tool_name": "codex_open_workspace"},
         },
     )
 
     _assert_compact_receipt(html)
-    assert "workspace" in html
+    visible = _assert_human_receipt_text(html)
+    assert "Workspace opening · ready" in visible
     assert "PatchBay" in html
 
 
@@ -184,11 +205,13 @@ def test_tool_card_renders_standard_tool_result_notification(tmp_path):
                 "report": "Rendered from ui notification.",
             },
             "content": [],
+            "_meta": {"patchbay/tool_name": "codex_worker_inspect"},
         },
     )
 
     _assert_compact_receipt(html)
-    assert "worker" in html
+    visible = _assert_human_receipt_text(html)
+    assert "Worker inspection · ready" in visible
     assert "Card Hydration Worker" in html
 
 
@@ -204,11 +227,14 @@ def test_tool_card_falls_back_from_empty_tool_output_to_response_metadata(tmp_pa
                     "tree": "metadata.md",
                 },
                 "content": [],
+                "_meta": {"patchbay/tool_name": "codex_open_workspace"},
             }
         },
     )
 
     _assert_compact_receipt(html)
+    visible = _assert_human_receipt_text(html)
+    assert "Workspace opening · ready" in visible
     assert "Metadata Workspace" in html
 
 
@@ -216,21 +242,25 @@ def test_tool_card_renders_worker_options_direct_tool_output(tmp_path):
     html = _render_tool_card_with_node(
         tmp_path,
         tool_output={
-            "source": "runtime_catalog",
-            "default_model": "gpt-5.4",
-            "default_reasoning_effort": "medium",
-            "model_count": 2,
-            "models": [
-                {"id": "gpt-5.4", "recommended_for": "major worker"},
-                {"id": "spark", "recommended_for": "fast reader"},
-            ],
-            "reasoning_efforts": [{"value": "medium", "description": "balanced"}],
-            "next_step": "Pass model to codex_worker_start when needed.",
+            "structuredContent": {
+                "source": "runtime_catalog",
+                "default_model": "gpt-5.4",
+                "default_reasoning_effort": "medium",
+                "model_count": 2,
+                "models": [
+                    {"id": "gpt-5.4", "recommended_for": "major worker"},
+                    {"id": "spark", "recommended_for": "fast reader"},
+                ],
+                "reasoning_efforts": [{"value": "medium", "description": "balanced"}],
+                "next_step": "Pass model to codex_worker_start when needed.",
+            },
+            "_meta": {"patchbay/tool_name": "codex_worker_options"},
         },
     )
 
     _assert_compact_receipt(html)
-    assert "worker_options" in html
+    visible = _assert_human_receipt_text(html)
+    assert "Worker options · ready" in visible
     assert "gpt-5.4" in html
 
 
@@ -238,20 +268,24 @@ def test_tool_card_renders_tool_mode_direct_tool_output(tmp_path):
     html = _render_tool_card_with_node(
         tmp_path,
         tool_output={
-            "current_mode": "worker",
-            "default_mode": "worker",
-            "recommended_default": "worker",
-            "available_modes": ["worker", "full"],
-            "modes": [
-                {"mode": "worker", "current": True, "tool_count": 8, "purpose": "Worker-first"},
-                {"mode": "full", "current": False, "tool_count": 32, "purpose": "All tools"},
-            ],
-            "chatgpt_refresh_note": "Refresh connector after mode changes.",
+            "structuredContent": {
+                "current_mode": "worker",
+                "default_mode": "worker",
+                "recommended_default": "worker",
+                "available_modes": ["worker", "full"],
+                "modes": [
+                    {"mode": "worker", "current": True, "tool_count": 8, "purpose": "Worker-first"},
+                    {"mode": "full", "current": False, "tool_count": 32, "purpose": "All tools"},
+                ],
+                "chatgpt_refresh_note": "Refresh connector after mode changes.",
+            },
+            "_meta": {"patchbay/tool_name": "codex_tool_mode_info"},
         },
     )
 
     _assert_compact_receipt(html)
-    assert "tool_mode" in html
+    visible = _assert_human_receipt_text(html)
+    assert "Tool mode check · ready" in visible
     assert "worker" in html
 
 
@@ -259,49 +293,89 @@ def test_tool_card_renders_worker_list_compactly(tmp_path):
     html = _render_tool_card_with_node(
         tmp_path,
         tool_output={
-            "tool_id": "worker_list",
-            "count": 3,
-            "active": 2,
-            "workers": [
-                {"name": "Reader", "state": "working"},
-                {"name": "Verifier", "state": "working"},
-                {"name": "Synthesizer", "state": "idle"},
-            ],
-            "team_report": "Two workers active, one idle.",
+            "structuredContent": {
+                "count": 3,
+                "active": 2,
+                "workers": [
+                    {"name": "Reader", "state": "working"},
+                    {"name": "Verifier", "state": "working"},
+                    {"name": "Synthesizer", "state": "idle"},
+                ],
+                "team_report": "Two workers active, one idle.",
+            },
+            "_meta": {"patchbay/tool_name": "codex_worker_list"},
         },
     )
 
     _assert_compact_receipt(html)
-    assert "worker_list" in html
-    assert "2 active" in html
-    assert "3 workers" in html
+    visible = _assert_human_receipt_text(html)
+    assert "Worker list · 2 active" in visible
+    assert "3 workers" in visible
+
+
+def test_tool_card_renders_worker_creation_compactly(tmp_path):
+    html = _render_tool_card_with_node(
+        tmp_path,
+        tool_output={
+            "structuredContent": {
+                "worker_id": "worker_test",
+                "name": "RetailMind UI Mapper",
+                "state": "working",
+            },
+            "_meta": {"patchbay/tool_name": "codex_worker_start"},
+        },
+    )
+
+    _assert_compact_receipt(html)
+    visible = _assert_human_receipt_text(html)
+    assert "Worker creation · in progress" in visible
+    assert "RetailMind UI Mapper started" in visible
 
 
 def test_tool_card_renders_command_error_and_repo_busy_compactly(tmp_path):
     command = _render_tool_card_with_node(
         tmp_path,
         tool_output={
-            "tool_id": "run_command",
-            "command": "pytest",
-            "exit_code": 0,
-            "stdout": "ok\n",
-            "stderr": "",
+            "structuredContent": {
+                "command": "pytest",
+                "exit_code": 0,
+                "stdout": "ok\n",
+                "stderr": "",
+            },
+            "_meta": {"patchbay/tool_name": "codex_run_command"},
+        },
+    )
+    failed_command = _render_tool_card_with_node(
+        tmp_path,
+        tool_output={
+            "structuredContent": {
+                "command": "pytest",
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "failed\n",
+            },
+            "_meta": {"patchbay/tool_name": "codex_run_command"},
         },
     )
     error = _render_tool_card_with_node(
         tmp_path,
-        tool_output={"tool_id": "read_file", "error": "File is outside allowed roots"},
+        tool_output={
+            "structuredContent": {"error": "File is outside allowed roots"},
+            "_meta": {"patchbay/tool_name": "codex_read_file"},
+        },
     )
     busy = _render_tool_card_with_node(
         tmp_path,
-        tool_output={"tool_id": "worker_integrate", "repo_busy": True, "operation": "integrate", "note": "Repository is locked."},
+        tool_output={
+            "structuredContent": {"repo_busy": True, "operation": "integrate", "note": "Repository is locked."},
+            "_meta": {"patchbay/tool_name": "codex_worker_integrate"},
+        },
     )
 
-    for html in (command, error, busy):
+    for html in (command, failed_command, error, busy):
         _assert_compact_receipt(html)
-    assert "run_command" in command
-    assert "passed" in command
-    assert "read_file" in error
-    assert "error" in error
-    assert "worker_integrate" in busy
-    assert "busy" in busy
+        _assert_human_receipt_text(html)
+    assert "Command run · finished" in _visible_receipt_text(command)
+    assert "Command run · failed" in _visible_receipt_text(failed_command)
+    assert "File reading · failed" in _visible_receipt_text(error)
+    assert "Worker integration · busy" in _visible_receipt_text(busy)

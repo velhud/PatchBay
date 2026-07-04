@@ -470,7 +470,7 @@ The server exposes a compact passive Apps card resource:
 ui://widget/patchbay-tool-card-v2.html
 ```
 
-Clients can fetch it with `resources/list` and `resources/read`. The MIME type is `text/html;profile=mcp-app`. The current card is a lightweight receipt: it shows the compact `tool_id`, a short status phrase, and one human-readable detail line while leaving the full tool payload in `structuredContent` for ChatGPT reasoning and later inspection. It hydrates from both MCP Apps bridge tool-result notifications and ChatGPT `window.openai` compatibility globals, and it shows a compact widget-error state instead of staying on the initial waiting state if rendering fails. It remains passive: it does not initiate tool calls. The legacy `ui://widget/patchbay-tool-card-v1.html` URI remains readable for compatibility, while descriptors advertise v2.
+Clients can fetch it with `resources/list` and `resources/read`. The MIME type is `text/html;profile=mcp-app`. The current card is a lightweight receipt: it shows a human tool label, a human status phrase, and one human-readable detail line while leaving the full tool payload in `structuredContent` for ChatGPT reasoning and later inspection. Internal tool identifiers may be used only as hidden component metadata or local widget inference; they are not the visible card language. It hydrates from both MCP Apps bridge tool-result notifications and ChatGPT `window.openai` compatibility globals, and it shows a compact widget-error state instead of staying on the initial waiting state if rendering fails. It remains passive: it does not initiate tool calls. The legacy `ui://widget/patchbay-tool-card-v1.html` URI remains readable for compatibility, while descriptors advertise v2.
 
 ## Power Boundary And Controls
 
