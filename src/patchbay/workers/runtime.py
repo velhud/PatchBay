@@ -534,7 +534,7 @@ class WorkerRuntime:
         if wait_seconds is None:
             wait_seconds = int(policy["recommended_next_poll_seconds"])
         wait_seconds = max(1, min(120, int(wait_seconds)))
-        started = time.time()
+        started = time.monotonic()
         await asyncio.sleep(wait_seconds)
         payload = await self.worker_status(
             repo_path=repo_path,
@@ -545,7 +545,8 @@ class WorkerRuntime:
             force_refresh=True,
             request_context=request_context,
         )
-        payload["waited_seconds"] = int(time.time() - started)
+        elapsed_seconds = int(time.monotonic() - started)
+        payload["waited_seconds"] = max(wait_seconds, elapsed_seconds)
         payload["wait_guidance"] = (
             "This tool is the patient manager path: it waits once, then returns a fresh compact status. "
             "Use it instead of repeated rapid codex_worker_status calls while workers are normally active or quiet."
