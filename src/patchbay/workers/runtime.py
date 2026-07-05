@@ -527,7 +527,8 @@ class WorkerRuntime:
             "poll_guidance": team_status["poll_guidance"],
             "workers": [self._compact_worker_view(worker) for worker in listed["workers"]],
             "count": listed["count"],
-            "active": listed["active"],
+            "active": int(team_status["counts"]["active"]),
+            "active_turns": listed["active"],
             "poll_too_early": False,
             "status_current": True,
             "seconds_since_last_poll": None,
@@ -551,7 +552,10 @@ class WorkerRuntime:
         policy = self._status_poll_policy()
         if wait_seconds is None:
             wait_seconds = int(policy["recommended_next_poll_seconds"])
-        wait_seconds = max(1, min(120, int(wait_seconds)))
+        requested_wait_seconds = int(wait_seconds)
+        wait_cap_seconds = 120
+        minimum_wait_seconds = min(wait_cap_seconds, int(policy["minimum_next_poll_seconds"]))
+        wait_seconds = min(wait_cap_seconds, max(minimum_wait_seconds, requested_wait_seconds))
         started = time.monotonic()
         await asyncio.sleep(wait_seconds)
         payload = await self.worker_status(
@@ -565,9 +569,13 @@ class WorkerRuntime:
         )
         elapsed_seconds = int(time.monotonic() - started)
         payload["waited_seconds"] = max(wait_seconds, elapsed_seconds)
+        payload["requested_wait_seconds"] = requested_wait_seconds
+        payload["minimum_wait_seconds_applied"] = minimum_wait_seconds
+        payload["wait_cap_seconds"] = wait_cap_seconds
         payload["wait_guidance"] = (
             "This tool is the patient manager path: it waits once, then returns a fresh compact status. "
-            "Use it instead of repeated rapid codex_worker_status calls while workers are normally active or quiet."
+            "Use it instead of repeated rapid codex_worker_status calls while workers are normally active or quiet. "
+            "Very small wait requests are raised to the configured minimum monitoring cadence."
         )
         return payload
 

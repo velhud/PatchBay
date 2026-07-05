@@ -16,6 +16,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_CARD_URI = "ui://widget/patchbay-tool-card-v2.html"
@@ -48,7 +50,8 @@ def main() -> int:
         env["PATCHBAY_HOME"] = str(temp_dir / "runtime")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
 
-        process = _start_server(repo, port, env, tool_mode=args.tool_mode)
+        config_path = _write_eval_config(temp_dir)
+        process = _start_server(repo, port, env, tool_mode=args.tool_mode, config_path=config_path)
         _wait_for_health(port, process, output_tail, timeout=args.timeout)
         client = McpClient(f"http://127.0.0.1:{port}")
 
@@ -152,6 +155,7 @@ def main() -> int:
             and "poll_guidance" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "poll_too_early" in tools["codex_worker_status"]["outputSchema"]["properties"]
             and "waited_seconds" in tools["codex_worker_wait"]["outputSchema"]["properties"]
+            and "minimum_wait_seconds_applied" in tools["codex_worker_wait"]["outputSchema"]["properties"]
             and "wait_seconds" in tools["codex_worker_wait"]["inputSchema"]["properties"]
             and "view" in tools["codex_worker_inspect"]["inputSchema"]["properties"]
             and "cleanup_workspace" in tools["codex_worker_stop"]["inputSchema"]["properties"],
@@ -245,7 +249,8 @@ def main() -> int:
             "worker_wait_fresh_status",
             waited_status_data["status_current"] is True
             and waited_status_data["poll_too_early"] is False
-            and waited_status_data["waited_seconds"] >= 1,
+            and waited_status_data["waited_seconds"] >= 1
+            and waited_status_data["minimum_wait_seconds_applied"] == 1,
         )
 
         pro_report_path = temp_dir / "pro-escalation-report.md"
@@ -400,11 +405,27 @@ def _create_disposable_repo(temp_dir: Path) -> Path:
     return repo
 
 
-def _start_server(repo: Path, port: int, env: dict[str, str], *, tool_mode: str) -> subprocess.Popen[str]:
+def _write_eval_config(temp_dir: Path) -> Path:
+    config_path = temp_dir / "config.yaml"
+    with open(ROOT / "config.yaml", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    workers = config.setdefault("workers", {})
+    workers["status_minimum_poll_seconds"] = 1
+    workers["status_recommended_poll_seconds"] = 1
+    config_path.write_text(
+        yaml.safe_dump(config, sort_keys=False),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _start_server(repo: Path, port: int, env: dict[str, str], *, tool_mode: str, config_path: Path) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
             sys.executable,
             "scripts/start.py",
+            "--config",
+            str(config_path),
             "--root",
             str(repo),
             "--port",

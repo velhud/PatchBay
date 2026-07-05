@@ -108,7 +108,7 @@ Required test groups:
 - worker changed-file and one-file diff views;
 - worker resume command ordering with `--sandbox` and `--cd` before `resume`.
 - peer-worker context relay using reports, changed files, or bounded diffs;
-- compact team status from `codex_worker_status` / `codex_worker_list.team_status`, including activity deltas, one-line worker status output, and recommended polling cadence.
+- compact team status from `codex_worker_status` / `codex_worker_list.team_status`, including all-repo unscoped visibility, activity deltas, one-line worker status output, minimum-cadence `codex_worker_wait`, and recommended polling cadence.
 
 ## MCP Protocol Smoke Tests
 

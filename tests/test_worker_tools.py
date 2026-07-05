@@ -184,6 +184,18 @@ async def test_tool_handler_scopes_worker_names_and_hints_worker_file_reads(tmp_
     assert current["accepted"] is True
     assert other["worker_id"] != current["worker_id"]
 
+    all_status = await handler.handle_tool_call("codex_worker_status", {})
+    assert all_status["count"] == 2
+    assert {worker["name"] for worker in all_status["workers"]} == {"Small Implementer"}
+    assert {worker["workspace_name"] for worker in all_status["workers"]} == {"repo", "other-repo"}
+
+    scoped_status = await handler.handle_tool_call(
+        "codex_worker_status",
+        {"repo_path": config["repositories"]["default"], "force_refresh": True},
+    )
+    assert scoped_status["count"] == 1
+    assert scoped_status["workers"][0]["workspace_name"] == "repo"
+
     job = next(
         job
         for job in manager.jobs.values()

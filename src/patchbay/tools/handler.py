@@ -305,7 +305,7 @@ class ToolHandler:
 
     async def _codex_worker_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List durable workers without exposing backend ids or private paths."""
-        repo = self._repo_from_args(args)
+        repo = self._optional_repo_filter_from_args(args)
         return await self.worker_runtime.list_workers(
             repo_path=repo,
             active_only=bool(args.get("active_only", False)),
@@ -317,7 +317,7 @@ class ToolHandler:
 
     async def _codex_worker_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return the compact worker-team status bar."""
-        repo = self._repo_from_args(args)
+        repo = self._optional_repo_filter_from_args(args)
         return await self.worker_runtime.worker_status(
             repo_path=repo,
             active_only=bool(args.get("active_only", False)),
@@ -330,7 +330,7 @@ class ToolHandler:
 
     async def _codex_worker_wait(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Wait patiently, then return a fresh compact worker-team status bar."""
-        repo = self._repo_from_args(args)
+        repo = self._optional_repo_filter_from_args(args)
         return await self.worker_runtime.worker_wait(
             repo_path=repo,
             active_only=bool(args.get("active_only", False)),
@@ -655,6 +655,18 @@ class ToolHandler:
     def _repo_from_args(self, args: Dict[str, Any]) -> str:
         repo = args.get('repo') or args.get('repo_path') or self.default_repo
         return str(self.workspace_context.open_workspace(str(repo)).root)
+
+    def _optional_repo_filter_from_args(self, args: Dict[str, Any]) -> Optional[str]:
+        """Return a repo filter only when the caller explicitly supplied one.
+
+        Worker team status is a manager-level control surface. On a multi-repo
+        PatchBay host, silently falling back to the default workspace can hide
+        active workers in another allowed repository and make the team look
+        empty, so list/status/wait default to all workers unless scoped.
+        """
+        if args.get("repo") or args.get("repo_path"):
+            return self._repo_from_args(args)
+        return None
 
     def _worker_file_hint(self, args: Dict[str, Any]) -> str:
         file_path = str(args.get("file_path") or "").strip()

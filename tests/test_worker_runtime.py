@@ -1542,7 +1542,7 @@ async def test_worker_status_soft_cooldown_does_not_reset_deltas(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_worker_wait_returns_fresh_status_after_delay(tmp_path):
+async def test_worker_wait_returns_fresh_status_after_delay(monkeypatch, tmp_path):
     config = make_config(tmp_path)
     config["workers"]["status_minimum_poll_seconds"] = 20
     config["workers"]["status_recommended_poll_seconds"] = 30
@@ -1557,12 +1557,20 @@ async def test_worker_wait_returns_fresh_status_after_delay(tmp_path):
         workspace_mode="read_only",
     )
 
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr("patchbay.workers.runtime.asyncio.sleep", fake_sleep)
+
     result = await runtime.worker_wait(repo_path=config["repositories"]["default"], wait_seconds=1)
 
     assert result["status_current"] is True
     assert result["poll_too_early"] is False
-    assert result["waited_seconds"] >= 1
+    assert result["requested_wait_seconds"] == 1
+    assert result["minimum_wait_seconds_applied"] == 20
+    assert result["waited_seconds"] >= 20
     assert "patient manager path" in result["wait_guidance"]
+    assert "configured minimum" in result["wait_guidance"]
 
 
 @pytest.mark.asyncio

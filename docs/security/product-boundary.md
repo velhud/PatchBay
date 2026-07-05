@@ -213,6 +213,8 @@ Optional staged behavior:
 
 The current implementation has addressed the original high-risk connector gaps: public schema validation, public/internal argument translation tests, hidden experimental handler removal, apply-job-only diff retrieval, default log redaction, prompt stdin transport, authenticated tunnel fail-closed behavior, and explicit mutating/open-world annotations for interactive/resume tools.
 
+Full-access workbench deployments are allowed to be useful, not decorative. When the runtime is explicitly configured for authenticated `danger-full-access`, direct writes, and full bash on a private VM or local workstation, repo-local dependency installation, virtual environment setup, verification commands, commits, and authorized private-repo pushes are ordinary engineering actions inside that workbench. The product boundary remains at external/public/production/paid/credential-changing/irreversible actions, plus repository allow-root validation and authentication for the MCP endpoint.
+
 Verified so far:
 
 - local MCP probe against a disposable repo;

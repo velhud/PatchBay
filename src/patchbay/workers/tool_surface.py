@@ -125,10 +125,14 @@ WORKER_STATUS_SCHEMA: Dict[str, Any] = {
         "seconds_since_last_poll": {"type": ["integer", "null"]},
         "retry_after_seconds": {"type": "integer"},
         "waited_seconds": {"type": "integer"},
+        "requested_wait_seconds": {"type": "integer"},
+        "minimum_wait_seconds_applied": {"type": "integer"},
+        "wait_cap_seconds": {"type": "integer"},
         "wait_guidance": {"type": "string"},
         "workers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "count": {"type": "integer"},
         "active": {"type": "integer"},
+        "active_turns": {"type": "integer"},
     },
 }
 
@@ -485,8 +489,8 @@ WORKER_TOOLS = [
             "Respect the returned polling guidance: normal worker monitoring means waiting about 20-30 seconds before the next status check, not polling every few seconds. "
             "Use active_only, owned_only, include_stopped=false, or created_after to reduce historical worker clutter during a specific task. "
             "If the team report shows thin, failed, stale, or conflicting work, continue the relevant named worker instead "
-            "of treating first reports as final. By default ChatGPT "
-            "sees workers for the current workspace, so old workers from other repos do not steal the same name."
+            "of treating first reports as final. If repo_path is omitted, list workers across all allowed repositories; "
+            "pass repo_path or a worker_id when a human name exists in more than one repo."
         ),
         "inputSchema": {
             "type": "object",
@@ -494,7 +498,7 @@ WORKER_TOOLS = [
             "properties": {
                 "repo_path": {
                     "type": "string",
-                    "description": "Optional authorized repository path used to filter workers.",
+                    "description": "Optional authorized repository path used to filter workers. Omit it to list workers across all allowed repositories.",
                 },
                 "active_only": {
                     "type": "boolean",
@@ -526,7 +530,8 @@ WORKER_TOOLS = [
             "if events/output/partial notes are changing, wait; if a worker is stale or lost, inspect it deliberately. "
             "For normal monitoring, wait about 20-30 seconds between status calls and follow "
             "recommended_next_poll_seconds in the result; do not poll every few seconds unless the user explicitly "
-            "asked for near-real-time monitoring or the last result needs immediate recovery."
+            "asked for near-real-time monitoring or the last result needs immediate recovery. If repo_path is omitted, "
+            "status covers workers across all allowed repositories so a manager does not miss active work in another repo."
         ),
         "inputSchema": {
             "type": "object",
@@ -534,7 +539,7 @@ WORKER_TOOLS = [
             "properties": {
                 "repo_path": {
                     "type": "string",
-                    "description": "Optional authorized repository path used to filter workers.",
+                    "description": "Optional authorized repository path used to filter workers. Omit it to see workers across all allowed repositories.",
                 },
                 "active_only": {
                     "type": "boolean",
@@ -568,7 +573,9 @@ WORKER_TOOLS = [
             "codex_worker_status every few seconds while workers are active or quiet. The normal manager pattern "
             "is: assign workers, wait about 20-30 seconds, read compact status, then either wait again, ask a "
             "worker a natural-language follow-up after its turn completes, or inspect only when there is a real "
-            "concern. This tool does not expose raw logs and does not interrupt workers."
+            "concern. If wait_seconds is lower than the configured minimum cadence, PatchBay raises it to that minimum. "
+            "If repo_path is omitted, status covers workers across all allowed repositories. This tool does not expose "
+            "raw logs and does not interrupt workers."
         ),
         "inputSchema": {
             "type": "object",
@@ -576,7 +583,7 @@ WORKER_TOOLS = [
             "properties": {
                 "repo_path": {
                     "type": "string",
-                    "description": "Optional authorized repository path used to filter workers.",
+                    "description": "Optional authorized repository path used to filter workers. Omit it to wait on workers across all allowed repositories.",
                 },
                 "active_only": {
                     "type": "boolean",
@@ -596,7 +603,7 @@ WORKER_TOOLS = [
                 },
                 "wait_seconds": {
                     "type": "integer",
-                    "description": "Seconds to wait before refreshing status. Default follows recommended_next_poll_seconds; capped by server policy.",
+                    "description": "Seconds to wait before refreshing status. Default follows recommended_next_poll_seconds; values below the configured minimum monitoring cadence are raised to that minimum, and values are capped by server policy.",
                 },
             },
             "required": [],
