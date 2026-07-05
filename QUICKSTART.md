@@ -117,7 +117,7 @@ Authentication: No Authentication / None
 
 Choose `No Authentication / None` inside ChatGPT because the copied Server URL already carries PatchBay token as a query parameter. Do not configure OAuth or an API key in ChatGPT for this local bridge.
 
-Keep `Enforce CSP in developer mode` enabled. The tool card resource is designed for the CSP-enabled path.
+The optional PatchBay tool-card widget is off by default because repeated Apps cards made long ChatGPT sessions heavy on mobile and tablet browsers. Normal PatchBay use does not require cards; ChatGPT still receives structured tool results. If an operator intentionally enables `app.tool_cards: true`, keep `Enforce CSP in developer mode` enabled because the widget resource is designed for the CSP-enabled path.
 
 After the connector is created, ChatGPT should show the tools PatchBay advertises. Open a new chat, click `+`, add PatchBay from the More menu, and send:
 

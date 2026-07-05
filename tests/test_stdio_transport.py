@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from patchbay.protocol.resources import TOOL_CARD_URI
+
 
 def subprocess_env(extra=None):
     env = dict(os.environ)
@@ -91,5 +93,39 @@ def test_stdio_transport_handles_core_mcp_methods(tmp_path):
     assert "codex_worker_start" in tool_names
     assert "codex_resume" not in tool_names
     assert by_id[3]["result"]["structuredContent"]["current_mode"] == "worker"
-    assert by_id[4]["result"]["resources"]
+    assert by_id[4]["result"]["resources"] == []
     assert completed.stdout.count("Handling MCP method") == 0
+
+
+def test_stdio_transport_exposes_resources_when_tool_cards_enabled(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = base_config(root)
+    config["app"]["tool_cards"] = True
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    env = subprocess_env({"PATCHBAY_HOME": str(tmp_path / "home")})
+
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}},
+    ]
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "patchbay.stdio", "--config", str(config_path), "--client-label", "unit-stdio"],
+        cwd=".",
+        env=env,
+        input="\n".join(json.dumps(message) for message in messages) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0
+    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    by_id = {response["id"]: response for response in responses}
+    tools = by_id[2]["result"]["tools"]
+    assert any(tool.get("_meta", {}).get("openai/outputTemplate") == TOOL_CARD_URI for tool in tools)
+    resource_uris = {resource["uri"] for resource in by_id[3]["result"]["resources"]}
+    assert TOOL_CARD_URI in resource_uris

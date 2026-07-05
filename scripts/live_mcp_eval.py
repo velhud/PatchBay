@@ -132,7 +132,11 @@ def main() -> int:
                 and "Same manager-first policy" in tools["bash"]["description"]
             ),
         )
-        _check(report, "tool_card_metadata", all(tools[name]["_meta"]["openai/outputTemplate"] == TOOL_CARD_URI for name in required_tools))
+        _check(
+            report,
+            "tool_cards_disabled_by_default",
+            all("openai/outputTemplate" not in tools[name].get("_meta", {}) for name in required_tools),
+        )
         _check(
             report,
             "worker_tool_descriptors",
@@ -164,9 +168,7 @@ def main() -> int:
 
         resources = client.rpc(3, "resources/list")
         resource_uris = {resource["uri"] for resource in resources["result"]["resources"]}
-        _check(report, "resources_list", TOOL_CARD_URI in resource_uris)
-        card = client.rpc(4, "resources/read", {"uri": TOOL_CARD_URI})
-        _check(report, "resources_read", card["result"]["contents"][0]["mimeType"] == "text/html;profile=mcp-app")
+        _check(report, "resources_list", TOOL_CARD_URI not in resource_uris)
 
         workspace = client.call_tool(5, "codex_open_workspace", {"repo_path": str(repo), "include_global_skills": False})
         workspace_data = workspace["result"]["structuredContent"]

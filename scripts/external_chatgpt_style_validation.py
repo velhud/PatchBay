@@ -486,11 +486,14 @@ def scenario_worker_surface(evidence: Evidence, client: McpClient, repo: Path) -
         required = {"codex_open_workspace", "codex_worker_start", "codex_worker_inbox", "codex_worker_inspect", "codex_self_test"}
         s.check("worker_tools_visible", required <= set(tools), f"worker mode contains {sorted(required)}.")
         s.check("low_level_hidden", "codex_get_status" not in tools and "read" not in tools, "worker mode hides low-level job tools and aliases.")
+        s.check(
+            "cards_not_advertised_by_default",
+            all("openai/outputTemplate" not in tool.get("_meta", {}) for tool in tools.values()),
+            "default worker surface does not advertise Apps widget templates.",
+        )
         resources = client.rpc("resources/list")
         uris = {item["uri"] for item in resources["result"]["resources"]}
-        s.check("card_listed", TOOL_CARD_URI in uris, "v2 card resource listed.")
-        card = client.rpc("resources/read", {"uri": TOOL_CARD_URI})
-        s.check("card_readable", card["result"]["contents"][0]["mimeType"] == "text/html;profile=mcp-app", "v2 card resource readable.")
+        s.check("cards_not_listed_by_default", TOOL_CARD_URI not in uris, "default resources omit the optional v2 card.")
         self_test = structured(client.call_tool("codex_self_test", {}))
         serialized = json.dumps(self_test)
         s.check("coordination_metadata", self_test.get("coordination", {}).get("raw_session_ids_returned") is False, "self_test reports coordination without raw session ids.")

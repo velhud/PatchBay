@@ -67,7 +67,7 @@ The unit suite verifies:
 - launcher profile storage and runtime config generation;
 - installable CLI dispatch, noninteractive setup behavior, settings profile management, stdio transport, and tunnel binary resolution;
 - fake public tunnel process supervision;
-- ChatGPT Apps tool-card resource discovery and widget hydration from both direct `window.openai.toolOutput` and standard `ui/notifications/tool-result` payloads;
+- default card-free ChatGPT Apps behavior, including no advertised output templates/resources unless `app.tool_cards: true`, plus opt-in tool-card resource discovery and widget hydration from both direct `window.openai.toolOutput` and standard `ui/notifications/tool-result` payloads;
 - operator boundary and runtime-profile checks;
 - path validation and symlink escape rejection;
 - redaction helpers;
@@ -297,7 +297,7 @@ Before public release, run all of these against disposable repos:
 - `scripts/real_mcp_worker_trial.py --include-safety-cases` passes for direct MCP worker negative cases, or the blocker is reported with partial artifacts.
 - `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json` passes for shared-server multi-client coordination, or the blocker is reported with partial artifacts.
 - `tools/list` returns the expected public catalog and metadata.
-- `resources/list` and `resources/read` return `ui://widget/patchbay-tool-card-v2.html`; the legacy v1 URI remains readable for compatibility.
+- With default config, `resources/list` returns no PatchBay widget resource and `tools/list` does not advertise `openai/outputTemplate`; with `app.tool_cards: true`, `resources/list` and `resources/read` return `ui://widget/patchbay-tool-card-v2.html`, and the legacy v1 URI remains readable for compatibility.
 - Async starter tools return `job_id`.
 - Real Codex plan jobs complete through MCP.
 - Structured Codex result parsing is clean.

@@ -559,6 +559,17 @@ def widget_domain(config: Dict[str, Any] | None = None) -> str:
     return DEFAULT_WIDGET_DOMAIN
 
 
+def tool_cards_enabled(config: Dict[str, Any] | None = None) -> bool:
+    """Return whether ChatGPT Apps widget cards should be advertised."""
+    app_config = (config or {}).get("app", {})
+    value = app_config.get("tool_cards") if isinstance(app_config, dict) else None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return False
+
+
 def tool_resource_meta(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
     domain = widget_domain(config)
     csp = {"connectDomains": [], "resourceDomains": []}
@@ -593,7 +604,15 @@ def list_resource_templates() -> List[Dict[str, Any]]:
     return [tool_card_descriptor()]
 
 
+def list_resources(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+    if not tool_cards_enabled(config):
+        return []
+    return [tool_card_descriptor()]
+
+
 def read_resource(uri: str, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    if not tool_cards_enabled(config):
+        raise ValueError("PatchBay tool cards are disabled by server config")
     if uri != TOOL_CARD_URI and uri not in TOOL_CARD_LEGACY_URIS:
         raise ValueError(f"Unknown resource URI: {uri}")
     return {

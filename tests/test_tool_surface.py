@@ -333,6 +333,22 @@ def test_public_tool_descriptors_have_chatgpt_app_metadata():
         assert annotations["readOnlyHint"] is descriptor["readOnlyHint"]
         assert isinstance(annotations["idempotentHint"], bool)
 
+        assert "ui" not in descriptor["_meta"]
+        assert "openai/outputTemplate" not in descriptor["_meta"]
+        assert "openai/toolInvocation/invoking" not in descriptor["_meta"]
+        assert "openai/toolInvocation/invoked" not in descriptor["_meta"]
+
+
+def test_tool_card_metadata_is_config_opt_in():
+    descriptors = tool_descriptors_for_mode(
+        {
+            **full_power_config("full"),
+            "app": {"tool_mode": "full", "tool_cards": True},
+        },
+        mode="full",
+    )
+
+    for descriptor in descriptors:
         invoking = descriptor["_meta"]["openai/toolInvocation/invoking"]
         invoked = descriptor["_meta"]["openai/toolInvocation/invoked"]
         assert isinstance(invoking, str)

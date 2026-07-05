@@ -182,7 +182,7 @@ def _apply_profile(config: dict[str, Any], profile: Mapping[str, Any]) -> None:
             "timeout_seconds",
         },
     )
-    _merge_known(config, profile, "app", {"widget_domain", "tool_mode"})
+    _merge_known(config, profile, "app", {"widget_domain", "tool_mode", "tool_cards"})
     _merge_known(
         config,
         profile,
@@ -301,7 +301,7 @@ def _profile_from_config(config: Mapping[str, Any], public_base_url: str | None)
                 "timeout_seconds",
             },
         ),
-        "app": _select_keys(_section(config, "app"), {"widget_domain", "tool_mode"}),
+        "app": _select_keys(_section(config, "app"), {"widget_domain", "tool_mode", "tool_cards"}),
         "power_tools": _select_keys(
             _section(config, "power_tools"),
             {

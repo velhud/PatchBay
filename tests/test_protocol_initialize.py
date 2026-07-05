@@ -431,8 +431,16 @@ def test_resume_tool_call_returns_async_job_pointer():
     assert "codex_get_status" in result["structuredContent"]["note"]
 
 
-def test_resources_list_exposes_tool_card_template():
+def test_resources_list_hides_tool_card_template_by_default():
     protocol = MCPProtocol({}, DummyToolHandler())
+
+    result = asyncio.run(protocol._handle_resources_list({}))
+
+    assert result["resources"] == []
+
+
+def test_resources_list_exposes_tool_card_template_when_enabled():
+    protocol = MCPProtocol({"app": {"tool_cards": True}}, DummyToolHandler())
 
     result = asyncio.run(protocol._handle_resources_list({}))
 
@@ -448,7 +456,7 @@ def test_resources_list_exposes_tool_card_template():
 
 
 def test_resources_read_returns_apps_widget_resource():
-    protocol = MCPProtocol({}, DummyToolHandler())
+    protocol = MCPProtocol({"app": {"tool_cards": True}}, DummyToolHandler())
 
     result = asyncio.run(protocol._handle_resources_read({"uri": TOOL_CARD_URI}))
 
@@ -460,6 +468,17 @@ def test_resources_read_returns_apps_widget_resource():
     assert content["_meta"]["ui"]["csp"] == {"connectDomains": [], "resourceDomains": []}
     assert content["_meta"]["openai/widgetPrefersBorder"] is True
     assert content["_meta"]["openai/widgetCSP"] == {"connect_domains": [], "resource_domains": []}
+
+
+def test_resources_read_rejects_tool_card_when_disabled():
+    protocol = MCPProtocol({}, DummyToolHandler())
+
+    try:
+        asyncio.run(protocol._handle_resources_read({"uri": TOOL_CARD_URI}))
+    except ValueError as error:
+        assert "disabled" in str(error)
+    else:
+        raise AssertionError("disabled tool card resource should not be readable")
 
 
 def test_resources_read_rejects_unknown_or_missing_uri():

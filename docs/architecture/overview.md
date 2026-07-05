@@ -100,8 +100,8 @@ Each public tool needs:
 - `annotations.destructiveHint`;
 - `annotations.openWorldHint`;
 - `_meta.securitySchemes` mirrored for ChatGPT compatibility;
-- short invocation labels;
-- output template URI for the shared ChatGPT tool card resource.
+- no short invocation labels or output template URI by default;
+- optional `app.tool_cards: true` mode can advertise the shared ChatGPT tool-card resource.
 
 Developer Mode treats tools without `readOnlyHint` as write actions, so missing annotations are product bugs.
 

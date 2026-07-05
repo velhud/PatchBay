@@ -226,8 +226,8 @@ Every public descriptor must include:
 - `securitySchemes`;
 - `_meta.securitySchemes`;
 - `_meta["openai/fileParams"]` for tools that receive ChatGPT files;
-- invocation status labels;
-- `_meta.ui.resourceUri` and `openai/outputTemplate` pointing to the shared ChatGPT card resource.
+- no invocation status labels, `_meta.ui.resourceUri`, or `openai/outputTemplate` by default;
+- optional `app.tool_cards: true` descriptors may include invocation status labels plus `_meta.ui.resourceUri` and `openai/outputTemplate` pointing to the shared ChatGPT card resource.
 
 These descriptors are not only API documentation; they are part of the model prompt surface ChatGPT uses for tool selection. Keep descriptions outcome-first and explicit about:
 
@@ -248,7 +248,9 @@ These descriptors are not only API documentation; they are part of the model pro
 
 The canonical names remain `codex_*`. Compatibility aliases such as `read`, `write`, `edit`, `bash`, `show_changes`, `git_status`, `git_diff`, `workspace_snapshot`, `export_pro_context`, and `handoff_to_agent` may be advertised depending on `app.tool_mode`, but they must resolve to canonical handlers rather than duplicate execution paths. Their descriptors should advertise the alias names ChatGPT can actually call, such as `path` for `read`/`write`/`edit` and `cmd` or `command` for `bash`, then translate those names into the canonical handler arguments.
 
-Current implementation returns these descriptor fields from `tools/list`, including bounded object output schemas for structured results. It advertises `ui://widget/patchbay-tool-card-v2.html` through `resources/list` and `resources/read` as a `text/html;profile=mcp-app` resource; the legacy v1 URI remains readable for compatibility. The current card is intentionally passive and compact: it renders a receipt with a human tool label, human status phrase, and one human detail line while preserving full result fields in `structuredContent` for ChatGPT reasoning and later inspection. Internal tool ids may be supplied through result `_meta` for component-only rendering, but visible card text should not expose backend names such as `codex_worker_start`, `worker_start`, or `repo_busy`. The test suite should snapshot public descriptors and fail if:
+Current implementation returns these descriptor fields from `tools/list`, including bounded object output schemas for structured results. Tool-card widgets are disabled by default: `tools/list` must not advertise `_meta.ui.resourceUri`, `openai/outputTemplate`, or invocation labels, and `resources/list` must return no PatchBay widget resource unless the server operator explicitly sets `app.tool_cards: true`. This keeps long ChatGPT/PatchBay sessions lighter on mobile and tablet browsers. The switch is config-only; ChatGPT must not receive a tool that enables cards.
+
+When `app.tool_cards: true`, PatchBay advertises `ui://widget/patchbay-tool-card-v2.html` through `resources/list` and `resources/read` as a `text/html;profile=mcp-app` resource; the legacy v1 URI remains readable for compatibility. The card is intentionally passive and compact: it renders a receipt with a human tool label, human status phrase, and one human detail line while preserving full result fields in `structuredContent` for ChatGPT reasoning and later inspection. Internal tool ids may be supplied through result `_meta` for component-only rendering, but visible card text should not expose backend names such as `codex_worker_start`, `worker_start`, or `repo_busy`. The test suite should snapshot public descriptors and fail if:
 
 - a mutating tool is marked read-only;
 - a read-only tool lacks `readOnlyHint`;
@@ -256,7 +258,8 @@ Current implementation returns these descriptor fields from `tools/list`, includ
 - a schema advertises fields that handlers do not accept;
 - an advertised alias falls back to an open generic schema instead of a precise translated schema;
 - aliases are advertised in the wrong tool mode or point to duplicate execution paths instead of canonical handlers.
-- descriptor resource URIs drift from the registered resource.
+- default descriptors advertise widget resource URIs or output templates.
+- enabled-card descriptor resource URIs drift from the registered resource.
 - prompt-critical workflow guidance such as stateful workers, preview-before-integrate, no-commit integration, or validation expectations disappears from `initialize.instructions` or worker descriptors.
 - manager-first guidance, direct-tool exceptions, or multi-worker encouragement disappears from `initialize.instructions` or worker descriptors.
 

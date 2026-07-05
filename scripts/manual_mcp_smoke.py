@@ -80,8 +80,8 @@ def list_tools(session_id: str):
     assert not missing, f"Missing public tools: {missing}"
     for tool in payload["result"]["tools"]:
         meta = tool.get("_meta", {})
-        assert meta.get("ui", {}).get("resourceUri") == TOOL_CARD_URI
-        assert meta.get("openai/outputTemplate") == TOOL_CARD_URI
+        assert meta.get("ui", {}).get("resourceUri") != TOOL_CARD_URI
+        assert meta.get("openai/outputTemplate") != TOOL_CARD_URI
 
 
 def list_resources(session_id: str):
@@ -96,7 +96,7 @@ def list_resources(session_id: str):
     print(json.dumps(response.json(), indent=2))
     payload = response.json()
     uris = [resource["uri"] for resource in payload["result"]["resources"]]
-    assert TOOL_CARD_URI in uris
+    assert TOOL_CARD_URI not in uris
 
 
 def read_resource(session_id: str):
@@ -129,5 +129,4 @@ if __name__ == "__main__":
         raise SystemExit("No session ID returned")
     list_tools(session_id)
     list_resources(session_id)
-    read_resource(session_id)
     print("\nManual smoke test passed")

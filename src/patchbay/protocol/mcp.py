@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, Optional
 
 from patchbay.protocol.context import RequestContext
-from patchbay.protocol.resources import TOOL_CARD_URI, list_resource_templates, read_resource
+from patchbay.protocol.resources import TOOL_CARD_URI, list_resources, read_resource, tool_cards_enabled
 from patchbay.pro_requests.tool_surface import install_pro_request_tool_surface
 from patchbay.security import internal_log_error, public_error_message
 from patchbay.workers.tool_surface import install_worker_tool_surface
@@ -2005,18 +2005,22 @@ def _build_tool_annotations(tool: Dict[str, Any]) -> Dict[str, bool]:
     }
 
 
-def _build_tool_meta(tool_name: str) -> Dict[str, Any]:
+def _build_tool_meta(tool_name: str, *, tool_cards: bool = False) -> Dict[str, Any]:
     invoking, invoked = TOOL_INVOCATION_STATUS.get(tool_name, ("Running tool", "Tool complete"))
-    return {
-        "securitySchemes": APP_SECURITY_SCHEMES,
-        "ui": {"resourceUri": TOOL_CARD_URI},
-        "openai/outputTemplate": TOOL_CARD_URI,
-        "openai/toolInvocation/invoking": invoking,
-        "openai/toolInvocation/invoked": invoked,
-    }
+    meta: Dict[str, Any] = {"securitySchemes": APP_SECURITY_SCHEMES}
+    if tool_cards:
+        meta.update(
+            {
+                "ui": {"resourceUri": TOOL_CARD_URI},
+                "openai/outputTemplate": TOOL_CARD_URI,
+                "openai/toolInvocation/invoking": invoking,
+                "openai/toolInvocation/invoked": invoked,
+            }
+        )
+    return meta
 
 
-def enrich_tool_descriptor(tool: Dict[str, Any]) -> Dict[str, Any]:
+def enrich_tool_descriptor(tool: Dict[str, Any], *, tool_cards: bool = False) -> Dict[str, Any]:
     """Add ChatGPT Apps metadata while preserving the core MCP descriptor."""
     descriptor = dict(tool)
     descriptor.setdefault("title", _tool_title(tool["name"]))
@@ -2025,7 +2029,7 @@ def enrich_tool_descriptor(tool: Dict[str, Any]) -> Dict[str, Any]:
     descriptor["annotations"] = _build_tool_annotations(tool)
 
     existing_meta = dict(tool.get("_meta", {}))
-    existing_meta.update(_build_tool_meta(tool["name"]))
+    existing_meta.update(_build_tool_meta(tool["name"], tool_cards=tool_cards))
     descriptor["_meta"] = existing_meta
 
     return descriptor
@@ -2035,7 +2039,7 @@ def _alias_title(alias_name: str) -> str:
     return "PatchBay " + " ".join(word.capitalize() for word in alias_name.split("_"))
 
 
-def alias_tool_descriptor(alias_name: str, canonical_name: str) -> Dict[str, Any]:
+def alias_tool_descriptor(alias_name: str, canonical_name: str, *, tool_cards: bool = False) -> Dict[str, Any]:
     """Expose compatibility names without making them the internal architecture."""
     canonical = TOOLS_BY_NAME[canonical_name]
     input_schema = ALIAS_INPUT_SCHEMAS.get(alias_name, canonical["inputSchema"])
@@ -2050,7 +2054,8 @@ def alias_tool_descriptor(alias_name: str, canonical_name: str) -> Dict[str, Any
             ),
             "inputSchema": copy.deepcopy(input_schema),
             "readOnlyHint": canonical["readOnlyHint"],
-        }
+        },
+        tool_cards=tool_cards,
     )
     descriptor["outputSchema"] = copy.deepcopy(TOOL_OUTPUT_SCHEMAS.get(canonical_name, GENERIC_OBJECT_OUTPUT_SCHEMA))
     descriptor["_meta"]["codex/canonicalTool"] = canonical_name
@@ -2058,12 +2063,18 @@ def alias_tool_descriptor(alias_name: str, canonical_name: str) -> Dict[str, Any
     return descriptor
 
 
-PUBLIC_TOOL_DESCRIPTORS = [enrich_tool_descriptor(tool) for tool in TOOLS] + [
-    alias_tool_descriptor(alias, canonical)
-    for alias, canonical in COMPATIBILITY_TOOL_ALIASES.items()
-    if canonical in TOOLS_BY_NAME
-]
+def public_tool_descriptors(*, tool_cards: bool = False) -> list[Dict[str, Any]]:
+    return [enrich_tool_descriptor(tool, tool_cards=tool_cards) for tool in TOOLS] + [
+        alias_tool_descriptor(alias, canonical, tool_cards=tool_cards)
+        for alias, canonical in COMPATIBILITY_TOOL_ALIASES.items()
+        if canonical in TOOLS_BY_NAME
+    ]
+
+
+PUBLIC_TOOL_DESCRIPTORS = public_tool_descriptors(tool_cards=False)
 PUBLIC_TOOL_DESCRIPTORS_BY_NAME = {tool["name"]: tool for tool in PUBLIC_TOOL_DESCRIPTORS}
+PUBLIC_TOOL_DESCRIPTORS_WITH_CARDS = public_tool_descriptors(tool_cards=True)
+PUBLIC_TOOL_DESCRIPTORS_WITH_CARDS_BY_NAME = {tool["name"]: tool for tool in PUBLIC_TOOL_DESCRIPTORS_WITH_CARDS}
 
 DEPRECATED_TOOL_ALIASES = {
     "query_text_analytics": "codex_plan_job",
@@ -2403,9 +2414,10 @@ def runtime_capability_enabled(config: Dict[str, Any], canonical_tool_name: str)
 
 def tool_descriptors_for_mode(config: Dict[str, Any], *, mode: Optional[str] = None) -> list[Dict[str, Any]]:
     resolved_mode = _normalize_tool_mode(mode) or configured_tool_mode(config)
+    descriptors = PUBLIC_TOOL_DESCRIPTORS_WITH_CARDS if tool_cards_enabled(config) else PUBLIC_TOOL_DESCRIPTORS
     return [
         descriptor
-        for descriptor in PUBLIC_TOOL_DESCRIPTORS
+        for descriptor in descriptors
         if tool_is_available(config, descriptor["name"], mode=resolved_mode)
     ]
 
@@ -2675,7 +2687,7 @@ class MCPProtocol:
         context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         """Return ChatGPT Apps resource templates exposed by this server."""
-        return {"resources": list_resource_templates()}
+        return {"resources": list_resources(self.config)}
 
     async def _handle_resources_read(
         self,

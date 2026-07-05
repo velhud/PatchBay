@@ -17,6 +17,7 @@ server:
 app:
   widget_domain: https://web-sandbox.oaiusercontent.com
   tool_mode: worker
+  tool_cards: false
 
 auth:
   enabled: false

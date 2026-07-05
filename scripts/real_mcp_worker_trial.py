@@ -532,17 +532,10 @@ def run_trial(
     resources = client.rpc(3, "resources/list")
     resource_uris = {resource["uri"] for resource in resources.get("result", {}).get("resources", [])}
     recorder.check(
-        "resources_list",
-        TOOL_CARD_URI in resource_uris,
+        "tool_cards_disabled_by_default",
+        TOOL_CARD_URI not in resource_uris,
         classification="direct_evidence",
-        evidence="Tool card resource is available over MCP.",
-    )
-    card = client.rpc(4, "resources/read", {"uri": TOOL_CARD_URI})
-    recorder.check(
-        "resources_read",
-        card.get("result", {}).get("contents", [{}])[0].get("mimeType") == "text/html;profile=mcp-app",
-        classification="direct_evidence",
-        evidence="Tool card resource body is readable.",
+        evidence="Default MCP resources do not advertise the optional Apps tool-card widget.",
     )
 
     self_test = structured(client.call_tool(5, "codex_self_test", {}))

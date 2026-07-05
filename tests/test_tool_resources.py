@@ -12,8 +12,10 @@ from patchbay.protocol.resources import (
     TOOL_CARD_LEGACY_URIS,
     TOOL_CARD_MIME_TYPE,
     TOOL_CARD_URI,
+    list_resources,
     list_resource_templates,
     read_resource,
+    tool_cards_enabled,
     widget_domain,
 )
 
@@ -31,7 +33,7 @@ def test_tool_card_resource_contract():
         }
     ]
 
-    result = read_resource(TOOL_CARD_URI, {})
+    result = read_resource(TOOL_CARD_URI, {"app": {"tool_cards": True}})
     content = result["contents"][0]
     assert content["uri"] == TOOL_CARD_URI
     assert content["mimeType"] == "text/html;profile=mcp-app"
@@ -41,7 +43,7 @@ def test_tool_card_resource_contract():
 
 
 def test_legacy_tool_card_resource_uri_still_reads_current_widget():
-    result = read_resource(TOOL_CARD_LEGACY_URIS[0], {})
+    result = read_resource(TOOL_CARD_LEGACY_URIS[0], {"app": {"tool_cards": True}})
     content = result["contents"][0]
 
     assert content["uri"] == TOOL_CARD_LEGACY_URIS[0]
@@ -54,6 +56,16 @@ def test_widget_domain_uses_safe_https_origin_only():
     assert widget_domain({"app": {"widget_domain": "https://widgets.example.com"}}) == "https://widgets.example.com"
     assert widget_domain({"app": {"widget_domain": "http://127.0.0.1:3000"}}) == DEFAULT_WIDGET_DOMAIN
     assert widget_domain({"app": {"widget_domain": "https://widgets.example.com/"}}) == DEFAULT_WIDGET_DOMAIN
+
+
+def test_tool_cards_are_disabled_by_default_and_config_opt_in():
+    assert tool_cards_enabled({}) is False
+    assert list_resources({}) == []
+    assert tool_cards_enabled({"app": {"tool_cards": True}}) is True
+    assert list_resources({"app": {"tool_cards": True}}) == list_resource_templates()
+
+    with pytest.raises(ValueError, match="disabled"):
+        read_resource(TOOL_CARD_URI, {})
 
 
 def test_tool_card_html_has_no_machine_specific_paths_or_tokens():

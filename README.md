@@ -87,7 +87,7 @@ flowchart TD
     B --> C["Transport boundary<br/>auth, request caps, MCP sessions, client_ref"]
     C --> D["MCP protocol surface<br/>initialize, tools/list, resources/read, schemas, annotations"]
     D --> E["Session-local tool modes<br/>worker, standard, full, minimal + aliases"]
-    D --> R["Compact passive Apps receipt<br/>ui://widget/patchbay-tool-card-v2.html"]
+    D -. "optional app.tool_cards=true" .-> R["Passive Apps receipt widget<br/>ui://widget/patchbay-tool-card-v2.html"]
 
     E --> H["Tool handler"]
     H --> W["Workspace context<br/>allowed roots, path guard, tree/read/search, git, AGENTS, skills"]
@@ -469,15 +469,24 @@ worker-first.
 
 ## ChatGPT Metadata And Tool Card
 
-`tools/list` includes ChatGPT/App metadata for every public tool: `title`, read/write/open-world annotations, top-level `securitySchemes`, `_meta.securitySchemes`, `_meta.ui.resourceUri`, `openai/outputTemplate`, `openai/fileParams` where a tool receives ChatGPT files, and short invocation labels.
+`tools/list` includes the data metadata every public tool needs: `title`, read/write/open-world annotations, top-level `securitySchemes`, `_meta.securitySchemes`, output schemas, and `openai/fileParams` where a tool receives ChatGPT files. It does not advertise a widget by default.
 
-The server exposes a compact passive Apps card resource:
+PatchBay still contains a compact passive Apps card resource:
 
 ```text
 ui://widget/patchbay-tool-card-v2.html
 ```
 
-Clients can fetch it with `resources/list` and `resources/read`. The MIME type is `text/html;profile=mcp-app`. The current card is a lightweight receipt: it shows a human tool label, a human status phrase, and one human-readable detail line while leaving the full tool payload in `structuredContent` for ChatGPT reasoning and later inspection. Internal tool identifiers may be used only as hidden component metadata or local widget inference; they are not the visible card language. It hydrates from both MCP Apps bridge tool-result notifications and ChatGPT `window.openai` compatibility globals, and it shows a compact widget-error state instead of staying on the initial waiting state if rendering fails. It remains passive: it does not initiate tool calls. The legacy `ui://widget/patchbay-tool-card-v1.html` URI remains readable for compatibility, while descriptors advertise v2.
+The card is disabled by default because repeated ChatGPT Apps iframes made long PatchBay sessions heavy and difficult to use on phones and tablets. This is a server/operator configuration choice, not a ChatGPT tool and not something the model can toggle. When `app.tool_cards: false`, `tools/list` omits `_meta.ui.resourceUri`, `openai/outputTemplate`, and invocation labels, and `resources/list` returns no PatchBay widget resource. Tool `structuredContent` remains unchanged for ChatGPT reasoning.
+
+Operators can opt in by setting:
+
+```yaml
+app:
+  tool_cards: true
+```
+
+When enabled, clients can fetch the card with `resources/list` and `resources/read`. The MIME type is `text/html;profile=mcp-app`. The card is a lightweight receipt: it shows a human tool label, a human status phrase, and one human-readable detail line while leaving the full tool payload in `structuredContent` for ChatGPT reasoning and later inspection. Internal tool identifiers may be used only as hidden component metadata or local widget inference; they are not the visible card language. It hydrates from both MCP Apps bridge tool-result notifications and ChatGPT `window.openai` compatibility globals, and it shows a compact widget-error state instead of staying on the initial waiting state if rendering fails. It remains passive: it does not initiate tool calls. The legacy `ui://widget/patchbay-tool-card-v1.html` URI remains readable only when tool cards are enabled.
 
 ## Power Boundary And Controls
 

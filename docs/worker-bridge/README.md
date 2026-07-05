@@ -51,7 +51,7 @@ State-visibility details are recorded in
 
 ## ChatGPT Instruction Surface
 
-The ChatGPT-facing prompt surface is the combination of MCP `initialize.instructions`, `tools/list` descriptors, annotations, output schemas, the passive tool card, and the setup docs. Keep it worker-first for first real ChatGPT validation:
+The ChatGPT-facing prompt surface is the combination of MCP `initialize.instructions`, `tools/list` descriptors, annotations, output schemas, and the setup docs. The optional passive tool card exists for operator-enabled visual receipts, but it is off by default because repeated Apps cards made long ChatGPT sessions heavy on mobile and tablet browsers. Keep the default surface worker-first for first real ChatGPT validation:
 
 - launch with `--tool-mode worker`;
 - keep ChatGPT in the lead/manager/consultant role: use direct context tools for light orientation, worker briefing context, focused verification, and tiny exceptions, and delegate non-trivial repository work to workers instead of doing a manual line-by-line implementation loop;
