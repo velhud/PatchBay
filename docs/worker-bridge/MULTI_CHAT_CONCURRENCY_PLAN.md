@@ -15,7 +15,7 @@ Implemented behavior:
 - global job admission counts pending plus running work;
 - `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json` verifies the shared-server path on disposable repos.
 
-The remaining unverified item is real ChatGPT Developer Mode behavior across multiple browser conversations. That remains a release validation item because ChatGPT UI/tool-catalog refresh behavior is external to this repository.
+The active internal ChatGPT Pro to private VM worker loop is working reliably for current PatchBay self-use. The remaining unverified item for this specific plan is real ChatGPT Developer Mode behavior across multiple independent browser conversations sharing one Server URL. That remains a release validation item because ChatGPT UI/tool-catalog refresh behavior is external to this repository.
 
 ## Purpose
 

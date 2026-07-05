@@ -143,7 +143,7 @@ For a faster local surface pass without real Codex workers:
 PYTHONDONTWRITEBYTECODE=1 python scripts/external_chatgpt_style_validation.py --skip-heavy-codex --json
 ```
 
-The harness writes `calls.jsonl`, `results.json`, and `summary.md` under `.local/validation/external_chatgpt_style/<timestamp>/`. It starts PatchBay through the compatibility launcher path `scripts/start.py`, uses disposable repositories, creates separate MCP clients to simulate separate ChatGPT conversations, records `codex --version`, and redacts temporary paths and token-like values in evidence. Real ChatGPT Developer Mode UI validation remains a separate manual gate.
+The harness writes `calls.jsonl`, `results.json`, and `summary.md` under `.local/validation/external_chatgpt_style/<timestamp>/`. It starts PatchBay through the compatibility launcher path `scripts/start.py`, uses disposable repositories, creates separate MCP clients to simulate separate ChatGPT conversations, records `codex --version`, and redacts temporary paths and token-like values in evidence. The active internal ChatGPT Pro to private VM worker loop is working reliably for current self-use, but formal ChatGPT Developer Mode UI validation remains a separate manual gate, especially for multiple independent browser conversations sharing one Server URL.
 
 For worker lifecycle regressions, add focused tests proving a durable `running` job is not marked stale while an executor-owned asyncio task, tracked subprocess, live process pid, or recent heartbeat still indicates life; proving worker start/message code schedules jobs through `JobExecutor.schedule_job` instead of orphaned background tasks; proving running workers expose compact `codex_worker_status` lines, activity deltas, liveness/checkpoints, and latest partial notes to ChatGPT; proving rapid repeated status calls return a soft cooldown instead of resetting deltas; proving `codex_worker_wait` returns a fresh status after a bounded wait; proving liveness thresholds are configurable display policy rather than task limits; proving terminal jobs clear live-only command state; proving Codex `agent_message` content variants parse into reports/checkpoints; proving fallback results are persisted when the final structured result is missing; and proving cancellation preserves captured partial reports/checkpoints.
 
@@ -274,7 +274,7 @@ Save the returned `Mcp-Session-Id` header and use it for `tools/list`, `resource
 
 Before public release, run all of these against disposable repos:
 
-- real ChatGPT Developer Mode connection;
+- formal real ChatGPT Developer Mode release-matrix coverage, including multiple independent browser conversations sharing one Server URL;
 - ChatGPT-originated worker flow through a token-gated public tunnel if tunnel use is advertised in the real ChatGPT UI;
 - direct workspace orientation from ChatGPT;
 - real `codex_plan_job` from ChatGPT;

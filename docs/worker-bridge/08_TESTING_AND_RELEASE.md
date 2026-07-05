@@ -147,7 +147,7 @@ Verify:
 - Phase 1 tests pass.
 - Real Codex start/continue/restart passes.
 - Existing suite passes.
-- Real ChatGPT remains a separate release gate unless explicitly verified.
+- Active internal ChatGPT Pro VM worker use is working reliably for self-use; formal release-gate evidence remains separate unless recorded.
 
 ### W2: Writing Worker Ready
 
@@ -172,7 +172,7 @@ Verify:
 
 ### W5: Release Ready
 
-- Real ChatGPT Developer Mode worker scenarios pass.
+- Formal real ChatGPT Developer Mode worker scenarios pass, including multiple independent browser conversations sharing one Server URL.
 - Direct tunnel/auth MCP scenario passes, and ChatGPT-originated tunnel worker flow passes from the real UI if included.
 - Documentation accurately states verified versus pending behavior.
 - App-server is either verified and enabled or explicitly deferred.

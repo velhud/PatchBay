@@ -1,6 +1,6 @@
 # Natural-Language Worker Bridge
 
-Status: durable named workers, isolated worker worktrees, peer-worker context, artifact inbox transfer, explicit integration, and shared-server multi-client coordination are implemented. Direct MCP and tokenized public-tunnel artifact-flow validation evidence exists. Real ChatGPT Developer Mode UI validation remains blocked/pending. App-server backend work remains deferred.
+Status: durable named workers, isolated worker worktrees, peer-worker context, artifact inbox transfer, explicit integration, and shared-server multi-client coordination are implemented. Direct MCP and tokenized public-tunnel artifact-flow validation evidence exists. The active internal ChatGPT Pro to private VM worker loop is working reliably for current self-use. Formal multi-browser ChatGPT Developer Mode validation remains pending, especially multiple independent ChatGPT conversations sharing one Server URL. App-server backend work remains deferred.
 
 This directory defines the worker layer for `patchbay`.
 

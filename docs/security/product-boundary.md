@@ -229,14 +229,14 @@ Verified so far:
 - artifact inbox import/list/inspect, repeated imports, structural archive rejection, worker materialization, and integration exclusion in automated tests;
 - direct tokenized public-tunnel MCP artifact worker flow through ngrok.
 - direct two-client MCP trial for session-local tool modes, shared inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, integration preview, no automatic commit, and sanitized local evidence.
+- active internal ChatGPT Pro to private VM worker use, reliable enough for current PatchBay self-use while still allowing for occasional small bugs.
 
 Remaining hardening is future-facing rather than a known boundary break:
 
-- real ChatGPT Developer Mode connection eval;
+- formal ChatGPT Developer Mode release-matrix evals, especially multiple independent browser conversations sharing one Server URL;
 - ChatGPT-hosted file-parameter artifact import eval from the actual UI;
 - real apply-job worktree eval from ChatGPT;
 - real resume/interactive continuation eval from ChatGPT;
-- real named-worker flow from ChatGPT;
 - stricter or richer ChatGPT tool-card resources;
 - CORS policy if a trusted standalone local UI is added;
 - OAuth 2.1 if this becomes a multi-user or app-store connector;

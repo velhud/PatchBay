@@ -56,7 +56,8 @@ This branch is **pre-release verified**, not public-release complete.
 | Public tunnel MCP probe | Earlier tokenized ngrok MCP simulator passed health, `initialize`, worker-mode `tools/list`, artifact inbox import/list/inspect, isolated worker artifact attachment/read, integration exclusion, and cleanup; current run blocked only because no validation ngrok hostname was provided |
 | Real Codex through MCP | `codex_plan_job` completes through PatchBay |
 | Current Codex JSONL parsing | `agent_message` results parse into structured output |
-| Real ChatGPT Developer Mode | Pending; latest local validation lacked browser automation for URL entry and trace capture |
+| Active ChatGPT Pro VM worker use | Working reliably in current internal use for ChatGPT Pro to a private PatchBay VM managing local Codex workers; occasional small bugs are still expected |
+| Parallel ChatGPT browser conversations | Pending; multiple independent ChatGPT browser conversations sharing one Server URL have not yet been tried |
 | Real apply-job diff eval from ChatGPT | Pending |
 | Real resume/continuation eval from ChatGPT | Pending |
 
@@ -205,7 +206,7 @@ patchbay stable --root "$tmpdir/repo" --hostname patchbay.example.com --tunnel-n
 
 OpenAI's Apps SDK docs describe the same connector shape: enable Developer Mode, create a connector, paste an HTTPS `/mcp` URL, then open a new chat and add the connector from the `+` / More menu. See [OpenAI Apps SDK quickstart](https://developers.openai.com/apps-sdk/quickstart#add-your-app-to-chatgpt) and [Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt#create-a-connector).
 
-Use `--tool-mode worker` for the first ChatGPT validation run; it exposes the worker tools plus the read-only context tools needed to brief them, while hiding low-level job/session controls and aliases. Direct tokenized public-tunnel MCP simulation has passed through ngrok, including artifact inbox transfer into an isolated worker. The real ChatGPT Developer Mode UI/tool-selection run remains a release gate.
+Use `--tool-mode worker` for the first ChatGPT validation run; it exposes the worker tools plus the read-only context tools needed to brief them, while hiding low-level job/session controls and aliases. Direct tokenized public-tunnel MCP simulation has passed through ngrok, including artifact inbox transfer into an isolated worker. The active internal ChatGPT Pro to private VM worker loop is now working well enough for regular PatchBay self-use, but formal public-release validation still needs recorded ChatGPT UI/tool-selection evidence, especially for multiple independent browser conversations sharing one Server URL.
 
 One copied Server URL points to one shared local server. Multiple ChatGPT conversations or MCP clients connected to that URL can see the same local worker, job, artifact, and repository state. Start each conversation with `codex_self_test`; it returns a session-relative `client_ref`, active MCP session count, shared-server coordination note, and readiness checks for the command environment (`codex`, `git`, `bash`, `rg`, and `python3`) without returning raw MCP session ids.
 

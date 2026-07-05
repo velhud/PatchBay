@@ -70,7 +70,7 @@ This project is intended for repositories the operator owns, maintains, administ
 ## Planned Hardening
 
 - Add command allowlisting around Codex CLI invocation.
-- Complete real ChatGPT Developer Mode UI/tool-selection and ChatGPT-hosted file-parameter artifact evals; keep the direct token-gated tunnel simulator in release regression.
+- Complete formal ChatGPT Developer Mode release-matrix evals, including multiple independent browser conversations sharing one Server URL and ChatGPT-hosted file-parameter artifact evals; keep the direct token-gated tunnel simulator in release regression.
 - Add stricter origin-header validation if a browser/local UI requires CORS.
 - Add CI checks for dependency vulnerabilities.
 - Add CodeQL or equivalent static analysis.
