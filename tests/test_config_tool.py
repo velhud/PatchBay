@@ -75,6 +75,42 @@ async def test_codex_get_config_never_returns_raw_local_config(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_codex_get_config_uses_configured_codex_home(monkeypatch, tmp_path):
+    codex_home = tmp_path / "configured-codex"
+    codex_config = codex_home / "config.toml"
+    codex_config.parent.mkdir(parents=True)
+    codex_config.write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    handler = ToolHandler(
+        {
+            "server": {"host": "127.0.0.1", "port": 8000, "enable_cors": False},
+            "app": {"tool_mode": "worker"},
+            "repositories": {"default": ".", "allowed": ["."]},
+            "security": {
+                "default_sandbox": "read-only",
+                "allow_dangerously_bypass": False,
+                "allowed_config_override_prefixes": [],
+                "allowed_env_keys": ["PATH"],
+            },
+            "power_tools": {"codex_home": str(codex_home)},
+        },
+        DummyJobManager(),
+        DummyJobExecutor(),
+    )
+
+    result = await handler._codex_get_config({})
+
+    assert result["codex_config"]["present"] is True
+    assert result["codex_config"]["path_hint"] == "configured_codex_home/config.toml"
+    assert result["patchbay_config"]["power_tools"]["codex_home_configured"] is True
+
+
+@pytest.mark.asyncio
 async def test_codex_get_config_hides_feature_list_stderr(monkeypatch, tmp_path):
     class FailingProcess:
         returncode = 2

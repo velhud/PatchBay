@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from patchbay.codex_home import resolve_codex_home
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
@@ -282,8 +284,7 @@ def _custom_model_entry(model_id: str) -> Dict[str, Any]:
 
 
 def _codex_home(config: Dict[str, Any]) -> Path:
-    configured = config.get("power_tools", {}).get("codex_home") or os.environ.get("CODEX_HOME") or "~/.codex"
-    return Path(str(configured)).expanduser()
+    return resolve_codex_home(config, os.environ)
 
 
 def _read_codex_config(config: Dict[str, Any]) -> Dict[str, Any]:

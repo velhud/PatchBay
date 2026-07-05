@@ -114,6 +114,8 @@ class JobManager:
         self.job_timeout = config['server']['job_timeout_seconds']
         self.cleanup_after_hours = config['server'].get('job_cleanup_after_hours', 24)
         logging_config = config.get('logging', {})
+        self.job_logs_dir = Path(logging_config['job_logs_dir']).expanduser().resolve()
+        self.job_logs_dir.mkdir(parents=True, exist_ok=True)
         self.worktrees_dir = Path(logging_config['worktrees_dir']).expanduser().resolve()
         self.worktrees_dir.mkdir(parents=True, exist_ok=True)
         self.job_state_dir = Path(logging_config['job_state_dir']).expanduser().resolve()
@@ -433,10 +435,13 @@ class JobManager:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 job = JobInfo.from_persisted_dict(data)
-                if job.state in (JobState.PENDING, JobState.RUNNING):
+                self._recover_result_artifact(job)
+                if job.state == JobState.PENDING:
                     job.state = JobState.FAILED
                     job.completed_at = time.time()
                     job.error = "Job did not finish before the server stopped."
+                elif job.state == JobState.RUNNING:
+                    job.progress = job.progress or "Recovered running job record after PatchBay restart; executor reconciliation will verify whether a live Codex runtime still exists."
                 elif job.state == JobState.COMPLETED:
                     job.error = None
                 if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
@@ -448,3 +453,18 @@ class JobManager:
                 logger.warning("Failed to load job record %s: %s", path.name, internal_log_error(error))
         if loaded:
             logger.info("Loaded %d durable job record(s)", loaded)
+
+    def _recover_result_artifact(self, job: JobInfo) -> None:
+        """Recover a terminal result payload when the state file lost it."""
+        if isinstance(job.result, dict):
+            return
+        result_path = self.job_logs_dir / f"{job.job_id}_result.json"
+        if not result_path.exists():
+            return
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception as error:
+            logger.warning("Failed to recover result artifact for job %s: %s", job.job_id, internal_log_error(error))
+            return
+        if isinstance(payload, dict):
+            job.result = redact_sensitive_output(payload)

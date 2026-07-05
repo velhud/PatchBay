@@ -66,6 +66,8 @@ worker-owned worktree
 
 Preview and apply use the same patch construction path. Tracked changes are collected through `git diff --binary HEAD`. Untracked text files are represented as new-file patches. Unreadable or binary untracked files are not silently copied; preview reports that manual integration is required.
 
+When `include_untracked_from_base` copies accepted untracked base files into an isolated worker, those copied files are baseline context. If their digest is unchanged, PatchBay excludes them from changed-file and integration patch construction. If a worker edits a copied baseline file, preview reports `modified_included_untracked_base_files` and refuses automatic apply, because applying that file as a new-file patch would conflict with the existing untracked base file. Resolve that case by asking the worker for a separate patch, integrating manually, or committing/tracking the base context before rerunning integration.
+
 ## Dirty base policy
 
 By default, integration refuses a dirty base checkout.
@@ -82,6 +84,8 @@ An expert override exists:
 ```
 
 Even with this override, `git apply` still has to succeed.
+
+For known phase artifacts, use `accepted_dirty_base` to allow specific dirty base paths while still blocking unexpected base changes.
 
 ## Conflict behavior
 

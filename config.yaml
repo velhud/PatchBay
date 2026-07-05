@@ -6,7 +6,7 @@ server:
   job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
   codex_session_start_timeout_seconds: 180  # fail only if Codex starts but no JSON session appears
   codex_startup_serialization_enabled: true  # serialize auth/session startup only; full turns still run concurrently
-  stale_running_job_grace_seconds: 5
+  stale_running_job_grace_seconds: 600  # restart/stale reconciliation window; not a worker turn timeout
   job_cleanup_after_hours: 24
   max_request_bytes: 1048576
   enable_cors: false

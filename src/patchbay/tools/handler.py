@@ -10,6 +10,7 @@ from pathlib import Path
 
 from patchbay.artifacts import ArtifactStore
 from patchbay.auth import auth_public_metadata, build_auth_policy
+from patchbay.codex_home import codex_home_path_hint, resolve_codex_home
 from patchbay.jobs.sessions import CodexSessionReader
 from patchbay.ownership import merge_owner_metadata
 from patchbay.pro_requests import ProRequestStore
@@ -1253,7 +1254,8 @@ class ToolHandler:
         repo_config = self.config.get("repositories", {})
         power_config = self.config.get("power_tools", {})
         auth_policy = build_auth_policy(self.config)
-        config_path = Path.home() / ".codex" / "config.toml"
+        codex_home = resolve_codex_home(self.config)
+        config_path = codex_home / "config.toml"
 
         result = {
             "codex_cli": {
@@ -1261,7 +1263,7 @@ class ToolHandler:
             },
             "codex_config": {
                 "present": config_path.exists(),
-                "path_hint": "~/.codex/config.toml",
+                "path_hint": codex_home_path_hint(config_path),
                 "raw_values_returned": False,
             },
             "patchbay_config": {

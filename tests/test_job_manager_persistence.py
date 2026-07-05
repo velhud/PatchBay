@@ -146,11 +146,25 @@ def test_terminal_job_clears_live_current_command_state(tmp_path):
     assert reloaded_job.last_command_preview == "rg RetailMind"
 
 
-def test_job_manager_marks_interrupted_running_jobs_failed_on_reload(tmp_path):
+def test_job_manager_preserves_running_jobs_for_executor_reconciliation_on_reload(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
     job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
     manager.update_job_state(job_id, JobState.RUNNING)
+
+    reloaded = JobManager(config)
+    job = reloaded.get_job(job_id)
+    assert job is not None
+    assert job.state == JobState.RUNNING
+    assert job.completed_at is None
+    assert job.error is None
+    assert "executor reconciliation" in job.progress
+
+
+def test_job_manager_marks_interrupted_pending_jobs_failed_on_reload(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
 
     reloaded = JobManager(config)
     job = reloaded.get_job(job_id)

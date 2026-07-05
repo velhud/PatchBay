@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from patchbay.codex_home import resolve_codex_home
 from patchbay.security import redact_text
 
 
@@ -126,8 +127,7 @@ class CodexSessionReader:
             raise ValueError("codex_read_session is disabled. Set power_tools.codex_session_read to true.")
 
     def _codex_home(self) -> Path:
-        configured = str(self.power_config().get("codex_home") or "").strip()
-        return Path(configured).expanduser().resolve() if configured else (Path.home() / ".codex").resolve()
+        return resolve_codex_home(self.config)
 
     def _session_roots(self) -> list[Path]:
         home = self._codex_home()

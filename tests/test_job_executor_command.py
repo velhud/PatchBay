@@ -18,6 +18,7 @@ def make_executor(tmp_path):
                 "allowed_env_keys": ["PATH"],
             },
             "logging": {"job_logs_dir": str(tmp_path / "logs")},
+            "power_tools": {"codex_home": str(tmp_path / "configured-codex-home")},
         },
         DummyJobManager(),
     )
@@ -84,6 +85,8 @@ def test_jobs_can_ignore_user_config_without_discarding_auth_home(tmp_path):
 
     assert "--ignore-user-config" in cmd
     assert cmd.index("--ignore-user-config") < len(cmd) - 1
+    env = executor._build_env()
+    assert env["CODEX_HOME"] == str(tmp_path / "configured-codex-home")
 
 
 def test_apply_jobs_default_to_workspace_write(tmp_path):

@@ -50,6 +50,8 @@ WORKER_BASE_REVISION_OPTION = "_worker_base_revision"
 WORKER_WORKSPACE_DISCARDED_OPTION = "_worker_workspace_discarded"
 WORKER_MODEL_OPTION = "_worker_model"
 WORKER_REASONING_EFFORT_OPTION = "_worker_reasoning_effort"
+WORKER_INCLUDED_UNTRACKED_BASE_FILES_OPTION = "_worker_included_untracked_base_files"
+WORKER_INCLUDED_UNTRACKED_BASE_DIGESTS_OPTION = "_worker_included_untracked_base_digests"
 WORKER_WORKSPACE_MODES = {"isolated_write", "read_only", "shared_write"}
 MAX_WORKER_NAME_CHARS = 120
 MAX_WORKER_MESSAGE_CHARS = 200_000
@@ -883,7 +885,9 @@ class WorkerRuntime:
         if workspace.get("base_revision"):
             options[WORKER_BASE_REVISION_OPTION] = workspace["base_revision"]
         if workspace.get("included_untracked_from_base"):
-            options["_worker_included_untracked_base_files"] = list(workspace["included_untracked_from_base"])
+            options[WORKER_INCLUDED_UNTRACKED_BASE_FILES_OPTION] = list(workspace["included_untracked_from_base"])
+        if workspace.get("included_untracked_from_base_digests"):
+            options[WORKER_INCLUDED_UNTRACKED_BASE_DIGESTS_OPTION] = dict(workspace["included_untracked_from_base_digests"])
         if workspace.get("discarded"):
             options[WORKER_WORKSPACE_DISCARDED_OPTION] = True
         return merge_owner_metadata(options, request_context, existing=existing_options)
@@ -1161,6 +1165,7 @@ class WorkerRuntime:
             "branch_name": None,
             "base_revision": None,
             "included_untracked_from_base": [],
+            "included_untracked_from_base_digests": {},
             "available": True,
             "discarded": False,
         }
@@ -1173,11 +1178,13 @@ class WorkerRuntime:
                     "base_revision": base_revision,
                 }
             )
-            workspace["included_untracked_from_base"] = self._copy_selected_untracked_from_base(
+            copied_files, copied_digests = self._copy_selected_untracked_from_base(
                 base_repo=repo_path,
                 worktree_path=str(worktree_path),
                 patterns=include_untracked_from_base,
             )
+            workspace["included_untracked_from_base"] = copied_files
+            workspace["included_untracked_from_base_digests"] = copied_digests
         return workspace
 
     def _normalize_glob_patterns(self, patterns: Optional[list[str]], *, field_name: str) -> list[str]:
@@ -1242,13 +1249,14 @@ class WorkerRuntime:
         base_repo: str,
         worktree_path: str,
         patterns: Optional[list[str]],
-    ) -> list[str]:
+    ) -> tuple[list[str], Dict[str, str]]:
         normalized_patterns = self._normalize_glob_patterns(patterns, field_name="include_untracked_from_base")
         if not normalized_patterns:
-            return []
+            return [], {}
         untracked = [path for path in self._git_untracked_files(base_repo) if self._path_matches_any(path, normalized_patterns)]
         blocked = set(self._blocked_changed_files(untracked))
         copied: list[str] = []
+        digests: Dict[str, str] = {}
         base_root = Path(base_repo).expanduser().resolve()
         worker_root = Path(worktree_path).expanduser().resolve()
         for rel_path in untracked:
@@ -1264,8 +1272,11 @@ class WorkerRuntime:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+            digest = self._file_sha256(target)
+            if digest:
+                digests[rel_path] = digest
             copied.append(rel_path)
-        return copied
+        return copied, digests
 
     def _discard_prepared_workspace(self, workspace: Dict[str, Any]) -> None:
         """Roll back a worker workspace that was created before durable job registration failed."""
@@ -1997,9 +2008,58 @@ class WorkerRuntime:
             path = line[3:].strip()
             if " -> " in path:
                 path = path.split(" -> ", 1)[1].strip()
-            if path and not self._is_artifact_context_path(path):
+            if path and not self._is_artifact_context_path(path) and not self._is_unchanged_included_untracked_base_file(root, path, jobs):
                 changed.append(path)
         return sorted(dict.fromkeys(changed))
+
+    def _included_untracked_base_digests(self, jobs: list[JobInfo]) -> Dict[str, str]:
+        digests: Dict[str, str] = {}
+        for job in jobs:
+            options = job.options or {}
+            raw = options.get(WORKER_INCLUDED_UNTRACKED_BASE_DIGESTS_OPTION)
+            if isinstance(raw, dict):
+                for path, digest in raw.items():
+                    clean_path = str(path or "").strip().replace("\\", "/")
+                    clean_digest = str(digest or "").strip()
+                    if clean_path and clean_digest:
+                        digests[clean_path] = clean_digest
+        return digests
+
+    def _is_unchanged_included_untracked_base_file(self, root: str, rel_path: str, jobs: list[JobInfo]) -> bool:
+        expected = self._included_untracked_base_digests(jobs).get(rel_path.replace("\\", "/"))
+        if not expected:
+            return False
+        actual = self._file_sha256(Path(root) / rel_path)
+        return bool(actual and actual == expected)
+
+    def _modified_included_untracked_base_files(self, jobs: list[JobInfo], changed_files: list[str]) -> list[str]:
+        workspace = self._workspace_for_jobs(jobs)
+        if workspace["mode"] == "read_only" or not workspace["available"]:
+            return []
+        root = self._execution_path_for_workspace(workspace)
+        digests = self._included_untracked_base_digests(jobs)
+        modified: list[str] = []
+        for rel_path in changed_files:
+            normalized = rel_path.replace("\\", "/")
+            expected = digests.get(normalized)
+            if not expected:
+                continue
+            actual = self._file_sha256(Path(root) / normalized)
+            if actual != expected:
+                modified.append(normalized)
+        return sorted(dict.fromkeys(modified))
+
+    def _file_sha256(self, path: Path) -> str:
+        try:
+            if not path.is_file():
+                return ""
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except Exception:
+            return ""
 
     def _is_artifact_context_path(self, rel_path: str) -> bool:
         normalized = str(rel_path or "").replace("\\", "/").strip("/")
@@ -2083,6 +2143,7 @@ class WorkerRuntime:
                 "accepted_dirty_base": [],
                 "accepted_dirty_base_files": [],
                 "unexpected_base_changed_files": [],
+                "modified_included_untracked_base_files": [],
                 "skipped_files": [],
                 "blocked_files": [],
             }
@@ -2110,6 +2171,20 @@ class WorkerRuntime:
                 {
                     "blocked_files": blocked,
                     "note": "Worker changes include blocked or secret-like paths. Inspect manually instead of integrating through MCP.",
+                }
+            )
+            return view
+
+        modified_baseline_files = self._modified_included_untracked_base_files(jobs, changed_files)
+        if modified_baseline_files:
+            view.update(
+                {
+                    "modified_included_untracked_base_files": modified_baseline_files,
+                    "note": (
+                        "Worker changed files that were copied from accepted untracked base context. "
+                        "PatchBay will not integrate those as new files over existing untracked base files; "
+                        "ask the worker to move its edits into separate files, integrate manually, or commit/track the base context first."
+                    ),
                 }
             )
             return view
@@ -2798,6 +2873,36 @@ class WorkerRuntime:
             )
             return payload
         if job.state == JobState.FAILED:
+            diagnostic = self._failure_diagnostic_for_job(job)
+            if diagnostic:
+                category = str(diagnostic.get("category") or "failed")
+                suggested_action = "inspect"
+                if category == "codex_auth_refresh_failed":
+                    suggested_action = "reauthenticate"
+                elif category == "codex_model_unavailable":
+                    suggested_action = "choose_model"
+                elif category == "patchbay_runtime_tracking_lost":
+                    suggested_action = "inspect_artifacts"
+                payload.update(
+                    {
+                        "status": "failed",
+                        "phase": category,
+                        "suggested_action": suggested_action,
+                        "failure_category": category,
+                        "failure_retry_without_operator_action": bool(diagnostic.get("retry_without_operator_action", True)),
+                        "manager_guidance": str(
+                            diagnostic.get("manager_guidance")
+                            or diagnostic.get("public_message")
+                            or "Worker did not complete normally. Inspect the report and available artifacts."
+                        ),
+                    }
+                )
+                if diagnostic.get("operator_action"):
+                    payload["operator_action"] = self._safe_public_text(
+                        str(diagnostic["operator_action"]),
+                        self._private_paths_for_jobs([job]),
+                    )
+                return payload
             payload.update(
                 {
                     "status": "failed",
@@ -2875,6 +2980,11 @@ class WorkerRuntime:
             diagnostics["exit_code"] = job.exit_code
         return diagnostics
 
+    def _failure_diagnostic_for_job(self, job: JobInfo) -> Dict[str, Any]:
+        if isinstance(job.result, dict) and isinstance(job.result.get("failure_diagnostic"), dict):
+            return dict(job.result["failure_diagnostic"])
+        return {}
+
     def _public_state(self, state: JobState) -> str:
         return {
             JobState.PENDING: "starting",
@@ -2921,6 +3031,14 @@ class WorkerRuntime:
         if job.state == JobState.CANCELLED:
             result = job.result if isinstance(job.result, dict) else {}
             summary = str(result.get("summary") or "").strip()
+            if result.get("final_structured_result") is False and result.get("raw_output_available"):
+                preview = str(result.get("stdout_preview") or "").strip()
+                parts = ["The latest worker turn was stopped before a final structured report was captured."]
+                if preview:
+                    parts.append("PatchBay preserved bounded raw-output preview: " + self._clip_text(preview, 1200))
+                else:
+                    parts.append("PatchBay preserved raw output metadata, but no bounded preview was available.")
+                return self._safe_public_text(" ".join(parts), private_paths)
             if summary:
                 return self._safe_public_text(
                     f"The latest worker turn was stopped after partial work. Partial report: {summary}",
@@ -2934,6 +3052,25 @@ class WorkerRuntime:
                 )
             return "The latest worker turn was stopped. No partial checkpoint was captured. The conversation can be continued later."
         if job.state == JobState.FAILED:
+            diagnostic = self._failure_diagnostic_for_job(job)
+            if diagnostic:
+                parts = [
+                    "The latest worker turn did not complete normally.",
+                    f"Failure category: {str(diagnostic.get('category') or 'failed')}.",
+                ]
+                public_message = str(diagnostic.get("public_message") or job.error or "").strip()
+                if public_message:
+                    parts.append(public_message)
+                guidance = str(diagnostic.get("manager_guidance") or "").strip()
+                if guidance:
+                    parts.append(f"Manager guidance: {guidance}")
+                operator_action = str(diagnostic.get("operator_action") or "").strip()
+                if operator_action:
+                    parts.append(f"Operator action: {operator_action}")
+                checkpoint = self._latest_checkpoint_summary(jobs)
+                if checkpoint:
+                    parts.append(f"Latest checkpoint before failure: {checkpoint}")
+                return self._safe_public_text(" ".join(parts), private_paths)
             detail = job.error or "Codex could not complete the latest turn."
             return self._safe_public_text(f"The latest turn failed: {detail}", private_paths)
 

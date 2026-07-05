@@ -29,6 +29,8 @@ def make_config(tmp_path):
             "job_logs_dir": str(tmp_path / "logs" / "jobs"),
             "job_state_dir": str(tmp_path / "logs" / "jobs" / "state"),
         },
+        "locks": {"root": str(tmp_path / "locks")},
+        "power_tools": {"codex_home": str(tmp_path / "codex-home")},
     }
 
 
@@ -148,6 +150,48 @@ async def test_parse_result_persists_fallback_from_latest_agent_message(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_parse_result_raw_fallback_prefers_useful_tail(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    result_file = tmp_path / "logs" / "jobs" / "raw_tail_result.json"
+    noisy_start = "\n".join(json.dumps({"type": "event", "index": index}) for index in range(30))
+    useful_message = json.dumps({"type": "error", "message": "Late useful error after broad search."})
+    stdout = f"{noisy_start}\n{useful_message}\n".encode("utf-8")
+
+    result = await executor._parse_result(stdout, result_file, {"structured_output": True})
+
+    assert result["final_structured_result"] is False
+    assert result["raw_output_available"] is True
+    assert "Late useful error" in result["stdout_preview"]
+    assert '"index": 0' not in result["stdout_preview"]
+
+
+def test_attach_failure_diagnostic_overrides_raw_fallback_summary(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+
+    result = executor._attach_failure_diagnostic(
+        {
+            "summary": "No final structured worker report was captured, but PatchBay preserved bounded raw Codex output for manager inspection.",
+            "files_changed": [],
+        },
+        {
+            "category": "codex_auth_refresh_failed",
+            "public_message": "Codex authentication failed before the worker could run.",
+            "manager_guidance": "Refresh Codex login before retrying.",
+            "operator_action": "Run `codex login`.",
+            "retry_without_operator_action": False,
+        },
+    )
+
+    assert result["summary"] == "Codex authentication failed before the worker could run."
+    assert result["failure_diagnostic"]["category"] == "codex_auth_refresh_failed"
+    assert "Refresh Codex login" in result["notes"]
+
+
+@pytest.mark.asyncio
 async def test_cancel_job_marks_cancelled_before_waiting_for_process_exit(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -184,6 +228,53 @@ async def test_cancel_unknown_job_returns_false(tmp_path):
 
     assert result["cancelled"] is False
     assert "Unknown job" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_without_live_process_persists_partial_artifact(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "queued or orphaned", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.RUNNING)
+
+    result = await executor.cancel_job(job_id, reason="Stop stale worker")
+
+    job = manager.get_job(job_id)
+    result_file = tmp_path / "logs" / "jobs" / f"{job_id}_result.json"
+    persisted = json.loads(result_file.read_text(encoding="utf-8"))
+    assert result["cancelled"] is True
+    assert result["process_signalled"] is False
+    assert job.state == JobState.CANCELLED
+    assert job.result["partial"] is True
+    assert job.result["status"] == "cancelled"
+    assert "stopped before PatchBay captured Codex output" in job.result["summary"]
+    assert persisted["partial"] is True
+
+
+def test_job_manager_recovers_missing_result_from_artifact(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job("plan", "lost result", config["repositories"]["default"], {})
+    manager.update_job_state(job_id, JobState.FAILED, error="failed before state included result")
+    manager.jobs[job_id].result = None
+    manager._persist_job(manager.jobs[job_id])
+    result_file = tmp_path / "logs" / "jobs" / f"{job_id}_result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "summary": "Recovered artifact report.",
+                "files_changed": [],
+                "failure_diagnostic": {"category": "codex_auth_refresh_failed"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reloaded = JobManager(config)
+
+    assert reloaded.get_job(job_id).result["summary"] == "Recovered artifact report."
+    assert reloaded.get_job(job_id).result["failure_diagnostic"]["category"] == "codex_auth_refresh_failed"
 
 
 def test_reconcile_stale_running_job_marks_failed(tmp_path):
@@ -525,6 +616,36 @@ async def test_codex_startup_gate_releases_when_process_exits_before_session(tmp
     assert manager.get_job(first_id).state == JobState.FAILED
     assert manager.get_job(second_id).state == JobState.COMPLETED
     assert manager.get_job(second_id).session_id == "session-second"
+
+
+@pytest.mark.asyncio
+async def test_codex_startup_file_lock_waits_for_external_holder(tmp_path):
+    pytest.importorskip("fcntl")
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    key = executor._codex_startup_gate_key()
+    lock_path = executor._codex_startup_lock_path(key)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    import fcntl
+
+    holder = lock_path.open("a+b")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+    started = time.monotonic()
+    acquire_task = asyncio.create_task(executor._acquire_codex_startup_file_lock(key))
+    await asyncio.sleep(0.15)
+    assert not acquire_task.done()
+    fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+    holder.close()
+
+    file_handle, acquired_path = await asyncio.wait_for(acquire_task, timeout=2)
+    try:
+        assert acquired_path == str(lock_path)
+        assert time.monotonic() - started >= 0.12
+    finally:
+        fcntl.flock(file_handle.fileno(), fcntl.LOCK_UN)
+        file_handle.close()
 
 
 @pytest.mark.asyncio

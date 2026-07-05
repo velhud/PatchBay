@@ -921,6 +921,18 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert "Do not poll every few seconds" in listed["team_report"]
 
 
+def test_context_from_workers_accepts_ten_and_rejects_eleven(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    expected = [f"worker-{index}" for index in range(10)]
+    assert runtime._normalize_context_workers(expected) == expected
+    with pytest.raises(ValueError, match="capped at 10"):
+        runtime._normalize_context_workers([f"worker-{index}" for index in range(11)])
+
+
 @pytest.mark.asyncio
 async def test_cancelled_worker_report_uses_partial_result(tmp_path):
     config = make_config(tmp_path)
@@ -964,6 +976,43 @@ async def test_cancelled_worker_report_uses_partial_result(tmp_path):
     assert view["report_artifacts"][0]["kind"] == "structured_result"
     assert view["report_artifacts"][0]["partial"] is True
     assert view["latest_checkpoints"][0]["summary"] == "I mapped the UI routes before cancellation."
+
+
+@pytest.mark.asyncio
+async def test_cancelled_worker_raw_only_result_is_not_called_partial_report(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Raw Cancelled Worker",
+        brief="Start and get cancelled before final schema.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.CANCELLED,
+        result={
+            "summary": "No final structured worker report was captured, but PatchBay preserved bounded raw Codex output for manager inspection.",
+            "files_changed": [],
+            "partial": True,
+            "status": "cancelled",
+            "final_structured_result": False,
+            "raw_output_available": True,
+            "stdout_preview": "The worker had already mapped the data import path.",
+        },
+        session_id="session-raw-cancelled",
+        error="Cancelled by request",
+    )
+
+    view = await runtime.inspect_worker(worker=started["worker_id"])
+
+    assert "Partial report:" not in view["report"]
+    assert "stopped before a final structured report" in view["report"]
+    assert "mapped the data import path" in view["report"]
 
 
 @pytest.mark.asyncio
@@ -1186,6 +1235,9 @@ async def test_failed_worker_public_view_exposes_auth_diagnostic(tmp_path):
     assert view["latest_turn"]["failure_category"] == "codex_auth_refresh_failed"
     assert view["latest_turn"]["failure_retry_without_operator_action"] is False
     assert "codex login" in view["latest_turn"]["failure_operator_action"]
+    assert view["liveness"]["failure_category"] == "codex_auth_refresh_failed"
+    assert view["liveness"]["suggested_action"] == "reauthenticate"
+    assert "Operator action" in view["report"]
 
 
 @pytest.mark.asyncio
@@ -1207,7 +1259,7 @@ async def test_inspect_reconciles_stale_running_worker_without_waiting(tmp_path)
         },
     )
     manager.update_job_state(job_id, JobState.RUNNING)
-    manager.jobs[job_id].started_at = time.time() - 60
+    manager.jobs[job_id].started_at = time.time() - 700
     manager._persist_job(manager.jobs[job_id])
 
     started = time.monotonic()
@@ -1216,6 +1268,7 @@ async def test_inspect_reconciles_stale_running_worker_without_waiting(tmp_path)
     assert time.monotonic() - started < 1
     assert result["state"] == "failed"
     assert "no live Codex process is tracked" in result["report"]
+    assert result["latest_turn"]["failure_category"] == "patchbay_runtime_tracking_lost"
     assert config["repositories"]["default"] not in str(result)
     assert manager.get_job(job_id).state == JobState.FAILED
     assert manager.get_job(job_id).error == STALE_RUNNING_JOB_ERROR
@@ -1240,7 +1293,7 @@ async def test_list_workers_reconciles_stale_running_worker(tmp_path):
         },
     )
     manager.update_job_state(job_id, JobState.RUNNING)
-    manager.jobs[job_id].started_at = time.time() - 60
+    manager.jobs[job_id].started_at = time.time() - 700
     manager._persist_job(manager.jobs[job_id])
 
     result = await runtime.list_workers()

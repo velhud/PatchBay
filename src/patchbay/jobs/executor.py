@@ -1,5 +1,6 @@
 """Job execution engine for running Codex CLI commands."""
 import asyncio
+import hashlib
 import json
 import logging
 import subprocess
@@ -9,10 +10,16 @@ import time
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import BinaryIO, Dict, Any, Optional
 
+try:  # pragma: no cover - supported PatchBay hosts are Unix-like.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
+from patchbay.codex_home import resolve_codex_home
 from patchbay.jobs.manager import JobManager, JobState
-from patchbay.connector.profiles import normalize_logging_paths
+from patchbay.connector.profiles import normalize_logging_paths, resolve_runtime_path
 from patchbay.repo_locks import RepoMutationLockManager
 from patchbay.security import (
     internal_log_error,
@@ -28,9 +35,12 @@ STALE_RUNNING_JOB_ERROR = (
     "Job was marked running, but no live Codex process is tracked. "
     "PatchBay marked it failed so it can be inspected or restarted."
 )
+STALE_RUNNING_JOB_CATEGORY = "patchbay_runtime_tracking_lost"
 
 MAX_JOB_CHECKPOINTS = 8
 MAX_CHECKPOINT_TEXT_CHARS = 2_000
+
+_CODEX_STARTUP_LOCKS: Dict[tuple[int, str], asyncio.Lock] = {}
 
 
 @dataclass
@@ -49,6 +59,8 @@ class StartupGateLease:
     key: str
     lock: asyncio.Lock
     acquired_at: float
+    file_handle: BinaryIO | None = None
+    file_lock_path: str = ""
     released: bool = False
     release_reason: str = ""
 
@@ -57,6 +69,12 @@ class StartupGateLease:
             return
         self.released = True
         self.release_reason = reason
+        if self.file_handle is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(self.file_handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                self.file_handle.close()
         self.lock.release()
 
 
@@ -79,7 +97,7 @@ class JobExecutor:
         max_concurrent = int(server_config.get("max_concurrent_jobs", 1) or 0)
         queue_enabled = bool(server_config.get("queue_enabled", False))
         self._execution_semaphore = asyncio.Semaphore(max_concurrent) if queue_enabled and max_concurrent > 0 else None
-        self._codex_startup_locks: Dict[str, asyncio.Lock] = {}
+        self._codex_startup_locks = _CODEX_STARTUP_LOCKS
 
     def schedule_job(self, job_id: str) -> asyncio.Task:
         """Start a background Codex job and keep a strong task reference."""
@@ -128,6 +146,7 @@ class JobExecutor:
                 job_id,
                 JobState.FAILED,
                 error=STALE_RUNNING_JOB_ERROR,
+                result=self._stale_running_result(job),
             )
             self.repo_locks.release_job(job_id)
             reconciled.append(job_id)
@@ -181,13 +200,42 @@ class JobExecutor:
             return False
         return True
 
+    def _stale_running_result(self, job: Any) -> Dict[str, Any]:
+        """Return a diagnostic payload for a job PatchBay can no longer track."""
+        return redact_sensitive_output(
+            {
+                "summary": STALE_RUNNING_JOB_ERROR,
+                "files_changed": [],
+                "final_structured_result": False,
+                "failure_diagnostic": {
+                    "category": STALE_RUNNING_JOB_CATEGORY,
+                    "public_message": STALE_RUNNING_JOB_ERROR,
+                    "manager_guidance": (
+                        "This is PatchBay runtime/process tracking recovery, not proof that the Codex worker "
+                        "reasoned badly. Inspect any preserved checkpoints, result artifacts, stdout/stderr byte "
+                        "counts, and then restart or continue the worker if needed."
+                    ),
+                    "operator_action": "Inspect the worker status/report artifacts; restart or continue the worker if no useful evidence was preserved.",
+                    "retry_without_operator_action": True,
+                },
+                "runtime_diagnostics": {
+                    "last_event": str(getattr(job, "last_event", "") or ""),
+                    "event_count": int(getattr(job, "event_count", 0) or 0),
+                    "stdout_bytes_seen": int(getattr(job, "stdout_bytes_seen", 0) or 0),
+                    "stderr_bytes_seen": int(getattr(job, "stderr_bytes_seen", 0) or 0),
+                    "process_started": bool(getattr(job, "process_started_at", None)),
+                    "session_created": bool(getattr(job, "session_id", None)),
+                },
+            }
+        )
+
     def _stale_running_grace_seconds(self, override: Optional[float] = None) -> float:
         if override is not None:
             return max(0.0, float(override))
         try:
-            configured = float(self.config.get("server", {}).get("stale_running_job_grace_seconds", 5))
+            configured = float(self.config.get("server", {}).get("stale_running_job_grace_seconds", 600))
         except (TypeError, ValueError):
-            configured = 5.0
+            configured = 600.0
         return max(0.0, configured)
 
     def _job_timeout_seconds(self) -> Optional[float]:
@@ -218,43 +266,61 @@ class JobExecutor:
         return bool(configured)
 
     def _codex_startup_gate_key(self) -> str:
-        configured = self.config.get("power_tools", {}).get("codex_home") or os.environ.get("CODEX_HOME")
-        if configured:
-            try:
-                return str(Path(str(configured)).expanduser().resolve())
-            except Exception:
-                return str(configured)
-        home = os.environ.get("HOME")
-        if home:
-            try:
-                return str((Path(home).expanduser() / ".codex").resolve())
-            except Exception:
-                return str(Path(home).expanduser() / ".codex")
-        return "default-codex-home"
+        return str(resolve_codex_home(self.config))
+
+    def _codex_startup_lock_path(self, key: str) -> Path:
+        configured = (self.config.get("locks") or {}).get("root") if isinstance(self.config.get("locks"), dict) else None
+        lock_dir = resolve_runtime_path(configured, "locks")
+        lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        return lock_dir / f"codex_startup_{digest}.lock"
+
+    async def _acquire_codex_startup_file_lock(self, key: str) -> tuple[BinaryIO | None, str]:
+        """Acquire a host-wide Codex startup lock for this Codex home."""
+        if fcntl is None:
+            return None, ""
+        path = self._codex_startup_lock_path(key)
+        file_handle: BinaryIO | None = path.open("a+b")
+        try:
+            await asyncio.to_thread(fcntl.flock, file_handle.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            file_handle.close()
+            raise
+        return file_handle, str(path)
 
     async def _acquire_codex_startup_gate(self, job_id: str) -> StartupGateLease | None:
         """Serialize the auth-sensitive part of Codex startup without serializing full turns."""
         if not self._codex_startup_gate_enabled():
             return None
         key = self._codex_startup_gate_key()
-        lock = self._codex_startup_locks.setdefault(key, asyncio.Lock())
-        if lock.locked():
-            self.job_manager.update_job_state(
-                job_id,
-                JobState.RUNNING,
-                last_heartbeat_at=time.time(),
-                current_phase="waiting_for_codex_startup_gate",
-                progress="Waiting for another Codex process to finish auth/session startup.",
-            )
-        await lock.acquire()
-        lease = StartupGateLease(key=key, lock=lock, acquired_at=time.time())
+        lock_key = (id(asyncio.get_running_loop()), key)
+        lock = self._codex_startup_locks.setdefault(lock_key, asyncio.Lock())
         self.job_manager.update_job_state(
             job_id,
             JobState.RUNNING,
             last_heartbeat_at=time.time(),
-            current_phase="launching_codex_process",
-            progress="Codex startup/auth gate acquired; launching Codex process.",
+            current_phase="waiting_for_codex_startup_gate",
+            progress="Waiting for the Codex auth/session startup gate. This protects shared Codex login state without serializing full worker turns.",
         )
+        await lock.acquire()
+        lease = StartupGateLease(key=key, lock=lock, acquired_at=time.time())
+        try:
+            file_handle, file_lock_path = await self._acquire_codex_startup_file_lock(key)
+            lease.file_handle = file_handle
+            lease.file_lock_path = file_lock_path
+            self.job_manager.update_job_state(
+                job_id,
+                JobState.RUNNING,
+                last_heartbeat_at=time.time(),
+                current_phase="launching_codex_process",
+                progress=(
+                    "Codex startup/auth gate acquired for this host; launching Codex process. "
+                    "Parallel worker turns resume after Codex creates the session."
+                ),
+            )
+        except Exception:
+            lease.release("startup_file_lock_failed")
+            raise
         return lease
 
     def _session_start_timeout_seconds(self) -> Optional[float]:
@@ -1037,10 +1103,14 @@ class JobExecutor:
             "TMPDIR",
             "OPENAI_API_KEY",
         ]
+        codex_home = str(resolve_codex_home(self.config, os.environ))
         allowed_set = set(allowed)
         if "*" in allowed_set:
-            return dict(os.environ)
-        return {k: v for k, v in os.environ.items() if k in allowed_set}
+            env = dict(os.environ)
+        else:
+            env = {k: v for k, v in os.environ.items() if k in allowed_set}
+        env["CODEX_HOME"] = codex_home
+        return env
 
     def _job_log_max_bytes(self) -> int:
         configured = int(self.config.get('logging', {}).get('job_log_max_bytes', 200_000))
@@ -1159,6 +1229,7 @@ class JobExecutor:
             latest_agent_result["result_source"] = "latest_agent_message"
             latest_agent_result["final_structured_result"] = False
             return latest_agent_result
+        stdout_preview = self._fallback_stdout_preview(stdout_text, lines)
         return {
             "summary": (
                 "No final structured worker report was captured, but PatchBay preserved bounded raw "
@@ -1170,8 +1241,41 @@ class JobExecutor:
             "notes": note,
             "final_structured_result": False,
             "raw_output_available": bool(stdout_text),
-            "stdout_preview": redact_text(stdout_text[:2000]) if stdout_text else "",
+            "stdout_preview": stdout_preview,
         }
+
+    def _fallback_stdout_preview(self, stdout_text: str, lines: list[str]) -> str:
+        """Prefer useful tail/error material over the start of a JSON event stream."""
+        if not stdout_text:
+            return ""
+        candidate_lines: list[str] = []
+        for line in reversed(lines[-40:]):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                candidate_lines.append(stripped)
+                continue
+            if not isinstance(parsed, dict):
+                candidate_lines.append(str(parsed))
+                continue
+            event_type = str(parsed.get("type") or "")
+            if event_type in {"error", "turn.failed"}:
+                candidate_lines.append(json.dumps(parsed, ensure_ascii=False))
+                continue
+            item = self._agent_item_from_event(parsed)
+            text = self._text_from_agent_item(item) if item else ""
+            if text:
+                candidate_lines.append(text)
+                continue
+            if event_type in {"result", "turn.completed"}:
+                candidate_lines.append(json.dumps(parsed, ensure_ascii=False))
+        preview = "\n".join(reversed(candidate_lines[:6])).strip()
+        if not preview:
+            preview = stdout_text[-2000:]
+        return redact_text(preview[-2000:])
 
     def _classify_codex_failure(self, stdout: bytes, stderr: bytes, exit_code: Optional[int]) -> Dict[str, Any] | None:
         stdout_text = stdout.decode("utf-8", errors="replace")
@@ -1223,7 +1327,12 @@ class JobExecutor:
     def _attach_failure_diagnostic(self, result: Dict[str, Any], failure: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(result) if isinstance(result, dict) else {"summary": str(result), "files_changed": []}
         summary = str(payload.get("summary") or "").strip()
-        if not summary or summary == "No final structured worker report was captured.":
+        generic_missing_report = summary in {
+            "",
+            "No final structured worker report was captured.",
+            "No final structured worker report was captured, but PatchBay preserved bounded raw Codex output for manager inspection.",
+        }
+        if generic_missing_report:
             payload["summary"] = failure["public_message"]
         payload.setdefault("files_changed", [])
         payload["failure_diagnostic"] = redact_sensitive_output(failure)
@@ -1330,6 +1439,16 @@ class JobExecutor:
         self.job_manager.update_job_state(job_id, JobState.CANCELLED, error=reason)
         if process and process.returncode is None:
             process_signalled = await self._terminate_process(job_id, process)
+        if not process_signalled:
+            partial_result = await self._cancelled_result_from_existing_artifacts(job, reason=reason)
+            self.job_manager.update_job_state(
+                job_id,
+                JobState.CANCELLED,
+                result=partial_result,
+                error=reason,
+                last_heartbeat_at=time.time(),
+                progress=self._cancelled_progress_label(partial_result),
+            )
 
         self.repo_locks.release_job(job_id)
         logger.info(f"Job {job_id} cancelled")
@@ -1339,6 +1458,46 @@ class JobExecutor:
             "state": JobState.CANCELLED.value,
             "process_signalled": process_signalled,
         }
+
+    async def _cancelled_result_from_existing_artifacts(self, job: Any, *, reason: str) -> Dict[str, Any]:
+        """Persist manager-readable evidence when cancellation happens outside the live process path."""
+        result_file = self.job_logs_dir / f"{job.job_id}_result.json"
+        stdout_log = self.job_logs_dir / f"{job.job_id}_stdout.log"
+        if isinstance(getattr(job, "result", None), dict):
+            result = dict(job.result)
+            result.setdefault("files_changed", [])
+            result["partial"] = True
+            result["partial_reason"] = redact_text(reason)
+            result["status"] = "cancelled"
+            return self._write_result_file(result_file, result)
+        if result_file.exists():
+            try:
+                payload = json.loads(result_file.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    payload.setdefault("files_changed", [])
+                    payload["partial"] = True
+                    payload["partial_reason"] = redact_text(reason)
+                    payload["status"] = "cancelled"
+                    return self._write_result_file(result_file, payload)
+            except Exception as error:
+                logger.warning("Failed to reuse result artifact for cancelled job %s: %s", job.job_id, internal_log_error(error))
+        if stdout_log.exists():
+            try:
+                return await self._parse_partial_result(stdout_log.read_bytes(), result_file, job.options, reason=reason)
+            except Exception as error:
+                logger.warning("Failed to parse stdout artifact for cancelled job %s: %s", job.job_id, internal_log_error(error))
+        return self._write_result_file(
+            result_file,
+            {
+                "summary": "Worker turn was stopped before PatchBay captured Codex output.",
+                "files_changed": [],
+                "partial": True,
+                "partial_reason": redact_text(reason),
+                "status": "cancelled",
+                "final_structured_result": False,
+                "raw_output_available": False,
+            },
+        )
 
     async def cancel_all_running(self, reason: str = "Server shutting down") -> None:
         """Cancel every tracked subprocess and mark queued/running jobs terminal."""
