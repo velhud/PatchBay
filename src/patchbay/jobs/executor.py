@@ -1160,7 +1160,12 @@ class JobExecutor:
             latest_agent_result["final_structured_result"] = False
             return latest_agent_result
         return {
-            "summary": "No final structured worker report was captured.",
+            "summary": (
+                "No final structured worker report was captured, but PatchBay preserved bounded raw "
+                "Codex output for manager inspection."
+                if stdout_text
+                else "No final structured worker report was captured."
+            ),
             "files_changed": [],
             "notes": note,
             "final_structured_result": False,

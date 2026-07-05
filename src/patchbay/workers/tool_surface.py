@@ -227,13 +227,18 @@ WORKER_TOOLS = [
             "choose a Codex model or reasoning effort before starting or continuing a worker. It loads bounded "
             "model metadata from the installed Codex runtime/catalog, returns advisory model-selection guidance "
             "for Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5, and explains which fields to pass to "
-            "codex_worker_start or codex_worker_message. Do not pass repo_path to this tool; it is a runtime/model "
-            "menu, not a repository operation. The guidance is a judgment aid, not a hard router."
+            "codex_worker_start or codex_worker_message. repo_path is accepted as a harmless compatibility field "
+            "and ignored because this is a runtime/model menu, not a repository operation. The guidance is a judgment "
+            "aid, not a hard router."
         ),
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional compatibility field accepted and ignored; worker options are global runtime metadata.",
+                },
                 "model": {
                     "type": "string",
                     "description": "Optional model id to focus the returned reasoning options.",
@@ -335,7 +340,9 @@ WORKER_TOOLS = [
             "Can include bounded context from other workers for review, alternatives, or handoff. When a "
             "specific model or reasoning depth matters, call codex_worker_options first, then pass model and/or "
             "reasoning_effort here. Worker names are scoped to the target workspace, so the same name can be reused "
-            "safely in another repo."
+            "safely in another repo. If rerunning a phase with the same name, pass auto_suffix=true. For isolated "
+            "workers that need accepted untracked phase artifacts from the base checkout, pass explicit "
+            "include_untracked_from_base glob patterns."
         ),
         "inputSchema": {
             "type": "object",
@@ -358,6 +365,19 @@ WORKER_TOOLS = [
                     "enum": ["isolated_write", "read_only", "shared_write"],
                     "description": "Worker workspace mode. Default: isolated_write.",
                 },
+                "auto_suffix": {
+                    "type": "boolean",
+                    "description": "When true, append a short timestamp suffix if this worker name already exists in the same workspace.",
+                },
+                "include_untracked_from_base": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional workspace-relative glob patterns for selected untracked base-checkout files to copy into "
+                        "a new isolated_write worker worktree, for example dev/big_update/00-*.md. This is for accepted "
+                        "phase artifacts that are not committed yet; blocked/secret-like paths are not copied."
+                    ),
+                },
                 "context_from_workers": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -377,8 +397,12 @@ WORKER_TOOLS = [
                 },
                 "context_detail": {
                     "type": "string",
-                    "enum": ["report", "changes", "diff"],
-                    "description": "How much peer-worker context to include. Default: report.",
+                    "enum": ["report", "changes", "diff", "review"],
+                    "description": (
+                        "How much peer-worker context to include. Default: report. Use changes for changed-file inventory, "
+                        "diff for bounded patch context, and review for review-grade report+changes+diff context with explicit "
+                        "visibility notes."
+                    ),
                 },
                 **WORKER_EXECUTION_OPTION_PROPERTIES,
             },
@@ -396,7 +420,7 @@ WORKER_TOOLS = [
             "A manager should keep talking to the worker until the evidence is usable instead of replacing worker "
             "conversation with direct reads. Use follow-up "
             "messages when a report is thin, contradictory, missing evidence, lacks a durable report file, or needs "
-            "another worker's findings. Can include bounded peer report/change/diff context without exposing backend ids. "
+            "another worker's findings. Can include bounded peer report/changes/diff/review context without exposing backend ids. "
             "If the worker is still running, inspect view=status and latest_checkpoints instead of cancelling it only "
             "because the final report is not ready; active-turn steering is not yet exposed, so this tool continues "
             "the next turn after completion. "
@@ -433,8 +457,11 @@ WORKER_TOOLS = [
                 },
                 "context_detail": {
                     "type": "string",
-                    "enum": ["report", "changes", "diff"],
-                    "description": "How much peer-worker context to include. Default: report.",
+                    "enum": ["report", "changes", "diff", "review"],
+                    "description": (
+                        "How much peer-worker context to include. Default: report. Use review when this continuation "
+                        "should evaluate another worker's report, changed-file list, and bounded diff."
+                    ),
                 },
                 **WORKER_TAKEOVER_PROPERTIES,
                 **WORKER_EXECUTION_OPTION_PROPERTIES,
@@ -615,6 +642,14 @@ WORKER_TOOLS = [
                     "type": "integer",
                     "description": "Maximum bytes for view=file, capped by server policy. Use start_line/end_line for pagination when a file is larger than the cap.",
                 },
+                "accepted_dirty_base": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "For view=integration_preview, workspace-relative glob patterns for known accepted dirty "
+                        "base-checkout files, such as previous phase docs, that should not block preview."
+                    ),
+                },
             },
             "required": ["worker"],
         },
@@ -641,6 +676,14 @@ WORKER_TOOLS = [
                 "allow_dirty_base": {
                     "type": "boolean",
                     "description": "Expert override allowing integration into a dirty base checkout when git apply still succeeds. Default: false.",
+                },
+                "accepted_dirty_base": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Workspace-relative glob patterns for known accepted dirty base-checkout files that may coexist "
+                        "with this integration. Unexpected dirty files still block unless allow_dirty_base=true."
+                    ),
                 },
                 **WORKER_TAKEOVER_PROPERTIES,
             },

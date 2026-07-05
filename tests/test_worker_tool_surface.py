@@ -21,7 +21,8 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "reasoning_efforts" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "model_selection_guidance" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5" in by_name["codex_worker_options"]["description"]
-    assert "Do not pass repo_path" in by_name["codex_worker_options"]["description"]
+    assert "repo_path is accepted as a harmless compatibility field" in by_name["codex_worker_options"]["description"]
+    assert "repo_path" in by_name["codex_worker_options"]["inputSchema"]["properties"]
     assert "not a hard router" in by_name["codex_worker_options"]["description"]
     assert by_name["codex_worker_inbox"]["readOnlyHint"] is False
     assert by_name["codex_worker_inbox"]["_meta"]["openai/fileParams"] == ["artifact_file"]
@@ -38,6 +39,8 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "context_from_artifacts" in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "model" in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "reasoning_effort" in by_name["codex_worker_start"]["inputSchema"]["properties"]
+    assert "auto_suffix" in by_name["codex_worker_start"]["inputSchema"]["properties"]
+    assert "include_untracked_from_base" in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "takeover" not in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "durable named Codex colleague" in by_name["codex_worker_start"]["description"]
     assert "manager instead of primary file reader" in by_name["codex_worker_start"]["description"]
@@ -195,7 +198,12 @@ def test_worker_peer_context_arguments_validate():
 
     validate_public_tool_arguments(
         "codex_worker_integrate",
-        {"worker": "Implementer", "takeover": True, "takeover_reason": "User accepted this worker."},
+        {
+            "worker": "Implementer",
+            "accepted_dirty_base": ["dev/big_update/00-*.md"],
+            "takeover": True,
+            "takeover_reason": "User accepted this worker.",
+        },
     )
 
     import pytest
@@ -221,5 +229,4 @@ def test_worker_peer_context_arguments_validate():
             },
         )
 
-    with pytest.raises(ValueError, match="codex_worker_options is a runtime/model menu"):
-        validate_public_tool_arguments("codex_worker_options", {"repo_path": "/repo"})
+    validate_public_tool_arguments("codex_worker_options", {"repo_path": "/repo"})

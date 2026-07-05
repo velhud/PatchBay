@@ -45,11 +45,11 @@ Management posture:
 
 Worker workflow:
 1. Use codex_worker_start for durable named Codex colleagues. It creates PatchBay state and usually starts an isolated writing worktree; choose workspace_mode=read_only for investigation/review.
-2. When model or reasoning depth matters, call codex_worker_options first, then pass model and/or reasoning_effort to codex_worker_start. Omit them for Codex defaults. Do not pass repo_path to codex_worker_options; it is a runtime/model menu, not a repository operation.
+2. When model or reasoning depth matters, call codex_worker_options first, then pass model and/or reasoning_effort to codex_worker_start. Omit them for Codex defaults. codex_worker_options accepts repo_path as a harmless compatibility field but ignores it because model options are runtime metadata, not repository state.
 3. Model choice should follow this advisory ladder, not a deterministic filter: Spark is the default for compact small workers because it is much faster and effectively free; use it for small reading tasks, straightforward checks, direct bounded fixes, tests, and exploration, while remembering its smaller context and possible quota depletion. GPT-5.4 Mini is a similarly small reliable worker for many low/moderate-risk tasks when Spark is unavailable, too context-constrained, or when a compatible small model is useful. GPT-5.4 is not merely a fallback; it is the main serious worker for normal above-average tasks that need real thought, multi-step analysis, implementation planning, debugging, verification, or decisions without frontier authority. GPT-5.5 is the highest-authority model for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and work where the best reasoning quality matters more than speed. Do not spend GPT-5.5 as the main worker for every ordinary case.
 4. Workers are stateful by name within a workspace: inspect/list them after a PatchBay restart, and use codex_worker_message to continue the same worker conversation without asking the user for job IDs, session IDs, branch names, or worktree paths. A continued worker keeps prior model/reasoning unless model or reasoning_effort is explicitly supplied. If the same worker name exists in another repo, pass repo_path or use the worker_id.
 5. Use codex_worker_status as the compact pull-based status bar while workers run: it shows active/quiet/stale/lost/completed/failed counts, deltas since the last check, one short line per worker, and recommended_next_poll_seconds without raw logs. For normal monitoring, wait about 20-30 seconds between status calls; do not poll every few seconds unless the user explicitly requested near-real-time monitoring or the previous result shows a lost/failed worker needing immediate recovery. If status returns poll_too_early/status_current=false, wait for retry_after_seconds; that cached response did not reset activity deltas. Use codex_worker_wait when the correct manager action is simply to pause once and receive a fresh compact status. For a single worker, use codex_worker_inspect(view=compact/status). If status shows activity, output growth, or a recent partial note, wait instead of cancelling; no final report yet does not mean no progress. Use changed-file, file, diff, or integration_preview views when there is a concrete escalation or integration need; do not treat those views as a requirement to manually review every worker result. codex_read_file reads the base checkout only; before integration, worker-created files live in the worker workspace and can be read with codex_worker_inspect(view="file", file_path="...") when direct inspection is warranted.
-6. For synthesis, review, relay, or alternative implementation, pass context_from_workers with context_detail=report, changes, or diff instead of manually copying raw transcripts. A synthesis worker should receive prior worker reports as context and produce a decision-oriented result, not merely restate them.
+6. For synthesis, review, relay, or alternative implementation, pass context_from_workers with context_detail=report, changes, diff, or review instead of manually copying raw transcripts. Use changes only for changed-file inventory; use diff or review when the next worker must evaluate file-level content before integration. A synthesis worker should receive prior worker reports as context and produce a decision-oriented result, not merely restate them.
 7. Before finalizing substantial work, check whether any worker needs a follow-up: missing evidence, unclear next step, disagreement between workers, no durable report file, or no validation. Use codex_worker_message for those loops rather than silently accepting the first answer.
 8. Call codex_worker_integrate only after the result is explicitly accepted and integration_preview is clean. Integration applies changes to the base checkout, does not commit, and preserves the worker worktree.
 9. After integration or direct edits, prefer worker-provided validation reports and focused follow-up questions. Use direct diff/file/command inspection when the change is risky, unclear, failing, user-requested, or otherwise needs escalation; otherwise report the worker evidence and current status.
@@ -150,7 +150,7 @@ TOOLS = [
                 },
                 "include_tree": {
                     "type": "boolean",
-                    "description": "Include a bounded repository tree. Default: true.",
+                    "description": "Include a bounded repository tree. Default: false; use codex_repo_tree for focused tree checks.",
                 },
                 "max_depth": {
                     "type": "integer",
@@ -1160,7 +1160,7 @@ ALIAS_INPUT_SCHEMAS = {
     "open_current_workspace": _alias_input_schema(
         {
             "repo_path": _string_arg("Optional repository path. Defaults to the configured workspace."),
-            "include_tree": _boolean_arg("Include a bounded repository tree. Default: true."),
+            "include_tree": _boolean_arg("Include a bounded repository tree. Default: false; use tree/codex_repo_tree for focused tree checks."),
             "max_depth": _integer_arg("Maximum tree depth. Capped by server policy."),
             "max_entries": _integer_arg("Maximum tree entries. Capped by server policy."),
             "include_hidden": _boolean_arg("Include hidden files when not blocked by safety rules. Default: false."),
@@ -1173,7 +1173,7 @@ ALIAS_INPUT_SCHEMAS = {
         {
             **_repo_selector_properties(),
             "path": _string_arg("Compatibility alias for root/repo_path."),
-            "include_tree": _boolean_arg("Include a bounded repository tree. Default: true."),
+            "include_tree": _boolean_arg("Include a bounded repository tree. Default: false; use tree/codex_repo_tree for focused tree checks."),
             "max_depth": _integer_arg("Maximum tree depth. Capped by server policy."),
             "max_files": _integer_arg("Compatibility alias for max_entries."),
             "max_entries": _integer_arg("Maximum tree entries. Capped by server policy."),
@@ -2220,12 +2220,6 @@ def _validate_any_of_required(value: Dict[str, Any], any_of: list[Dict[str, Any]
 
 def _unknown_argument_message(tool_name: str, argument_name: str) -> str:
     """Return a tool-specific validation hint for common ChatGPT schema mistakes."""
-    if tool_name == "codex_worker_options" and argument_name == "repo_path":
-        return (
-            "Unknown argument 'repo_path' for codex_worker_options. "
-            "codex_worker_options is a runtime/model menu; call it without repo_path, "
-            "then pass the selected model or reasoning_effort to codex_worker_start or codex_worker_message."
-        )
     return f"Unknown argument '{argument_name}'"
 
 

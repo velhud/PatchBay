@@ -281,6 +281,8 @@ class ToolHandler:
             context_detail=args.get("context_detail", "report"),
             model=args.get("model"),
             reasoning_effort=args.get("reasoning_effort"),
+            auto_suffix=bool(args.get("auto_suffix", False)),
+            include_untracked_from_base=args.get("include_untracked_from_base"),
             request_context=self.current_request_context(),
         )
 
@@ -349,6 +351,7 @@ class ToolHandler:
             start_line=args.get("start_line"),
             end_line=args.get("end_line"),
             max_bytes=args.get("max_bytes"),
+            accepted_dirty_base=args.get("accepted_dirty_base"),
             request_context=self.current_request_context(),
         )
 
@@ -358,6 +361,7 @@ class ToolHandler:
             worker=args["worker"],
             repo_path=self._repo_from_args(args),
             allow_dirty_base=bool(args.get("allow_dirty_base", False)),
+            accepted_dirty_base=args.get("accepted_dirty_base"),
             request_context=self.current_request_context(),
             takeover=bool(args.get("takeover", False)),
             takeover_reason=args.get("takeover_reason", ""),

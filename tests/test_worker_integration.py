@@ -203,6 +203,69 @@ async def test_integration_refuses_dirty_base_by_default(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_integration_accepts_named_dirty_base_patterns(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(name="Implementer", brief="Edit readme.", repo_path=config["repositories"]["default"])
+    await asyncio.sleep(0)
+    job = next(job for job in manager.jobs.values() if (job.options or {}).get("_worker_id") == started["worker_id"])
+    Path(job.worktree_path, "worker-note.txt").write_text("from worker\n", encoding="utf-8")
+    manager.update_job_state(job.job_id, JobState.COMPLETED, result={"summary": "Created note"}, session_id="session-1")
+
+    base = Path(config["repositories"]["default"])
+    accepted = base / "dev" / "big_update"
+    accepted.mkdir(parents=True)
+    (accepted / "00-phase-one.md").write_text("accepted phase artifact\n", encoding="utf-8")
+
+    blocked_preview = await runtime.inspect_worker(worker="Implementer", view="integration_preview")
+    assert blocked_preview["can_apply"] is False
+    assert blocked_preview["unexpected_base_changed_files"] == ["dev/big_update/00-phase-one.md"]
+
+    preview = await runtime.inspect_worker(
+        worker="Implementer",
+        view="integration_preview",
+        accepted_dirty_base=["dev/big_update/00-*.md"],
+    )
+    assert preview["can_apply"] is True
+    assert preview["accepted_dirty_base_files"] == ["dev/big_update/00-phase-one.md"]
+    assert preview["unexpected_base_changed_files"] == []
+
+    applied = await runtime.integrate_worker(worker="Implementer", accepted_dirty_base=["dev/big_update/00-*.md"])
+    assert applied["applied"] is True
+    assert (base / "worker-note.txt").read_text(encoding="utf-8") == "from worker\n"
+
+
+@pytest.mark.asyncio
+async def test_isolated_worker_can_copy_selected_untracked_base_files(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    base = Path(config["repositories"]["default"])
+    docs = base / "dev" / "big_update"
+    docs.mkdir(parents=True)
+    (docs / "00-phase-one.md").write_text("phase one context\n", encoding="utf-8")
+    (docs / "scratch.md").write_text("not accepted\n", encoding="utf-8")
+
+    started = await runtime.start_worker(
+        name="Context Worker",
+        brief="Use accepted docs.",
+        repo_path=config["repositories"]["default"],
+        include_untracked_from_base=["dev/big_update/00-*.md"],
+    )
+    await asyncio.sleep(0)
+    job = next(job for job in manager.jobs.values() if (job.options or {}).get("_worker_id") == started["worker_id"])
+
+    assert Path(job.worktree_path, "dev/big_update/00-phase-one.md").read_text(encoding="utf-8") == "phase one context\n"
+    assert not Path(job.worktree_path, "dev/big_update/scratch.md").exists()
+    assert job.options["_worker_included_untracked_base_files"] == ["dev/big_update/00-phase-one.md"]
+
+
+@pytest.mark.asyncio
 async def test_integration_preview_reports_conflict_without_mutating_base(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

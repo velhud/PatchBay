@@ -253,7 +253,7 @@ class WorkspaceContext:
     def open_summary(self, args: Dict[str, Any]) -> Dict[str, Any]:
         workspace = self.open_workspace(args.get("repo"))
         tree = None
-        if args.get("include_tree", True):
+        if args.get("include_tree", False):
             tree = self.repo_tree(
                 {
                     "repo": str(workspace.root),

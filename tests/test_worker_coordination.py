@@ -148,6 +148,49 @@ async def test_peer_diff_context_is_bounded_and_workspace_relative(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_peer_review_context_includes_diff_and_visibility_note(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    implementer = await runtime.start_worker(
+        name="Review Target",
+        brief="Create a file.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="isolated_write",
+    )
+    await asyncio.sleep(0)
+    implementer_job = manager.get_job(executor.started[-1])
+    worktree = Path(implementer_job.worktree_path)
+    (worktree / "review-me.txt").write_text("review-grade-change\n", encoding="utf-8")
+    manager.update_job_state(
+        implementer_job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Created review-me.txt", "files_changed": ["review-me.txt"]},
+        session_id="session-review-target",
+        exit_code=0,
+    )
+
+    reviewer = await runtime.start_worker(
+        name="Review Context Reader",
+        brief="Review the peer worker result.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        context_from_workers=[implementer["worker_id"]],
+        context_detail="review",
+    )
+    await asyncio.sleep(0)
+    reviewer_job = manager.get_job(executor.started[-1])
+
+    assert reviewer["context_detail"] == "review"
+    assert "Bounded diff:" in reviewer_job.prompt
+    assert "+review-grade-change" in reviewer_job.prompt
+    assert "Review note:" in reviewer_job.prompt
+    assert str(worktree) not in reviewer_job.prompt
+
+
+@pytest.mark.asyncio
 async def test_message_worker_can_relay_context_from_another_worker(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

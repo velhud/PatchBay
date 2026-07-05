@@ -553,7 +553,13 @@ def run_trial(
         evidence="Self-test reported the loopback direct connection ready.",
     )
 
-    workspace = structured(client.call_tool(6, "codex_open_workspace", {"repo_path": str(repo), "include_global_skills": False}))
+    workspace = structured(
+        client.call_tool(
+            6,
+            "codex_open_workspace",
+            {"repo_path": str(repo), "include_tree": True, "include_global_skills": False},
+        )
+    )
     recorder.check(
         "open_workspace",
         workspace.get("git", {}).get("is_git_repo") is True

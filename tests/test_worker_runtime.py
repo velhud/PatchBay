@@ -727,6 +727,33 @@ async def test_message_does_not_create_a_queue_while_worker_is_busy(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_worker_can_auto_suffix_existing_name(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    first = await runtime.start_worker(
+        name="Repeat Phase Worker",
+        brief="First run.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    second = await runtime.start_worker(
+        name="Repeat Phase Worker",
+        brief="Second run.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        auto_suffix=True,
+    )
+
+    assert first["accepted"] is True
+    assert second["accepted"] is True
+    assert second["name"].startswith("Repeat Phase Worker ")
+    assert second["name"] != first["name"]
+
+
+@pytest.mark.asyncio
 async def test_running_worker_public_view_exposes_liveness_and_checkpoints(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -851,6 +878,10 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert first["since_last_check"]["first_check"] is True
     assert "baseline recorded" in first["since_last_check_line"]
     assert first["worker_lines"][0].startswith("Delta Worker: active")
+    assert "rg worker runtime" not in first["worker_lines"][0]
+    assert first["workers"][0]["current_command"]["running"] is True
+    assert first["workers"][0]["current_command"]["kind"] == "shell_command"
+    assert "preview" not in first["workers"][0]["current_command"]
     assert first["minimum_next_poll_seconds"] == 20
     assert first["recommended_next_poll_seconds"] == 30
     assert "20-30 seconds" in first["poll_guidance"]
@@ -978,6 +1009,43 @@ async def test_completed_worker_report_exposes_detailed_evidence_fields(tmp_path
     assert view["report_artifacts"][0]["risk_count"] == 1
     assert view["report_artifacts"][0]["open_question_count"] == 1
     assert "detailed_report" in view["report_artifacts"][0]["fields_present"]
+
+
+@pytest.mark.asyncio
+async def test_unstructured_worker_result_surfaces_preserved_output(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Unstructured Reporter",
+        brief="Finish without schema.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={
+            "summary": "No final structured worker report was captured, but PatchBay preserved bounded raw Codex output for manager inspection.",
+            "files_changed": [],
+            "notes": "Could not extract a final structured Codex result event.",
+            "final_structured_result": False,
+            "raw_output_available": True,
+            "stdout_preview": "I inspected the dataflow and found the batch importer route.",
+        },
+        session_id="session-unstructured",
+    )
+
+    view = await runtime.inspect_worker(worker=started["worker_id"])
+
+    assert "preserved bounded raw Codex output" in view["report"]
+    assert "Preserved raw-output preview" in view["report"]
+    assert "batch importer route" in view["report"]
+    assert view["report_artifacts"][0]["final_structured_result"] is False
+    assert view["report_artifacts"][0]["stdout_preview_available"] is True
 
 
 @pytest.mark.asyncio

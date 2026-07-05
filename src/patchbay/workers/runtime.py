@@ -13,6 +13,7 @@ import fnmatch
 import hashlib
 import logging
 import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -68,7 +69,7 @@ DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 30
 DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 20
 MAX_STATUS_LINE_CHARS = 260
 MAX_PARTIAL_NOTE_PREVIEW_CHARS = 220
-WORKER_CONTEXT_DETAILS = {"report", "changes", "diff"}
+WORKER_CONTEXT_DETAILS = {"report", "changes", "diff", "review"}
 ARTIFACT_CONTEXT_DIR = ".ai-bridge/imported-artifacts"
 PRIVATE_BRANCH_PATTERN = re.compile(r"\bcodex/(?:worker|job)-[A-Za-z0-9._/-]+\b")
 UUID_PATTERN = re.compile(
@@ -133,6 +134,8 @@ class WorkerRuntime:
         context_detail: str = "report",
         model: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        auto_suffix: bool = False,
+        include_untracked_from_base: Optional[list[str]] = None,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         self._reconcile_active_jobs()
@@ -151,13 +154,21 @@ class WorkerRuntime:
         )
         worker_context = self._worker_context_prompt(context_from_workers, detail=context_detail, repo_path=repo_path)
         if self._find_jobs_by_name(worker_name, repo_path=repo_path):
-            raise ValueError(
-                f"A worker named {worker_name!r} already exists in this workspace. Continue it with "
-                "codex_worker_message or choose another human-readable name for this workspace."
-            )
+            if auto_suffix:
+                worker_name = self._unique_worker_name(worker_name, repo_path=repo_path)
+            else:
+                raise ValueError(
+                    f"A worker named {worker_name!r} already exists in this workspace. Continue it with "
+                    "codex_worker_message, pass auto_suffix=true, or choose another human-readable name for this workspace."
+                )
 
         worker_id = f"wrk_{uuid.uuid4().hex[:20]}"
-        workspace = self._prepare_workspace(worker_id=worker_id, repo_path=repo_path, workspace_mode=workspace_mode)
+        workspace = self._prepare_workspace(
+            worker_id=worker_id,
+            repo_path=repo_path,
+            workspace_mode=workspace_mode,
+            include_untracked_from_base=include_untracked_from_base,
+        )
         try:
             artifact_context = self._artifact_context_prompt(artifact_ids, repo_path=repo_path, workspace=workspace)
             context = self._merge_contexts(worker_context, artifact_context)
@@ -365,6 +376,7 @@ class WorkerRuntime:
         start_line: Optional[int] = None,
         end_line: Optional[int] = None,
         max_bytes: Optional[int] = None,
+        accepted_dirty_base: Optional[list[str]] = None,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         wait_seconds = max(0, min(int(wait_seconds or 0), MAX_INSPECT_WAIT_SECONDS))
@@ -397,7 +409,11 @@ class WorkerRuntime:
                         request_context=request_context,
                     )
                 if view == "integration_preview":
-                    return self._integration_preview(jobs, request_context=request_context)
+                    return self._integration_preview(
+                        jobs,
+                        accepted_dirty_base=accepted_dirty_base,
+                        request_context=request_context,
+                    )
                 raise ValueError("view must be one of: report, compact, status, changes, diff, file, integration_preview")
             await asyncio.sleep(0.25)
 
@@ -638,6 +654,7 @@ class WorkerRuntime:
         worker: str,
         repo_path: Optional[str] = None,
         allow_dirty_base: bool = False,
+        accepted_dirty_base: Optional[list[str]] = None,
         request_context: Optional[RequestContext] = None,
         takeover: bool = False,
         takeover_reason: str = "",
@@ -660,7 +677,12 @@ class WorkerRuntime:
         base_repo = self._validated_base_repo(workspace)
         try:
             async with self.repo_locks.hold(base_repo, operation="codex_worker_integrate"):
-                preview = self._integration_preview(jobs, allow_dirty_base=allow_dirty_base, request_context=request_context)
+                preview = self._integration_preview(
+                    jobs,
+                    allow_dirty_base=allow_dirty_base,
+                    accepted_dirty_base=accepted_dirty_base,
+                    request_context=request_context,
+                )
                 if not preview.get("can_apply"):
                     preview.update(
                         {
@@ -860,6 +882,8 @@ class WorkerRuntime:
             options[WORKER_BRANCH_OPTION] = workspace["branch_name"]
         if workspace.get("base_revision"):
             options[WORKER_BASE_REVISION_OPTION] = workspace["base_revision"]
+        if workspace.get("included_untracked_from_base"):
+            options["_worker_included_untracked_base_files"] = list(workspace["included_untracked_from_base"])
         if workspace.get("discarded"):
             options[WORKER_WORKSPACE_DISCARDED_OPTION] = True
         return merge_owner_metadata(options, request_context, existing=existing_options)
@@ -903,7 +927,7 @@ class WorkerRuntime:
     def _validate_context_detail(self, value: str) -> str:
         detail = str(value or "report").strip().lower()
         if detail not in WORKER_CONTEXT_DETAILS:
-            raise ValueError("context_detail must be one of: report, changes, diff")
+            raise ValueError("context_detail must be one of: report, changes, diff, review")
         return detail
 
     def _normalize_context_workers(self, workers: Optional[list[str]]) -> list[str]:
@@ -955,7 +979,7 @@ class WorkerRuntime:
                 "Latest report:",
                 self._clip_text(view.get("report") or "No report yet.", MAX_CONTEXT_REPORT_CHARS),
             ]
-            if detail in {"changes", "diff"}:
+            if detail in {"changes", "diff", "review"}:
                 changes = self._changes_view(jobs)
                 changed_files = changes.get("changed_files") or []
                 if changed_files:
@@ -964,7 +988,7 @@ class WorkerRuntime:
                         lines.append(f"- ... {len(changed_files) - 80} more file(s) omitted")
                 else:
                     lines.append("Changed files: none reported.")
-            if detail == "diff":
+            if detail in {"diff", "review"}:
                 diff_text, diff_truncated = self._context_diff_for_jobs(jobs, byte_budget=max(0, MAX_CONTEXT_DIFF_BYTES - used_bytes))
                 truncated = truncated or diff_truncated
                 if diff_text:
@@ -972,6 +996,12 @@ class WorkerRuntime:
                     used_bytes += len(diff_text.encode("utf-8", errors="replace"))
                 else:
                     lines.append("Bounded diff: no diff available for this worker.")
+                if detail == "review":
+                    lines.append(
+                        "Review note: this is review-grade peer context. Use the report, changed-file list, "
+                        "and bounded diff as the review surface; worker files are not mounted into this worker's "
+                        "checkout unless they have been explicitly integrated or supplied as artifacts."
+                    )
             block = "\n".join(lines).strip()
             sections.append(block)
             used_bytes += len(block.encode("utf-8", errors="replace"))
@@ -1116,13 +1146,21 @@ class WorkerRuntime:
             raise ValueError("workspace_mode must be one of: isolated_write, read_only, shared_write")
         return mode
 
-    def _prepare_workspace(self, *, worker_id: str, repo_path: str, workspace_mode: str) -> Dict[str, Any]:
+    def _prepare_workspace(
+        self,
+        *,
+        worker_id: str,
+        repo_path: str,
+        workspace_mode: str,
+        include_untracked_from_base: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
         workspace: Dict[str, Any] = {
             "mode": workspace_mode,
             "base_repo_path": str(Path(repo_path).expanduser().resolve()),
             "worktree_path": None,
             "branch_name": None,
             "base_revision": None,
+            "included_untracked_from_base": [],
             "available": True,
             "discarded": False,
         }
@@ -1135,7 +1173,99 @@ class WorkerRuntime:
                     "base_revision": base_revision,
                 }
             )
+            workspace["included_untracked_from_base"] = self._copy_selected_untracked_from_base(
+                base_repo=repo_path,
+                worktree_path=str(worktree_path),
+                patterns=include_untracked_from_base,
+            )
         return workspace
+
+    def _normalize_glob_patterns(self, patterns: Optional[list[str]], *, field_name: str) -> list[str]:
+        if not patterns:
+            return []
+        if not isinstance(patterns, list):
+            raise ValueError(f"{field_name} must be an array of workspace-relative glob patterns")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in patterns:
+            value = str(raw or "").strip().replace("\\", "/")
+            if not value:
+                continue
+            if value.startswith("/") or value.startswith("../") or "/../" in value or value == "..":
+                raise ValueError(f"{field_name} entries must be workspace-relative glob patterns")
+            if value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized
+
+    def _unique_worker_name(self, base_name: str, *, repo_path: Optional[str]) -> str:
+        candidate_base = self._clip_status_line(base_name, max_chars=max(1, MAX_WORKER_NAME_CHARS - 18)).rstrip()
+        suffix = time.strftime("%Y%m%d-%H%M%S")
+        candidate = self._validate_name(f"{candidate_base} {suffix}")
+        counter = 2
+        while self._find_jobs_by_name(candidate, repo_path=repo_path):
+            candidate = self._validate_name(f"{candidate_base} {suffix}-{counter}")
+            counter += 1
+        return candidate
+
+    def _git_untracked_files(self, base_repo: str) -> list[str]:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=base_repo,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        paths: list[str] = []
+        for line in result.stdout.splitlines():
+            if not line.startswith("?? "):
+                continue
+            path = line[3:].strip().replace("\\", "/")
+            if path:
+                paths.append(path)
+        return sorted(dict.fromkeys(paths))
+
+    def _path_matches_any(self, rel_path: str, patterns: list[str]) -> bool:
+        normalized = rel_path.replace("\\", "/")
+        for pattern in patterns:
+            clean = str(pattern).replace("\\", "/")
+            if fnmatch.fnmatch(normalized, clean) or fnmatch.fnmatch(f"./{normalized}", clean):
+                return True
+        return False
+
+    def _copy_selected_untracked_from_base(
+        self,
+        *,
+        base_repo: str,
+        worktree_path: str,
+        patterns: Optional[list[str]],
+    ) -> list[str]:
+        normalized_patterns = self._normalize_glob_patterns(patterns, field_name="include_untracked_from_base")
+        if not normalized_patterns:
+            return []
+        untracked = [path for path in self._git_untracked_files(base_repo) if self._path_matches_any(path, normalized_patterns)]
+        blocked = set(self._blocked_changed_files(untracked))
+        copied: list[str] = []
+        base_root = Path(base_repo).expanduser().resolve()
+        worker_root = Path(worktree_path).expanduser().resolve()
+        for rel_path in untracked:
+            if rel_path in blocked:
+                continue
+            source = (base_root / rel_path).resolve()
+            target = (worker_root / rel_path).resolve()
+            if not str(source).startswith(str(base_root) + "/"):
+                continue
+            if not str(target).startswith(str(worker_root) + "/"):
+                continue
+            if not source.is_file():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            copied.append(rel_path)
+        return copied
 
     def _discard_prepared_workspace(self, workspace: Dict[str, Any]) -> None:
         """Roll back a worker workspace that was created before durable job registration failed."""
@@ -1510,10 +1640,27 @@ class WorkerRuntime:
             "suggested_action": liveness.get("suggested_action"),
             "last_activity_age_seconds": liveness.get("last_activity_age_seconds"),
             "latest_event": latest_turn.get("last_event") or liveness.get("last_event"),
-            "current_command_preview": latest_turn.get("current_command_preview") or liveness.get("current_command_preview"),
-            "current_command_elapsed_seconds": latest_turn.get("current_command_elapsed_seconds") or liveness.get("current_command_elapsed_seconds"),
+            "current_command": self._manager_command_snapshot(view),
             "latest_partial_note": view.get("latest_partial_note"),
             "activity_since_last_check": view.get("activity_since_last_check"),
+        }
+
+    def _manager_command_snapshot(self, view: Dict[str, Any]) -> Dict[str, Any]:
+        latest_turn = view.get("latest_turn") if isinstance(view.get("latest_turn"), dict) else {}
+        liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+        preview = latest_turn.get("current_command_preview") or liveness.get("current_command_preview") or ""
+        elapsed = latest_turn.get("current_command_elapsed_seconds") or liveness.get("current_command_elapsed_seconds")
+        return {
+            "running": bool(preview),
+            "kind": "shell_command" if preview else "",
+            "elapsed_seconds": elapsed,
+            "preview_available_in_status_view": bool(preview),
+            "manager_note": (
+                "A shell command is running. Compact status intentionally omits raw command text; "
+                "inspect view=status only for deliberate debugging."
+                if preview
+                else ""
+            ),
         }
 
     def _compact_worker_view(self, view: Dict[str, Any]) -> Dict[str, Any]:
@@ -1534,10 +1681,7 @@ class WorkerRuntime:
             "last_activity_age_seconds": liveness.get("last_activity_age_seconds"),
             "since_last_check": view.get("activity_since_last_check"),
             "latest_event": latest_turn.get("last_event") or liveness.get("last_event"),
-            "current_command": {
-                "preview": latest_turn.get("current_command_preview") or liveness.get("current_command_preview") or "",
-                "elapsed_seconds": latest_turn.get("current_command_elapsed_seconds") or liveness.get("current_command_elapsed_seconds"),
-            },
+            "current_command": self._manager_command_snapshot(view),
             "latest_partial_note": view.get("latest_partial_note"),
             "report_files_note": view.get("worker_report_files_note"),
             "suggested_action": liveness.get("suggested_action"),
@@ -1559,10 +1703,11 @@ class WorkerRuntime:
         delta_line = str(delta.get("line") or "baseline recorded")
         action = str(liveness.get("suggested_action") or "inspect")
         partial = view.get("latest_partial_note") if isinstance(view.get("latest_partial_note"), dict) else {}
-        current_command = latest_turn.get("current_command_preview") or liveness.get("current_command_preview") or ""
+        command_snapshot = self._manager_command_snapshot(view)
         detail = ""
-        if current_command:
-            detail = f"command {self._clip_status_line(str(current_command), max_chars=80)}"
+        if command_snapshot.get("running"):
+            elapsed = self._format_age(command_snapshot.get("elapsed_seconds"))
+            detail = f"shell command running for {elapsed}"
         elif partial.get("available"):
             detail = f"partial note {self._format_age(partial.get('age_seconds'))} ago"
         else:
@@ -1920,6 +2065,7 @@ class WorkerRuntime:
         jobs: list[JobInfo],
         *,
         allow_dirty_base: bool = False,
+        accepted_dirty_base: Optional[list[str]] = None,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         view = self._changes_view(jobs, request_context=request_context)
@@ -1934,6 +2080,9 @@ class WorkerRuntime:
                 "base_dirty": False,
                 "base_moved": False,
                 "base_changed_files": [],
+                "accepted_dirty_base": [],
+                "accepted_dirty_base_files": [],
+                "unexpected_base_changed_files": [],
                 "skipped_files": [],
                 "blocked_files": [],
             }
@@ -1968,6 +2117,9 @@ class WorkerRuntime:
         base_repo = self._validated_base_repo(workspace)
         base_changed = self._base_changed_files(base_repo)
         base_dirty = bool(base_changed)
+        accepted_patterns = self._normalize_glob_patterns(accepted_dirty_base, field_name="accepted_dirty_base")
+        accepted_base_files = [path for path in base_changed if self._path_matches_any(path, accepted_patterns)]
+        unexpected_base_files = [path for path in base_changed if path not in set(accepted_base_files)]
         base_head = self._git_head(base_repo)
         worker_base = str(workspace.get("base_revision") or "")
         base_moved = bool(worker_base and base_head and worker_base != base_head)
@@ -1975,13 +2127,19 @@ class WorkerRuntime:
             {
                 "base_dirty": base_dirty,
                 "base_changed_files": base_changed,
+                "accepted_dirty_base": accepted_patterns,
+                "accepted_dirty_base_files": accepted_base_files,
+                "unexpected_base_changed_files": unexpected_base_files,
                 "base_moved": base_moved,
                 "base_revision": base_head[:12] if base_head else "",
                 "worker_base_revision": worker_base[:12] if worker_base else "",
             }
         )
-        if base_dirty and not allow_dirty_base:
-            view["note"] = "The base checkout has local changes. Commit, stash, or pass allow_dirty_base=true for an explicit expert override."
+        if base_dirty and unexpected_base_files and not allow_dirty_base:
+            view["note"] = (
+                "The base checkout has local changes outside accepted_dirty_base. Commit, stash, pass "
+                "accepted_dirty_base for known phase artifacts, or pass allow_dirty_base=true for an explicit expert override."
+            )
             return view
 
         patch, patch_info = self._integration_patch(jobs)
@@ -2108,7 +2266,7 @@ class WorkerRuntime:
 
     def _base_changed_files(self, base_repo: str) -> list[str]:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=base_repo,
             capture_output=True,
             text=True,
@@ -2338,8 +2496,16 @@ class WorkerRuntime:
                         "evidence_count": self._list_field_count(job.result.get("evidence")),
                         "risk_count": self._list_field_count(job.result.get("risks")),
                         "open_question_count": self._list_field_count(job.result.get("open_questions")),
+                        "final_structured_result": bool(job.result.get("final_structured_result", True)),
+                        "raw_output_available": bool(job.result.get("raw_output_available")),
+                        "stdout_preview_available": bool(job.result.get("stdout_preview")),
+                        "result_source": str(job.result.get("result_source") or ""),
                         "location": "patchbay_runtime",
-                        "note": "Structured worker report is exposed through the report field; raw runtime files stay local.",
+                        "note": (
+                            "Structured worker report is exposed through the report field; raw runtime files stay local."
+                            if job.result.get("final_structured_result", True)
+                            else "Worker did not emit the final structured schema; PatchBay preserved bounded fallback evidence."
+                        ),
                     }
                 )
             checkpoint_count = len(job.checkpoints) if isinstance(job.checkpoints, list) else 0
@@ -2787,6 +2953,12 @@ class WorkerRuntime:
         notes = result.get("notes")
         if isinstance(notes, str) and notes.strip():
             parts.append(f"Notes: {notes.strip()}")
+        if result.get("final_structured_result") is False and result.get("raw_output_available"):
+            preview = str(result.get("stdout_preview") or "").strip()
+            if preview:
+                parts.append("Preserved raw-output preview: " + self._clip_text(preview, 1800))
+            else:
+                parts.append("PatchBay preserved raw Codex output, but no bounded preview was available in the report payload.")
         risks = result.get("risks")
         if isinstance(risks, list):
             clean_risks = [str(item).strip() for item in risks if str(item).strip()]
