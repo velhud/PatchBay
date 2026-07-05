@@ -17,7 +17,9 @@ def resolve_codex_home(
         power_tools = config.get("power_tools")
         if isinstance(power_tools, Mapping):
             configured = str(power_tools.get("codex_home") or "").strip()
-    selected = configured or str(env.get("CODEX_HOME") or "").strip() or "~/.codex"
+    selected = configured or str(env.get("CODEX_HOME") or "").strip()
+    if not selected:
+        return (Path.home() / ".codex").resolve(strict=False)
     return Path(os.path.expandvars(selected)).expanduser().resolve(strict=False)
 
 
