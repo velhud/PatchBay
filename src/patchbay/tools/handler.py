@@ -216,7 +216,10 @@ class ToolHandler:
                 "ChatGPT conversations and MCP clients. Read/list/inspect may show shared state; cross-owner "
                 "mutations require explicit takeover when ownership checks apply. active_mcp_sessions counts "
                 "known transport sessions, and ChatGPT may create many short sessions; worker ownership is "
-                "based on owner_scope/client owner metadata, not this count by itself."
+                "based on owner_scope/client owner metadata, not this count by itself. When ChatGPT provides "
+                "openai/session metadata, PatchBay hashes it into chatgpt_session_ref and uses a separate "
+                "work_run_ref to keep current status focused while preserving older workers for explicit "
+                "conversation/history scopes."
             ),
         }
         status["jobs"] = {
@@ -312,6 +315,7 @@ class ToolHandler:
             include_stopped=bool(args.get("include_stopped", True)),
             owned_only=bool(args.get("owned_only", False)),
             created_after=args.get("created_after"),
+            scope=args.get("scope", "current"),
             request_context=self.current_request_context(),
         )
 
@@ -324,6 +328,7 @@ class ToolHandler:
             include_stopped=bool(args.get("include_stopped", False)),
             owned_only=bool(args.get("owned_only", False)),
             created_after=args.get("created_after"),
+            scope=args.get("scope", "current"),
             force_refresh=bool(args.get("force_refresh", False)),
             request_context=self.current_request_context(),
         )
@@ -337,6 +342,7 @@ class ToolHandler:
             include_stopped=bool(args.get("include_stopped", False)),
             owned_only=bool(args.get("owned_only", False)),
             created_after=args.get("created_after"),
+            scope=args.get("scope", "current"),
             wait_seconds=args.get("wait_seconds"),
             request_context=self.current_request_context(),
         )

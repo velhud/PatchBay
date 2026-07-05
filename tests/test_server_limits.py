@@ -124,3 +124,45 @@ def test_mcp_http_sessions_keep_tool_modes_separate():
             server.config["app"]["tool_mode"] = original_mode
         server.sessions.clear()
         server.sessions.update(original_sessions)
+
+
+def test_mcp_hashes_chatgpt_session_metadata_across_short_transports():
+    original_sessions = dict(server.sessions)
+    original_work_runs = dict(server.work_runs)
+    server.sessions.clear()
+    server.work_runs.clear()
+    client = TestClient(server.app)
+    try:
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "codex_self_test",
+                "arguments": {},
+                "_meta": {
+                    "openai/session": "chatgpt-conversation-raw",
+                    "openai/subject": "chatgpt-user-raw",
+                },
+            },
+        }
+        first = _mcp_post(client, message)
+        second = _mcp_post(client, {**message, "id": 2})
+
+        first_coordination = first.json()["result"]["structuredContent"]["coordination"]
+        second_coordination = second.json()["result"]["structuredContent"]["coordination"]
+        first_client = first_coordination["client"]
+        second_client = second_coordination["client"]
+
+        assert first_client["chatgpt_session_ref"].startswith("chatgpt_session_")
+        assert first_client["chatgpt_subject_ref"].startswith("chatgpt_subject_")
+        assert first_client["chatgpt_session_ref"] == second_client["chatgpt_session_ref"]
+        assert first_client["work_run_ref"] == second_client["work_run_ref"]
+        assert first_client["work_run_ref"].startswith("run_")
+        assert "chatgpt-conversation-raw" not in str(first_coordination)
+        assert "chatgpt-user-raw" not in str(first_coordination)
+    finally:
+        server.sessions.clear()
+        server.sessions.update(original_sessions)
+        server.work_runs.clear()
+        server.work_runs.update(original_work_runs)

@@ -50,9 +50,15 @@ WORKER_BASE_REVISION_OPTION = "_worker_base_revision"
 WORKER_WORKSPACE_DISCARDED_OPTION = "_worker_workspace_discarded"
 WORKER_MODEL_OPTION = "_worker_model"
 WORKER_REASONING_EFFORT_OPTION = "_worker_reasoning_effort"
+WORKER_CHATGPT_SESSION_REF_OPTION = "_worker_chatgpt_session_ref"
+WORKER_CHATGPT_SUBJECT_REF_OPTION = "_worker_chatgpt_subject_ref"
+WORKER_WORK_RUN_REF_OPTION = "_worker_work_run_ref"
+WORKER_WORK_RUN_STARTED_AT_OPTION = "_worker_work_run_started_at"
+WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION = "_worker_work_run_last_activity_at"
 WORKER_INCLUDED_UNTRACKED_BASE_FILES_OPTION = "_worker_included_untracked_base_files"
 WORKER_INCLUDED_UNTRACKED_BASE_DIGESTS_OPTION = "_worker_included_untracked_base_digests"
 WORKER_WORKSPACE_MODES = {"isolated_write", "read_only", "shared_write"}
+WORKER_VISIBILITY_SCOPES = {"current", "conversation", "recent", "history", "all"}
 MAX_WORKER_NAME_CHARS = 120
 MAX_WORKER_MESSAGE_CHARS = 200_000
 MAX_PUBLIC_REPORT_CHARS = 24_000
@@ -69,6 +75,7 @@ DEFAULT_HEARTBEAT_QUIET_SECONDS = 600
 DEFAULT_STOP_ARTIFACT_WAIT_SECONDS = 2.0
 DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 30
 DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 20
+DEFAULT_WORKER_RECENT_SCOPE_SECONDS = 4 * 60 * 60
 MAX_STATUS_LINE_CHARS = 260
 MAX_PARTIAL_NOTE_PREVIEW_CHARS = 220
 WORKER_CONTEXT_DETAILS = {"report", "changes", "diff", "review"}
@@ -427,6 +434,7 @@ class WorkerRuntime:
         include_stopped: bool = True,
         owned_only: bool = False,
         created_after: Optional[float] = None,
+        scope: str = "history",
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         self._reconcile_active_jobs()
@@ -446,6 +454,12 @@ class WorkerRuntime:
             self._public_view(jobs, request_context=request_context, include_change_state=False)
             for jobs in groups
         ]
+        scope = self._normalize_worker_scope(scope)
+        views, scope_info = self._apply_worker_scope(
+            views,
+            scope=scope,
+            request_context=request_context,
+        )
         if active_only:
             views = [item for item in views if item["state"] in {"starting", "working"}]
         if not include_stopped:
@@ -454,12 +468,21 @@ class WorkerRuntime:
             views = [item for item in views if item.get("owned_by_current_client") is True]
         views.sort(key=lambda item: (item["state"] not in {"starting", "working"}, item["name"].casefold()))
         team_status = self._annotate_worker_deltas(views, request_context=request_context)
+        team_report = self._team_report(views, team_status=team_status)
+        hidden_count = int(scope_info["hidden_workers"]["count"])
+        if hidden_count:
+            team_report += (
+                f"\nHistorical workers hidden by scope={scope_info['applied']}: {hidden_count}. "
+                "Use scope=conversation, scope=recent, or scope=history when you intentionally need them."
+            )
         return {
             "workers": views,
             "count": len(views),
             "active": sum(1 for item in views if item["state"] in {"starting", "working"}),
+            "scope": scope_info,
+            "hidden_workers": scope_info["hidden_workers"],
             "team_status": team_status,
-            "team_report": self._team_report(views, team_status=team_status),
+            "team_report": team_report,
         }
 
     async def worker_status(
@@ -470,6 +493,7 @@ class WorkerRuntime:
         include_stopped: bool = False,
         owned_only: bool = False,
         created_after: Optional[float] = None,
+        scope: str = "history",
         force_refresh: bool = False,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
@@ -481,6 +505,7 @@ class WorkerRuntime:
             include_stopped=include_stopped,
             owned_only=owned_only,
             created_after=created_after,
+            scope=scope,
             request_context=request_context,
         )
         now = time.time()
@@ -512,6 +537,7 @@ class WorkerRuntime:
             include_stopped=include_stopped,
             owned_only=owned_only,
             created_after=created_after,
+            scope=scope,
             request_context=request_context,
         )
         team_status = listed["team_status"]
@@ -529,6 +555,8 @@ class WorkerRuntime:
             "count": listed["count"],
             "active": int(team_status["counts"]["active"]),
             "active_turns": listed["active"],
+            "scope": listed["scope"],
+            "hidden_workers": listed["hidden_workers"],
             "poll_too_early": False,
             "status_current": True,
             "seconds_since_last_poll": None,
@@ -545,6 +573,7 @@ class WorkerRuntime:
         include_stopped: bool = False,
         owned_only: bool = False,
         created_after: Optional[float] = None,
+        scope: str = "history",
         wait_seconds: Optional[int] = None,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
@@ -564,6 +593,7 @@ class WorkerRuntime:
             include_stopped=include_stopped,
             owned_only=owned_only,
             created_after=created_after,
+            scope=scope,
             force_refresh=True,
             request_context=request_context,
         )
@@ -739,6 +769,7 @@ class WorkerRuntime:
         if takeover:
             options["_mcp_takeover_reason"] = clean_takeover_reason(takeover_reason)
             options["_mcp_takeover_at"] = time.time()
+        options.update(self._request_interaction_metadata(request_context, existing=latest.options or {}))
         self.job_manager.update_job_options(latest.job_id, options)
 
         applied = self._public_view(self._resolve_worker(worker, repo_path=repo_path), request_context=request_context)
@@ -898,7 +929,39 @@ class WorkerRuntime:
             options[WORKER_INCLUDED_UNTRACKED_BASE_DIGESTS_OPTION] = dict(workspace["included_untracked_from_base_digests"])
         if workspace.get("discarded"):
             options[WORKER_WORKSPACE_DISCARDED_OPTION] = True
+        options.update(self._request_interaction_metadata(request_context, existing=existing_options))
         return merge_owner_metadata(options, request_context, existing=existing_options)
+
+    def _request_interaction_metadata(
+        self,
+        request_context: Optional[RequestContext],
+        *,
+        existing: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        existing = existing or {}
+        for key in (
+            WORKER_CHATGPT_SESSION_REF_OPTION,
+            WORKER_CHATGPT_SUBJECT_REF_OPTION,
+            WORKER_WORK_RUN_REF_OPTION,
+            WORKER_WORK_RUN_STARTED_AT_OPTION,
+            WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION,
+        ):
+            if key in existing:
+                metadata[key] = existing[key]
+        if not request_context:
+            return metadata
+        if request_context.chatgpt_session_ref:
+            metadata[WORKER_CHATGPT_SESSION_REF_OPTION] = request_context.chatgpt_session_ref
+        if request_context.chatgpt_subject_ref:
+            metadata[WORKER_CHATGPT_SUBJECT_REF_OPTION] = request_context.chatgpt_subject_ref
+        if request_context.work_run_ref:
+            metadata[WORKER_WORK_RUN_REF_OPTION] = request_context.work_run_ref
+        if request_context.work_run_started_at is not None:
+            metadata[WORKER_WORK_RUN_STARTED_AT_OPTION] = float(request_context.work_run_started_at)
+        if request_context.work_run_last_activity_at is not None:
+            metadata[WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION] = float(request_context.work_run_last_activity_at)
+        return metadata
 
     def _prepare_prompt(self, message: str, *, context: Optional[Dict[str, Any]] = None) -> str:
         sections = [message.strip()]
@@ -1448,6 +1511,10 @@ class WorkerRuntime:
 
     def _status_poll_key(self, request_context: Optional[RequestContext]) -> str:
         if request_context:
+            if request_context.work_run_ref:
+                return f"run:{request_context.work_run_ref}"
+            if request_context.chatgpt_session_ref:
+                return f"chatgpt:{request_context.chatgpt_session_ref}"
             if request_context.owner_ref:
                 return f"owner:{request_context.owner_ref}"
             if request_context.client_ref:
@@ -1462,6 +1529,7 @@ class WorkerRuntime:
         include_stopped: bool,
         owned_only: bool,
         created_after: Optional[float],
+        scope: str,
         request_context: Optional[RequestContext],
     ) -> str:
         return "|".join(
@@ -1472,8 +1540,92 @@ class WorkerRuntime:
                 f"stopped={bool(include_stopped)}",
                 f"owned={bool(owned_only)}",
                 f"after={created_after if created_after is not None else ''}",
+                f"scope={self._normalize_worker_scope(scope)}",
             ]
         )
+
+    def _normalize_worker_scope(self, value: Any) -> str:
+        scope = str(value or "current").strip().lower().replace("-", "_")
+        if scope == "all":
+            return "history"
+        return scope if scope in WORKER_VISIBILITY_SCOPES else "current"
+
+    def _scope_is_live_or_problem(self, view: Dict[str, Any]) -> bool:
+        liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+        status = str(liveness.get("status") or "")
+        return status in {"starting", "active", "quiet", "stale", "lost"}
+
+    def _scope_is_recent(self, view: Dict[str, Any], *, now: float) -> bool:
+        try:
+            timestamp = float(view.get("last_activity_at") or 0)
+        except (TypeError, ValueError):
+            timestamp = 0
+        return bool(timestamp and now - timestamp <= DEFAULT_WORKER_RECENT_SCOPE_SECONDS)
+
+    def _apply_worker_scope(
+        self,
+        views: list[Dict[str, Any]],
+        *,
+        scope: str,
+        request_context: Optional[RequestContext],
+    ) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+        scope = self._normalize_worker_scope(scope)
+        all_count = len(views)
+        current_run = request_context.work_run_ref if request_context else ""
+        conversation_ref = request_context.chatgpt_session_ref if request_context else ""
+        now = time.time()
+
+        if scope == "history":
+            visible = list(views)
+            reason = "history scope requested; no workers hidden by scope"
+        elif scope == "conversation":
+            if conversation_ref:
+                visible = [
+                    view for view in views
+                    if view.get("chatgpt_session_ref") == conversation_ref or self._scope_is_live_or_problem(view)
+                ]
+                reason = "showing this ChatGPT conversation plus live/problem workers"
+            else:
+                visible = [
+                    view for view in views
+                    if view.get("owned_by_current_client") is True or self._scope_is_live_or_problem(view)
+                ]
+                reason = "ChatGPT conversation metadata is unavailable; showing current-owner plus live/problem workers"
+        elif scope == "recent":
+            visible = [
+                view for view in views
+                if self._scope_is_recent(view, now=now) or self._scope_is_live_or_problem(view)
+            ]
+            reason = "showing recently active workers plus live/problem workers"
+        else:
+            if current_run:
+                visible = [
+                    view for view in views
+                    if view.get("work_run_ref") == current_run or self._scope_is_live_or_problem(view)
+                ]
+                reason = "showing current work run plus live/problem workers"
+            else:
+                visible = [view for view in views if self._scope_is_live_or_problem(view)]
+                reason = "work-run metadata is unavailable; showing live/problem workers only"
+
+        hidden_count = max(0, all_count - len(visible))
+        scope_info = {
+            "requested": scope,
+            "applied": scope,
+            "current_work_run_ref": current_run,
+            "chatgpt_session_ref": conversation_ref,
+            "all_workers_considered": all_count,
+            "visible_workers": len(visible),
+            "hidden_workers": {
+                "count": hidden_count,
+                "reason": reason,
+                "how_to_show": (
+                    "Use scope='conversation' to see this ChatGPT conversation, scope='recent' for recently active "
+                    "workers, or scope='history' to see all durable historical workers."
+                ),
+            },
+        }
+        return visible, scope_info
 
     def _annotate_worker_deltas(
         self,
@@ -1689,6 +1841,8 @@ class WorkerRuntime:
             "worker_id": view.get("worker_id"),
             "name": view.get("name"),
             "workspace_name": view.get("workspace_name"),
+            "chatgpt_session_ref": view.get("chatgpt_session_ref"),
+            "work_run_ref": view.get("work_run_ref"),
             "workspace_mode": view.get("workspace_mode"),
             "state": view.get("state"),
             "status": liveness.get("status"),
@@ -2393,6 +2547,7 @@ class WorkerRuntime:
         include_change_state: bool = True,
     ) -> Dict[str, Any]:
         latest = jobs[-1]
+        options = latest.options or {}
         worker_id, worker_name = self._worker_identity(jobs)
         session_id = self._session_for_jobs(jobs)
         workspace = self._workspace_for_jobs(jobs)
@@ -2413,6 +2568,10 @@ class WorkerRuntime:
             "name": worker_name,
             "workspace_id": workspace_id,
             "workspace_name": Path(repo_path).name or "workspace",
+            "chatgpt_session_ref": str(options.get(WORKER_CHATGPT_SESSION_REF_OPTION) or ""),
+            "work_run_ref": str(options.get(WORKER_WORK_RUN_REF_OPTION) or ""),
+            "work_run_started_at": options.get(WORKER_WORK_RUN_STARTED_AT_OPTION),
+            "work_run_last_activity_at": options.get(WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION),
             "workspace_mode": workspace["mode"],
             "workspace_available": workspace_available,
             "state": state,

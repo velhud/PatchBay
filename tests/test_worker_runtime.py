@@ -22,11 +22,13 @@ from patchbay.ownership import (
 from patchbay.protocol.context import RequestContext
 from patchbay.workers.runtime import (
     WORKER_BASE_REPO_OPTION,
+    WORKER_CHATGPT_SESSION_REF_OPTION,
     WORKER_ID_OPTION,
     WORKER_MODE_OPTION,
     WORKER_MODEL_OPTION,
     WORKER_NAME_OPTION,
     WORKER_REASONING_EFFORT_OPTION,
+    WORKER_WORK_RUN_REF_OPTION,
     WorkerRuntime,
 )
 
@@ -140,6 +142,22 @@ def owner_context(owner_ref: str, client_ref: str, label: str = "") -> RequestCo
     )
 
 
+def chatgpt_context(run_ref: str, *, chat_ref: str = "chatgpt_session_test") -> RequestContext:
+    now = time.time()
+    return RequestContext(
+        transport_session_id=f"transport-{run_ref}",
+        client_ref=f"client-{run_ref}",
+        owner_ref="owner_shared",
+        owner_scope="token",
+        client_label="ChatGPT",
+        chatgpt_session_ref=chat_ref,
+        chatgpt_subject_ref="chatgpt_subject_test",
+        work_run_ref=run_ref,
+        work_run_started_at=now,
+        work_run_last_activity_at=now,
+    )
+
+
 @pytest.mark.asyncio
 async def test_start_worker_defaults_to_isolated_worktree_and_hides_backend_ids(tmp_path):
     config = make_config(tmp_path)
@@ -244,7 +262,7 @@ async def test_worker_owner_metadata_is_private_and_public_flags_are_session_rel
 
     reloaded_manager = JobManager(config)
     reloaded_runtime = WorkerRuntime(config, reloaded_manager, RecordingExecutor(reloaded_manager))
-    reloaded = await reloaded_runtime.list_workers(request_context=client_b)
+    reloaded = await reloaded_runtime.list_workers(scope="history", request_context=client_b)
     assert reloaded["workers"][0]["owned_by_current_client"] is False
     assert reloaded["workers"][0]["ownership_status"] == "other_connection"
 
@@ -683,7 +701,7 @@ async def test_completed_worker_survives_restart_and_continues_same_session(tmp_
     reloaded_executor = RecordingExecutor(reloaded_manager)
     reloaded_runtime = WorkerRuntime(config, reloaded_manager, reloaded_executor)
 
-    listed = await reloaded_runtime.list_workers()
+    listed = await reloaded_runtime.list_workers(scope="history")
     assert listed["count"] == 1
     assert listed["workers"][0]["name"] == "Session Investigator"
 
@@ -1296,7 +1314,7 @@ async def test_list_workers_reconciles_stale_running_worker(tmp_path):
     manager.jobs[job_id].started_at = time.time() - 700
     manager._persist_job(manager.jobs[job_id])
 
-    result = await runtime.list_workers()
+    result = await runtime.list_workers(scope="history")
 
     assert result["count"] == 1
     assert result["active"] == 0
@@ -1347,11 +1365,67 @@ async def test_worker_list_filters_active_stopped_owner_and_created_after(tmp_pa
     without_stopped = await runtime.list_workers(include_stopped=False, request_context=client_a)
     assert stopped["worker_id"] not in {item["worker_id"] for item in without_stopped["workers"]}
 
-    owned = await runtime.list_workers(owned_only=True, request_context=client_a)
+    owned = await runtime.list_workers(owned_only=True, scope="history", request_context=client_a)
     assert {item["worker_id"] for item in owned["workers"]} == {active["worker_id"], stopped["worker_id"]}
 
-    recent = await runtime.list_workers(created_after=time.time() - 10, request_context=client_a)
+    recent = await runtime.list_workers(created_after=time.time() - 10, scope="history", request_context=client_a)
     assert active["worker_id"] not in {item["worker_id"] for item in recent["workers"]}
+
+
+@pytest.mark.asyncio
+async def test_worker_status_current_scope_hides_historical_terminal_workers(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    old_ctx = chatgpt_context("run_old")
+    current_ctx = chatgpt_context("run_current")
+
+    old_done = await runtime.start_worker(
+        name="Old Done",
+        brief="Historical completed work.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=old_ctx,
+    )
+    manager.update_job_state(executor.started[-1], JobState.COMPLETED, result={"summary": "old done"}, session_id="old-session")
+
+    current_done = await runtime.start_worker(
+        name="Current Done",
+        brief="Current completed work.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=current_ctx,
+    )
+    manager.update_job_state(executor.started[-1], JobState.COMPLETED, result={"summary": "current done"}, session_id="current-session")
+
+    active_old_run = await runtime.start_worker(
+        name="Active Old Run",
+        brief="Still running from old run.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=old_ctx,
+    )
+    manager.update_job_state(executor.started[-1], JobState.RUNNING, process_started_at=time.time(), session_id="active-session")
+
+    status = await runtime.worker_status(request_context=current_ctx, scope="current")
+    visible_ids = {item["worker_id"] for item in status["workers"]}
+
+    assert current_done["worker_id"] in visible_ids
+    assert active_old_run["worker_id"] in visible_ids
+    assert old_done["worker_id"] not in visible_ids
+    assert status["scope"]["applied"] == "current"
+    assert status["scope"]["current_work_run_ref"] == "run_current"
+    assert status["hidden_workers"]["count"] == 1
+    assert "scope='conversation'" in status["hidden_workers"]["how_to_show"]
+
+    conversation = await runtime.worker_status(request_context=current_ctx, scope="conversation", force_refresh=True)
+    conversation_ids = {item["worker_id"] for item in conversation["workers"]}
+    assert {old_done["worker_id"], current_done["worker_id"], active_old_run["worker_id"]} <= conversation_ids
+
+    job = manager.get_job(executor.started[1])
+    assert job.options[WORKER_CHATGPT_SESSION_REF_OPTION] == "chatgpt_session_test"
+    assert job.options[WORKER_WORK_RUN_REF_OPTION] == "run_current"
 
 
 @pytest.mark.asyncio
@@ -1502,7 +1576,7 @@ async def test_stop_cancels_active_turn_but_preserves_worker(tmp_path):
     assert result["stopped"] is True
     assert result["state"] == "stopped"
     assert executor.cancelled == [job.job_id]
-    listed = await runtime.list_workers()
+    listed = await runtime.list_workers(scope="history")
     assert listed["count"] == 1
 
 
@@ -1705,7 +1779,7 @@ async def test_cleanup_workspace_discards_isolated_worktree_without_deleting_wor
     assert result["workspace_cleaned"] is True
     assert result["workspace_available"] is False
     assert worktree_path.exists() is False
-    listed = await runtime.list_workers()
+    listed = await runtime.list_workers(scope="history")
     assert listed["count"] == 1
 
     rejected = await runtime.message_worker(worker=started["worker_id"], message="Continue.")

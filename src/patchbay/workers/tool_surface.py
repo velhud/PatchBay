@@ -13,6 +13,10 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "name": {"type": "string"},
         "workspace_id": {"type": "string"},
         "workspace_name": {"type": "string"},
+        "chatgpt_session_ref": {"type": "string"},
+        "work_run_ref": {"type": "string"},
+        "work_run_started_at": {"type": "number"},
+        "work_run_last_activity_at": {"type": "number"},
         "workspace_mode": {"type": "string"},
         "workspace_available": {"type": "boolean"},
         "workspace_location": {"type": "string"},
@@ -102,6 +106,8 @@ WORKER_LIST_SCHEMA: Dict[str, Any] = {
         "workers": {"type": "array", "items": WORKER_VIEW_SCHEMA},
         "count": {"type": "integer"},
         "active": {"type": "integer"},
+        "scope": {"type": "object", "additionalProperties": True},
+        "hidden_workers": {"type": "object", "additionalProperties": True},
         "team_status": {"type": "object", "additionalProperties": True},
         "team_report": {"type": "string"},
     },
@@ -129,6 +135,8 @@ WORKER_STATUS_SCHEMA: Dict[str, Any] = {
         "minimum_wait_seconds_applied": {"type": "integer"},
         "wait_cap_seconds": {"type": "integer"},
         "wait_guidance": {"type": "string"},
+        "scope": {"type": "object", "additionalProperties": True},
+        "hidden_workers": {"type": "object", "additionalProperties": True},
         "workers": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         "count": {"type": "integer"},
         "active": {"type": "integer"},
@@ -487,7 +495,9 @@ WORKER_TOOLS = [
             "a worker team, after restart, or before choosing which worker to inspect, message, stop, or integrate. "
             "For long-running teams, read team_status/status_line first: active or quiet workers with recent activity are not failed just because no final report is ready. "
             "Respect the returned polling guidance: normal worker monitoring means waiting about 20-30 seconds before the next status check, not polling every few seconds. "
-            "Use active_only, owned_only, include_stopped=false, or created_after to reduce historical worker clutter during a specific task. "
+            "By default, scope=current hides old completed/stopped historical workers and shows only the current work run plus live/problem workers; the response says how many historical workers were hidden to reduce historical worker clutter. "
+            "Use scope=conversation to intentionally reuse workers from the same ChatGPT conversation, scope=recent for recently active workers, or scope=history when you deliberately need the durable archive. "
+            "Use active_only, owned_only, include_stopped=false, or created_after for additional narrowing during a specific task. "
             "If the team report shows thin, failed, stale, or conflicting work, continue the relevant named worker instead "
             "of treating first reports as final. If repo_path is omitted, list workers across all allowed repositories; "
             "pass repo_path or a worker_id when a human name exists in more than one repo."
@@ -516,6 +526,11 @@ WORKER_TOOLS = [
                     "type": "number",
                     "description": "Optional Unix timestamp; return workers first created at or after this time.",
                 },
+                "scope": {
+                    "type": "string",
+                    "enum": ["current", "conversation", "recent", "history", "all"],
+                    "description": "Visibility scope. Default current: current work run plus live/problem workers, with historical completed/stopped workers hidden. conversation shows this ChatGPT conversation when available; recent shows recently active workers; history/all shows every durable worker.",
+                },
             },
             "required": [],
         },
@@ -530,7 +545,7 @@ WORKER_TOOLS = [
             "if events/output/partial notes are changing, wait; if a worker is stale or lost, inspect it deliberately. "
             "For normal monitoring, wait about 20-30 seconds between status calls and follow "
             "recommended_next_poll_seconds in the result; do not poll every few seconds unless the user explicitly "
-            "asked for near-real-time monitoring or the last result needs immediate recovery. If repo_path is omitted, "
+            "asked for near-real-time monitoring or the last result needs immediate recovery. Default scope=current hides old historical completed/stopped workers, reports how many are hidden, and keeps current-run plus live/problem workers visible. Use scope=conversation to reuse earlier workers from the same ChatGPT conversation, or scope=history only when you deliberately need the archive. If repo_path is omitted, "
             "status covers workers across all allowed repositories so a manager does not miss active work in another repo."
         ),
         "inputSchema": {
@@ -561,6 +576,11 @@ WORKER_TOOLS = [
                     "type": "boolean",
                     "description": "When true, bypass the soft polling cooldown for deliberate recovery or user-requested near-real-time monitoring. Default: false.",
                 },
+                "scope": {
+                    "type": "string",
+                    "enum": ["current", "conversation", "recent", "history", "all"],
+                    "description": "Visibility scope. Default current: current work run plus live/problem workers, with historical completed/stopped workers hidden. conversation shows this ChatGPT conversation when available; recent shows recently active workers; history/all shows every durable worker.",
+                },
             },
             "required": [],
         },
@@ -574,7 +594,7 @@ WORKER_TOOLS = [
             "is: assign workers, wait about 20-30 seconds, read compact status, then either wait again, ask a "
             "worker a natural-language follow-up after its turn completes, or inspect only when there is a real "
             "concern. If wait_seconds is lower than the configured minimum cadence, PatchBay raises it to that minimum. "
-            "If repo_path is omitted, status covers workers across all allowed repositories. This tool does not expose "
+            "Default scope=current hides old completed/stopped historical workers while keeping current-run and live/problem workers visible; use scope=conversation or scope=history only when intentionally reusing older workers. If repo_path is omitted, status covers workers across all allowed repositories. This tool does not expose "
             "raw logs and does not interrupt workers."
         ),
         "inputSchema": {
@@ -604,6 +624,11 @@ WORKER_TOOLS = [
                 "wait_seconds": {
                     "type": "integer",
                     "description": "Seconds to wait before refreshing status. Default follows recommended_next_poll_seconds; values below the configured minimum monitoring cadence are raised to that minimum, and values are capped by server policy.",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["current", "conversation", "recent", "history", "all"],
+                    "description": "Visibility scope. Default current: current work run plus live/problem workers, with historical completed/stopped workers hidden. conversation shows this ChatGPT conversation when available; recent shows recently active workers; history/all shows every durable worker.",
                 },
             },
             "required": [],
