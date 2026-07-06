@@ -35,6 +35,13 @@ ownership:
   # present, fall back to one shared server owner for local single-user runs.
   scope: token
 
+hub:
+  # Optional multi-machine hub/edge runtime state. Blank paths resolve under
+  # PATCHBAY_HOME/runtime/hub/ and are not repository data.
+  state_file:
+  heartbeat_stale_seconds: 90
+  max_events: 1000
+
 tunnel:
   hostname: ""
   tunnel_name: ""

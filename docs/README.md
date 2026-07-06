@@ -12,6 +12,7 @@ The repository root keeps the practical entrypoints: `README.md`, `QUICKSTART.md
 - [Worker bridge guide](worker-bridge/README.md)
 - [Pro Escalations user flow](pro-escalations/USER_FLOW.md)
 - [Multi-chat concurrency model](worker-bridge/MULTI_CHAT_CONCURRENCY_PLAN.md)
+- [Optional Hub/Edge mode](reference/hub-edge-mode.md)
 
 ## Architecture
 
@@ -26,6 +27,7 @@ The repository root keeps the practical entrypoints: `README.md`, `QUICKSTART.md
 - [Configuration reference](reference/configuration.md)
 - [Public tool surface](reference/public-tool-surface.md)
 - [Tool surface and worker details](reference/tool-surface-and-worker-details.md)
+- [Optional Hub/Edge mode](reference/hub-edge-mode.md)
 - [Context and handoff specification](reference/context-and-handoff.md)
 - [Pro Escalation skill copies](pro-escalations/skill-copies/)
 

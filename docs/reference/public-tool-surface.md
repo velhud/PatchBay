@@ -24,6 +24,33 @@ The same public tool surface is served through Streamable HTTP `/mcp` and the st
 
 Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps canonical `codex_*` names as the durable API, while `app.tool_mode` can advertise compatibility aliases for ChatGPT live use. Aliases are tool-selection aids, not separate or safer execution paths; they resolve to canonical handlers and use precise alias-specific schemas instead of open generic argument bags. Full mode and aliases do not change ChatGPT's manager-first role; they only make exceptional controls available when worker-mode controls are insufficient.
 
+## Optional Hub Tool Surface
+
+Hub mode is a separate optional MCP server. It does not expose every direct
+single-machine `codex_*` tool from every edge machine. It exposes a smaller
+fleet-native manager surface and queues commands to the selected edge machine:
+
+| Tool | Role |
+| --- | --- |
+| `patchbay_fleet_status` | Compact status of online/offline machines and visible worker projections. |
+| `patchbay_machine_list` | List enrolled machines, tags, capabilities, and safe workspace projections. |
+| `patchbay_machine_workspaces` | Show advertised workspaces on one machine or the whole fleet. |
+| `patchbay_worker_options` | Route a model/reasoning options request to one machine. |
+| `patchbay_worker_start` | Start a worker on a selected machine. |
+| `patchbay_worker_message` | Continue a worker on the same machine. |
+| `patchbay_worker_status` | Show cached fleet worker status or queue a machine-local refresh. |
+| `patchbay_worker_wait` | Queue a patient status refresh on one machine. |
+| `patchbay_worker_inspect` | Inspect one worker through its machine-local PatchBay runtime. |
+| `patchbay_worker_stop` | Stop one worker turn on the owning machine. |
+| `patchbay_worker_integrate` | Apply an accepted isolated worker result on the owning machine. |
+| `patchbay_command_status` | Inspect hub-routed command state. |
+
+Hub initialize instructions must tell ChatGPT to behave as a fleet manager:
+start with fleet status, choose machines by workspace/capability, use explicit
+`machine_id`, and collect reports for cross-machine synthesis. Hub state is a
+projection and command queue; edge machines keep local Codex auth, repositories,
+worker state, worktrees, and authority policy.
+
 ## Current Stable Tools
 
 | Tool | Current role | Target status | Notes |

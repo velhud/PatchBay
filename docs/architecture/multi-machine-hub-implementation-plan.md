@@ -1,6 +1,12 @@
 # Multi-Machine Hub Implementation Plan
 
-Status: selected implementation direction, not yet implemented.
+Status: V1 implemented as optional hub/edge mode.
+
+Implementation note: the first shipped version uses simple HTTP polling rather
+than WebSocket/RPC streaming. That was deliberate: polling is easier to test,
+works through ordinary outbound HTTPS, and keeps normal single-machine PatchBay
+unchanged. The same hub/edge identity and command-routing model can later grow
+into WebSocket, richer mailbox coordination, and cross-machine review modes.
 
 This document turns the multi-machine options investigation into the concrete
 plan PatchBay should build next.
@@ -24,12 +30,12 @@ selected machine.
 flowchart TD
     ChatGPT["ChatGPT<br/>one PatchBay Hub connector"] -->|"HTTPS /mcp"| Hub["PatchBay Hub<br/>MCP server + fleet registry"]
 
-    Hub --> DB["Hub state<br/>SQLite/runtime files<br/>machines, sessions, events, projections"]
+    Hub --> DB["Hub state<br/>private runtime JSON<br/>machines, commands, events, projections"]
 
-    EdgeA["PatchBay Edge<br/>Mac Studio"] -->|"outbound secure WebSocket/RPC"| Hub
-    EdgeB["PatchBay Edge<br/>Scaleway VM"] -->|"outbound secure WebSocket/RPC"| Hub
-    EdgeC["PatchBay Edge<br/>Laptop"] -->|"outbound secure WebSocket/RPC"| Hub
-    EdgeD["PatchBay Edge<br/>Second VM"] -->|"outbound secure WebSocket/RPC"| Hub
+    EdgeA["PatchBay Edge<br/>Mac Studio"] -->|"outbound HTTPS polling"| Hub
+    EdgeB["PatchBay Edge<br/>Scaleway VM"] -->|"outbound HTTPS polling"| Hub
+    EdgeC["PatchBay Edge<br/>Laptop"] -->|"outbound HTTPS polling"| Hub
+    EdgeD["PatchBay Edge<br/>Second VM"] -->|"outbound HTTPS polling"| Hub
 
     EdgeA --> CodexA["Local Codex workers<br/>local repos/worktrees"]
     EdgeB --> CodexB["Local Codex workers<br/>local repos/worktrees"]
@@ -96,9 +102,9 @@ Each machine runs PatchBay Edge. Edge owns:
 - local repository locks;
 - local worktrees and logs.
 
-Edge opens an outbound secure connection to Hub. The hub sends RPC requests over
-that connection. Edge executes them locally through the existing PatchBay
-service graph and returns structured results.
+Edge uses outbound HTTPS polling to the Hub. The hub queues commands for a
+machine, and the edge claims them, executes them locally through the existing
+PatchBay service graph, and returns structured results.
 
 ### ChatGPT
 
@@ -135,13 +141,9 @@ On the hub machine, likely the Scaleway VM first:
 
 ```bash
 export PATCHBAY_HOME="$HOME/.patchbay-hub"
-patchbay hub init
 patchbay hub start \
   --host 127.0.0.1 \
-  --port 8000 \
-  --public-base-url https://hub.example.com/patchbay-hub \
-  --tool-mode hub \
-  --reveal-token
+  --port 8000
 ```
 
 The hub prints:
@@ -161,7 +163,9 @@ On the hub:
 ```bash
 patchbay hub enroll-code create \
   --name "Local Workstation" \
-  --tags local,documents,high-storage \
+  --tag local \
+  --tag documents \
+  --tag high-storage \
   --ttl-minutes 30
 ```
 
@@ -185,9 +189,9 @@ patchbay edge enroll \
   --code PB-EXAMPLE-CODE \
   --machine-name "Local Workstation" \
   --machine-id local-workstation \
-  --root /workspace \
-  --allow-root /workspace/Documents \
-  --tags local,documents,high-storage
+  --tag local \
+  --tag documents \
+  --tag high-storage
 ```
 
 The hub validates the pairing code and returns a machine token. Edge stores:
@@ -232,9 +236,10 @@ Use separate identities. Do not merge these concepts.
 
 ## Hub State
 
-Use SQLite under `PATCHBAY_HOME` for hub state in the first implementation.
-Runtime files are acceptable for early prototypes, but SQLite will make
-heartbeats, leases, and event projections easier.
+V1 uses a private JSON store under `PATCHBAY_HOME/runtime/hub/hub-state.json`
+unless `hub.state_file` is configured. SQLite remains a reasonable future
+upgrade when heartbeats, leases, mailboxes, and event projections become more
+complex.
 
 Tables or equivalent stores:
 
@@ -282,48 +287,51 @@ full private filesystem inventories in hub state.
 
 ## Edge Connection Protocol
 
-Use an outbound persistent connection from edge to hub.
+Use outbound edge-to-hub traffic so laptops, local workstations, and VMs do not
+need public inbound ports.
 
-Recommended V1 transport:
+Implemented V1 transport:
 
 ```text
-WebSocket over HTTPS
+HTTPS polling
 ```
 
 Why:
 
 - local laptops and home machines do not need public inbound ports;
-- hub can push RPC requests to edge;
-- edge can stream compact progress/events back;
-- reconnect logic is straightforward.
+- polling is simple to deploy and easy to test;
+- hub queues commands until the target edge claims them;
+- edge posts heartbeats, local worker-status projections, command claims, and
+  command results;
+- the normal single-machine PatchBay server remains unchanged.
 
-V1 message envelope:
+Future transport:
+
+```text
+WebSocket over HTTPS
+```
+
+That becomes useful when PatchBay needs lower-latency progress events, mailbox
+streaming, or richer cross-machine campaigns.
+
+Command envelope:
 
 ```json
 {
-  "id": "rpc_...",
-  "type": "request|response|event|heartbeat|error",
+  "command_id": "cmd_...",
   "machine_id": "roman-scaleway-ucl",
-  "method": "worker.start",
-  "params": {},
-  "created_at": "..."
+  "action": "codex_worker_start",
+  "arguments": {},
+  "state": "queued|running|completed|failed"
 }
 ```
 
 V1 methods:
 
-- `node.hello`
-- `node.heartbeat`
-- `node.capabilities`
-- `workspace.list`
-- `workspace.open`
-- `worker.options`
-- `worker.start`
-- `worker.message`
-- `worker.status`
-- `worker.inspect`
-- `worker.stop`
-- `worker.integrate`
+- `/edge/enroll`
+- `/edge/heartbeat`
+- `/edge/poll`
+- `/edge/result`
 
 The edge executes these by calling existing PatchBay runtime methods rather
 than shelling out to a second HTTP server.
@@ -507,21 +515,20 @@ Expose safe machine metadata in:
 
 Add tests that machine metadata does not expose tokens or runtime paths.
 
-### Phase 1: Hub Runtime Skeleton
+### Phase 1: Hub Runtime Skeleton (V1 Done)
 
 Add:
 
-- `patchbay hub init`
 - `patchbay hub start`
 - hub config section;
-- hub SQLite/runtime store;
-- hub MCP mode `hub`;
-- hub self-test;
-- hub setup guide.
+- private runtime JSON store;
+- hub MCP mode through `patchbay.hub.server`;
+- hub tool descriptors and manager instructions;
+- hub HTTP live smoke test.
 
-No edge routing yet.
+Edge routing exists through queued commands in V1.
 
-### Phase 2: Edge Enrollment
+### Phase 2: Edge Enrollment (V1 Done)
 
 Add:
 
@@ -530,23 +537,22 @@ Add:
 - `patchbay edge enroll`;
 - edge profile storage;
 - node token generation;
-- token rotation command;
 - enrollment tests.
 
-### Phase 3: Edge Connection And Heartbeat
+Token rotation remains future work.
+
+### Phase 3: Edge Connection And Heartbeat (V1 Done)
 
 Add:
 
-- outbound WebSocket client in edge;
-- hub WebSocket endpoint;
-- `node.hello`;
-- `node.heartbeat`;
+- outbound polling client in edge;
+- hub `/edge/heartbeat`, `/edge/poll`, and `/edge/result` endpoints;
 - capability and workspace projection;
 - offline detection.
 
 ChatGPT can now see machines online/offline.
 
-### Phase 4: Fleet Read-Only Tools
+### Phase 4: Fleet Read-Only Tools (V1 Done)
 
 Expose:
 
@@ -570,16 +576,19 @@ Add routing for:
 These wrap current edge worker runtime and return compact hub-normalized
 results.
 
-### Phase 6: Routed Worker Message And Cross-Machine Context
+V1 has command routing for start, message, status, wait, inspect, stop, and
+integrate. The current hub queues the commands and the selected edge executes
+the local `codex_worker_*` tool.
+
+### Phase 6: Cross-Machine Context (Future)
 
 Add:
 
-- `patchbay_worker_message`;
 - report collection from one machine;
 - report injection into another machine's worker brief;
 - bounded cross-machine `context_from_fleet_workers`.
 
-### Phase 7: Routed Integration
+### Phase 7: Rich Routed Integration (Partly Done)
 
 Add:
 
@@ -588,10 +597,14 @@ Add:
 - explicit machine id in every integration result;
 - Git branch/push/pull guidance for cross-machine work.
 
-### Phase 8: Mailbox And Campaigns
+V1 can route `patchbay_worker_integrate` to the machine that owns the worker.
+Preview semantics and cross-machine branch guidance need a later pass.
+
+### Phase 8: WebSocket, Mailbox, And Campaigns (Future)
 
 Add:
 
+- WebSocket transport for lower-latency progress;
 - campaign ids;
 - channels;
 - messages;
@@ -677,8 +690,8 @@ Real:
   no for V1; expose worker-first fleet tools.
 - Whether to support OAuth immediately. Initial answer: no for Roman/self-hosted
   V1; pairing codes and tokens first, OAuth later for public multi-user.
-- Whether to use SQLite or filesystem JSONL. Initial answer: SQLite for hub,
-  existing runtime files for edge-local worker state.
+- Whether to migrate hub JSON runtime state to SQLite. Initial answer: JSON for
+  V1, SQLite later when event volume and coordination complexity justify it.
 
 ## Final Architecture Summary
 
@@ -695,4 +708,3 @@ One ChatGPT connector
 
 This gives Roman the experience he wants: turn on several machines, start
 PatchBay Edge on each, open ChatGPT, and see the online fleet from one app.
-

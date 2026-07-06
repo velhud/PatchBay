@@ -58,6 +58,11 @@ auth:
 ownership:
   scope: token
 
+hub:
+  state_file:
+  heartbeat_stale_seconds: 90
+  max_events: 1000
+
 repositories:
   default: /
   allowed:
@@ -109,6 +114,10 @@ pro_requests:
 ```
 
 Blank logging paths resolve outside the checkout under `PATCHBAY_HOME/runtime` when `PATCHBAY_HOME` is set, otherwise under `~/.patchbay/runtime`. Set explicit paths only when you deliberately want repo-local or custom runtime state.
+
+Blank `hub.state_file` resolves to `PATCHBAY_HOME/runtime/hub/hub-state.json`.
+Hub state is private runtime state for enrolled machines, command routing, and
+compact event history. It is not repository data and should not be committed.
 
 ## Authentication
 

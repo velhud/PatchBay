@@ -87,6 +87,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         "install-cloudflared": install_cloudflared_main,
         "stdio": stdio_main,
         "pro-request": pro_request_main,
+        "hub": hub_main,
+        "edge": edge_main,
     }
     handler = handlers.get(command)
     if handler is None:
@@ -423,6 +425,124 @@ def pro_request_main(argv: Iterable[str] | None = None) -> int:
     return 2
 
 
+def hub_main(argv: Iterable[str] | None = None) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if not args or args[0] in {"-h", "--help"}:
+        print(_hub_help())
+        return 0
+    command, rest = args[0], args[1:]
+    if command == "start":
+        parser = argparse.ArgumentParser(description="Start optional PatchBay Hub mode.")
+        parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+        parser.add_argument("--host", help="HTTP bind host override.")
+        parser.add_argument("--port", type=int, help="HTTP port override.")
+        parsed = parser.parse_args(rest)
+        config = load_config(parsed.config)
+        if parsed.host:
+            config.setdefault("server", {})["host"] = parsed.host
+        if parsed.port:
+            config.setdefault("server", {})["port"] = parsed.port
+        env = dict(os.environ)
+        _prepend_source_path(env)
+        runtime_path = _write_temp_runtime_config_for_cli(config)
+        env["PATCHBAY_CONFIG"] = runtime_path
+        os.execvpe(sys.executable, [sys.executable, "-m", "patchbay.hub.server"], env)
+        return 1
+    if command == "enroll-code":
+        return hub_enroll_code_main(rest)
+    print(f"Unknown hub command: {command}\n\n{_hub_help()}", file=sys.stderr)
+    return 2
+
+
+def hub_enroll_code_main(argv: Iterable[str] | None = None) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if not args or args[0] in {"-h", "--help"}:
+        print(_hub_enroll_code_help())
+        return 0
+    command, rest = args[0], args[1:]
+    if command != "create":
+        print(f"Unknown enroll-code command: {command}\n\n{_hub_enroll_code_help()}", file=sys.stderr)
+        return 2
+    from patchbay.hub.runtime import HubRuntime
+
+    parser = argparse.ArgumentParser(description="Create a one-use PatchBay Hub edge enrollment code.")
+    parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+    parser.add_argument("--name", required=True, help="Human label for the enrolling machine.")
+    parser.add_argument("--tag", action="append", default=[], help="Machine tag. Repeat as needed.")
+    parser.add_argument("--ttl-minutes", type=int, default=30)
+    parser.add_argument("--json", action="store_true")
+    parsed = parser.parse_args(rest)
+    result = HubRuntime(load_config(parsed.config)).create_enrollment_code(
+        name=parsed.name,
+        tags=parsed.tag,
+        ttl_minutes=parsed.ttl_minutes,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else f"Enrollment code: {result['code']}")
+    return 0
+
+
+def edge_main(argv: Iterable[str] | None = None) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if not args or args[0] in {"-h", "--help"}:
+        print(_edge_help())
+        return 0
+    command, rest = args[0], args[1:]
+    if command == "enroll":
+        from patchbay.hub.edge import enroll_edge
+
+        parser = argparse.ArgumentParser(description="Enroll this machine with a PatchBay Hub.")
+        parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+        parser.add_argument("--hub", required=True, help="Hub base URL or MCP URL.")
+        parser.add_argument("--code", required=True, help="One-use code from `patchbay hub enroll-code create`.")
+        parser.add_argument("--machine-id", default="")
+        parser.add_argument("--machine-name", default="")
+        parser.add_argument("--tag", action="append", default=[])
+        parser.add_argument("--role", default="")
+        parser.add_argument("--json", action="store_true")
+        parsed = parser.parse_args(rest)
+        result = enroll_edge(
+            load_config(parsed.config),
+            hub_url=parsed.hub,
+            code=parsed.code,
+            machine_id=parsed.machine_id,
+            display_name=parsed.machine_name,
+            tags=parsed.tag,
+            role=parsed.role,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else f"Edge profile saved: {result['profile_path']}")
+        return 0
+    if command == "start":
+        from patchbay.hub.edge import EdgeRunner
+
+        parser = argparse.ArgumentParser(description="Run the PatchBay Edge polling loop.")
+        parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+        parser.add_argument("--interval-seconds", type=float, default=5)
+        parsed = parser.parse_args(rest)
+        asyncio.run(EdgeRunner(load_config(parsed.config)).run_loop(interval_seconds=parsed.interval_seconds))
+        return 0
+    if command == "run-once":
+        from patchbay.hub.edge import EdgeRunner
+
+        parser = argparse.ArgumentParser(description="Run one PatchBay Edge heartbeat/poll/execute cycle.")
+        parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+        parser.add_argument("--json", action="store_true")
+        parsed = parser.parse_args(rest)
+        result = asyncio.run(EdgeRunner(load_config(parsed.config)).run_once())
+        print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else yaml.safe_dump(result, sort_keys=False))
+        return 0
+    if command == "status":
+        from patchbay.hub.edge import load_edge_profile, public_edge_profile
+
+        parser = argparse.ArgumentParser(description="Show this machine's saved PatchBay Edge profile without the private node token.")
+        parser.add_argument("--json", action="store_true")
+        parsed = parser.parse_args(rest)
+        result = {"profile": public_edge_profile(load_edge_profile())}
+        print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else yaml.safe_dump(result, sort_keys=False))
+        return 0
+    print(f"Unknown edge command: {command}\n\n{_edge_help()}", file=sys.stderr)
+    return 2
+
+
 def _add_pro_request_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -452,6 +572,19 @@ def _print_pro_request_result(result: dict[str, Any], *, json_output: bool) -> N
         print(result["response_markdown"])
     if result.get("note"):
         print(result["note"])
+
+
+def _write_temp_runtime_config_for_cli(config: Mapping[str, Any]) -> str:
+    from patchbay.connector.profiles import runtime_path
+
+    target = runtime_path("hub", f"runtime-{int(time.time())}.yaml")
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.write_text(yaml.safe_dump(dict(config), sort_keys=False), encoding="utf-8")
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+    return str(target)
 
 
 def _add_start_args(parser: argparse.ArgumentParser, *, include_runtime_flags: bool = True) -> None:
@@ -785,6 +918,8 @@ Usage:
   patchbay doctor --json
   patchbay settings list
   patchbay pro-request list
+  patchbay hub start --config config.yaml
+  patchbay edge enroll --hub <url> --code <code>
   patchbay stdio --config config.yaml
   patchbay ngrok --root <repo> --hostname <reserved-domain>
   patchbay stable --root <repo> --hostname <host> --tunnel-name <name>
@@ -805,6 +940,35 @@ Usage:
   patchbay pro-request close <proreq_id> [--reason <text>]
 
 Worker dispatch uses the same ToolHandler/WorkerRuntime path as codex_pro_request_dispatch."""
+
+
+def _hub_help() -> str:
+    return """PatchBay Hub
+
+Usage:
+  patchbay hub start --config config.yaml
+  patchbay hub enroll-code create --name <machine-name> [--tag laptop] [--json]
+
+Hub mode is optional. It exposes one MCP server that routes work to enrolled PatchBay Edge machines."""
+
+
+def _hub_enroll_code_help() -> str:
+    return """PatchBay Hub enrollment codes
+
+Usage:
+  patchbay hub enroll-code create --name <machine-name> [--tag laptop] [--ttl-minutes 30] [--json]"""
+
+
+def _edge_help() -> str:
+    return """PatchBay Edge
+
+Usage:
+  patchbay edge enroll --hub <hub-url> --code <code> [--machine-id id] [--tag laptop]
+  patchbay edge start --config config.yaml
+  patchbay edge run-once --config config.yaml --json
+  patchbay edge status --json
+
+Edge mode runs on each worker machine and executes hub-routed commands through that machine's local PatchBay ToolHandler."""
 
 
 def _settings_help() -> str:

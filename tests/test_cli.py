@@ -74,6 +74,8 @@ def test_patchbay_cli_help_lists_public_commands():
 
     assert completed.returncode == 0
     assert "patchbay setup" in completed.stdout
+    assert "patchbay hub start" in completed.stdout
+    assert "patchbay edge enroll" in completed.stdout
     assert "patchbay stdio" in completed.stdout
     assert "patchbay install-cloudflared" in completed.stdout
 

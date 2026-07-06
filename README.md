@@ -87,6 +87,7 @@ flowchart LR
 | **Reviewable integration** | Inspect reports, changed files, one-file diffs, and integration previews before applying accepted worker output. |
 | **Artifact transfer** | Import ChatGPT-generated files or zip packages into local worker context without manual file handling. |
 | **Advanced escalation loop** | Store a local blocked-problem report for ChatGPT, write the answer back into PatchBay, then explicitly dispatch it to a worker when useful. |
+| **Optional machine fleet** | Experimental hub/edge mode lets one ChatGPT connector route worker commands to enrolled PatchBay machines. |
 
 ## Example: ChatGPT as manager
 
@@ -211,6 +212,7 @@ More detail: [SECURITY.md](SECURITY.md), [docs/security/product-boundary.md](doc
 | **Repository controls** | Allowed roots, path guard, token-gated public tunnels, per-repo mutation locks, and dirty-base checks |
 | **Artifacts** | ChatGPT-generated files/zips can be imported into worker context without editing the repo |
 | **Power modes** | `worker`, `standard`, `full`, and `minimal` tool surfaces with runtime-aware tool advertisement |
+| **Optional hub/edge mode** | `patchbay hub start` plus `patchbay edge start` can expose several enrolled machines behind one ChatGPT connector |
 
 ## Current status
 
