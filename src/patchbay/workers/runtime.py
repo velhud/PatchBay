@@ -75,6 +75,7 @@ DEFAULT_HEARTBEAT_QUIET_SECONDS = 600
 DEFAULT_STOP_ARTIFACT_WAIT_SECONDS = 2.0
 DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 30
 DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 20
+DEFAULT_STOP_CONFIRMATION_GRACE_SECONDS = 300
 DEFAULT_WORKER_RECENT_SCOPE_SECONDS = 4 * 60 * 60
 MAX_STATUS_LINE_CHARS = 260
 MAX_PARTIAL_NOTE_PREVIEW_CHARS = 220
@@ -107,6 +108,15 @@ emit a checkpoint first that says what you are about to scan and why. Avoid
 large whole-repo searches such as `rg -S .` unless the full surface is actually
 needed; exclude generated, dependency, archive, or research areas when they are
 not part of the assignment.
+
+Avoid commands that dump huge text into the turn. Prefer `rg -l`, targeted
+globs, `--max-count`, `--max-filesize`, `--glob` exclusions, and paged reads
+over broad `rg`, `find`, `cat`, `nl`, or `sed` loops across vendor, minified,
+static, cache, archive, build, dependency, or generated files. If command output
+starts becoming large or the path clearly points at minified/vendor/generated
+material, stop that route, report the finding, and switch to a narrower probe.
+Large raw output makes the manager blind; precise evidence and checkpoints are
+better than exhaustive dumps.
 """.strip()
 
 
@@ -398,12 +408,17 @@ class WorkerRuntime:
             jobs = self._resolve_worker(worker, repo_path=repo_path)
             latest = jobs[-1]
             if latest.state not in (JobState.PENDING, JobState.RUNNING) or time.monotonic() >= deadline:
-                if view in {"report", "status", "compact"}:
+                if view in {"report", "status", "compact", "diagnostics"}:
                     public = self._public_view(jobs, request_context=request_context)
                     self._annotate_worker_deltas([public], request_context=request_context)
                     if view == "compact":
                         return self._compact_worker_view(public)
-                    return public
+                    if view == "status":
+                        return self._status_worker_view(public)
+                    if view == "diagnostics":
+                        public["view"] = "diagnostics"
+                        return public
+                    return self._report_worker_view(public)
                 if view == "changes":
                     return self._changes_view(jobs, request_context=request_context)
                 if view == "diff":
@@ -423,7 +438,7 @@ class WorkerRuntime:
                         accepted_dirty_base=accepted_dirty_base,
                         request_context=request_context,
                     )
-                raise ValueError("view must be one of: report, compact, status, changes, diff, file, integration_preview")
+                raise ValueError("view must be one of: report, compact, status, diagnostics, changes, diff, file, integration_preview")
             await asyncio.sleep(0.25)
 
     async def list_workers(
@@ -615,6 +630,7 @@ class WorkerRuntime:
         worker: str,
         repo_path: Optional[str] = None,
         cleanup_workspace: bool = False,
+        force: bool = False,
         request_context: Optional[RequestContext] = None,
         takeover: bool = False,
         takeover_reason: str = "",
@@ -635,6 +651,10 @@ class WorkerRuntime:
         self._record_owner_touch(jobs, request_context, takeover=takeover, takeover_reason=takeover_reason)
         jobs = self._resolve_worker(worker, repo_path=repo_path)
         latest = jobs[-1]
+        if latest.state in (JobState.PENDING, JobState.RUNNING) and not force:
+            confirmation = self._stop_confirmation_payload(jobs, request_context=request_context)
+            if confirmation:
+                return confirmation
         cancelled = False
         if latest.state in (JobState.PENDING, JobState.RUNNING):
             result = await self.job_executor.cancel_job(latest.job_id)
@@ -658,6 +678,7 @@ class WorkerRuntime:
         view.update(
             {
                 "stopped": cancelled,
+                "stop_confirmation_required": False,
                 "workspace_cleaned": cleaned,
                 "note": (
                     "Active work was stopped. The Codex conversation remains available for a later message."
@@ -1865,6 +1886,156 @@ class WorkerRuntime:
             "active_steering_supported": view.get("active_steering_supported"),
         }
 
+    def _report_worker_view(self, view: Dict[str, Any]) -> Dict[str, Any]:
+        keys = [
+            "worker_id",
+            "name",
+            "workspace_id",
+            "workspace_name",
+            "chatgpt_session_ref",
+            "work_run_ref",
+            "work_run_started_at",
+            "work_run_last_activity_at",
+            "workspace_mode",
+            "workspace_available",
+            "workspace_location",
+            "state",
+            "report",
+            "status_line",
+            "compact_status",
+            "activity_since_last_check",
+            "liveness",
+            "latest_partial_note",
+            "latest_checkpoints",
+            "checkpoint_count",
+            "report_artifacts",
+            "worker_report_files_note",
+            "worker_report_files",
+            "has_changes",
+            "integration_state",
+            "has_session",
+            "can_message",
+            "can_message_now",
+            "can_queue_message",
+            "queued_message_count",
+            "can_message_reason",
+            "followup_mode",
+            "active_steering_supported",
+            "last_activity_at",
+            "model",
+            "reasoning_effort",
+            "owned_by_current_client",
+            "ownership_status",
+            "ownership_scope",
+            "owner_label",
+            "ownership_note",
+            "takeover_required",
+            "required_action",
+        ]
+        payload = {key: view[key] for key in keys if key in view}
+        payload["view"] = "report"
+        payload["diagnostics_available"] = True
+        payload["diagnostics_note"] = (
+            "Use view=diagnostics only for deliberate lifecycle debugging; routine report view omits "
+            "latest_turn internals."
+        )
+        return payload
+
+    def _status_worker_view(self, view: Dict[str, Any]) -> Dict[str, Any]:
+        liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
+        latest_turn = view.get("latest_turn") if isinstance(view.get("latest_turn"), dict) else {}
+        payload = {
+            "view": "status",
+            "worker_id": view.get("worker_id"),
+            "name": view.get("name"),
+            "workspace_name": view.get("workspace_name"),
+            "chatgpt_session_ref": view.get("chatgpt_session_ref"),
+            "work_run_ref": view.get("work_run_ref"),
+            "workspace_mode": view.get("workspace_mode"),
+            "workspace_location": view.get("workspace_location"),
+            "state": view.get("state"),
+            "status_line": view.get("status_line"),
+            "compact_status": view.get("compact_status"),
+            "activity_since_last_check": view.get("activity_since_last_check"),
+            "liveness": liveness,
+            "latest_partial_note": view.get("latest_partial_note"),
+            "latest_checkpoints": view.get("latest_checkpoints"),
+            "checkpoint_count": view.get("checkpoint_count"),
+            "report_artifacts": view.get("report_artifacts"),
+            "worker_report_files_note": view.get("worker_report_files_note"),
+            "has_session": view.get("has_session"),
+            "can_message": view.get("can_message"),
+            "can_message_now": view.get("can_message_now"),
+            "can_queue_message": view.get("can_queue_message"),
+            "queued_message_count": view.get("queued_message_count"),
+            "can_message_reason": view.get("can_message_reason"),
+            "followup_mode": view.get("followup_mode"),
+            "active_steering_supported": view.get("active_steering_supported"),
+            "last_activity_at": view.get("last_activity_at"),
+            "model": view.get("model"),
+            "reasoning_effort": view.get("reasoning_effort"),
+            "owned_by_current_client": view.get("owned_by_current_client"),
+            "ownership_status": view.get("ownership_status"),
+            "ownership_scope": view.get("ownership_scope"),
+            "latest_turn": latest_turn,
+            "diagnostics_available": True,
+            "diagnostics_note": (
+                "Status view is liveness-focused. Use view=report for the worker answer or view=diagnostics "
+                "for the full lifecycle payload."
+            ),
+        }
+        if view.get("state") in {"starting", "working", "failed", "stopped"}:
+            payload["report"] = view.get("report")
+        else:
+            payload["report"] = "Report omitted from status view; use view=report for the worker's answer."
+        return {key: value for key, value in payload.items() if value is not None}
+
+    def _stop_confirmation_payload(
+        self,
+        jobs: list[JobInfo],
+        *,
+        request_context: Optional[RequestContext] = None,
+    ) -> Dict[str, Any] | None:
+        latest = jobs[-1]
+        session_id = self._session_for_jobs(jobs)
+        partial_note = self._latest_partial_note_for_jobs(jobs)
+        liveness = self._liveness_for_job(latest, session_id=session_id, latest_partial_note=partial_note)
+        if liveness.get("status") in {"lost", "failed"}:
+            return None
+        grace = self._stop_confirmation_grace_seconds()
+        started = latest.process_started_at or latest.started_at
+        elapsed = self._elapsed_since(started)
+        within_grace = elapsed is not None and elapsed < grace
+        recent_activity = liveness.get("status") in {"starting", "active", "quiet"}
+        command_elapsed = liveness.get("current_command_elapsed_seconds")
+        command_within_grace = command_elapsed is not None and command_elapsed < grace
+        if not (within_grace or recent_activity or command_within_grace or partial_note.get("available")):
+            return None
+
+        public = self._public_view(jobs, request_context=request_context, include_change_state=False)
+        self._annotate_worker_deltas([public], request_context=request_context)
+        status = self._status_worker_view(public)
+        status.update(
+            {
+                "stopped": False,
+                "workspace_cleaned": False,
+                "stop_confirmation_required": True,
+                "force_required": True,
+                "force_parameter": "force",
+                "force_value": True,
+                "stop_confirmation_grace_seconds": int(grace),
+                "active_turn_elapsed_seconds": elapsed,
+                "suggested_action": "wait_or_force_stop",
+                "note": (
+                    "PatchBay did not stop this worker because it still looks live or is inside the early-stop "
+                    "confirmation window. If the manager truly wants to interrupt it, call codex_worker_stop again "
+                    "with force=true. Otherwise use codex_worker_wait or codex_worker_status after the recommended "
+                    "poll interval."
+                ),
+            }
+        )
+        return status
+
     def _worker_status_line(self, view: Dict[str, Any]) -> str:
         name = str(view.get("name") or "Worker")
         liveness = view.get("liveness") if isinstance(view.get("liveness"), dict) else {}
@@ -2742,6 +2913,9 @@ class WorkerRuntime:
                         "raw_output_available": bool(job.result.get("raw_output_available")),
                         "stdout_preview_available": bool(job.result.get("stdout_preview")),
                         "result_source": str(job.result.get("result_source") or ""),
+                        "codex_result_event_seen": bool(job.result.get("codex_result_event_seen")),
+                        "turn_completed_seen": bool(job.result.get("turn_completed_seen")),
+                        "parsed_output_schema_valid": bool(job.result.get("parsed_output_schema_valid")),
                         "location": "patchbay_runtime",
                         "note": (
                             "Structured worker report is exposed through the report field; raw runtime files stay local."
@@ -2822,6 +2996,12 @@ class WorkerRuntime:
 
     def _stop_artifact_wait_seconds(self) -> float:
         return self._worker_seconds_config("stop_artifact_wait_seconds", DEFAULT_STOP_ARTIFACT_WAIT_SECONDS)
+
+    def _stop_confirmation_grace_seconds(self) -> float:
+        return self._worker_seconds_config(
+            "stop_confirmation_grace_seconds",
+            DEFAULT_STOP_CONFIRMATION_GRACE_SECONDS,
+        )
 
     def _status_poll_policy(self) -> Dict[str, Any]:
         minimum = int(

@@ -380,6 +380,7 @@ class ToolHandler:
             worker=args["worker"],
             repo_path=self._repo_from_args(args),
             cleanup_workspace=bool(args.get("cleanup_workspace", False)),
+            force=bool(args.get("force", False)),
             request_context=self.current_request_context(),
             takeover=bool(args.get("takeover", False)),
             takeover_reason=args.get("takeover_reason", ""),

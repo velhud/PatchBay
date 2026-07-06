@@ -47,7 +47,7 @@ These confirm the source material remains buildable if more behavior is ported.
 Verification performed for the current hybrid implementation:
 
 - PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests`: passed.
-- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 351 tests in the 2026-07-05 worker-status/deployment verification pass.
+- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 356 tests in the 2026-07-06 worker-stop/status verification pass.
 - PatchBay `python scripts/live_mcp_eval.py --json`: passed against a disposable local repo with no ChatGPT and no public tunnel.
 - Codex CLI: current local validation recorded `0.142.2`.
 - Real read-only worker continuity eval `scripts/worker_phase1_eval.py --timeout 600`: passed.
@@ -56,7 +56,8 @@ Verification performed for the current hybrid implementation:
 - Real worker integration eval `scripts/worker_phase4_eval.py --timeout 900`: passed.
 - Real MCP worker lifecycle trial `scripts/real_mcp_worker_trial.py`: passed and wrote progressive `calls.jsonl`, `results.json`, and `summary.md`.
 - Real MCP worker negative-case trial `scripts/real_mcp_worker_trial.py --include-safety-cases`: passed for active/read-only/dirty-base/blocked-path/binary/conflict/cleanup negative cases, connector/OAuth stderr noise scan, and public artifact leak scan.
-- Direct multi-client MCP trial `scripts/real_mcp_worker_trial.py --multi-client --tool-mode worker --json`: passed for two logical MCP sessions, session-local tool modes, shared worker inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, preview-before-integrate, no automatic commit, and sanitized private evidence.
+- Direct multi-client MCP trial `scripts/real_mcp_worker_trial.py --multi-client --include-safety-cases --tool-mode worker --json`: passed for two logical MCP sessions, session-local tool modes, shared worker inspection, cross-owner mutation refusal, explicit takeover, ownership transfer, active/read-only/dirty-base/blocked-path/binary/conflict/cleanup safety refusals, preview-before-integrate, no automatic commit, connector/OAuth stderr noise scan, and sanitized private evidence.
+- Focused live stop-confirmation probe: passed against a disposable local MCP server. A fresh `codex_worker_stop` returned `stop_confirmation_required: true` without stopping the worker, and a second call with `force: true` stopped and cleaned it.
 - Worker status guidance update `89eac18`: local compileall, full pytest, live MCP eval, worker Phase 4 eval, direct multi-client MCP trial, GitHub CI, and GitHub CodeQL passed before deployment.
 - Real worker validation configs run Codex worker subprocesses with `--ignore-user-config`, preserving `CODEX_HOME` auth while suppressing unrelated user-level MCP connector config in trial workers.
 - External ChatGPT-style direct MCP validation `scripts/external_chatgpt_style_validation.py --skip-baseline --skip-public-tunnel --json`: passed for setup/token behavior, worker-mode and full-power tool surfaces, artifact import/zip/rejection, artifact-to-worker use, handoff, session discovery, repo mutation locking, single-worker integrate, restart continuation with explicit takeover, multi-worker collaboration, low-level plan/apply job, and resume/interactive continuation.

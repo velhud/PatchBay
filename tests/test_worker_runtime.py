@@ -441,7 +441,7 @@ async def test_worker_stop_requires_takeover_for_other_owner(tmp_path):
     assert first_job.job_id not in executor.cancelled
     assert manager.get_job(first_job.job_id).state == JobState.PENDING
 
-    stopped = await runtime.stop_worker(worker=started["worker_id"], request_context=client_b, takeover=True)
+    stopped = await runtime.stop_worker(worker=started["worker_id"], request_context=client_b, takeover=True, force=True)
     assert stopped["takeover_performed"] is True
     assert first_job.job_id in executor.cancelled
     assert manager.get_job(first_job.job_id).options[OWNER_CLIENT_REF_OPTION] == "client_b"
@@ -1116,6 +1116,84 @@ async def test_unstructured_worker_result_surfaces_preserved_output(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stop_worker_requires_confirmation_for_live_recent_turn(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["stop_confirmation_grace_seconds"] = 300
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Graceful Stop Worker",
+        brief="Keep working.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-graceful-stop",
+        process_started_at=time.time(),
+        last_heartbeat_at=time.time(),
+        last_event="stdout",
+    )
+
+    first = await runtime.stop_worker(worker=started["worker_id"])
+
+    assert first["stopped"] is False
+    assert first["stop_confirmation_required"] is True
+    assert first["force_required"] is True
+    assert first["force_parameter"] == "force"
+    assert first["suggested_action"] == "wait_or_force_stop"
+    assert "force=true" in first["note"]
+    assert job.job_id not in executor.cancelled
+    assert manager.get_job(job.job_id).state == JobState.RUNNING
+
+    forced = await runtime.stop_worker(worker=started["worker_id"], force=True)
+
+    assert forced["stopped"] is True
+    assert forced["stop_confirmation_required"] is False
+    assert job.job_id in executor.cancelled
+
+
+@pytest.mark.asyncio
+async def test_stop_worker_allows_stale_long_command_without_confirmation(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["heartbeat_fresh_seconds"] = 60
+    config["workers"]["heartbeat_quiet_seconds"] = 120
+    config["workers"]["stop_confirmation_grace_seconds"] = 300
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Stale Command Worker",
+        brief="Run a broad command.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    now = time.time()
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-stale-command",
+        process_started_at=now - 900,
+        last_heartbeat_at=now - 500,
+        last_event="item.started",
+        current_command_preview="rg broad-pattern .",
+        current_command_started_at=now - 500,
+    )
+
+    result = await runtime.stop_worker(worker=started["worker_id"])
+
+    assert result["stopped"] is True
+    assert result["stop_confirmation_required"] is False
+    assert job.job_id in executor.cancelled
+
+
+@pytest.mark.asyncio
 async def test_stop_worker_waits_briefly_for_partial_report_artifact(tmp_path):
     config = make_config(tmp_path)
     config["workers"]["stop_artifact_wait_seconds"] = 1
@@ -1138,7 +1216,7 @@ async def test_stop_worker_waits_briefly_for_partial_report_artifact(tmp_path):
         last_heartbeat_at=time.time(),
     )
 
-    view = await runtime.stop_worker(worker=started["worker_id"])
+    view = await runtime.stop_worker(worker=started["worker_id"], force=True)
 
     assert view["stopped"] is True
     assert "Partial evidence attached after stop" in view["report"]
@@ -1169,7 +1247,7 @@ async def test_stop_worker_existing_checkpoint_does_not_skip_partial_result_wait
         checkpoints=[{"kind": "agent_message", "at": time.time(), "summary": "Earlier checkpoint."}],
     )
 
-    view = await runtime.stop_worker(worker=started["worker_id"])
+    view = await runtime.stop_worker(worker=started["worker_id"], force=True)
 
     assert view["stopped"] is True
     assert "Partial evidence attached after stop" in view["report"]
@@ -1281,7 +1359,7 @@ async def test_inspect_reconciles_stale_running_worker_without_waiting(tmp_path)
     manager._persist_job(manager.jobs[job_id])
 
     started = time.monotonic()
-    result = await runtime.inspect_worker(worker="Stale Worker", wait_seconds=30)
+    result = await runtime.inspect_worker(worker="Stale Worker", wait_seconds=30, view="diagnostics")
 
     assert time.monotonic() - started < 1
     assert result["state"] == "failed"
@@ -1571,7 +1649,7 @@ async def test_stop_cancels_active_turn_but_preserves_worker(tmp_path):
     job = next(iter(manager.jobs.values()))
     manager.update_job_state(job.job_id, JobState.RUNNING)
 
-    result = await runtime.stop_worker(worker=started["worker_id"])
+    result = await runtime.stop_worker(worker=started["worker_id"], force=True)
 
     assert result["stopped"] is True
     assert result["state"] == "stopped"

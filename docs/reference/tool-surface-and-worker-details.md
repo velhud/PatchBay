@@ -25,9 +25,9 @@ Direct read/search tools remain available for orientation, briefing context, foc
 | `codex_worker_list` | List current-scope workers with compact `team_status`, liveness lines, checkpoints, latest report, and hidden-history count | yes |
 | `codex_worker_status` | Show the compact pull-based status bar for the current work run plus live/problem workers | yes |
 | `codex_worker_wait` | Wait once, then return a fresh compact worker status without rapid polling | yes |
-| `codex_worker_inspect` | Read one worker's compact status, current state, report, changed files, worker-created file content, one-file diff, or integration preview | yes |
+| `codex_worker_inspect` | Read one worker's report, compact/status/diagnostics state, changed files, worker-created file content, one-file diff, or integration preview | yes |
 | `codex_worker_integrate` | Apply an explicitly accepted isolated worker result to the base checkout without committing or deleting the worktree | no |
-| `codex_worker_stop` | Stop the active turn and optionally discard an isolated worker workspace | no |
+| `codex_worker_stop` | Stop the active turn, with confirmation for live/recent turns, and optionally discard an isolated worker workspace | no |
 
 Workers are derived from persisted job records and Codex sessions. Human worker names are scoped to the base workspace, so `Small Implementer` can exist in more than one repo. Pass `repo_path` or use the public `worker_id` only when a name is ambiguous.
 
@@ -76,17 +76,19 @@ For ordinary monitoring, ChatGPT should wait about 20-30 seconds between status 
 
 `codex_worker_wait` is the preferred patient path: it waits once, raises too-small `wait_seconds` values to the configured minimum cadence, then returns a fresh compact status without interrupting workers or exposing raw logs.
 
+`codex_worker_stop` is an interruption, not a status tool. When the latest turn still looks live or is inside `workers.stop_confirmation_grace_seconds`, PatchBay returns `stop_confirmation_required: true` and leaves the worker running. ChatGPT should wait or use `codex_worker_wait` unless it has deliberately decided to interrupt; only then should it repeat the stop with `force: true`.
+
 Before final synthesis on substantial work, ChatGPT should check the relevant worker status and either stop/supersede stale unneeded workers or explicitly report that a worker remains active and why.
 
 ## Streaming, liveness, and recovered evidence
 
 PatchBay streams Codex JSON events while a worker turn is running. When Codex emits `thread.started`, the worker's session is recorded immediately rather than only after completion.
 
-Full status views expose bounded lifecycle diagnostics such as process pid, launch/process timestamps, last event, phase, event count, stdout/stderr bytes seen, command preview, progress, heartbeat age, exit code, session-created status, and classified failure categories when Codex fails before useful work.
+`codex_worker_inspect(view="report")` is the normal worker-answer view and omits low-level `latest_turn` internals. `view="status"` is the single-worker liveness/turn-diagnostics view. `view="diagnostics"` exposes the full bounded lifecycle payload for explicit debugging. Full diagnostics include process pid, launch/process timestamps, last event, phase, event count, stdout/stderr bytes seen, command preview, progress, heartbeat age, exit code, session-created status, and classified failure categories when Codex fails before useful work.
 
 Useful `agent_message` events become bounded manager-level checkpoints under `latest_checkpoints` and the latest short partial note under `latest_partial_note`. `liveness.status` uses the compact manager categories `starting`, `active`, `quiet`, `stale`, `lost`, `completed`, `failed`, and `cancelled`.
 
-A missing final report is not automatically a stuck worker. PatchBay persists a result artifact even when Codex does not emit the final structured result event; it falls back to the latest agent message, a bounded raw-output note/preview, or a redacted failure diagnostic so cancelled, failed, and unusual turns still have manager-readable evidence.
+A missing final report is not automatically a stuck worker. PatchBay persists a result artifact even when Codex does not emit the final structured result event; it falls back to the latest agent message, a bounded raw-output note/preview, or a redacted failure diagnostic so cancelled, failed, and unusual turns still have manager-readable evidence. `report_artifacts` expose `result_source`, `codex_result_event_seen`, `turn_completed_seen`, and `parsed_output_schema_valid` so the manager can tell a final schema result from a usable assistant-message fallback or raw-output fallback.
 
 ## Ownership and shared servers
 
@@ -200,6 +202,8 @@ ui://widget/patchbay-tool-card-v2.html
 ```
 
 The card is disabled by default because repeated ChatGPT Apps iframes made long PatchBay sessions heavy and difficult to use on phones and tablets. This is a server/operator configuration choice, not a ChatGPT tool and not something the model can toggle.
+
+Even without tool cards, PatchBay intentionally keeps visible MCP `content` text compact for worker/status/report tools while preserving the full payload in `structuredContent`. This avoids duplicating large worker reports into the chat interface while keeping the model-readable structured result available.
 
 Operators can opt in by setting:
 

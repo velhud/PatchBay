@@ -162,7 +162,10 @@ Input:
 
 Implemented views:
 
-- `report` / `status`: current public worker view and latest report.
+- `report`: the normal worker-answer view with report, liveness summary, checkpoints, report artifacts, and follow-up state; it omits low-level `latest_turn` internals.
+- `compact`: one small liveness snapshot for manager monitoring.
+- `status`: one-worker liveness and latest-turn diagnostics without making the full completed report the main payload.
+- `diagnostics`: full bounded lifecycle debugging payload, including `latest_turn`, for explicit process/session/command-state investigation.
 - `changes`: changed-file inventory from the worker workspace.
 - `file`: bounded text content for a workspace-relative `file_path` inside the worker workspace. Use this before integration for files created by the worker.
 - `diff`: bounded unified diff for a workspace-relative `file_path`.
@@ -180,7 +183,7 @@ This applies the worker patch to the base checkout only after preview succeeds. 
 
 Purpose: interrupt active work.
 
-Behavior preserves the worker identity and prior conversation reference. `cleanup_workspace=true` explicitly discards an isolated worker worktree and private branch. After cleanup, the worker history remains inspectable but PatchBay refuses to continue that worker instead of falling back to the base checkout.
+Behavior preserves the worker identity and prior conversation reference. Stop is an escalation, not a liveness probe. If the worker still looks live or is inside `workers.stop_confirmation_grace_seconds`, PatchBay returns `stop_confirmation_required: true` and does not cancel; the manager should wait or retry with `force=true` only after deliberately deciding to interrupt. `cleanup_workspace=true` explicitly discards an isolated worker worktree and private branch. After cleanup, the worker history remains inspectable but PatchBay refuses to continue that worker instead of falling back to the base checkout.
 
 ## Worker Tool Mode
 

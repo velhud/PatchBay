@@ -112,6 +112,7 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "workspace_location" in by_name["codex_worker_inspect"]["outputSchema"]["properties"]
     assert "view" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]
     assert "compact" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]["view"]["enum"]
+    assert "diagnostics" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]["view"]["enum"]
     assert "file" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]["view"]["enum"]
     assert "start_line" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_inspect"]["inputSchema"]["properties"]
@@ -130,9 +131,12 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "explicitly accepted" in by_name["codex_worker_integrate"]["description"]
     assert "does not commit" in by_name["codex_worker_integrate"]["description"]
     assert "cleanup_workspace" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
+    assert "force" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "takeover" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "partial checkpoints" in by_name["codex_worker_stop"]["description"]
+    assert "stop_confirmation_required" in by_name["codex_worker_stop"]["description"]
+    assert "force=true" in by_name["codex_worker_stop"]["description"]
     assert "discard" in by_name["codex_worker_stop"]["description"]
 
 

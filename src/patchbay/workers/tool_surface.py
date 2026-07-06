@@ -60,6 +60,12 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "last_activity_at": {"type": "number"},
         "accepted": {"type": "boolean"},
         "stopped": {"type": "boolean"},
+        "stop_confirmation_required": {"type": "boolean"},
+        "force_required": {"type": "boolean"},
+        "force_parameter": {"type": "string"},
+        "force_value": {"type": "boolean"},
+        "stop_confirmation_grace_seconds": {"type": "integer"},
+        "active_turn_elapsed_seconds": {"type": ["integer", "null"]},
         "workspace_cleaned": {"type": "boolean"},
         "note": {"type": "string"},
         "context_sources": {"type": "array", "items": {"type": "string"}},
@@ -640,9 +646,9 @@ WORKER_TOOLS = [
         "description": (
             "Read one worker's current state and latest natural-language report. Optionally wait briefly for the "
             "current turn; this does not expose private repo paths, job ids, session ids, or raw transcripts. "
-            "For running workers, use view=compact or codex_worker_status to check active/quiet/stale/lost status, activity deltas, phase, latest_checkpoints, and latest partial note before "
+            "For running workers, use view=compact, view=status, or codex_worker_status to check active/quiet/stale/lost status, activity deltas, phase, latest_checkpoints, and latest partial note before "
             "assuming the worker is stuck. Use the report as the normal management signal. Managerial review means reading the report and asking follow-up questions, not routinely opening every changed file or diff; question the worker again with codex_worker_message "
-            "when evidence is missing, output is too compressed, or another worker disagrees. Use view=changes, view=diff with file_path, view=file with file_path, or view=integration_preview only when there is a concrete escalation or integration need. codex_read_file reads the "
+            "when evidence is missing, output is too compressed, or another worker disagrees. view=report omits low-level lifecycle diagnostics; use view=diagnostics only for deliberate debugging of process/session/command state. Use view=changes, view=diff with file_path, view=file with file_path, or view=integration_preview only when there is a concrete escalation or integration need. codex_read_file reads the "
             "base checkout, not an isolated worker worktree."
         ),
         "inputSchema": {
@@ -660,8 +666,8 @@ WORKER_TOOLS = [
                 },
                 "view": {
                     "type": "string",
-                    "enum": ["report", "compact", "status", "changes", "diff", "file", "integration_preview"],
-                    "description": "Report/status by default. Use compact for a small liveness snapshot, changes for file inventory, diff with file_path, file with file_path for worker-created file content, or integration_preview before accepting a worker result.",
+                    "enum": ["report", "compact", "status", "diagnostics", "changes", "diff", "file", "integration_preview"],
+                    "description": "Report by default. Use compact for a tiny liveness snapshot, status for liveness and latest-turn diagnostics without the full answer, diagnostics for the full lifecycle payload, changes for file inventory, diff with file_path, file with file_path for worker-created file content, or integration_preview before accepting a worker result.",
                 },
                 "file_path": {
                     "type": "string",
@@ -734,7 +740,10 @@ WORKER_TOOLS = [
             "Stop a named worker's active Codex turn. The durable worker identity and Codex conversation are "
             "preserved so ChatGPT can continue the colleague later, and PatchBay preserves any partial checkpoints "
             "or partial report it captured before cancellation. Stop is an escalation, not a liveness probe; inspect "
-            "view=status first when the worker has recent heartbeat or checkpoints. Set cleanup_workspace=true only when the "
+            "view=status first when the worker has recent heartbeat or checkpoints. If the worker still looks live or "
+            "has been active for less than the configured confirmation grace window, the first stop call returns "
+            "stop_confirmation_required instead of cancelling; wait longer or call again with force=true after a "
+            "deliberate manager decision. Set cleanup_workspace=true only when the "
             "user intentionally wants to discard that worker's isolated worktree. If the worker belongs to "
             "another MCP connection, retry with takeover=true only after user confirmation."
         ),
@@ -750,6 +759,10 @@ WORKER_TOOLS = [
                 "cleanup_workspace": {
                     "type": "boolean",
                     "description": "When true, discard the isolated worker worktree after stopping active work.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "When true, confirm that ChatGPT deliberately wants to interrupt a worker that still looks live or is inside the early-stop grace window.",
                 },
                 **WORKER_TAKEOVER_PROPERTIES,
             },

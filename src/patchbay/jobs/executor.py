@@ -495,9 +495,17 @@ class JobExecutor:
                 self._write_process_artifact(stderr_log, stderr)
 
                 if capture.session_start_timed_out:
+                    startup_result = await self._parse_partial_result(
+                        stdout,
+                        result_file,
+                        job.options,
+                        reason="Codex session startup timed out before PatchBay saw a JSON session.",
+                        status="failed",
+                    )
                     self.job_manager.update_job_state(
                         job_id,
                         JobState.FAILED,
+                        result=startup_result,
                         error=(
                             "Codex process started but did not create a JSON session before the startup "
                             "timeout. Inspect local job stdout/stderr logs for startup diagnostics."
@@ -509,9 +517,17 @@ class JobExecutor:
                     return
 
                 if capture.total_timed_out:
+                    timeout_result = await self._parse_partial_result(
+                        stdout,
+                        result_file,
+                        job.options,
+                        reason=f"Job timed out after {timeout} seconds.",
+                        status="failed",
+                    )
                     self.job_manager.update_job_state(
                         job_id,
                         JobState.FAILED,
+                        result=timeout_result,
                         error=f"Job timed out after {timeout} seconds",
                         exit_code=process.returncode,
                         last_heartbeat_at=time.time(),
@@ -1149,11 +1165,16 @@ class JobExecutor:
             
             # Parse JSONL - look for structured result
             lines = [line for line in stdout_text.split('\n') if line.strip()]
+            turn_completed_seen = self._json_event_type_seen(lines, "turn.completed")
             
             if not lines:
                 return self._write_result_file(result_file, {
                     "summary": "No output received",
-                    "files_changed": []
+                    "files_changed": [],
+                    "result_source": "empty_stdout",
+                    "codex_result_event_seen": False,
+                    "turn_completed_seen": False,
+                    "parsed_output_schema_valid": False,
                 })
             
             # Try to find the structured result in JSON events
@@ -1165,25 +1186,43 @@ class JobExecutor:
                     if isinstance(parsed, dict):
                         if parsed.get('type') == 'result' and 'data' in parsed:
                             result = parsed['data']
+                            if isinstance(result, dict):
+                                result.setdefault("result_source", "codex_result_event")
+                                result.setdefault("codex_result_event_seen", True)
+                                result.setdefault("turn_completed_seen", turn_completed_seen)
+                                result.setdefault("parsed_output_schema_valid", True)
+                                result.setdefault("final_structured_result", True)
                             break
                         elif parsed.get('type') == 'item.completed':
                             item = self._agent_item_from_event(parsed)
                             text = self._text_from_agent_item(item) if item else ""
                             if text:
+                                parsed_message_as_json = False
                                 try:
                                     message_result = json.loads(text)
                                     if isinstance(message_result, dict):
                                         result = message_result
+                                        parsed_message_as_json = True
                                     else:
                                         result = {"summary": str(message_result), "files_changed": []}
                                 except json.JSONDecodeError:
                                     result = {"summary": text, "files_changed": []}
                                 if isinstance(result, dict):
-                                    result.setdefault("result_source", "latest_agent_message")
+                                    result.setdefault(
+                                        "result_source",
+                                        "latest_agent_message_json" if parsed_message_as_json else "latest_agent_message_text",
+                                    )
+                                    result.setdefault("codex_result_event_seen", False)
+                                    result.setdefault("turn_completed_seen", turn_completed_seen)
+                                    result.setdefault("parsed_output_schema_valid", parsed_message_as_json)
                                     result.setdefault("final_structured_result", False)
                                 break
                         elif 'summary' in parsed:
                             result = parsed
+                            result.setdefault("result_source", "json_summary_event")
+                            result.setdefault("codex_result_event_seen", False)
+                            result.setdefault("turn_completed_seen", turn_completed_seen)
+                            result.setdefault("parsed_output_schema_valid", True)
                             break
                 except json.JSONDecodeError:
                     continue
@@ -1197,6 +1236,7 @@ class JobExecutor:
                     stdout_text,
                     lines,
                     note="Could not extract a final structured Codex result event.",
+                    turn_completed_seen=turn_completed_seen,
                 ),
             )
             
@@ -1209,8 +1249,19 @@ class JobExecutor:
                     stdout_text,
                     [line for line in stdout_text.split('\n') if line.strip()],
                     note="Could not parse Codex JSON output.",
+                    turn_completed_seen=False,
                 ),
             )
+
+    def _json_event_type_seen(self, lines: list[str], event_type: str) -> bool:
+        for line in lines:
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and parsed.get("type") == event_type:
+                return True
+        return False
 
     def _write_result_file(self, result_file: Path, result: Dict[str, Any]) -> Dict[str, Any]:
         """Persist a redacted result payload and return the same public payload."""
@@ -1220,13 +1271,23 @@ class JobExecutor:
         result_file.write_text(json.dumps(safe_result, indent=2), encoding="utf-8")
         return safe_result
 
-    def _fallback_result_from_stdout(self, stdout_text: str, lines: list[str], *, note: str) -> Dict[str, Any]:
+    def _fallback_result_from_stdout(
+        self,
+        stdout_text: str,
+        lines: list[str],
+        *,
+        note: str,
+        turn_completed_seen: bool = False,
+    ) -> Dict[str, Any]:
         """Build a manager-usable report when Codex did not emit the final schema."""
         latest_agent_result = self._latest_agent_message_result(lines)
         if latest_agent_result:
             latest_agent_result.setdefault("files_changed", [])
             latest_agent_result.setdefault("notes", note)
-            latest_agent_result["result_source"] = "latest_agent_message"
+            latest_agent_result.setdefault("result_source", "latest_agent_message_text")
+            latest_agent_result.setdefault("codex_result_event_seen", False)
+            latest_agent_result.setdefault("turn_completed_seen", turn_completed_seen)
+            latest_agent_result.setdefault("parsed_output_schema_valid", False)
             latest_agent_result["final_structured_result"] = False
             return latest_agent_result
         stdout_preview = self._fallback_stdout_preview(stdout_text, lines)
@@ -1239,6 +1300,10 @@ class JobExecutor:
             ),
             "files_changed": [],
             "notes": note,
+            "result_source": "stdout_preview",
+            "codex_result_event_seen": False,
+            "turn_completed_seen": turn_completed_seen,
+            "parsed_output_schema_valid": False,
             "final_structured_result": False,
             "raw_output_available": bool(stdout_text),
             "stdout_preview": stdout_preview,
@@ -1269,6 +1334,10 @@ class JobExecutor:
             text = self._text_from_agent_item(item) if item else ""
             if text:
                 candidate_lines.append(text)
+                continue
+            raw_item = self._event_item_from_event(parsed)
+            if str(raw_item.get("type") or "") == "error":
+                candidate_lines.append(json.dumps(raw_item, ensure_ascii=False))
                 continue
             if event_type in {"result", "turn.completed"}:
                 candidate_lines.append(json.dumps(parsed, ensure_ascii=False))
@@ -1379,6 +1448,7 @@ class JobExecutor:
         options: Dict[str, Any] = None,
         *,
         reason: str,
+        status: str = "cancelled",
     ) -> Dict[str, Any]:
         """Parse and persist the latest useful report from a stopped worker turn."""
         result = await self._parse_result(stdout, result_file, options)
@@ -1390,7 +1460,7 @@ class JobExecutor:
         result.setdefault("files_changed", [])
         result["partial"] = True
         result["partial_reason"] = redact_text(reason)
-        result["status"] = "cancelled"
+        result["status"] = status
         safe_result = redact_sensitive_output(result)
         result_file.write_text(json.dumps(safe_result, indent=2))
         return safe_result

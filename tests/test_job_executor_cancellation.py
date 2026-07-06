@@ -144,8 +144,10 @@ async def test_parse_result_persists_fallback_from_latest_agent_message(tmp_path
     result = await executor._parse_result(agent_message.encode("utf-8"), result_file, {"structured_output": True})
 
     assert result["summary"] == "I checked the UI surface and found no blocker."
-    assert result["result_source"] == "latest_agent_message"
+    assert result["result_source"] == "latest_agent_message_text"
     assert result["final_structured_result"] is False
+    assert result["codex_result_event_seen"] is False
+    assert result["parsed_output_schema_valid"] is False
     assert json.loads(result_file.read_text(encoding="utf-8"))["summary"] == result["summary"]
 
 

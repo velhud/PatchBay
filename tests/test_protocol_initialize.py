@@ -58,6 +58,7 @@ def test_initialize_includes_server_instructions():
     assert "Workers are stateful by name" in result["instructions"]
     assert "20-30 seconds between status calls" in result["instructions"]
     assert "recommended_next_poll_seconds" in result["instructions"]
+    assert "stop_confirmation_required" in result["instructions"]
     assert "Spark is the default for compact small workers" in result["instructions"]
     assert "GPT-5.4 is not merely a fallback" in result["instructions"]
     assert "main serious worker" in result["instructions"]
@@ -146,6 +147,33 @@ def test_public_tool_call_passes_request_context_to_handler():
     assert result["result"]["_meta"]["patchbay/tool_id"] == "get_status"
     assert handler.contexts == [context]
     assert "private-session-id" not in result["result"]["content"][0]["text"]
+
+
+def test_worker_tool_call_content_text_is_compact_while_structured_content_is_full():
+    class LargeWorkerHandler:
+        async def handle_tool_call(self, tool_name, arguments, *, context=None):
+            return {
+                "name": "Huge Reporter",
+                "state": "idle",
+                "report": "x" * 20_000,
+                "status_line": "Huge Reporter: completed.",
+            }
+
+    protocol = MCPProtocol(full_power_config(), LargeWorkerHandler())
+
+    result = asyncio.run(
+        protocol._handle_tools_call(
+            {
+                "name": "codex_worker_inspect",
+                "arguments": {"worker": "Huge Reporter"},
+            }
+        )
+    )
+
+    assert result["structuredContent"]["report"] == "x" * 20_000
+    assert len(result["content"][0]["text"]) < 500
+    assert "Huge Reporter" in result["content"][0]["text"]
+    assert "x" * 1000 not in result["content"][0]["text"]
 
 
 def test_public_tool_call_supports_legacy_handler_without_context():

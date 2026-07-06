@@ -109,6 +109,7 @@ workers:
   status_recommended_poll_seconds: 30
   status_minimum_poll_seconds: 20
   stop_artifact_wait_seconds: 2
+  stop_confirmation_grace_seconds: 300
 
 artifacts:
   enabled: true
