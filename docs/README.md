@@ -16,6 +16,7 @@ The repository root keeps the practical entrypoints: `README.md`, `QUICKSTART.md
 ## Architecture
 
 - [Architecture overview](architecture/overview.md)
+- [Multi-machine orchestration options](architecture/multi-machine-orchestration-options.md)
 - [Pro Escalations architecture](pro-escalations/ARCHITECTURE.md)
 - [Runtime decision](architecture/runtime-decision.md)
 
