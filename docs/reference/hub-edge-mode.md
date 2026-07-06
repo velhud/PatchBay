@@ -23,8 +23,10 @@ PatchBay use.
 - Lets ChatGPT queue worker commands for a selected `machine_id`.
 - Lets the selected edge poll, execute the local `codex_worker_*` command through the existing `ToolHandler`, and post the result back.
 
-V1 uses HTTPS polling. WebSocket streaming, mailbox channels, and campaign
-coordination are future extensions.
+V1 uses HTTPS polling. WebSocket streaming, mailbox channels, campaign
+coordination, and multiple ChatGPT conversations coordinating through one Hub
+are future extensions. The multi-conversation idea is preserved in
+[Multi-ChatGPT hub coordination idea](../architecture/multi-chatgpt-hub-coordination-idea.md).
 
 ## Start A Hub
 
