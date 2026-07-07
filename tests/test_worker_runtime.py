@@ -900,9 +900,9 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert first["workers"][0]["current_command"]["running"] is True
     assert first["workers"][0]["current_command"]["kind"] == "shell_command"
     assert "preview" not in first["workers"][0]["current_command"]
-    assert first["minimum_next_poll_seconds"] == 20
-    assert first["recommended_next_poll_seconds"] == 30
-    assert "20-30 seconds" in first["poll_guidance"]
+    assert first["minimum_next_poll_seconds"] == 10
+    assert first["recommended_next_poll_seconds"] == 20
+    assert "10-20 seconds" in first["poll_guidance"]
 
     manager.update_job_state(
         job.job_id,
@@ -935,7 +935,7 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert second["workers"][0]["latest_partial_note"]["available"] is True
     assert "partial note" in second["worker_lines"][0]
     listed = await runtime.list_workers(repo_path=config["repositories"]["default"], include_stopped=True)
-    assert listed["team_status"]["recommended_next_poll_seconds"] == 30
+    assert listed["team_status"]["recommended_next_poll_seconds"] == 20
     assert "Do not poll every few seconds" in listed["team_report"]
 
 
@@ -1694,6 +1694,91 @@ async def test_worker_status_soft_cooldown_does_not_reset_deltas(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_worker_list_uses_soft_monitoring_cooldown(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["status_minimum_poll_seconds"] = 20
+    config["workers"]["status_recommended_poll_seconds"] = 30
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Listed Worker",
+        brief="Inspect the repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+
+    first = await runtime.list_workers(repo_path=config["repositories"]["default"])
+    second = await runtime.list_workers(repo_path=config["repositories"]["default"])
+
+    assert first["poll_too_early"] is False
+    assert first["status_current"] is True
+    assert second["poll_too_early"] is True
+    assert second["status_current"] is False
+    assert second["workers"][0]["worker_id"] == started["worker_id"]
+
+
+@pytest.mark.asyncio
+async def test_worker_monitoring_cache_is_cleared_by_new_worker(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["status_minimum_poll_seconds"] = 20
+    config["workers"]["status_recommended_poll_seconds"] = 30
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    empty = await runtime.list_workers(repo_path=config["repositories"]["default"])
+    assert empty["count"] == 0
+
+    started = await runtime.start_worker(
+        name="Fresh Worker",
+        brief="Inspect the repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    listed = await runtime.list_workers(repo_path=config["repositories"]["default"])
+
+    assert listed["poll_too_early"] is False
+    assert listed["count"] == 1
+    assert listed["workers"][0]["worker_id"] == started["worker_id"]
+
+
+@pytest.mark.asyncio
+async def test_worker_inspect_status_uses_soft_monitoring_cooldown(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["status_minimum_poll_seconds"] = 20
+    config["workers"]["status_recommended_poll_seconds"] = 30
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Inspectable Worker",
+        brief="Inspect the repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[-1])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-inspectable",
+        last_heartbeat_at=time.time(),
+        event_count=1,
+    )
+
+    first = await runtime.inspect_worker(worker=started["worker_id"], view="status")
+    second = await runtime.inspect_worker(worker=started["worker_id"], view="status")
+
+    assert first["poll_too_early"] is False
+    assert first["status_current"] is True
+    assert second["poll_too_early"] is True
+    assert second["status_current"] is False
+    assert second["worker_id"] == started["worker_id"]
+
+
+@pytest.mark.asyncio
 async def test_worker_wait_returns_fresh_status_after_delay(monkeypatch, tmp_path):
     config = make_config(tmp_path)
     config["workers"]["status_minimum_poll_seconds"] = 20
@@ -1723,6 +1808,38 @@ async def test_worker_wait_returns_fresh_status_after_delay(monkeypatch, tmp_pat
     assert result["waited_seconds"] >= 20
     assert "patient manager path" in result["wait_guidance"]
     assert "configured minimum" in result["wait_guidance"]
+
+
+@pytest.mark.asyncio
+async def test_worker_wait_respects_recent_status_cooldown(monkeypatch, tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["status_minimum_poll_seconds"] = 20
+    config["workers"]["status_recommended_poll_seconds"] = 30
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    await runtime.start_worker(
+        name="Patient Worker",
+        brief="Inspect the repo.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    await runtime.worker_status(repo_path=config["repositories"]["default"])
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        return None
+
+    monkeypatch.setattr("patchbay.workers.runtime.asyncio.sleep", fake_sleep)
+
+    result = await runtime.worker_wait(repo_path=config["repositories"]["default"], wait_seconds=1)
+
+    assert sleeps
+    assert sleeps[0] >= 20
+    assert result["status_current"] is True
+    assert result["poll_too_early"] is False
 
 
 @pytest.mark.asyncio

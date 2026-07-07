@@ -113,8 +113,8 @@ workers:
   file_response_max_bytes: 25000
   heartbeat_fresh_seconds: 120
   heartbeat_quiet_seconds: 600
-  status_recommended_poll_seconds: 30
-  status_minimum_poll_seconds: 20
+  status_recommended_poll_seconds: 20
+  status_minimum_poll_seconds: 10
   stop_artifact_wait_seconds: 2
   stop_confirmation_grace_seconds: 300
 

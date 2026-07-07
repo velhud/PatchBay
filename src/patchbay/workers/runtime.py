@@ -73,8 +73,8 @@ DEFAULT_WORKER_FILE_RESPONSE_BYTES = 25_000
 DEFAULT_HEARTBEAT_FRESH_SECONDS = 120
 DEFAULT_HEARTBEAT_QUIET_SECONDS = 600
 DEFAULT_STOP_ARTIFACT_WAIT_SECONDS = 2.0
-DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 30
-DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 20
+DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 20
+DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 10
 DEFAULT_STOP_CONFIRMATION_GRACE_SECONDS = 300
 DEFAULT_WORKER_RECENT_SCOPE_SECONDS = 4 * 60 * 60
 MAX_STATUS_LINE_CHARS = 260
@@ -140,6 +140,48 @@ class WorkerRuntime:
         self.artifact_store = ArtifactStore(config)
         self._status_poll_snapshots: dict[str, dict[str, Dict[str, Any]]] = {}
         self._status_poll_responses: dict[str, Dict[str, Any]] = {}
+
+    def _clear_monitoring_caches(self) -> None:
+        """Forget cached manager status after a real worker-side state change."""
+        self._status_poll_responses.clear()
+
+    def _cached_monitoring_response(
+        self,
+        cache_key: str,
+        *,
+        tool_name: str,
+        force_refresh: bool = False,
+    ) -> Dict[str, Any] | None:
+        if force_refresh:
+            return None
+        cached = self._status_poll_responses.get(cache_key)
+        if not cached:
+            return None
+        poll_policy = self._status_poll_policy()
+        minimum = int(poll_policy["minimum_next_poll_seconds"])
+        elapsed = max(0.0, time.time() - float(cached.get("at") or 0))
+        if elapsed >= minimum:
+            return None
+        retry_after = max(1, int(round(minimum - elapsed)))
+        payload = deepcopy(cached.get("payload") or {})
+        payload.update(
+            {
+                "poll_too_early": True,
+                "status_current": False,
+                "seconds_since_last_poll": int(elapsed),
+                "retry_after_seconds": retry_after,
+                "poll_tool": tool_name,
+                "poll_guidance": (
+                    f"{tool_name} checked worker state {int(elapsed)}s ago. For normal worker monitoring, "
+                    f"wait about {minimum}-{poll_policy['recommended_next_poll_seconds']} seconds between "
+                    "checks. This cached response is not a failure and did not reset activity deltas."
+                ),
+            }
+        )
+        return payload
+
+    def _store_monitoring_response(self, cache_key: str, payload: Dict[str, Any]) -> None:
+        self._status_poll_responses[cache_key] = {"at": time.time(), "payload": deepcopy(payload)}
 
     async def start_worker(
         self,
@@ -219,6 +261,7 @@ class WorkerRuntime:
             self._discard_prepared_workspace(workspace)
             raise
         self._schedule_job(job_id)
+        self._clear_monitoring_caches()
 
         view = self._public_view(
             self._jobs_for_worker(worker_id),
@@ -364,6 +407,7 @@ class WorkerRuntime:
             view.update({"accepted": False, **busy.public_payload()})
             return view
         self._schedule_job(job_id)
+        self._clear_monitoring_caches()
 
         view = self._public_view(
             self._jobs_for_worker(worker_id),
@@ -407,18 +451,65 @@ class WorkerRuntime:
             self._reconcile_active_jobs()
             jobs = self._resolve_worker(worker, repo_path=repo_path)
             latest = jobs[-1]
+            worker_id, _ = self._worker_identity(jobs)
+            is_monitoring_view = view in {"compact", "status"} or (
+                view == "report" and latest.state in (JobState.PENDING, JobState.RUNNING)
+            )
+            inspect_cache_key = "|".join(
+                [
+                    "inspect",
+                    self._status_poll_key(request_context),
+                    str(Path(repo_path).expanduser().resolve()) if repo_path else "",
+                    worker_id,
+                    f"view={view}",
+                ]
+            )
+            if is_monitoring_view and wait_seconds <= 0:
+                cached = self._cached_monitoring_response(inspect_cache_key, tool_name="codex_worker_inspect")
+                if cached:
+                    return cached
             if latest.state not in (JobState.PENDING, JobState.RUNNING) or time.monotonic() >= deadline:
                 if view in {"report", "status", "compact", "diagnostics"}:
                     public = self._public_view(jobs, request_context=request_context)
                     self._annotate_worker_deltas([public], request_context=request_context)
                     if view == "compact":
-                        return self._compact_worker_view(public)
+                        payload = self._compact_worker_view(public)
+                        if is_monitoring_view:
+                            payload.update(
+                                {
+                                    "poll_too_early": False,
+                                    "status_current": True,
+                                    "retry_after_seconds": self._status_poll_policy()["recommended_next_poll_seconds"],
+                                }
+                            )
+                            self._store_monitoring_response(inspect_cache_key, payload)
+                        return payload
                     if view == "status":
-                        return self._status_worker_view(public)
+                        payload = self._status_worker_view(public)
+                        if is_monitoring_view:
+                            payload.update(
+                                {
+                                    "poll_too_early": False,
+                                    "status_current": True,
+                                    "retry_after_seconds": self._status_poll_policy()["recommended_next_poll_seconds"],
+                                }
+                            )
+                            self._store_monitoring_response(inspect_cache_key, payload)
+                        return payload
                     if view == "diagnostics":
                         public["view"] = "diagnostics"
                         return public
-                    return self._report_worker_view(public)
+                    payload = self._report_worker_view(public)
+                    if is_monitoring_view:
+                        payload.update(
+                            {
+                                "poll_too_early": False,
+                                "status_current": True,
+                                "retry_after_seconds": self._status_poll_policy()["recommended_next_poll_seconds"],
+                            }
+                        )
+                        self._store_monitoring_response(inspect_cache_key, payload)
+                    return payload
                 if view == "changes":
                     return self._changes_view(jobs, request_context=request_context)
                 if view == "diff":
@@ -451,7 +542,21 @@ class WorkerRuntime:
         created_after: Optional[float] = None,
         scope: str = "history",
         request_context: Optional[RequestContext] = None,
+        apply_monitoring_cooldown: bool = True,
     ) -> Dict[str, Any]:
+        list_cache_key = self._list_response_key(
+            repo_path=repo_path,
+            active_only=active_only,
+            include_stopped=include_stopped,
+            owned_only=owned_only,
+            created_after=created_after,
+            scope=scope,
+            request_context=request_context,
+        )
+        if apply_monitoring_cooldown:
+            cached = self._cached_monitoring_response(list_cache_key, tool_name="codex_worker_list")
+            if cached:
+                return cached
         self._reconcile_active_jobs()
         groups = self._worker_groups()
         if repo_path:
@@ -490,7 +595,7 @@ class WorkerRuntime:
                 f"\nHistorical workers hidden by scope={scope_info['applied']}: {hidden_count}. "
                 "Use scope=conversation, scope=recent, or scope=history when you intentionally need them."
             )
-        return {
+        payload = {
             "workers": views,
             "count": len(views),
             "active": sum(1 for item in views if item["state"] in {"starting", "working"}),
@@ -498,7 +603,13 @@ class WorkerRuntime:
             "hidden_workers": scope_info["hidden_workers"],
             "team_status": team_status,
             "team_report": team_report,
+            "poll_too_early": False,
+            "status_current": True,
+            "retry_after_seconds": team_status["recommended_next_poll_seconds"],
         }
+        if apply_monitoring_cooldown:
+            self._store_monitoring_response(list_cache_key, payload)
+        return payload
 
     async def worker_status(
         self,
@@ -554,6 +665,7 @@ class WorkerRuntime:
             created_after=created_after,
             scope=scope,
             request_context=request_context,
+            apply_monitoring_cooldown=False,
         )
         team_status = listed["team_status"]
         payload = {
@@ -577,7 +689,7 @@ class WorkerRuntime:
             "seconds_since_last_poll": None,
             "retry_after_seconds": team_status["recommended_next_poll_seconds"],
         }
-        self._status_poll_responses[poll_key] = {"at": now, "payload": deepcopy(payload)}
+        self._store_monitoring_response(poll_key, payload)
         return payload
 
     async def worker_wait(
@@ -600,6 +712,18 @@ class WorkerRuntime:
         wait_cap_seconds = 120
         minimum_wait_seconds = min(wait_cap_seconds, int(policy["minimum_next_poll_seconds"]))
         wait_seconds = min(wait_cap_seconds, max(minimum_wait_seconds, requested_wait_seconds))
+        poll_key = self._status_response_key(
+            repo_path=repo_path,
+            active_only=active_only,
+            include_stopped=include_stopped,
+            owned_only=owned_only,
+            created_after=created_after,
+            scope=scope,
+            request_context=request_context,
+        )
+        cached = self._cached_monitoring_response(poll_key, tool_name="codex_worker_wait")
+        if cached:
+            wait_seconds = max(wait_seconds, int(cached.get("retry_after_seconds") or 0))
         started = time.monotonic()
         await asyncio.sleep(wait_seconds)
         payload = await self.worker_status(
@@ -690,6 +814,8 @@ class WorkerRuntime:
         if takeover:
             view["takeover_performed"] = True
             view["note"] = "Control was transferred to this MCP connection. " + view["note"]
+        if cancelled or cleaned:
+            self._clear_monitoring_caches()
         return view
 
     async def _wait_for_cancelled_turn_artifacts(self, job_id: str) -> None:
@@ -814,6 +940,7 @@ class WorkerRuntime:
         if takeover:
             applied["takeover_performed"] = True
             applied["note"] = "Control was transferred to this MCP connection. " + applied["note"]
+        self._clear_monitoring_caches()
         return applied
 
     def _reconcile_active_jobs(self) -> None:
@@ -1563,6 +1690,27 @@ class WorkerRuntime:
                 f"after={created_after if created_after is not None else ''}",
                 f"scope={self._normalize_worker_scope(scope)}",
             ]
+        )
+
+    def _list_response_key(
+        self,
+        *,
+        repo_path: Optional[str],
+        active_only: bool,
+        include_stopped: bool,
+        owned_only: bool,
+        created_after: Optional[float],
+        scope: str,
+        request_context: Optional[RequestContext],
+    ) -> str:
+        return "list|" + self._status_response_key(
+            repo_path=repo_path,
+            active_only=active_only,
+            include_stopped=include_stopped,
+            owned_only=owned_only,
+            created_after=created_after,
+            scope=scope,
+            request_context=request_context,
         )
 
     def _normalize_worker_scope(self, value: Any) -> str:

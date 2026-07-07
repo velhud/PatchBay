@@ -56,7 +56,7 @@ def test_initialize_includes_server_instructions():
     assert "context_from_workers" in result["instructions"]
     assert "codex_worker_inbox(action=import_file)" in result["instructions"]
     assert "Workers are stateful by name" in result["instructions"]
-    assert "20-30 seconds between status calls" in result["instructions"]
+    assert "10-20 seconds between status/list/wait/compact-inspect checks" in result["instructions"]
     assert "recommended_next_poll_seconds" in result["instructions"]
     assert "stop_confirmation_required" in result["instructions"]
     assert "Spark is the default for compact small workers" in result["instructions"]
