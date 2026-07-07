@@ -145,8 +145,12 @@ logging:
   audit_file:
   job_logs_dir:
   job_state_dir:
+  private_evidence_dir:
   job_log_max_bytes: 200000
   write_raw_job_logs: false
   access_log: false
+  private_evidence_log: false
+  store_job_prompts: false
+  store_mcp_transcripts: false
   log_prompt_bodies: false
   log_response_bodies: false

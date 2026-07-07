@@ -48,6 +48,7 @@ The unit suite verifies:
 - durable redacted job metadata persistence;
 - current Codex JSONL `agent_message` result parsing;
 - redacted/capped job stdout/stderr artifacts;
+- optional private runtime evidence for full job briefs and MCP request/response transcripts while keeping durable state JSON prompt-body-free;
 - strict completed-apply-job diff retrieval;
 - `codex review` prompt stdin transport and config override allowlisting;
 - metadata-only session listing;

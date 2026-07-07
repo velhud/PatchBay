@@ -16,6 +16,7 @@ from dataclasses import dataclass, asdict
 import git
 
 from patchbay.connector.profiles import normalize_logging_paths
+from patchbay.evidence import EvidenceRecorder
 from patchbay.security import internal_log_error, redact_sensitive_output, validate_allowed_path
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,10 @@ class JobInfo:
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     exit_code: Optional[int] = None
+    prompt_artifact: Optional[str] = None
+    prompt_sha256: Optional[str] = None
+    prompt_bytes: Optional[int] = None
+    prompt_recorded_at: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, handling enum serialization"""
@@ -120,6 +125,7 @@ class JobManager:
         self.worktrees_dir.mkdir(parents=True, exist_ok=True)
         self.job_state_dir = Path(logging_config['job_state_dir']).expanduser().resolve()
         self.job_state_dir.mkdir(parents=True, exist_ok=True)
+        self.evidence_recorder = EvidenceRecorder(config)
         self._load_jobs()
         
         timeout_label = "disabled" if str(self.job_timeout).strip().lower() in {"", "0", "none", "never", "unlimited", "disabled", "false"} else f"{self.job_timeout}s"
@@ -204,6 +210,21 @@ class JobManager:
             else:
                 # Plan/read-only/shared modes can use the main repo.
                 job.worktree_path = repo_path
+
+        prompt_record = self.evidence_recorder.record_job_brief(
+            job_id=job_id,
+            mode=mode,
+            prompt=prompt,
+            repo_path=repo_path,
+            options=job.options or {},
+            worktree_path=job.worktree_path,
+            branch_name=job.branch_name,
+        )
+        if prompt_record:
+            job.prompt_artifact = prompt_record["prompt_artifact"]
+            job.prompt_sha256 = prompt_record["prompt_sha256"]
+            job.prompt_bytes = prompt_record["prompt_bytes"]
+            job.prompt_recorded_at = prompt_record["prompt_recorded_at"]
         
         self.jobs[job_id] = job
         self._persist_job(job)

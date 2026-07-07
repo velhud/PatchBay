@@ -91,8 +91,12 @@ logging:
   audit_file:
   job_logs_dir:
   job_state_dir:
+  private_evidence_dir:
   write_raw_job_logs: false
   access_log: false
+  private_evidence_log: false
+  store_job_prompts: false
+  store_mcp_transcripts: false
 
 workers:
   worktree_root: ""
@@ -114,6 +118,17 @@ pro_requests:
 ```
 
 Blank logging paths resolve outside the checkout under `PATCHBAY_HOME/runtime` when `PATCHBAY_HOME` is set, otherwise under `~/.patchbay/runtime`. Set explicit paths only when you deliberately want repo-local or custom runtime state.
+
+`audit_file` is compact metadata. `job_logs_dir` stores bounded/redacted Codex
+stdout, stderr, and result artifacts. `job_state_dir` stores durable job state
+without prompt bodies. `private_evidence_dir` stores optional private evidence:
+full job briefs and full MCP request/response transcripts. See
+[`runtime-evidence.md`](runtime-evidence.md).
+
+For public/default use, leave `private_evidence_log`, `store_job_prompts`, and
+`store_mcp_transcripts` false. For a trusted personal VM/workbench where
+debuggability matters more than minimizing private local artifacts, set
+`private_evidence_log: true`.
 
 Blank `hub.state_file` resolves to `PATCHBAY_HOME/runtime/hub/hub-state.json`.
 Hub state is private runtime state for enrolled machines, command routing, and
@@ -145,4 +160,4 @@ ChatGPT can inspect mode choices with `codex_tool_mode_info` and request a sessi
 
 ## Runtime state
 
-PatchBay keeps local paths, raw session ids, worker worktree paths, process logs, and runtime files behind the local control boundary unless a specific public tool is designed to expose a bounded summary.
+PatchBay keeps local paths, raw session ids, worker worktree paths, process logs, and runtime files behind the local control boundary unless a specific public tool is designed to expose a bounded summary. Private evidence files can include full ChatGPT tool calls and full worker/Codex prompts when explicitly enabled; they are private runtime evidence, not repository data.

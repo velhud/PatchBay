@@ -37,7 +37,7 @@ The repo still supports local maintainer workflows, but do not describe the app 
 - Preserve local control and localhost-first defaults.
 - Do not introduce network exposure without authentication.
 - Do not enable dangerous bypass in public examples.
-- Do not log prompts, secrets, auth files, or full Codex outputs by default.
+- Do not log prompts, secrets, auth files, or full Codex outputs into public-safe audit/status artifacts by default. Full prompt/body preservation belongs only in explicit private runtime evidence under `PATCHBAY_HOME`, with docs/tests keeping that boundary clear.
 - Mutating tools must be clearly marked as mutating.
 - Add or update tests for path validation, job lifecycle behavior, worker coordination behavior, and unsafe input handling.
 - Update README, examples, and tests when changing public tool names, CLI arguments, server behavior, or MCP schemas.

@@ -33,6 +33,7 @@ from patchbay.jobs.executor import JobExecutor
 from patchbay.protocol.context import RequestContext, make_client_ref, make_hashed_ref
 from patchbay.protocol.mcp import MCPProtocol
 from patchbay.connector.profiles import normalize_logging_paths
+from patchbay.evidence import EvidenceRecorder
 from patchbay.security import internal_log_error
 from patchbay.tools.handler import ToolHandler
 
@@ -74,6 +75,7 @@ audit_handler = logging.FileHandler(audit_log_path)
 audit_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 audit_logger.addHandler(audit_handler)
 audit_logger.setLevel(logging.INFO)
+evidence_recorder = EvidenceRecorder(config)
 
 # Initialize app
 app = FastAPI(title="PatchBay")
@@ -427,12 +429,25 @@ async def mcp_endpoint(request: Request):
         message.get("id"),
         params.get("name"),
     )
+    evidence_recorder.record_mcp_event(
+        client_ref=request_context.client_ref,
+        owner_ref=request_context.owner_ref,
+        direction="request",
+        message=message,
+    )
     
     # Handle MCP message
     try:
         response = await mcp_protocol.handle_message(message, context=request_context)
         
         if response:
+            evidence_recorder.record_mcp_event(
+                client_ref=request_context.client_ref,
+                owner_ref=request_context.owner_ref,
+                direction="response",
+                response=response,
+                status_code=200,
+            )
             if config.get("logging", {}).get("log_response_bodies", False):
                 audit_logger.info("[%s] response=%s", session_id, json.dumps(response))
             
@@ -442,6 +457,12 @@ async def mcp_endpoint(request: Request):
                 headers={"Mcp-Session-Id": session_id}
             )
         else:
+            evidence_recorder.record_mcp_event(
+                client_ref=request_context.client_ref,
+                owner_ref=request_context.owner_ref,
+                direction="response",
+                status_code=204,
+            )
             # Notification - no response expected (return 204 or empty)
             return Response(
                 status_code=204,
@@ -450,12 +471,20 @@ async def mcp_endpoint(request: Request):
             
     except Exception as e:
         logger.error("Message handling error: %s", internal_log_error(e))
+        error_response = {
+            "jsonrpc": "2.0",
+            "error": {"code": -32603, "message": "Internal processing error"},
+            "id": message.get("id"),
+        }
+        evidence_recorder.record_mcp_event(
+            client_ref=request_context.client_ref,
+            owner_ref=request_context.owner_ref,
+            direction="response",
+            response=error_response,
+            status_code=500,
+        )
         return JSONResponse(
-            content={
-                "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": "Internal processing error"},
-                "id": message.get("id")
-            },
+            content=error_response,
             status_code=500,
             headers={"Mcp-Session-Id": session_id}
         )

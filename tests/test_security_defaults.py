@@ -59,8 +59,12 @@ def test_prompt_and_response_body_logging_disabled_by_default(tmp_path):
     assert config["logging"].get("audit_file") is None
     assert config["logging"].get("job_logs_dir") is None
     assert config["logging"].get("job_state_dir") is None
+    assert config["logging"].get("private_evidence_dir") is None
     assert config["logging"].get("job_log_max_bytes") == 200_000
     assert config["logging"].get("write_raw_job_logs", False) is False
+    assert config["logging"].get("private_evidence_log", False) is False
+    assert config["logging"].get("store_job_prompts", False) is False
+    assert config["logging"].get("store_mcp_transcripts", False) is False
     assert config["logging"].get("log_prompt_bodies", False) is False
     assert config["logging"].get("log_response_bodies", False) is False
 
@@ -68,6 +72,7 @@ def test_prompt_and_response_body_logging_disabled_by_default(tmp_path):
     assert normalized["logging"]["audit_file"] == str(tmp_path / "home" / "runtime" / "logs" / "audit.log")
     assert normalized["logging"]["job_logs_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs")
     assert normalized["logging"]["job_state_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "jobs" / "state")
+    assert normalized["logging"]["private_evidence_dir"] == str(tmp_path / "home" / "runtime" / "logs" / "private-evidence")
 
 
 def test_child_process_environment_is_inherited_for_full_permission_profile():

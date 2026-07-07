@@ -70,6 +70,44 @@ def test_job_manager_persists_redacted_completed_job(tmp_path):
     }
 
 
+def test_job_manager_can_store_complete_private_prompt_evidence(tmp_path):
+    config = make_config(tmp_path)
+    config["logging"]["private_evidence_log"] = True
+    config["logging"]["private_evidence_dir"] = str(tmp_path / "logs" / "private-evidence")
+    manager = JobManager(config)
+    prompt = "Implement this exact worker brief with private context password = fixture-value"
+
+    job_id = manager.create_job(
+        "plan",
+        prompt,
+        config["repositories"]["default"],
+        {"structured_output": True, "_worker_name": "Evidence Worker"},
+    )
+
+    record_path = tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json"
+    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    serialized = json.dumps(persisted)
+    assert "prompt" not in persisted
+    assert prompt not in serialized
+    assert persisted["prompt_artifact"]
+    assert persisted["prompt_sha256"]
+    assert persisted["prompt_bytes"] == len(prompt.encode("utf-8"))
+
+    evidence_path = tmp_path / "logs" / "private-evidence" / "jobs" / job_id / "brief.json"
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert payload["kind"] == "job_brief"
+    assert payload["job_id"] == job_id
+    assert payload["prompt"] == prompt
+    assert payload["options"]["_worker_name"] == "Evidence Worker"
+    assert payload["prompt_sha256"] == persisted["prompt_sha256"]
+
+    reloaded = JobManager(config)
+    job = reloaded.get_job(job_id)
+    assert job is not None
+    assert job.prompt == ""
+    assert job.prompt_artifact == str(evidence_path)
+
+
 def test_completed_job_clears_prior_running_error(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

@@ -1292,6 +1292,17 @@ class ToolHandler:
                 "cors_enabled": bool(server_config.get("enable_cors", False)),
                 "access_log_enabled": bool(logging_config.get("access_log", False)),
                 "durable_job_state_enabled": bool(logging_config.get("job_state_dir")),
+                "private_evidence_enabled": bool(logging_config.get("private_evidence_log", False)),
+                "job_prompt_evidence_enabled": bool(
+                    logging_config.get("private_evidence_log", False)
+                    or logging_config.get("store_job_prompts", False)
+                ),
+                "mcp_transcript_evidence_enabled": bool(
+                    logging_config.get("private_evidence_log", False)
+                    or logging_config.get("store_mcp_transcripts", False)
+                    or logging_config.get("log_prompt_bodies", False)
+                    or logging_config.get("log_response_bodies", False)
+                ),
                 "power_tools": {
                     "direct_write": bool(power_config.get("direct_write", False)),
                     "bash_mode": power_config.get("bash_mode", "off"),

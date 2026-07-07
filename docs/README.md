@@ -26,6 +26,7 @@ The repository root keeps the practical entrypoints: `README.md`, `QUICKSTART.md
 ## Reference
 
 - [Configuration reference](reference/configuration.md)
+- [Runtime evidence and logging](reference/runtime-evidence.md)
 - [Public tool surface](reference/public-tool-surface.md)
 - [Tool surface and worker details](reference/tool-surface-and-worker-details.md)
 - [Optional Hub/Edge mode](reference/hub-edge-mode.md)

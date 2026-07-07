@@ -71,6 +71,15 @@ def normalize_logging_paths(
         job_state_dir = runtime_path("logs", "jobs", "state", environ=environ)
     logging_config["job_state_dir"] = str(job_state_dir)
 
+    logging_config["private_evidence_dir"] = str(
+        resolve_runtime_path(
+            logging_config.get("private_evidence_dir"),
+            "logs",
+            "private-evidence",
+            environ=environ,
+        )
+    )
+
     if logging_config.get("worktrees_dir") not in (None, ""):
         worktrees_dir = resolve_runtime_path(logging_config.get("worktrees_dir"), environ=environ)
     else:
