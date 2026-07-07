@@ -1126,6 +1126,19 @@ class JobExecutor:
         else:
             env = {k: v for k, v in os.environ.items() if k in allowed_set}
         env["CODEX_HOME"] = codex_home
+        home = str(os.environ.get("HOME") or "").strip()
+        if not home:
+            codex_home_path = Path(codex_home).expanduser()
+            home = str(codex_home_path.parent) if codex_home_path.name == ".codex" else str(Path.home())
+        env["HOME"] = home
+        env.setdefault("XDG_CONFIG_HOME", str(Path(home) / ".config"))
+        git_config_global = str(os.environ.get("GIT_CONFIG_GLOBAL") or "").strip()
+        if git_config_global:
+            env["GIT_CONFIG_GLOBAL"] = git_config_global
+        else:
+            candidate = Path(home) / ".gitconfig"
+            if candidate.exists():
+                env["GIT_CONFIG_GLOBAL"] = str(candidate)
         return env
 
     def _job_log_max_bytes(self) -> int:

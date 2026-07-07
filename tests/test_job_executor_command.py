@@ -89,6 +89,33 @@ def test_jobs_can_ignore_user_config_without_discarding_auth_home(tmp_path):
     assert env["CODEX_HOME"] == str(tmp_path / "configured-codex-home")
 
 
+def test_jobs_get_home_for_cli_auth_helpers_even_when_env_is_restricted(monkeypatch, tmp_path):
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    codex_home = tmp_path / ".codex"
+    executor = JobExecutor(
+        {
+            "server": {"job_timeout_seconds": 30},
+            "repositories": {"allowed": [str(tmp_path)]},
+            "security": {
+                "default_sandbox": "danger-full-access",
+                "allow_dangerously_bypass": True,
+                "allowed_env_keys": ["PATH"],
+            },
+            "logging": {"job_logs_dir": str(tmp_path / "logs")},
+            "power_tools": {"codex_home": str(codex_home)},
+        },
+        DummyJobManager(),
+    )
+
+    env = executor._build_env()
+
+    assert env["CODEX_HOME"] == str(codex_home)
+    assert env["HOME"] == str(tmp_path)
+    assert env["XDG_CONFIG_HOME"] == str(tmp_path / ".config")
+
+
 def test_apply_jobs_default_to_workspace_write(tmp_path):
     executor = make_executor(tmp_path)
 

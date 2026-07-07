@@ -134,6 +134,19 @@ Blank `hub.state_file` resolves to `PATCHBAY_HOME/runtime/hub/hub-state.json`.
 Hub state is private runtime state for enrolled machines, command routing, and
 compact event history. It is not repository data and should not be committed.
 
+When PatchBay is run by a service manager such as systemd, set a real user home
+for the service process. Codex workers inherit `CODEX_HOME` for Codex auth and
+PatchBay also passes `HOME`, `XDG_CONFIG_HOME`, and `GIT_CONFIG_GLOBAL` to
+worker jobs so tools such as `gh` and `git` can find the same GitHub CLI and git
+credential configuration that works in an interactive shell.
+
+```env
+HOME=/root
+XDG_CONFIG_HOME=/root/.config
+GIT_CONFIG_GLOBAL=/root/.gitconfig
+CODEX_HOME=/root/.codex
+```
+
 ## Authentication
 
 For local loopback use, auth can remain off. For non-loopback bind addresses, public URL mode, tunnel mode, or explicit `PATCHBAY_HTTP_TOKEN`, every MCP/status request must include a matching Bearer token or an allowed query token.
