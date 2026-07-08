@@ -1286,6 +1286,17 @@ class HubRuntime:
 
         disk_free_bytes = resources.get("disk_free_bytes")
         disk_free = _as_int(disk_free_bytes, -1) if disk_free_bytes is not None else None
+        role = str(machine.get("role") or "").lower()
+        is_wsl_machine = "wsl" in role or any(str(tag).lower() in {"wsl", "wsl2"} for tag in tags)
+        disk_confidence = str(resources.get("disk_telemetry_confidence") or "")
+        disk_warning = str(resources.get("disk_telemetry_warning") or "")
+        if is_wsl_machine and not disk_confidence and disk_free is not None:
+            disk_free = None
+            disk_confidence = "legacy_wsl_untrusted"
+            disk_warning = (
+                "Legacy WSL edge did not label disk telemetry. Hub ignored disk_free_bytes because WSL can report "
+                "virtual ext4/VHD capacity instead of real Windows-host free space."
+            )
         min_disk = _as_int(settings.get("min_disk_free_bytes"), DEFAULT_ROUTING_MIN_DISK_FREE_BYTES)
         if disk_free is not None and disk_free < min_disk:
             reasons.append("disk free below routing minimum")
@@ -1295,6 +1306,10 @@ class HubRuntime:
         memory_percent = max(0.0, min(_as_float(resources.get("memory_used_percent"), 0.0), 100.0))
         cpu_percent = max(0.0, min(_as_float(resources.get("cpu_percent"), 0.0), 100.0))
         disk_percent = max(0.0, min(_as_float(resources.get("disk_used_percent"), 0.0), 100.0))
+        cpu_source = str(resources.get("cpu_telemetry_source") or "")
+        cpu_confidence = str(resources.get("cpu_telemetry_confidence") or "")
+        memory_source = str(resources.get("memory_telemetry_source") or "")
+        memory_confidence = str(resources.get("memory_telemetry_confidence") or "")
         weights = settings.get("weights") if isinstance(settings.get("weights"), Mapping) else DEFAULT_ROUTING_WEIGHTS
         score = (
             _as_float(weights.get("worker_ratio"), DEFAULT_ROUTING_WEIGHTS["worker_ratio"]) * worker_ratio
@@ -1306,6 +1321,8 @@ class HubRuntime:
             disk_penalty = 0.25
         elif disk_percent >= 90.0:
             disk_penalty = 0.10
+        elif disk_confidence in {"virtualized", "legacy_wsl_untrusted"}:
+            disk_penalty = 0.03
         score += disk_penalty
 
         return {
@@ -1318,6 +1335,11 @@ class HubRuntime:
                 "memory_ratio": round(memory_percent / 100.0, 6),
                 "cpu_ratio": round(cpu_percent / 100.0, 6),
                 "disk_penalty": disk_penalty,
+                "cpu_telemetry_source": cpu_source,
+                "cpu_telemetry_confidence": cpu_confidence,
+                "memory_telemetry_source": memory_source,
+                "memory_telemetry_confidence": memory_confidence,
+                "disk_telemetry_confidence": disk_confidence,
                 "weights": deepcopy(weights),
             },
             "active_workers": active_workers,
@@ -1325,8 +1347,17 @@ class HubRuntime:
             "free_worker_slots": free_slots,
             "queue_enabled": queue_enabled,
             "memory_available_bytes": max(0, _as_int(resources.get("memory_available_bytes"), 0)),
+            "memory_total_bytes": max(0, _as_int(resources.get("memory_total_bytes"), 0)),
+            "cpu_percent": cpu_percent,
+            "cpu_telemetry_source": cpu_source,
+            "cpu_telemetry_confidence": cpu_confidence,
+            "memory_used_percent": memory_percent,
+            "memory_telemetry_source": memory_source,
+            "memory_telemetry_confidence": memory_confidence,
             "disk_free_bytes": disk_free,
             "disk_used_percent": disk_percent,
+            "disk_telemetry_confidence": disk_confidence,
+            "disk_telemetry_warning": disk_warning,
             "rejected_reasons": reasons,
             "machine": deepcopy(machine),
         }

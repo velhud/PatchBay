@@ -187,11 +187,36 @@ hub:
 - Hub does not receive raw Codex credentials, raw local logs, prompts, file
   contents, or private paths beyond already-advertised workspace projections.
 - Edge heartbeat resource telemetry is compact: active worker count, configured
-  max workers, free slots, queue flag, CPU percent when cheaply available,
-  memory pressure, and disk capacity numbers for the work/log/repo area.
+  max workers, free slots, queue flag, CPU pressure, memory pressure, and disk
+  capacity numbers for the work/log/repo area. CPU, memory, and disk telemetry
+  are source-labeled in hub recommendations. CPU uses `/proc/stat` deltas after
+  the first sample and falls back to a one-minute load-average pressure
+  estimate. Memory comes from `/proc/meminfo`, so on WSL it is the Linux edge's
+  visible/usable memory, not necessarily the laptop's physical RAM.
+- Disk telemetry is source-labeled. On WSL, Linux may report the virtual
+  ext4/VHD capacity rather than real Windows-host free space; if PatchBay cannot
+  read a Windows host disk or an operator-configured override, the edge marks
+  disk telemetry as `virtualized` and does not present that virtual number as
+  effective routing free space.
 - A node token controls one machine only.
 - Single-machine `patchbay start` remains unchanged and should remain the
   default for ordinary use.
+
+For WSL or other virtualized edges where the host disk is not readable, set a
+conservative explicit override on the edge:
+
+```yaml
+hub:
+  edge:
+    resource_overrides:
+      disk_free_bytes: 250000000000
+      disk_total_bytes: 1000000000000
+      disk_source: windows-host-configured
+```
+
+The equivalent environment variables are
+`PATCHBAY_EDGE_DISK_FREE_BYTES`, `PATCHBAY_EDGE_DISK_TOTAL_BYTES`,
+`PATCHBAY_EDGE_DISK_USED_PERCENT`, and `PATCHBAY_EDGE_DISK_SOURCE`.
 
 ## Verification
 

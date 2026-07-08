@@ -62,6 +62,15 @@ hub:
   state_file:
   heartbeat_stale_seconds: 90
   max_events: 1000
+  # Optional edge-side resource overrides for virtualized machines. Useful for
+  # WSL edges when Windows drive mounts/interop are intentionally disabled and
+  # Linux reports the virtual ext4/VHD capacity instead of real host free space.
+  edge:
+    resource_overrides:
+      # disk_free_bytes:
+      # disk_total_bytes:
+      # disk_used_percent:
+      # disk_source: windows-host-configured
 
 repositories:
   default: /

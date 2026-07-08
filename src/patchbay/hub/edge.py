@@ -136,6 +136,13 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _active_workers_from_status(status: Mapping[str, Any]) -> int:
     active = status.get("active")
     if isinstance(active, bool):
@@ -170,16 +177,157 @@ def _memory_status() -> dict[str, Any]:
         "memory_used_percent": round(used_percent, 2),
         "memory_available_bytes": available,
         "memory_total_bytes": total,
+        "memory_telemetry_source": "/proc/meminfo",
+        "memory_telemetry_confidence": "edge_visible",
     }
 
 
-def _cpu_percent_estimate() -> float | None:
+_LAST_CPU_SAMPLE: tuple[int, int] | None = None
+
+
+def _read_proc_stat_cpu() -> tuple[int, int] | None:
+    proc_stat = Path("/proc/stat")
+    if not proc_stat.exists():
+        return None
+    try:
+        line = proc_stat.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except (IndexError, OSError):
+        return None
+    parts = line.split()
+    if not parts or parts[0] != "cpu":
+        return None
+    values = [_as_int(part, 0) for part in parts[1:]]
+    if len(values) < 4:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    return total, idle
+
+
+def _cpu_percent_status() -> dict[str, Any]:
+    global _LAST_CPU_SAMPLE
+    sample = _read_proc_stat_cpu()
+    if sample is not None:
+        previous = _LAST_CPU_SAMPLE
+        _LAST_CPU_SAMPLE = sample
+        if previous is not None:
+            total_delta = sample[0] - previous[0]
+            idle_delta = sample[1] - previous[1]
+            if total_delta > 0:
+                used = max(0, total_delta - max(0, idle_delta))
+                return {
+                    "cpu_percent": round(max(0.0, min(100.0, (used / total_delta) * 100.0)), 2),
+                    "cpu_telemetry_source": "/proc/stat_delta",
+                    "cpu_telemetry_confidence": "sampled",
+                }
+
     try:
         load_one, _, _ = os.getloadavg()
     except (AttributeError, OSError):
-        return None
+        return {}
     cpu_count = os.cpu_count() or 1
-    return round(max(0.0, min(100.0, (load_one / cpu_count) * 100.0)), 2)
+    return {
+        "cpu_percent": round(max(0.0, min(100.0, (load_one / cpu_count) * 100.0)), 2),
+        "cpu_telemetry_source": "loadavg_1m_per_cpu",
+        "cpu_telemetry_confidence": "pressure_estimate",
+    }
+
+
+def _is_wsl() -> bool:
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    release_path = Path("/proc/sys/kernel/osrelease")
+    if not release_path.exists():
+        return False
+    release = release_path.read_text(encoding="utf-8", errors="replace").lower()
+    return "microsoft" in release or "wsl" in release
+
+
+def _edge_resource_overrides(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    hub_config = config.get("hub") if isinstance(config.get("hub"), Mapping) else {}
+    edge_config = hub_config.get("edge") if isinstance(hub_config.get("edge"), Mapping) else {}
+    resources = edge_config.get("resource_overrides") if isinstance(edge_config.get("resource_overrides"), Mapping) else {}
+    return resources
+
+
+def _configured_disk_override(config: Mapping[str, Any]) -> dict[str, Any]:
+    resources = _edge_resource_overrides(config)
+    free = os.environ.get("PATCHBAY_EDGE_DISK_FREE_BYTES", resources.get("disk_free_bytes"))
+    total = os.environ.get("PATCHBAY_EDGE_DISK_TOTAL_BYTES", resources.get("disk_total_bytes"))
+    used_percent = os.environ.get("PATCHBAY_EDGE_DISK_USED_PERCENT", resources.get("disk_used_percent"))
+    if free is None and total is None and used_percent is None:
+        return {}
+
+    result: dict[str, Any] = {
+        "disk_telemetry_source": str(os.environ.get("PATCHBAY_EDGE_DISK_SOURCE") or resources.get("disk_source") or "configured_override"),
+        "disk_telemetry_confidence": "configured",
+    }
+    free_int = _as_int(free, -1) if free is not None else -1
+    total_int = _as_int(total, -1) if total is not None else -1
+    if free_int >= 0:
+        result["disk_free_bytes"] = free_int
+    if total_int > 0:
+        result["disk_total_bytes"] = total_int
+    if used_percent is not None:
+        result["disk_used_percent"] = round(max(0.0, min(_as_float(used_percent, 0.0), 100.0)), 2)
+    elif free_int >= 0 and total_int > 0:
+        result["disk_used_percent"] = round(((total_int - min(free_int, total_int)) / total_int) * 100.0, 2)
+    return result
+
+
+def _windows_host_disk_status() -> dict[str, Any]:
+    if not _is_wsl():
+        return {}
+    mount = Path("/mnt/c")
+    if mount.exists():
+        try:
+            usage = shutil.disk_usage(mount)
+        except OSError:
+            usage = None
+        if usage is not None:
+            total = max(1, usage.total)
+            return {
+                "disk_host_free_bytes": usage.free,
+                "disk_host_total_bytes": usage.total,
+                "disk_host_used_percent": round(((usage.total - usage.free) / total) * 100.0, 2),
+                "disk_host_source": "/mnt/c",
+            }
+
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        return {}
+    script = (
+        "$d=Get-PSDrive -Name C; "
+        "[Console]::WriteLine((@{Free=[int64]$d.Free;Used=[int64]$d.Used}|ConvertTo-Json -Compress))"
+    )
+    try:
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-Command", script],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if completed.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(completed.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return {}
+    free = _as_int(payload.get("Free"), -1)
+    used = _as_int(payload.get("Used"), -1)
+    if free < 0 or used < 0:
+        return {}
+    total = max(1, free + used)
+    return {
+        "disk_host_free_bytes": free,
+        "disk_host_total_bytes": total,
+        "disk_host_used_percent": round((used / total) * 100.0, 2),
+        "disk_host_source": "powershell:C",
+    }
 
 
 def _nearest_existing_path(path: Path) -> Path:
@@ -203,6 +351,68 @@ def _disk_telemetry_path(config: Mapping[str, Any]) -> Path:
     return Path.cwd()
 
 
+def _disk_status(config: Mapping[str, Any]) -> dict[str, Any]:
+    telemetry_path = _disk_telemetry_path(config)
+    try:
+        usage = shutil.disk_usage(telemetry_path)
+    except OSError:
+        return {}
+
+    total = max(1, usage.total)
+    status: dict[str, Any] = {
+        "disk_filesystem_path": str(telemetry_path),
+        "disk_filesystem_free_bytes": usage.free,
+        "disk_filesystem_total_bytes": usage.total,
+        "disk_filesystem_used_percent": round(((usage.total - usage.free) / total) * 100.0, 2),
+    }
+
+    configured = _configured_disk_override(config)
+    if configured:
+        status.update(configured)
+        return status
+
+    host = _windows_host_disk_status()
+    if host:
+        status.update(host)
+        free = min(usage.free, _as_int(host.get("disk_host_free_bytes"), usage.free))
+        host_total = _as_int(host.get("disk_host_total_bytes"), 0)
+        status.update(
+            {
+                "disk_free_bytes": free,
+                "disk_total_bytes": host_total if host_total > 0 else usage.total,
+                "disk_used_percent": host.get("disk_host_used_percent", status["disk_filesystem_used_percent"]),
+                "disk_telemetry_source": f"effective_min(filesystem,{host.get('disk_host_source')})",
+                "disk_telemetry_confidence": "host",
+            }
+        )
+        return status
+
+    if _is_wsl():
+        status.update(
+            {
+                "disk_telemetry_source": "wsl_virtual_filesystem",
+                "disk_telemetry_confidence": "virtualized",
+                "disk_telemetry_warning": (
+                    "WSL reports the virtual Linux filesystem capacity. Configure "
+                    "hub.edge.resource_overrides.disk_free_bytes or PATCHBAY_EDGE_DISK_FREE_BYTES "
+                    "when host disk telemetry is unavailable."
+                ),
+            }
+        )
+        return status
+
+    status.update(
+        {
+            "disk_free_bytes": usage.free,
+            "disk_total_bytes": usage.total,
+            "disk_used_percent": status["disk_filesystem_used_percent"],
+            "disk_telemetry_source": "filesystem",
+            "disk_telemetry_confidence": "filesystem",
+        }
+    )
+    return status
+
+
 def build_resource_status(config: Mapping[str, Any], status: Mapping[str, Any]) -> dict[str, Any]:
     capabilities = build_capabilities(config)
     active_workers = _active_workers_from_status(status)
@@ -214,17 +424,9 @@ def build_resource_status(config: Mapping[str, Any], status: Mapping[str, Any]) 
         "free_worker_slots": free_slots,
         "queue_enabled": bool(capabilities.get("queue_enabled", False)),
     }
-    cpu_percent = _cpu_percent_estimate()
-    if cpu_percent is not None:
-        resource_status["cpu_percent"] = cpu_percent
+    resource_status.update(_cpu_percent_status())
     resource_status.update(_memory_status())
-    try:
-        usage = shutil.disk_usage(_disk_telemetry_path(config))
-        total = max(1, usage.total)
-        resource_status["disk_free_bytes"] = usage.free
-        resource_status["disk_used_percent"] = round(((usage.total - usage.free) / total) * 100.0, 2)
-    except OSError:
-        pass
+    resource_status.update(_disk_status(config))
     return resource_status
 
 
