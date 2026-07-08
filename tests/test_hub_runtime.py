@@ -423,6 +423,23 @@ def test_hub_work_group_close_refuses_active_commands_by_default(tmp_path):
     assert closed["work_group"]["status"] == "complete"
 
 
+def test_hub_work_group_close_clears_current_group_pointer(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(runtime, "edge")
+    context = RequestContext(chatgpt_session_ref="session-a")
+    created = runtime.create_work_group(title="Task", goal="Do the thing", context=context)
+    group_id = created["work_group"]["work_group_id"]
+
+    assert runtime.list_work_groups(scope="recent", context=context)["current_work_group_id"] == group_id
+
+    closed = runtime.close_work_group(work_group_id=group_id, outcome="complete", summary="Done", force=True, context=context)
+
+    assert closed["accepted"] is True
+    listed = runtime.list_work_groups(scope="recent", include_closed=False, context=context)
+    assert listed["groups"] == []
+    assert listed["current_work_group_id"] == ""
+
+
 def test_hub_work_group_reassign_supersedes_old_lanes_and_queues_preflight(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     token_a = enroll_online(runtime, "a")

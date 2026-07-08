@@ -428,7 +428,13 @@ class HubRuntime:
         return data
 
     def _current_group_id(self, payload: Mapping[str, Any], context: RequestContext | None) -> str:
-        return str(payload.get("current_work_group_by_manager", {}).get(_manager_ref(context)) or "")
+        group_id = str(payload.get("current_work_group_by_manager", {}).get(_manager_ref(context)) or "")
+        group = payload.get("work_groups", {}).get(group_id) if group_id else None
+        if not isinstance(group, Mapping):
+            return ""
+        if group.get("status") in {"complete", "abandoned", "superseded"}:
+            return ""
+        return group_id
 
     def _normalize_lanes(self, lanes: Any) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
@@ -827,6 +833,10 @@ class HubRuntime:
             group["summary"] = summary_text
             group["closed_at"] = now
             group["updated_at"] = now
+            current_by_manager = payload.setdefault("current_work_group_by_manager", {})
+            for manager_ref, current_group_id in list(current_by_manager.items()):
+                if current_group_id == group_id:
+                    del current_by_manager[manager_ref]
             self.store.append_event(payload, "work_group.closed", {"work_group_id": group_id, "outcome": outcome_text})
             return {
                 "accepted": True,
