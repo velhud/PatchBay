@@ -8,8 +8,9 @@ works through ordinary outbound HTTPS, and keeps normal single-machine PatchBay
 unchanged. The same hub/edge identity and command-routing model can later grow
 into WebSocket, richer mailbox coordination, and cross-machine review modes.
 
-This document turns the multi-machine options investigation into the concrete
-plan PatchBay should build next.
+This document preserves the concrete multi-machine Hub plan and records the V1
+shape now implemented. Future versions can add richer streaming/mailbox/campaign
+coordination without changing the single-machine PatchBay runtime.
 
 ## Decision
 
@@ -54,6 +55,8 @@ ChatGPT connector. That is usable, but not the desired experience.
 With a hub:
 
 - ChatGPT sees one tool catalog;
+- one non-trivial user task becomes one durable work group with lanes;
+- the group chooses or pins one machine and keeps the task together there;
 - each machine can be behind NAT because it connects outbound to the hub;
 - offline machines simply disappear or show `offline`;
 - machine identity, capabilities, workspace aliases, and worker status are
@@ -122,14 +125,18 @@ patchbay_machine_list
 patchbay_machine_workspaces
 ```
 
-Then it routes work:
+Then it creates or resumes one task group and routes workers inside lanes:
 
 ```text
-patchbay_worker_start(machine_id="roman-scaleway-ucl", ...)
-patchbay_worker_start(machine_id="local-workstation", ...)
-patchbay_worker_status(machine_id="all")
-patchbay_worker_message(machine_id="roman-scaleway-ucl", worker="Backend Reviewer", ...)
+patchbay_work_group_create(title="RetailMind stage", goal="...", repo_path="RetailMind", lanes=["backend", "review"])
+patchbay_worker_start_auto(work_group_id="grp_...", lane="backend", auto_routing_ok=true, ...)
+patchbay_worker_message(work_group_id="grp_...", lane="backend", worker="Backend Reviewer", ...)
+patchbay_work_group_status(work_group_id="grp_...")
+patchbay_work_group_close(work_group_id="grp_...", outcome="complete", summary="...")
 ```
+
+Explicit ungrouped `patchbay_worker_start(machine_id=...)` remains available
+for tiny checks, operator-requested work, and legacy compatibility only.
 
 ## Enrollment Flow
 

@@ -39,7 +39,20 @@ def call(protocol, name, arguments=None):
             }
         )
     )
+    if "error" in response:
+        return {"accepted": False, "error": response["error"]["message"]}
     return response["result"]["structuredContent"]
+
+
+def complete_next_preflight(runtime: HubRuntime, *, machine_id: str, token: str):
+    claimed = runtime.claim_next_command(machine_id=machine_id, token=token)
+    assert claimed["command"]["action"] == "patchbay_edge_preflight"
+    runtime.finish_command(
+        machine_id=machine_id,
+        token=token,
+        command_id=claimed["command"]["command_id"],
+        result={"ok": True, "repo_exists": True, "git_repo": True},
+    )
 
 
 def test_hub_initialize_and_tool_list(tmp_path):
@@ -57,6 +70,8 @@ def test_hub_initialize_and_tool_list(tmp_path):
     names = {tool["name"] for tool in tools["result"]["tools"]}
     assert "patchbay_fleet_status" in names
     assert "patchbay_machine_recommend" in names
+    assert "patchbay_work_group_create" in names
+    assert "patchbay_work_group_status" in names
     assert "patchbay_worker_start" in names
     assert "patchbay_worker_start_auto" in names
     assert "patchbay_worker_integrate" in names
@@ -77,7 +92,13 @@ def test_hub_protocol_queues_worker_start_for_machine(tmp_path):
     queued = call(
         protocol,
         "patchbay_worker_start",
-        {"machine_id": "laptop", "name": "Reader", "brief": "Read the docs.", "workspace_mode": "read_only"},
+        {
+            "machine_id": "laptop",
+            "name": "Reader",
+            "brief": "Read the docs.",
+            "workspace_mode": "read_only",
+            "ungrouped_reason": "tiny_check",
+        },
     )
     assert queued["accepted"] is True
     assert queued["state"] == "queued"
@@ -88,18 +109,17 @@ def test_hub_protocol_queues_worker_start_for_machine(tmp_path):
     assert claimed["command"]["arguments"]["brief"] == "Read the docs."
 
 
-def test_hub_protocol_auto_start_requires_enabled_routing(tmp_path):
+def test_hub_protocol_auto_start_requires_work_group(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path))
     protocol = HubProtocol(runtime)
 
     result = call(protocol, "patchbay_worker_start_auto", {"name": "Reader", "brief": "Read the docs."})
 
     assert result["accepted"] is False
-    assert result["error"] == "Hub availability routing is disabled."
-    assert result["routing"]["enabled"] is False
+    assert "work_group_id" in result["error"]
 
 
-def test_hub_protocol_auto_start_queues_to_least_busy_machine(tmp_path):
+def test_hub_protocol_auto_start_queues_to_group_pinned_machine(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     alpha_code = runtime.create_enrollment_code(name="Alpha")["code"]
     alpha_token = runtime.enroll_machine(code=alpha_code, machine_id="alpha", display_name="Alpha")["node_token"]
@@ -139,11 +159,58 @@ def test_hub_protocol_auto_start_queues_to_least_busy_machine(tmp_path):
         },
     )
     protocol = HubProtocol(runtime)
+    group = call(
+        protocol,
+        "patchbay_work_group_create",
+        {"title": "Grouped task", "goal": "Read docs", "repo_path": str(tmp_path)},
+    )["work_group"]
+    assert group["pinned_machine_id"] == "beta"
+    complete_next_preflight(runtime, machine_id="beta", token=beta_token)
+
+    runtime.heartbeat(
+        machine_id="beta",
+        token=beta_token,
+        capabilities=capabilities,
+        resource_status={
+            "active_workers": 3,
+            "max_concurrent_jobs": 4,
+            "free_worker_slots": 1,
+            "queue_enabled": True,
+            "cpu_percent": 90,
+            "memory_used_percent": 90,
+            "memory_available_bytes": 1_000_000_000,
+            "disk_free_bytes": 10_000_000_000,
+            "disk_used_percent": 20,
+        },
+    )
+    runtime.heartbeat(
+        machine_id="alpha",
+        token=alpha_token,
+        capabilities=capabilities,
+        resource_status={
+            "active_workers": 0,
+            "max_concurrent_jobs": 4,
+            "free_worker_slots": 4,
+            "queue_enabled": True,
+            "cpu_percent": 5,
+            "memory_used_percent": 10,
+            "memory_available_bytes": 8_000_000_000,
+            "disk_free_bytes": 10_000_000_000,
+            "disk_used_percent": 20,
+        },
+    )
 
     queued = call(
         protocol,
         "patchbay_worker_start_auto",
-        {"name": "Auto Reader", "brief": "Read the docs.", "workspace_mode": "read_only"},
+        {
+            "work_group_id": group["work_group_id"],
+            "lane": "reader",
+            "auto_routing_ok": True,
+            "name": "Auto Reader",
+            "brief": "Read the docs.",
+            "workspace_mode": "read_only",
+        },
     )
 
     assert queued["accepted"] is True
@@ -154,7 +221,7 @@ def test_hub_protocol_auto_start_queues_to_least_busy_machine(tmp_path):
     assert claimed["command"]["arguments"]["name"] == "Auto Reader"
 
 
-def test_hub_protocol_explicit_worker_start_unchanged_with_routing_enabled(tmp_path):
+def test_hub_protocol_explicit_ungrouped_worker_start_requires_reason_with_routing_enabled(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     code = runtime.create_enrollment_code(name="Manual")["code"]
     token = runtime.enroll_machine(code=code, machine_id="manual", display_name="Manual")["node_token"]
@@ -172,8 +239,16 @@ def test_hub_protocol_explicit_worker_start_unchanged_with_routing_enabled(tmp_p
     )
     protocol = HubProtocol(runtime)
 
-    queued = call(protocol, "patchbay_worker_start", {"machine_id": "manual", "name": "Manual", "brief": "Run there."})
+    missing = call(protocol, "patchbay_worker_start", {"machine_id": "manual", "name": "Manual", "brief": "Run there."})
+
+    assert missing.get("accepted") is not True
+
+    queued = call(
+        protocol,
+        "patchbay_worker_start",
+        {"machine_id": "manual", "name": "Manual", "brief": "Run there.", "ungrouped_reason": "operator_requested"},
+    )
 
     assert queued["accepted"] is True
     assert queued["machine_id"] == "manual"
-    assert "routing" not in queued
+    assert queued["routing"]["policy"] == "explicit_ungrouped"

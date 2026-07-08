@@ -55,6 +55,8 @@ WORKER_CHATGPT_SUBJECT_REF_OPTION = "_worker_chatgpt_subject_ref"
 WORKER_WORK_RUN_REF_OPTION = "_worker_work_run_ref"
 WORKER_WORK_RUN_STARTED_AT_OPTION = "_worker_work_run_started_at"
 WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION = "_worker_work_run_last_activity_at"
+WORKER_WORK_GROUP_ID_OPTION = "_worker_work_group_id"
+WORKER_LANE_ID_OPTION = "_worker_lane_id"
 WORKER_INCLUDED_UNTRACKED_BASE_FILES_OPTION = "_worker_included_untracked_base_files"
 WORKER_INCLUDED_UNTRACKED_BASE_DIGESTS_OPTION = "_worker_included_untracked_base_digests"
 WORKER_WORKSPACE_MODES = {"isolated_write", "read_only", "shared_write"}
@@ -1094,6 +1096,8 @@ class WorkerRuntime:
             WORKER_WORK_RUN_REF_OPTION,
             WORKER_WORK_RUN_STARTED_AT_OPTION,
             WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION,
+            WORKER_WORK_GROUP_ID_OPTION,
+            WORKER_LANE_ID_OPTION,
         ):
             if key in existing:
                 metadata[key] = existing[key]
@@ -1109,6 +1113,10 @@ class WorkerRuntime:
             metadata[WORKER_WORK_RUN_STARTED_AT_OPTION] = float(request_context.work_run_started_at)
         if request_context.work_run_last_activity_at is not None:
             metadata[WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION] = float(request_context.work_run_last_activity_at)
+        if request_context.work_group_id:
+            metadata[WORKER_WORK_GROUP_ID_OPTION] = request_context.work_group_id
+        if request_context.lane_id:
+            metadata[WORKER_LANE_ID_OPTION] = request_context.lane_id
         return metadata
 
     def _prepare_prompt(self, message: str, *, context: Optional[Dict[str, Any]] = None) -> str:
@@ -2012,6 +2020,8 @@ class WorkerRuntime:
             "workspace_name": view.get("workspace_name"),
             "chatgpt_session_ref": view.get("chatgpt_session_ref"),
             "work_run_ref": view.get("work_run_ref"),
+            "work_group_id": view.get("work_group_id"),
+            "lane_id": view.get("lane_id"),
             "workspace_mode": view.get("workspace_mode"),
             "state": view.get("state"),
             "status": liveness.get("status"),
@@ -2044,6 +2054,8 @@ class WorkerRuntime:
             "work_run_ref",
             "work_run_started_at",
             "work_run_last_activity_at",
+            "work_group_id",
+            "lane_id",
             "workspace_mode",
             "workspace_available",
             "workspace_location",
@@ -2891,6 +2903,8 @@ class WorkerRuntime:
             "work_run_ref": str(options.get(WORKER_WORK_RUN_REF_OPTION) or ""),
             "work_run_started_at": options.get(WORKER_WORK_RUN_STARTED_AT_OPTION),
             "work_run_last_activity_at": options.get(WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION),
+            "work_group_id": str(options.get(WORKER_WORK_GROUP_ID_OPTION) or ""),
+            "lane_id": str(options.get(WORKER_LANE_ID_OPTION) or ""),
             "workspace_mode": workspace["mode"],
             "workspace_available": workspace_available,
             "state": state,

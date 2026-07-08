@@ -21,14 +21,18 @@ PatchBay use.
 - Stores edge profiles privately under `PATCHBAY_HOME/runtime/hub/edge-profile.json`.
 - Lets each edge advertise local capabilities, allowed workspaces, and compact worker status.
 - Lets ChatGPT queue worker commands for a selected `machine_id`.
-- Optionally recommends or auto-selects the least-busy eligible online machine
-  by compact availability telemetry only when `hub.routing.enabled: true`.
+- Adds durable work groups: one user task becomes one group, lanes are workers
+  inside that group, and the group is pinned to one machine.
+- Optionally chooses the least-busy eligible online machine when a work group is
+  created and no explicit `machine_id` is supplied.
 - Lets the selected edge poll, execute the local `codex_worker_*` command through the existing `ToolHandler`, and post the result back.
 
 V1 uses HTTPS polling. WebSocket streaming, mailbox channels, campaign
 coordination, and multiple ChatGPT conversations coordinating through one Hub
 are future extensions. The multi-conversation idea is preserved in
 [Multi-ChatGPT hub coordination idea](../architecture/multi-chatgpt-hub-coordination-idea.md).
+Work groups are the current durable coordination object for one ChatGPT-managed
+task; future campaigns/channels can build on the same state model.
 
 ## Start A Hub
 
@@ -87,6 +91,12 @@ machine:
 - `patchbay_machine_list`
 - `patchbay_machine_workspaces`
 - `patchbay_machine_recommend`
+- `patchbay_work_group_create`
+- `patchbay_work_group_list`
+- `patchbay_work_group_status`
+- `patchbay_work_group_resume`
+- `patchbay_work_group_close`
+- `patchbay_work_group_reassign`
 - `patchbay_worker_options`
 - `patchbay_worker_start`
 - `patchbay_worker_start_auto`
@@ -98,16 +108,50 @@ machine:
 - `patchbay_worker_integrate`
 - `patchbay_command_status`
 
-ChatGPT should start with `patchbay_fleet_status`, choose a machine by
-workspace/capability, then route worker commands with explicit `machine_id`.
+For non-trivial tasks, ChatGPT should use this lifecycle:
+
+```text
+patchbay_fleet_status
+patchbay_work_group_list
+patchbay_work_group_resume or patchbay_work_group_create
+patchbay_work_group_status
+patchbay_worker_start_auto or patchbay_worker_start with work_group_id/lane
+patchbay_work_group_status until work completes
+patchbay_work_group_close or report what remains active
+```
+
+Hard rules for ChatGPT:
+
+- one user task equals one work group;
+- do not create one group per worker;
+- do not call `patchbay_worker_start_auto` before a group exists;
+- do not treat `patchbay_machine_recommend` as permission to scatter workers;
+- do not start grouped workers until group preflight is `ok`;
+- if the pinned machine is full/offline, wait, queue there when allowed, or
+  explicitly reassign the group;
+- use separate groups/branches/integration owners for deliberate cross-machine
+  same-repo work.
+
+`patchbay_worker_start_auto` is no longer a per-worker scatter router. It
+requires `work_group_id`, `lane`, and `auto_routing_ok: true`, then queues the
+worker on the group's pinned machine. `patchbay_worker_start` with explicit
+`machine_id` still exists for tiny checks, operator-requested work, and legacy
+compatibility, but ungrouped starts must supply `ungrouped_reason`.
 
 If `hub.routing.enabled` is true, ChatGPT may use
-`patchbay_machine_recommend` or `patchbay_worker_start_auto` when the user did
-not name a machine. This router is deliberately simple and mechanical: it uses
-online state, worker slots, CPU, memory, disk feasibility, and explicit
-`required_tags`. It does not classify task meaning, complexity, model choice, or
-coding-vs-documentation intent. Explicit `machine_id` selection always overrides
-auto-routing.
+`patchbay_work_group_create` without `machine_id`. The Hub then chooses one
+eligible machine by compact availability telemetry and pins the group there.
+This router is deliberately simple and mechanical: it uses online state, worker
+slots, CPU, memory, disk feasibility, workspace projections, allow-lists, and
+explicit `required_tags`. It does not classify task meaning, complexity, model
+choice, or coding-vs-documentation intent.
+
+Once a group is pinned, later grouped workers stay on that machine even if
+another machine becomes less busy. If the pinned machine is full or offline,
+Hub returns a capacity/unavailable block or queues there when policy permits; it
+does not silently fail over. Use `patchbay_work_group_reassign` only when the
+user explicitly wants successor work on a different machine. Reassigning does
+not migrate live Codex processes.
 
 Public/default config keeps routing disabled:
 
@@ -134,6 +178,10 @@ hub:
 ## Boundaries
 
 - Hub state is a compact projection, not the source of truth for local repos.
+- Hub work groups are coordination objects, not security boundaries.
+- Hub preflight is required before grouped worker starts: the edge confirms the
+  repo/workspace can be resolved, reports compact git/capacity facts, and then
+  worker starts are allowed unless an operator recovery override is used.
 - Edge machines keep local Codex auth, repositories, worker state, worktrees,
   logs, and credentials.
 - Hub does not receive raw Codex credentials, raw local logs, prompts, file
@@ -153,6 +201,7 @@ Run:
 python scripts/live_hub_edge_eval.py --json
 ```
 
-That starts a temporary hub, enrolls a fake edge over HTTP, performs MCP
-initialize/fleet status, queues a routed command, has the edge claim it, posts a
-result, and verifies command completion.
+That starts a temporary hub, enrolls fake edges over HTTP, performs MCP
+initialize/fleet status, creates a work group, completes group preflight,
+queues grouped workers, verifies the group stays pinned after machine load
+changes, and verifies command completion.

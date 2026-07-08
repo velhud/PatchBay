@@ -2,6 +2,11 @@
 
 Status: documented future design, not implemented.
 
+Current bridge: Hub work groups are implemented as the durable task object. A
+future campaign/channel layer should build on work groups rather than returning
+to a flat historical worker list. Several ChatGPT conversations may eventually
+share or take over explicit groups, but private groups remain the default.
+
 This document preserves the product idea that PatchBay Hub should eventually let
 several ChatGPT conversations work through the same hub at the same time, see
 shared machine/work state, exchange information, and coordinate higher-level
@@ -90,6 +95,7 @@ is available only through explicit scopes and filters.
 The hub must avoid overwhelming ChatGPT with stale state. It must distinguish:
 
 - current work run;
+- current work group;
 - same conversation;
 - same campaign;
 - same user/server owner;
@@ -116,6 +122,25 @@ The hub needs stable identity and safe client references:
 
 Raw ChatGPT session metadata must not be logged or returned. Use hashed public
 references only.
+
+### Work Groups
+
+Work groups are the implemented V1 task object. They contain:
+
+- title and goal;
+- visibility (`private` by default, `shared` explicitly);
+- pinned machine;
+- repo/workspace hint;
+- lanes;
+- worker refs;
+- queued/running/completed command refs;
+- preflight result;
+- close/reassign history.
+
+Multiple ChatGPT conversations should not discover old workers by reading a
+giant fleet status dump. They should list/resume/close explicit groups. Sharing
+or takeover should happen at the group/lane level before future mailbox or
+campaign objects coordinate across conversations.
 
 ### Campaigns
 

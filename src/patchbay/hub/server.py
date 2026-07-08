@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -17,12 +18,13 @@ from patchbay.auth import (
     AuthConfigurationError,
     auth_public_metadata,
     build_auth_policy,
+    request_token,
     request_is_authorized,
 )
-from patchbay.connector.profiles import normalize_logging_paths
+from patchbay.connector.profiles import normalize_logging_paths, resolve_runtime_path
 from patchbay.hub.protocol import HubProtocol
 from patchbay.hub.runtime import HubRuntime
-from patchbay.protocol.context import RequestContext, make_client_ref
+from patchbay.protocol.context import RequestContext, make_client_ref, make_hashed_ref
 from patchbay.security import internal_log_error, public_error_message
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,34 @@ runtime = HubRuntime(config)
 protocol = HubProtocol(runtime)
 app = FastAPI(title="PatchBay Hub")
 sessions: dict[str, dict[str, Any]] = {}
-_SESSION_REF_SALT = os.environ.get("PATCHBAY_SESSION_REF_SALT") or uuid.uuid4().hex
+work_runs: dict[str, dict[str, Any]] = {}
+DEFAULT_WORK_RUN_IDLE_SECONDS = 900
+
+
+def _load_session_ref_salt() -> str:
+    configured = os.environ.get("PATCHBAY_SESSION_REF_SALT")
+    if configured:
+        return configured
+    path = resolve_runtime_path(None, "hub", "session-ref-salt", environ=os.environ)
+    try:
+        if path.exists():
+            value = path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        value = uuid.uuid4().hex
+        path.write_text(value + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return value
+    except OSError:
+        logger.warning("Could not persist Hub session ref salt; falling back to process-local salt")
+        return uuid.uuid4().hex
+
+
+_SESSION_REF_SALT = _load_session_ref_salt()
 
 
 class RequestBodyTooLarge(Exception):
@@ -107,6 +136,27 @@ def _mcp_session_id(request: Request) -> Optional[str]:
     return request.headers.get("Mcp-Session-Id") or request.headers.get("MCP-Session-Id")
 
 
+def _ownership_scope() -> str:
+    raw = (config.get("ownership") or {}).get("scope") if isinstance(config.get("ownership"), dict) else None
+    scope = str(raw or "token").strip().lower().replace("-", "_")
+    if scope in {"transport", "transport_session", "session", "mcp_session"}:
+        return "transport_session"
+    if scope in {"server", "shared", "single_user"}:
+        return "server"
+    return "token"
+
+
+def _owner_ref_for_request(request: Request, session_id: str) -> tuple[str, str]:
+    scope = _ownership_scope()
+    if scope == "transport_session":
+        return make_client_ref(session_id, salt=_SESSION_REF_SALT), scope
+    if scope == "token":
+        token = request_token(request.headers, request.query_params, auth_policy)
+        if token:
+            return make_client_ref(f"token:{token}", salt=_SESSION_REF_SALT), scope
+    return make_client_ref("hub-server-owner", salt=_SESSION_REF_SALT), "server"
+
+
 def _request_context_for_session(session_id: str) -> RequestContext:
     return RequestContext.from_session(
         session_id,
@@ -114,6 +164,98 @@ def _request_context_for_session(session_id: str) -> RequestContext:
         salt=_SESSION_REF_SALT,
         active_mcp_sessions=len(sessions),
     )
+
+
+def _client_meta_from_message(message: Any) -> dict[str, Any]:
+    if not isinstance(message, dict):
+        return {}
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return {}
+    meta = params.get("_meta")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _tool_name_from_message(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return ""
+    return str(params.get("name") or "")
+
+
+def _is_work_activity(message: Any) -> bool:
+    return isinstance(message, dict) and str(message.get("method") or "") == "tools/call" and bool(_tool_name_from_message(message))
+
+
+def _work_run_idle_seconds() -> int:
+    app_config = config.get("app", {}) if isinstance(config.get("app"), dict) else {}
+    raw = app_config.get("work_run_idle_seconds") or app_config.get("conversation_work_run_idle_seconds")
+    try:
+        value = int(raw if raw is not None else DEFAULT_WORK_RUN_IDLE_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_WORK_RUN_IDLE_SECONDS
+    return max(60, value)
+
+
+def _work_run_key(session_data: dict[str, Any]) -> str:
+    return (
+        str(session_data.get("chatgpt_session_ref") or "")
+        or str(session_data.get("owner_ref") or "")
+        or str(session_data.get("client_ref") or "")
+        or "anonymous"
+    )
+
+
+def _apply_chatgpt_client_metadata(session_id: str, message: Any) -> None:
+    session_data = sessions[session_id]
+    session_data["client_ref"] = make_client_ref(session_id, salt=_SESSION_REF_SALT)
+    meta = _client_meta_from_message(message)
+    openai_session = str(meta.get("openai/session") or "").strip()
+    openai_subject = str(meta.get("openai/subject") or "").strip()
+    openai_org = str(meta.get("openai/organization") or "").strip()
+    if openai_session:
+        session_data["chatgpt_session_ref"] = make_hashed_ref(
+            f"openai/session:{openai_session}",
+            salt=_SESSION_REF_SALT,
+            prefix="chatgpt_session",
+        )
+    if openai_subject:
+        session_data["chatgpt_subject_ref"] = make_hashed_ref(
+            f"openai/subject:{openai_subject}",
+            salt=_SESSION_REF_SALT,
+            prefix="chatgpt_subject",
+        )
+    if openai_org:
+        session_data["chatgpt_organization_ref"] = make_hashed_ref(
+            f"openai/organization:{openai_org}",
+            salt=_SESSION_REF_SALT,
+            prefix="chatgpt_org",
+        )
+    if not _is_work_activity(message):
+        return
+    now = asyncio.get_event_loop().time()
+    wall_now = time.time()
+    idle_seconds = _work_run_idle_seconds()
+    key = _work_run_key(session_data)
+    run = work_runs.get(key)
+    if not run or now - float(run.get("last_activity_monotonic") or 0) > idle_seconds:
+        run = {
+            "work_run_ref": f"run_{uuid.uuid4().hex[:12]}",
+            "key": key,
+            "started_at": wall_now,
+            "last_activity_at": wall_now,
+            "last_activity_monotonic": now,
+            "idle_seconds": idle_seconds,
+        }
+        work_runs[key] = run
+    else:
+        run["last_activity_at"] = wall_now
+        run["last_activity_monotonic"] = now
+    session_data["work_run_ref"] = run["work_run_ref"]
+    session_data["work_run_started_at"] = run["started_at"]
+    session_data["work_run_last_activity_at"] = run["last_activity_at"]
 
 
 async def _request_json_or_error(request: Request) -> tuple[Any | None, JSONResponse | None]:
@@ -183,12 +325,13 @@ async def mcp_endpoint(request: Request):
     session_id = _mcp_session_id(request)
     if not session_id:
         session_id = str(uuid.uuid4())
+        owner_ref, owner_scope = _owner_ref_for_request(request, session_id)
         sessions[session_id] = {
             "created_at": asyncio.get_event_loop().time(),
             "last_activity": asyncio.get_event_loop().time(),
             "client_ref": make_client_ref(session_id, salt=_SESSION_REF_SALT),
-            "owner_ref": make_client_ref("hub-server-owner", salt=_SESSION_REF_SALT),
-            "owner_scope": "hub",
+            "owner_ref": owner_ref,
+            "owner_scope": owner_scope,
             "tool_mode": "hub",
         }
     elif session_id not in sessions:
@@ -198,12 +341,16 @@ async def mcp_endpoint(request: Request):
         )
     else:
         sessions[session_id]["last_activity"] = asyncio.get_event_loop().time()
+        owner_ref, owner_scope = _owner_ref_for_request(request, session_id)
+        sessions[session_id]["owner_ref"] = owner_ref
+        sessions[session_id]["owner_scope"] = owner_scope
 
     message, error_response = await _request_json_or_error(request)
     if error_response:
         error_response.headers["Mcp-Session-Id"] = session_id
         return error_response
 
+    _apply_chatgpt_client_metadata(session_id, message)
     try:
         response = await protocol.handle_message(message, context=_request_context_for_session(session_id))
     except Exception as error:

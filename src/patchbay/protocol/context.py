@@ -42,6 +42,8 @@ class RequestContext:
     work_run_ref: str = ""
     work_run_started_at: float | None = None
     work_run_last_activity_at: float | None = None
+    work_group_id: str = ""
+    lane_id: str = ""
     tool_mode: str | None = None
     active_mcp_sessions: int | None = None
     session_data: MutableMapping[str, Any] | None = field(default=None, repr=False, compare=False)
@@ -71,9 +73,38 @@ class RequestContext:
             work_run_ref=str(session_data.get("work_run_ref") or ""),
             work_run_started_at=session_data.get("work_run_started_at"),
             work_run_last_activity_at=session_data.get("work_run_last_activity_at"),
+            work_group_id=str(session_data.get("work_group_id") or ""),
+            lane_id=str(session_data.get("lane_id") or ""),
             tool_mode=session_data.get("tool_mode"),
             active_mcp_sessions=active_mcp_sessions,
             session_data=session_data,
+        )
+
+    @classmethod
+    def from_public_metadata(cls, metadata: MutableMapping[str, Any] | dict[str, Any] | None) -> "RequestContext":
+        """Reconstruct safe public context forwarded through Hub commands.
+
+        Hub commands intentionally carry only hashed/public refs, never raw MCP
+        session ids or OpenAI metadata. Edges can still preserve worker
+        ownership, work-run, work-group, and lane metadata from this projection.
+        """
+        data = metadata or {}
+        return cls(
+            transport_session_id=None,
+            client_ref=str(data.get("client_ref") or ANONYMOUS_CLIENT_REF),
+            owner_ref=str(data.get("owner_ref") or ""),
+            owner_scope=str(data.get("owner_scope") or ""),
+            client_label=str(data.get("client_label") or ""),
+            chatgpt_session_ref=str(data.get("chatgpt_session_ref") or ""),
+            chatgpt_subject_ref=str(data.get("chatgpt_subject_ref") or ""),
+            chatgpt_organization_ref=str(data.get("chatgpt_organization_ref") or ""),
+            work_run_ref=str(data.get("work_run_ref") or ""),
+            work_run_started_at=data.get("work_run_started_at"),
+            work_run_last_activity_at=data.get("work_run_last_activity_at"),
+            work_group_id=str(data.get("work_group_id") or ""),
+            lane_id=str(data.get("lane_id") or ""),
+            tool_mode=data.get("tool_mode"),
+            active_mcp_sessions=data.get("active_mcp_sessions"),
         )
 
     @property
@@ -103,6 +134,10 @@ class RequestContext:
             data["work_run_started_at"] = self.work_run_started_at
         if self.work_run_last_activity_at is not None:
             data["work_run_last_activity_at"] = self.work_run_last_activity_at
+        if self.work_group_id:
+            data["work_group_id"] = self.work_group_id
+        if self.lane_id:
+            data["lane_id"] = self.lane_id
         if self.tool_mode:
             data["tool_mode"] = self.tool_mode
         if self.active_mcp_sessions is not None:

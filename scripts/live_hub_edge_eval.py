@@ -240,7 +240,12 @@ def run() -> dict[str, Any]:
                     "method": "tools/call",
                     "params": {
                         "name": "patchbay_worker_start",
-                        "arguments": {"machine_id": "live-edge", "name": "Smoke", "brief": "No-op smoke task."},
+                        "arguments": {
+                            "machine_id": "live-edge",
+                            "name": "Smoke",
+                            "brief": "No-op smoke task.",
+                            "ungrouped_reason": "tiny_check",
+                        },
                     },
                 },
                 token=token,
@@ -269,15 +274,56 @@ def run() -> dict[str, Any]:
             selected = recommendation["result"]["structuredContent"]["selected_machine_id"]
             if selected != "live-edge":
                 raise RuntimeError(f"Router selected {selected}, expected live-edge")
-            auto_queued, _ = post_json(
+            group_created, _ = post_json(
                 f"{base_url}/mcp",
                 {
                     "jsonrpc": "2.0",
                     "id": 6,
                     "method": "tools/call",
                     "params": {
+                        "name": "patchbay_work_group_create",
+                        "arguments": {
+                            "title": "Live grouped smoke",
+                            "goal": "Verify Hub group pinning and preflight.",
+                            "repo_path": str(root),
+                            "lanes": ["smoke", "followup"],
+                        },
+                    },
+                },
+                token=token,
+                session_id=session_id,
+            )
+            group_payload = group_created["result"]["structuredContent"]["work_group"]
+            work_group_id = group_payload["work_group_id"]
+            if group_payload["pinned_machine_id"] != "live-edge":
+                raise RuntimeError(f"Group pinned {group_payload['pinned_machine_id']}, expected live-edge")
+            preflight_polled, _ = post_json(f"{base_url}/edge/poll", {"machine_id": "live-edge"}, token=node_tokens["live-edge"])
+            if preflight_polled["command"]["action"] != "patchbay_edge_preflight":
+                raise RuntimeError("Edge did not claim group preflight command")
+            post_json(
+                f"{base_url}/edge/result",
+                {
+                    "machine_id": "live-edge",
+                    "command_id": preflight_polled["command"]["command_id"],
+                    "result": {"ok": True, "repo_exists": True, "git_repo": False, "branch": "", "head": ""},
+                },
+                token=node_tokens["live-edge"],
+            )
+            auto_queued, _ = post_json(
+                f"{base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {
                         "name": "patchbay_worker_start_auto",
-                        "arguments": {"name": "Auto Smoke", "brief": "No-op auto smoke task."},
+                        "arguments": {
+                            "work_group_id": work_group_id,
+                            "lane": "smoke",
+                            "auto_routing_ok": True,
+                            "name": "Auto Smoke",
+                            "brief": "No-op auto smoke task.",
+                        },
                     },
                 },
                 token=token,
@@ -336,7 +382,7 @@ def run() -> dict[str, Any]:
                 f"{base_url}/mcp",
                 {
                     "jsonrpc": "2.0",
-                    "id": 7,
+                    "id": 8,
                     "method": "tools/call",
                     "params": {"name": "patchbay_machine_recommend", "arguments": {}},
                 },
@@ -346,11 +392,48 @@ def run() -> dict[str, Any]:
             changed_selected = changed_recommendation["result"]["structuredContent"]["selected_machine_id"]
             if changed_selected != "busy-edge":
                 raise RuntimeError(f"Router selected {changed_selected}, expected busy-edge after heartbeat load changed")
+            group_recommendation, _ = post_json(
+                f"{base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 9,
+                    "method": "tools/call",
+                    "params": {"name": "patchbay_machine_recommend", "arguments": {"work_group_id": work_group_id}},
+                },
+                token=token,
+                session_id=session_id,
+            )
+            group_selected = group_recommendation["result"]["structuredContent"]["selected_machine_id"]
+            if group_selected != "live-edge":
+                raise RuntimeError(f"Grouped recommendation selected {group_selected}, expected pinned live-edge")
+            second_auto, _ = post_json(
+                f"{base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "patchbay_worker_start_auto",
+                        "arguments": {
+                            "work_group_id": work_group_id,
+                            "lane": "followup",
+                            "auto_routing_ok": True,
+                            "name": "Auto Followup",
+                            "brief": "No-op grouped follow-up task.",
+                        },
+                    },
+                },
+                token=token,
+                session_id=session_id,
+            )
+            second_payload = second_auto["result"]["structuredContent"]
+            if second_payload["machine_id"] != "live-edge":
+                raise RuntimeError(f"Second grouped auto worker queued on {second_payload['machine_id']}, expected live-edge")
             command_status, _ = post_json(
                 f"{base_url}/mcp",
                 {
                     "jsonrpc": "2.0",
-                    "id": 4,
+                    "id": 11,
                     "method": "tools/call",
                     "params": {"name": "patchbay_command_status", "arguments": {"command_id": command_id}},
                 },
@@ -369,8 +452,11 @@ def run() -> dict[str, Any]:
                 "fleet_summary": fleet["result"]["structuredContent"]["summary"],
                 "command_id": command_id,
                 "auto_command_id": auto_payload["command_id"],
+                "work_group_id": work_group_id,
+                "second_auto_command_id": second_payload["command_id"],
                 "initial_router_selection": selected,
                 "changed_router_selection": changed_selected,
+                "group_router_selection_after_load_change": group_selected,
                 "completed_state": done["state"],
             }
         finally:

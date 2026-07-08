@@ -12,7 +12,11 @@ from typing import Any, Mapping
 from patchbay.connector.profiles import resolve_runtime_path
 
 
-STORE_VERSION = 1
+STORE_VERSION = 2
+
+
+class HubStoreCorrupt(RuntimeError):
+    """Raised when private hub state cannot be decoded safely."""
 
 
 def hub_state_path(config: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> Path:
@@ -52,21 +56,33 @@ class HubStore:
             "enrollment_codes": {},
             "machines": {},
             "commands": {},
+            "work_groups": {},
+            "current_work_group_by_manager": {},
             "events": [],
         }
 
     def read(self) -> dict[str, Any]:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             payload = self._empty()
+        except json.JSONDecodeError as exc:
+            quarantine = self.path.with_suffix(self.path.suffix + f".corrupt.{int(time.time())}")
+            try:
+                self.path.replace(quarantine)
+            except OSError:
+                quarantine = self.path
+            raise HubStoreCorrupt(f"Hub state is corrupt and was quarantined at {quarantine}") from exc
         if not isinstance(payload, dict):
-            payload = self._empty()
+            raise HubStoreCorrupt("Hub state is corrupt: root payload is not an object")
         payload.setdefault("version", STORE_VERSION)
         payload.setdefault("enrollment_codes", {})
         payload.setdefault("machines", {})
         payload.setdefault("commands", {})
+        payload.setdefault("work_groups", {})
+        payload.setdefault("current_work_group_by_manager", {})
         payload.setdefault("events", [])
+        payload["version"] = max(int(payload.get("version") or 1), STORE_VERSION)
         return payload
 
     def update(self, mutator) -> dict[str, Any]:

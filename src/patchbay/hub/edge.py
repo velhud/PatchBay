@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -235,6 +236,80 @@ async def worker_status(handler: ToolHandler) -> dict[str, Any]:
         return {"error": str(error)}
 
 
+def _repo_path_from_projection(config: Mapping[str, Any], repo_path: str) -> Path:
+    requested = str(repo_path or "").strip()
+    workspaces = build_workspaces(config)
+    if not requested:
+        default_root = (config.get("repositories") or {}).get("default") if isinstance(config.get("repositories"), Mapping) else None
+        return Path(str(default_root or Path.cwd())).expanduser().resolve(strict=False)
+    if os.path.isabs(requested):
+        return Path(requested).expanduser().resolve(strict=False)
+    needle = requested.lower()
+    for workspace in workspaces:
+        haystack = " ".join(str(workspace.get(key) or "") for key in ("alias", "path")).lower()
+        if needle == str(workspace.get("alias") or "").lower() or needle in haystack:
+            return Path(str(workspace.get("path") or requested)).expanduser().resolve(strict=False)
+    return Path(requested).expanduser().resolve(strict=False)
+
+
+def _git_output(repo: Path, *args: str, timeout: float = 5) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(repo),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def edge_preflight(config: Mapping[str, Any], arguments: Mapping[str, Any], status: Mapping[str, Any]) -> dict[str, Any]:
+    repo = _repo_path_from_projection(config, str(arguments.get("repo_path") or ""))
+    exists = repo.exists()
+    git_repo = exists and bool(_git_output(repo, "rev-parse", "--is-inside-work-tree"))
+    branch = _git_output(repo, "branch", "--show-current") if git_repo else ""
+    head = _git_output(repo, "rev-parse", "--short", "HEAD") if git_repo else ""
+    dirty_summary = ""
+    if git_repo:
+        raw_status = _git_output(repo, "status", "--short")
+        lines = [line for line in raw_status.splitlines() if line.strip()]
+        dirty_summary = "clean" if not lines else f"{len(lines)} changed/untracked paths"
+    try:
+        usage = shutil.disk_usage(_nearest_existing_path(repo))
+        disk_free = usage.free
+        disk_used_percent = round(((usage.total - usage.free) / max(1, usage.total)) * 100.0, 2)
+    except OSError:
+        disk_free = None
+        disk_used_percent = None
+    resources = build_resource_status(config, status)
+    return {
+        "ok": bool(exists),
+        "repo_requested": str(arguments.get("repo_path") or ""),
+        "repo_resolved": str(repo),
+        "repo_exists": exists,
+        "git_repo": git_repo,
+        "branch": branch,
+        "head": head,
+        "dirty_status_summary": dirty_summary,
+        "upstream_ahead_behind": "",
+        "disk_free_bytes": disk_free,
+        "disk_used_percent": disk_used_percent,
+        "active_workers": resources.get("active_workers"),
+        "max_concurrent_jobs": resources.get("max_concurrent_jobs"),
+        "free_worker_slots": resources.get("free_worker_slots"),
+        "queue_enabled": resources.get("queue_enabled"),
+        "unintegrated_worker_warnings": [],
+        "error": "" if exists else "repo path does not exist",
+    }
+
+
 def enroll_edge(
     config: Mapping[str, Any],
     *,
@@ -334,7 +409,18 @@ class EdgeRunner:
         if not command_id or not action:
             return {"skipped": True, "reason": "No command claimed"}
         try:
-            result = await self.handler.handle_tool_call(action, dict(arguments), context=RequestContext.anonymous())
+            public_context = command.get("context") if isinstance(command.get("context"), dict) else {}
+            public_context = dict(public_context)
+            if command.get("work_group_id"):
+                public_context["work_group_id"] = command.get("work_group_id")
+            if command.get("lane_id"):
+                public_context["lane_id"] = command.get("lane_id")
+            context = RequestContext.from_public_metadata(public_context)
+            if action == "patchbay_edge_preflight":
+                status = await worker_status(self.handler)
+                result = edge_preflight(self.config, arguments, status)
+            else:
+                result = await self.handler.handle_tool_call(action, dict(arguments), context=context)
             return await self.send_result(command_id, result=redact_sensitive_output(result))
         except Exception as error:
             return await self.send_result(command_id, error=str(error))

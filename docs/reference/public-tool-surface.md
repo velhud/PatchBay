@@ -35,10 +35,16 @@ fleet-native manager surface and queues commands to the selected edge machine:
 | `patchbay_fleet_status` | Compact status of online/offline machines and visible worker projections. |
 | `patchbay_machine_list` | List enrolled machines, tags, capabilities, and safe workspace projections. |
 | `patchbay_machine_workspaces` | Show advertised workspaces on one machine or the whole fleet. |
-| `patchbay_machine_recommend` | Recommend the least-busy eligible online machine when optional availability routing is enabled. |
+| `patchbay_machine_recommend` | With `work_group_id`, report the pinned machine or blocked reason; without a group, provide read-only availability advice. |
+| `patchbay_work_group_create` | Create one durable task group, choose/pin one machine, and queue edge preflight. |
+| `patchbay_work_group_list` | List current/owned/recent/history groups without dumping stale history by default. |
+| `patchbay_work_group_status` | Show group state, pinned machine, lanes, commands, preflight, and next action. |
+| `patchbay_work_group_resume` | Make an existing group current and queue fresh preflight. |
+| `patchbay_work_group_close` | Close a group with outcome/summary; refuses by default while active commands remain. |
+| `patchbay_work_group_reassign` | Move successor work to another machine without pretending live workers moved. |
 | `patchbay_worker_options` | Route a model/reasoning options request to one machine. |
-| `patchbay_worker_start` | Start a worker on a selected machine. |
-| `patchbay_worker_start_auto` | Start a worker on the least-busy eligible online machine when optional availability routing is enabled. |
+| `patchbay_worker_start` | Start a worker on an explicit machine or inside a group/lane. Ungrouped Hub starts require `ungrouped_reason`. |
+| `patchbay_worker_start_auto` | Start a worker inside an existing group/lane on the group's pinned machine; requires `work_group_id`, `lane`, and `auto_routing_ok: true`. |
 | `patchbay_worker_message` | Continue a worker on the same machine. |
 | `patchbay_worker_status` | Show cached fleet worker status or queue a machine-local refresh. |
 | `patchbay_worker_wait` | Queue a patient status refresh on one machine. |
@@ -47,19 +53,38 @@ fleet-native manager surface and queues commands to the selected edge machine:
 | `patchbay_worker_integrate` | Apply an accepted isolated worker result on the owning machine. |
 | `patchbay_command_status` | Inspect hub-routed command state. |
 
-Hub initialize instructions must tell ChatGPT to behave as a fleet manager:
-start with fleet status, choose machines by workspace/capability, use explicit
-`machine_id`, and collect reports for cross-machine synthesis. Hub state is a
-projection and command queue; edge machines keep local Codex auth, repositories,
-worker state, worktrees, and authority policy.
+Hub initialize instructions must tell ChatGPT to behave as a fleet manager. For
+non-trivial Hub tasks, the default lifecycle is:
+
+```text
+fleet status -> group list -> resume or create one group -> start workers in
+lanes -> monitor group status -> close the group or report active work
+```
+
+The instruction surface should be unambiguous about these prohibitions:
+
+- no one-group-per-worker pattern;
+- no `patchbay_worker_start_auto` before `patchbay_work_group_create` or
+  `patchbay_work_group_resume`;
+- no per-worker least-busy scatter for workers in the same task;
+- no grouped worker start while preflight is pending or failed, except explicit
+  operator recovery override;
+- no silent failover from a pinned machine to a different machine.
+
+Hub state is a projection and command queue; edge machines keep local Codex
+auth, repositories, worker state, worktrees, and authority policy.
 
 The optional hub router is availability-only. It is off by default in public
 config and, when enabled, compares current worker load, CPU pressure, memory
-pressure, disk feasibility, online state, and explicit required tags. It must
-not infer task type, complexity, model choice, repository meaning, or
-documentation-vs-coding intent. ChatGPT should use auto-routing only when the
-user has not named a machine; explicit `machine_id` selection remains the
-normal override and is unchanged.
+pressure, disk feasibility, workspace projections, online state, allow-lists,
+and explicit required tags. It must not infer task type, complexity, model
+choice, repository meaning, or documentation-vs-coding intent.
+
+Auto-routing chooses a machine for a work group, not for each worker. After a
+group is pinned, `patchbay_worker_start_auto` keeps later workers on the pinned
+machine. If that machine is full or offline, Hub returns a blocked/queued state;
+it does not scatter workers across other machines. Cross-machine same-repo
+writes require explicit separate groups/branches and one integration owner.
 
 ## Current Stable Tools
 

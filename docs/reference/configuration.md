@@ -131,8 +131,11 @@ debuggability matters more than minimizing private local artifacts, set
 `private_evidence_log: true`.
 
 Blank `hub.state_file` resolves to `PATCHBAY_HOME/runtime/hub/hub-state.json`.
-Hub state is private runtime state for enrolled machines, command routing, and
-compact event history. It is not repository data and should not be committed.
+Hub state is private runtime state for enrolled machines, durable work groups,
+current group selections, command routing, and compact event history. It is not
+repository data and should not be committed. If the Hub state file is corrupt,
+PatchBay quarantines it as `*.corrupt.<timestamp>` and returns a recovery error
+instead of silently resetting fleet/group state.
 
 When PatchBay is run by a service manager such as systemd, set a real user home
 for the service process. Codex workers inherit `CODEX_HOME` for Codex auth and

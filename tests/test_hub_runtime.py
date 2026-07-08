@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from patchbay.hub.runtime import HubRuntime
-from patchbay.hub.store import HubStore
+from patchbay.hub.store import HubStore, HubStoreCorrupt
+from patchbay.protocol.context import RequestContext
 
 
 def hub_config(tmp_path: Path, *, routing_enabled: bool = False):
@@ -51,6 +54,18 @@ def enroll_online(runtime: HubRuntime, machine_id: str, *, token_name: str | Non
         },
     )
     return token_name or token
+
+
+def complete_next_preflight(runtime: HubRuntime, *, machine_id: str, token: str):
+    claimed = runtime.claim_next_command(machine_id=machine_id, token=token)
+    command = claimed["command"]
+    assert command["action"] == "patchbay_edge_preflight"
+    return runtime.finish_command(
+        machine_id=machine_id,
+        token=token,
+        command_id=command["command_id"],
+        result={"ok": True, "repo_exists": True, "git_repo": True, "branch": "main", "head": "abc123"},
+    )
 
 
 def test_hub_enrollment_stores_only_token_hash(tmp_path):
@@ -195,3 +210,244 @@ def test_hub_routing_required_tags_filter_candidates(tmp_path):
     assert result["selected_machine_id"] == "laptop"
     rejected = {candidate["machine_id"]: candidate["rejected_reasons"] for candidate in result["rejected_candidates"]}
     assert any("missing required tags" in reason for reason in rejected["untagged"])
+
+
+def test_hub_work_group_create_persists_and_queues_preflight(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(runtime, "edge")
+
+    created = runtime.create_work_group(title="RetailMind stage", goal="Plan next implementation", repo_path=str(tmp_path))
+
+    group = created["work_group"]
+    assert created["accepted"] is True
+    assert group["pinned_machine_id"] == "edge"
+    assert group["preflight"]["status"] == "pending"
+    assert created["preflight_command"]["action"] == "patchbay_edge_preflight"
+
+    restarted = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    listed = restarted.list_work_groups(scope="history", include_closed=True)
+    assert listed["groups"][0]["work_group_id"] == group["work_group_id"]
+    claimed = restarted.claim_next_command(machine_id="edge", token=token)
+    assert claimed["command"]["work_group_id"] == group["work_group_id"]
+
+
+def test_hub_work_group_idempotency_key_reuses_same_group(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(runtime, "edge")
+
+    first = runtime.create_work_group(title="Task", goal="Do the thing", idempotency_key="same-key")
+    second = runtime.create_work_group(title="Task retry", goal="Do the thing again", idempotency_key="same-key")
+
+    assert second["idempotent_replay"] is True
+    assert first["work_group"]["work_group_id"] == second["work_group"]["work_group_id"]
+
+
+def test_hub_auto_worker_start_requires_ok_preflight(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(runtime, "edge")
+    created = runtime.create_work_group(title="Task", goal="Do the thing")
+    group_id = created["work_group"]["work_group_id"]
+
+    with pytest.raises(ValueError, match="preflight"):
+        runtime.queue_auto_worker_start(
+            arguments={
+                "work_group_id": group_id,
+                "lane": "reader",
+                "auto_routing_ok": True,
+                "name": "Reader",
+                "brief": "Read docs.",
+            }
+        )
+
+
+def test_hub_grouped_auto_start_stays_on_pinned_machine_after_load_changes(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    pinned_token = enroll_online(runtime, "pinned", resources={"active_workers": 0, "free_worker_slots": 4})
+    other_token = enroll_online(runtime, "other", resources={"active_workers": 2, "free_worker_slots": 2})
+    created = runtime.create_work_group(title="Task", goal="Do the thing")
+    group_id = created["work_group"]["work_group_id"]
+    assert created["work_group"]["pinned_machine_id"] == "pinned"
+    complete_next_preflight(runtime, machine_id="pinned", token=pinned_token)
+
+    runtime.heartbeat(
+        machine_id="pinned",
+        token=pinned_token,
+        capabilities={"codex_worker_tools": True, "max_concurrent_jobs": 4, "queue_enabled": True},
+        resource_status={
+            "active_workers": 3,
+            "max_concurrent_jobs": 4,
+            "free_worker_slots": 1,
+            "queue_enabled": True,
+            "cpu_percent": 90,
+            "memory_used_percent": 90,
+            "memory_available_bytes": 1_000_000_000,
+            "disk_free_bytes": 10_000_000_000,
+        },
+    )
+    runtime.heartbeat(
+        machine_id="other",
+        token=other_token,
+        capabilities={"codex_worker_tools": True, "max_concurrent_jobs": 4, "queue_enabled": True},
+        resource_status={
+            "active_workers": 0,
+            "max_concurrent_jobs": 4,
+            "free_worker_slots": 4,
+            "queue_enabled": True,
+            "cpu_percent": 5,
+            "memory_used_percent": 10,
+            "memory_available_bytes": 9_000_000_000,
+            "disk_free_bytes": 10_000_000_000,
+        },
+    )
+
+    queued = runtime.queue_auto_worker_start(
+        arguments={
+            "work_group_id": group_id,
+            "lane": "reader",
+            "auto_routing_ok": True,
+            "name": "Reader",
+            "brief": "Read docs.",
+        }
+    )
+
+    assert queued["accepted"] is True
+    assert queued["machine_id"] == "pinned"
+    assert queued["routing"]["selected_machine_id"] == "pinned"
+    claimed = runtime.claim_next_command(machine_id="pinned", token=pinned_token)
+    assert claimed["command"]["action"] == "codex_worker_start"
+    runtime.finish_command(
+        machine_id="pinned",
+        token=pinned_token,
+        command_id=claimed["command"]["command_id"],
+        result={"worker_id": "wrk_reader", "name": "Reader"},
+    )
+    group_status = runtime.work_group_status(work_group_id=group_id)
+    assert group_status["work_group"]["worker_refs"][0]["worker_id"] == "wrk_reader"
+
+
+def test_hub_group_recommend_blocks_when_pinned_machine_offline(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(runtime, "edge")
+    created = runtime.create_work_group(title="Task", goal="Do the thing")
+    group_id = created["work_group"]["work_group_id"]
+    complete_next_preflight(runtime, machine_id="edge", token=token)
+
+    payload = runtime.store.read()
+    payload["machines"]["edge"]["last_seen_at"] = 1
+    runtime.store._write(payload)
+
+    recommendation = runtime.recommend_machine(work_group_id=group_id)
+
+    assert recommendation["selected_machine_id"] == ""
+    assert recommendation["blocked_reason"] == "pinned_machine_not_eligible"
+
+
+def test_hub_ungrouped_worker_start_requires_reason(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(runtime, "edge")
+
+    with pytest.raises(ValueError, match="ungrouped_reason"):
+        runtime.queue_worker_command(
+            machine_id="edge",
+            action="codex_worker_start",
+            arguments={"name": "Loose", "brief": "Run loose."},
+        )
+
+    queued = runtime.queue_worker_command(
+        machine_id="edge",
+        action="codex_worker_start",
+        arguments={"name": "Loose", "brief": "Run loose.", "ungrouped_reason": "tiny_check"},
+        ungrouped_reason="tiny_check",
+    )
+    assert queued["state"] == "queued"
+    assert queued["routing"]["ungrouped_reason"] == "tiny_check"
+
+
+def test_hub_command_status_filters_by_work_group(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(runtime, "edge")
+    created = runtime.create_work_group(title="Task", goal="Do the thing")
+    group_id = created["work_group"]["work_group_id"]
+
+    status = runtime.command_status(work_group_id=group_id)
+
+    assert status["count"] == 1
+    assert status["commands"][0]["work_group_id"] == group_id
+    assert "arguments" not in status["commands"][0]
+
+
+def test_hub_context_refs_reach_grouped_edge_command(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(runtime, "edge")
+    context = RequestContext(
+        client_ref="client_123",
+        owner_ref="owner_123",
+        chatgpt_session_ref="chatgpt_session_123",
+        work_run_ref="run_123",
+    )
+    created = runtime.create_work_group(title="Task", goal="Do the thing", context=context)
+    group_id = created["work_group"]["work_group_id"]
+    complete_next_preflight(runtime, machine_id="edge", token=token)
+
+    queued = runtime.queue_auto_worker_start(
+        arguments={
+            "work_group_id": group_id,
+            "lane": "reader",
+            "auto_routing_ok": True,
+            "name": "Reader",
+            "brief": "Read docs.",
+        },
+        context=context,
+    )
+    claimed = runtime.claim_next_command(machine_id="edge", token=token)["command"]
+
+    assert queued["work_group_id"] == group_id
+    assert claimed["context"]["chatgpt_session_ref"] == "chatgpt_session_123"
+    assert claimed["context"]["work_run_ref"] == "run_123"
+    assert claimed["context"]["work_group_id"] == group_id
+    assert claimed["context"]["lane_id"] == "reader"
+
+
+def test_hub_work_group_close_refuses_active_commands_by_default(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(runtime, "edge")
+    created = runtime.create_work_group(title="Task", goal="Do the thing")
+    group_id = created["work_group"]["work_group_id"]
+
+    refused = runtime.close_work_group(work_group_id=group_id, outcome="complete", summary="Done")
+
+    assert refused["accepted"] is False
+    assert refused["active_commands"][0]["action"] == "patchbay_edge_preflight"
+    closed = runtime.close_work_group(work_group_id=group_id, outcome="complete", summary="Done", force=True)
+    assert closed["accepted"] is True
+    assert closed["work_group"]["status"] == "complete"
+
+
+def test_hub_work_group_reassign_supersedes_old_lanes_and_queues_preflight(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token_a = enroll_online(runtime, "a")
+    token_b = enroll_online(runtime, "b", resources={"active_workers": 1, "free_worker_slots": 3})
+    created = runtime.create_work_group(title="Task", goal="Do the thing", machine_id="a", lanes=["reader"])
+    group_id = created["work_group"]["work_group_id"]
+    complete_next_preflight(runtime, machine_id="a", token=token_a)
+
+    reassigned = runtime.reassign_work_group(work_group_id=group_id, machine_id="b", reason="Use the other machine")
+
+    assert reassigned["accepted"] is True
+    assert reassigned["work_group"]["pinned_machine_id"] == "b"
+    assert reassigned["work_group"]["lanes"]["reader"]["status"] == "superseded"
+    assert reassigned["successor_lane_id"] in reassigned["work_group"]["lanes"]
+    claimed = runtime.claim_next_command(machine_id="b", token=token_b)
+    assert claimed["command"]["action"] == "patchbay_edge_preflight"
+    assert claimed["command"]["work_group_id"] == group_id
+
+
+def test_hub_store_corruption_is_quarantined_not_reset(tmp_path):
+    config = hub_config(tmp_path)
+    store = HubStore(config)
+    store.path.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(HubStoreCorrupt):
+        store.read()
+
+    assert list(tmp_path.glob("hub-state.json.corrupt.*"))
