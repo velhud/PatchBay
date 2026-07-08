@@ -82,6 +82,45 @@ For a one-cycle diagnostic:
 patchbay edge run-once --config config.yaml --json
 ```
 
+### Windows WSL Edge Persistence
+
+For a Windows laptop or workstation running the edge inside WSL, do not assume a
+successful manual `systemctl --user start` means the edge will remain online
+after the SSH/terminal session closes. Some WSL setups stop the user service
+manager shortly after the last interactive WSL process exits. The symptom is:
+
+```text
+Hub briefly shows the WSL edge online
+about 10-30 seconds later the edge goes offline
+the edge service journal shows a clean stop, not a crash
+```
+
+Use a persistent Windows-side launcher for always-on edges:
+
+1. Enable linger for the Linux edge user:
+
+   ```bash
+   sudo loginctl enable-linger patchbay
+   ```
+
+2. Keep WSL alive from Windows, for example with a per-user Scheduled Task that
+   starts at logon and runs a small PowerShell keepalive script. The script
+   should start the WSL user service and then keep one WSL process alive:
+
+   ```powershell
+   while ($true) {
+     & wsl.exe -d Ubuntu-24.04 -u patchbay -- bash -lc "export XDG_RUNTIME_DIR=/run/user/1001; systemctl --user start patchbay-edge.service || true; exec sleep infinity"
+     Start-Sleep -Seconds 10
+   }
+   ```
+
+3. Verify from the Hub after waiting longer than the previous shutdown window.
+   The edge should still show `online`, its heartbeat age should remain fresh,
+   and `max_concurrent_jobs` / free slots should match the edge config.
+
+This is an operating-system persistence requirement, not a Hub routing problem.
+The Hub can only route to an edge that is actually heartbeating.
+
 ## ChatGPT-Facing Hub Tools
 
 Hub mode exposes fleet-native tools, not every direct local file tool from every
