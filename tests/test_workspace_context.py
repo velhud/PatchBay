@@ -276,7 +276,7 @@ def test_list_workspaces_includes_configured_aliases(tmp_path):
 
 def test_list_workspaces_discovers_repositories_under_configured_roots(tmp_path):
     base = tmp_path / "github"
-    retail = base / "RetailMind"
+    retail = base / "SampleRepo"
     retail.mkdir(parents=True)
     init_repo(retail)
     (retail / "AGENTS.md").write_text("project rules\n", encoding="utf-8")
@@ -289,12 +289,12 @@ def test_list_workspaces_discovers_repositories_under_configured_roots(tmp_path)
     config["repositories"]["discovery_roots"] = [str(base)]
     context = WorkspaceContext(config)
 
-    result = context.list_workspaces({"query": "retail", "discover": True})
+    result = context.list_workspaces({"query": "sample", "discover": True})
 
     discovered = [item for item in result["workspaces"] if item.get("source") == "discovered"]
     assert result["discovered_count"] == 1
     assert discovered[0]["root"] == str(retail.resolve())
-    assert discovered[0]["name"] == "RetailMind"
+    assert discovered[0]["name"] == "SampleRepo"
     assert ".git" in discovered[0]["markers"]
     assert "IgnoredRepo" not in str(result)
     assert result["paths_returned"] == "configured-and-discovered"
@@ -302,7 +302,7 @@ def test_list_workspaces_discovers_repositories_under_configured_roots(tmp_path)
 
 def test_open_workspace_missing_name_suggests_discovered_repo(tmp_path):
     base = tmp_path / "github"
-    retail = base / "RetailMind"
+    retail = base / "SampleRepo"
     retail.mkdir(parents=True)
     init_repo(retail)
     config = make_config(base)
@@ -311,7 +311,7 @@ def test_open_workspace_missing_name_suggests_discovered_repo(tmp_path):
     context = WorkspaceContext(config)
 
     with pytest.raises(ValueError) as error:
-        context.open_workspace("RetailMind")
+        context.open_workspace("SampleRepo")
 
     message = str(error.value)
     assert "Candidate workspace(s)" in message

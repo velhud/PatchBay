@@ -538,7 +538,7 @@ TOOLS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Optional case-insensitive workspace name/path filter, for example RetailMind.",
+                    "description": "Optional case-insensitive workspace name/path filter, for example SampleRepo.",
                 },
                 "discover": {
                     "type": "boolean",

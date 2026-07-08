@@ -44,17 +44,17 @@ move freely between hosts.
 
 ## Problem To Solve
 
-Roman may have several PatchBay-capable machines:
+An operator may have several PatchBay-capable machines:
 
 - local computers in front of him;
-- one or more Scaleway VMs;
+- one or more cloud VMs;
 - other laptops or workbench machines.
 
 The desired future behavior has two layers.
 
 First, ChatGPT should be able to choose a machine naturally:
 
-> Use the Scaleway VM for this.
+> Use the cloud VM for this.
 
 or:
 
@@ -77,7 +77,7 @@ Run one PatchBay server per machine and create one ChatGPT connector per
 machine, for example:
 
 - `PatchBay - Local Mac`
-- `PatchBay - Scaleway VM`
+- `PatchBay - cloud VM`
 - `PatchBay - Laptop`
 
 Each machine keeps its own token, tunnel hostname, `PATCHBAY_HOME`, allowed
@@ -114,13 +114,13 @@ Example registry entries:
 
 ```yaml
 machines:
-  - machine_id: roman-scaleway-ucl
-    display_name: Scaleway UCL VM
+  - machine_id: cloud-edge-a
+    display_name: Cloud Edge A
     roles: [cloud, full-access, private-repos]
     status: online
-    connector_name: PatchBay - Scaleway
-    workspaces: [Documents, RetailMind, ServerAPI]
-  - machine_id: local-workstation
+    connector_name: PatchBay - Cloud
+    workspaces: [Documents, SampleRepo, ExampleAPI]
+  - machine_id: dev-workstation
     display_name: Local Mac Studio
     roles: [local, documents-canonical, high-storage]
     status: online
@@ -242,12 +242,12 @@ Suggested config:
 
 ```yaml
 machine:
-  id: roman-scaleway-ucl
-  display_name: Scaleway UCL VM
+  id: cloud-edge-a
+  display_name: Cloud Edge A
   role: cloud-workbench
   tags: [vm, cloud, private-repos, full-access]
-  location_hint: Scaleway fr-par
-  owner_label: Roman
+  location_hint: cloud-region-a
+  owner_label: operator
 ```
 
 `machine.id` should be stable and operator-chosen. It should not be derived from
@@ -406,7 +406,7 @@ Minimum rules:
 - public/external/production/paid/credential-changing/irreversible actions
   remain explicit escalation boundaries.
 
-For Roman's private workbench machines, full local power is still the intended
+For private workbench machines, full local power is still the intended
 mode when authenticated. The security boundary exists to keep power controlled,
 not to make PatchBay timid.
 
@@ -415,13 +415,13 @@ not to make PatchBay timid.
 Before implementing a hub, the practical setup is:
 
 ```bash
-export PATCHBAY_HOME="$HOME/.patchbay-roman-scaleway-ucl"
+export PATCHBAY_HOME="$HOME/.patchbay-cloud-edge-a"
 export PATCHBAY_HTTP_TOKEN="<unique-long-token>"
 patchbay start \
-  --root /root/github \
-  --allow-root /root/Documents \
+  --root /srv/repos \
+  --allow-root /srv/documents \
   --tunnel-mode cloudflare-named \
-  --hostname patchbay-ucl.example.com \
+  --hostname patchbay-cloud.example.com \
   --tool-mode worker \
   --save-profile \
   --reveal-token

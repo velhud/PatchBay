@@ -92,31 +92,31 @@ def test_hub_enrollment_stores_only_token_hash(tmp_path):
 def test_hub_heartbeat_command_queue_and_finish(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path))
     code = runtime.create_enrollment_code(name="VM")["code"]
-    enrolled = runtime.enroll_machine(code=code, machine_id="ucl-vm", display_name="ucl-vm")
+    enrolled = runtime.enroll_machine(code=code, machine_id="cloud-vm", display_name="cloud-vm")
     token = enrolled["node_token"]
 
     heartbeat = runtime.heartbeat(
-        machine_id="ucl-vm",
+        machine_id="cloud-vm",
         token=token,
         worker_status={"worker_lines": ["worker A: running"]},
     )
     assert heartbeat["accepted"] is True
-    assert runtime.fleet_status()["active_workers"][0]["machine_id"] == "ucl-vm"
+    assert runtime.fleet_status()["active_workers"][0]["machine_id"] == "cloud-vm"
 
     queued = runtime.create_command(
-        machine_id="ucl-vm",
+        machine_id="cloud-vm",
         action="codex_worker_start",
         arguments={"name": "Architect", "brief": "Inspect the repo."},
     )
     assert queued["state"] == "queued"
     assert "arguments" not in queued
 
-    claimed = runtime.claim_next_command(machine_id="ucl-vm", token=token)
+    claimed = runtime.claim_next_command(machine_id="cloud-vm", token=token)
     assert claimed["command"]["command_id"] == queued["command_id"]
     assert claimed["command"]["arguments"]["name"] == "Architect"
 
     finished = runtime.finish_command(
-        machine_id="ucl-vm",
+        machine_id="cloud-vm",
         token=token,
         command_id=queued["command_id"],
         result={"accepted": True},
@@ -216,7 +216,7 @@ def test_hub_work_group_create_persists_and_queues_preflight(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     token = enroll_online(runtime, "edge")
 
-    created = runtime.create_work_group(title="RetailMind stage", goal="Plan next implementation", repo_path=str(tmp_path))
+    created = runtime.create_work_group(title="SampleRepo stage", goal="Plan next implementation", repo_path=str(tmp_path))
 
     group = created["work_group"]
     assert created["accepted"] is True

@@ -18,7 +18,7 @@ Build a **central PatchBay Hub with outbound PatchBay Edge nodes**.
 
 Do not make ChatGPT connect to four separate full PatchBay connectors as the
 final product. That works as a temporary bridge, but it gives ChatGPT duplicate
-tool catalogs and no single fleet state. The product Roman wants is one ChatGPT
+tool catalogs and no single fleet state. The product goal is one ChatGPT
 connector that can see every online machine and route work to them.
 
 The hub is the stable HTTPS MCP server ChatGPT connects to. Every machine runs a
@@ -34,7 +34,7 @@ flowchart TD
     Hub --> DB["Hub state<br/>private runtime JSON<br/>machines, commands, events, projections"]
 
     EdgeA["PatchBay Edge<br/>Mac Studio"] -->|"outbound HTTPS polling"| Hub
-    EdgeB["PatchBay Edge<br/>Scaleway VM"] -->|"outbound HTTPS polling"| Hub
+    EdgeB["PatchBay Edge<br/>cloud VM"] -->|"outbound HTTPS polling"| Hub
     EdgeC["PatchBay Edge<br/>Laptop"] -->|"outbound HTTPS polling"| Hub
     EdgeD["PatchBay Edge<br/>Second VM"] -->|"outbound HTTPS polling"| Hub
 
@@ -128,7 +128,7 @@ patchbay_machine_workspaces
 Then it creates or resumes one task group and routes workers inside lanes:
 
 ```text
-patchbay_work_group_create(title="RetailMind stage", goal="...", repo_path="RetailMind", lanes=["backend", "review"])
+patchbay_work_group_create(title="SampleRepo stage", goal="...", repo_path="SampleRepo", lanes=["backend", "review"])
 patchbay_worker_start_auto(work_group_id="grp_...", lane="backend", auto_routing_ok=true, ...)
 patchbay_worker_message(work_group_id="grp_...", lane="backend", worker="Backend Reviewer", ...)
 patchbay_work_group_status(work_group_id="grp_...")
@@ -144,7 +144,7 @@ The simplest smart enrollment model is a one-time pairing code.
 
 ### 1. Start Hub
 
-On the hub machine, likely the Scaleway VM first:
+On the hub machine, likely the cloud VM first:
 
 ```bash
 export PATCHBAY_HOME="$HOME/.patchbay-hub"
@@ -160,7 +160,7 @@ ChatGPT Server URL:
 https://hub.example.com/patchbay-hub/mcp?patchbay_token=<hub-chatgpt-token>
 
 Create machine enrollment code:
-patchbay hub enroll-code create --name "Local Workstation"
+patchbay hub enroll-code create --name "Dev Workstation"
 ```
 
 ### 2. Create Enrollment Code
@@ -169,7 +169,7 @@ On the hub:
 
 ```bash
 patchbay hub enroll-code create \
-  --name "Local Workstation" \
+  --name "Dev Workstation" \
   --tag local \
   --tag documents \
   --tag high-storage \
@@ -194,8 +194,8 @@ export PATCHBAY_HOME="$HOME/.patchbay-edge"
 patchbay edge enroll \
   --hub https://hub.example.com/patchbay-hub \
   --code PB-EXAMPLE-CODE \
-  --machine-name "Local Workstation" \
-  --machine-id local-workstation \
+  --machine-name "Dev Workstation" \
+  --machine-id dev-workstation \
   --tag local \
   --tag documents \
   --tag high-storage
@@ -267,8 +267,8 @@ Machine records store safe projections only:
 
 ```json
 {
-  "machine_id": "roman-scaleway-ucl",
-  "display_name": "Scaleway UCL VM",
+  "machine_id": "cloud-edge-a",
+  "display_name": "Cloud Edge A",
   "status": "online",
   "tags": ["cloud", "full-access", "private-repos"],
   "capabilities": {
@@ -280,8 +280,8 @@ Machine records store safe projections only:
   },
   "workspaces": [
     {
-      "alias": "RetailMind",
-      "repo_name": "RetailMind",
+      "alias": "SampleRepo",
+      "repo_name": "SampleRepo",
       "kind": "git",
       "branch": "main"
     }
@@ -326,7 +326,7 @@ Command envelope:
 ```json
 {
   "command_id": "cmd_...",
-  "machine_id": "roman-scaleway-ucl",
+  "machine_id": "cloud-edge-a",
   "action": "codex_worker_start",
   "arguments": {},
   "state": "queued|running|completed|failed"
@@ -403,7 +403,7 @@ ChatGPT should select machines by capability and workspace, not by path guessing
 Examples:
 
 - Documents canonical work: prefer the machine tagged `documents-canonical`.
-- Cloud-safe long work: prefer Scaleway VM or always-on cloud workbench.
+- Cloud-safe long work: prefer cloud VM or always-on cloud workbench.
 - Heavy storage work: prefer machine tagged `high-storage`.
 - Local-only files: use the machine that advertises the workspace.
 - Parallel investigation: start read-only workers on several machines.
@@ -526,7 +526,7 @@ The hub is a powerful control point. Keep authority separated:
 - Edge nodes enforce local allowed roots and power policy even if the hub asks.
 - Hub stores compact projections and event logs, not raw local secrets.
 
-For Roman's private workbench, full machine power is allowed after enrollment.
+For a private workbench, full machine power is allowed after enrollment.
 For open-source users, defaults should stay narrow and explicit.
 
 ## Why This Is Not Too Complex
@@ -666,14 +666,14 @@ Add:
 
 This enables multi-ChatGPT coordination without historical-status clutter.
 
-## First Real Roman Deployment
+## First Real Private Deployment
 
-Use the Scaleway VM as the first hub because it is always on and already has a
+Use the cloud VM as the first hub because it is always on and already has a
 stable public URL.
 
 Install/update PatchBay on:
 
-- Scaleway VM as Hub + Edge;
+- cloud VM as Hub + Edge;
 - local Mac as Edge;
 - second local computer as Edge;
 - second VM/laptop as Edge.
@@ -739,7 +739,7 @@ Real:
   fewer protocol layers.
 - Whether to expose low-level direct file tools through hub. Initial answer:
   no for V1; expose worker-first fleet tools.
-- Whether to support OAuth immediately. Initial answer: no for Roman/self-hosted
+- Whether to support OAuth immediately. Initial answer: no for private self-hosted
   V1; pairing codes and tokens first, OAuth later for public multi-user.
 - Whether to migrate hub JSON runtime state to SQLite. Initial answer: JSON for
   V1, SQLite later when event volume and coordination complexity justify it.
@@ -757,5 +757,5 @@ One ChatGPT connector
 → Edge executes and enforces local authority
 ```
 
-This gives Roman the experience he wants: turn on several machines, start
+This gives the operator the experience he wants: turn on several machines, start
 PatchBay Edge on each, open ChatGPT, and see the online fleet from one app.

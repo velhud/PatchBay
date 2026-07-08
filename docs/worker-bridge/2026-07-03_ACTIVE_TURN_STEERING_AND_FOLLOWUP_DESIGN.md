@@ -104,7 +104,7 @@ The current algorithm file states the same thing:
 If the latest turn is pending/running, return accepted: false; PatchBay does not queue or steer.
 ```
 
-This is a legitimate simple V1, but it is not enough for the manager-worker workflow Roman wants.
+This is a legitimate simple V1, but it is not enough for the manager-worker workflow expected by this product.
 
 In a long worker run, ChatGPT can currently inspect status or stop the worker, but it cannot naturally say:
 
@@ -565,7 +565,7 @@ Do not make read-only investigation mean "no durable evidence."
 
 Do not treat `item.completed` as full worker completion.
 
-## Second-Pass Code-Grounded Answers To Roman's Checklist
+## Second-Pass Code-Grounded Answers To operator checklist
 
 This section answers the concrete questions that triggered this note. It is based on a second pass through:
 
@@ -701,7 +701,7 @@ It returns before:
 - `result_file.write_text`
 - `update_job_state(... result=...)`
 
-Therefore a cancelled worker can have useful agent messages in stdout, but no `result.json` and no public report. This exactly happened for the RetailMind workers:
+Therefore a cancelled worker can have useful agent messages in stdout, but no `result.json` and no public report. This exactly happened for the SampleRepo workers:
 
 - `RM Data Lifecycle Trace`: session id present, pid present, heartbeat present, 3 agent messages in stdout, final state `cancelled`, no result file.
 - `RM Final Gap Synthesis`: session id present, pid present, heartbeat present, 3 agent messages in stdout, final state `cancelled`, no result file.
@@ -869,9 +869,9 @@ Compression layers:
 7. Cancelled jobs skip `_parse_result` entirely.
 8. Read-only jobs cannot produce discoverable report files.
 
-In the RetailMind evidence:
+In the SampleRepo evidence:
 
-- `RetailMind UI Quick Mapper` completed and had a useful `result.json`.
+- `SampleRepo UI Quick Mapper` completed and had a useful `result.json`.
 - cancelled `RM ...` workers had useful intermediate messages but no result file.
 
 So "report compression" can mean different things:
@@ -891,7 +891,7 @@ Correct fix:
 
 ### 11. Is "marked running but no live Codex process is tracked" real?
 
-Answer: yes, real, but it is a different class from the latest RetailMind cancellation pattern.
+Answer: yes, real, but it is a different class from the latest SampleRepo cancellation pattern.
 
 The error text is `STALE_RUNNING_JOB_ERROR` in `JobExecutor`.
 
@@ -917,13 +917,13 @@ Tests cover this behavior:
 - live process prevents false stale failure;
 - process started but no JSON session can fail through startup timeout.
 
-In the latest RetailMind evidence, the four main `RM ...` workers were not this case. They had process ids, session ids, heartbeats, then `Cancelled by request`.
+In the latest SampleRepo evidence, the four main `RM ...` workers were not this case. They had process ids, session ids, heartbeats, then `Cancelled by request`.
 
 So:
 
 ```text
 stale process bug = real historical/lifecycle class
-latest RetailMind stopped workers = mostly cancellation + bad liveness/report surfacing
+latest SampleRepo stopped workers = mostly cancellation + bad liveness/report surfacing
 ```
 
 ### 12. Why did ChatGPT pass `repo_path` to `codex_worker_options`?
@@ -967,7 +967,7 @@ that came from an older deployed build, another read path, or a version mismatch
 
 ### 14. Did ChatGPT act manually because PatchBay failed or because ChatGPT mismanaged workers?
 
-Answer: both contributed, but the latest RetailMind evidence points more to PatchBay's status/report/steering deficiencies causing ChatGPT to lose confidence.
+Answer: both contributed, but the latest SampleRepo evidence points more to PatchBay's status/report/steering deficiencies causing ChatGPT to lose confidence.
 
 Audit counts from the relevant 16:46-16:59 UTC window:
 
@@ -1007,14 +1007,14 @@ So ChatGPT's collapse into manual reading was bad manager behavior, but PatchBay
 | Read-only workers cannot expose changed report files. | Verified | `_worker_report_files` returns `[]` for `read_only`; `_worker_options` uses read-only sandbox. |
 | Job stdout/stderr artifacts are capped by default. | Verified | `config.yaml`; `_write_process_artifact`. |
 | Audit logs default to metadata only. | Verified | `server.py` audit logger; `log_response_bodies: false`. |
-| Latest RetailMind `RM ...` workers were cancelled after sessions/heartbeats existed. | Verified | copied VM job state JSON and journal logs. |
-| `RetailMind UI Quick Mapper` completed and had a result file. | Verified | copied VM job state and result JSON. |
+| Latest SampleRepo `RM ...` workers were cancelled after sessions/heartbeats existed. | Verified | copied VM job state JSON and journal logs. |
+| `SampleRepo UI Quick Mapper` completed and had a result file. | Verified | copied VM job state and result JSON. |
 | Stale-running/no-process failure remains a real separate class. | Verified | `STALE_RUNNING_JOB_ERROR`; reconciliation code; tests. |
 | Current local `codex_read_file` applies `max_bytes` to the returned page. | Verified | `WorkspaceContext.read_file`. |
 
 ## Current Conclusion
 
-PatchBay does not currently have the active steering capability Roman is asking about.
+PatchBay does not currently have the active steering capability the operator is asking about.
 
 Codex does have a real steering capability in its app-server/interactive surface. PatchBay should integrate that only after building a clean backend-neutral worker state model with live status, active turn ids, heartbeat, partial checkpoints, and cancellation evidence preservation.
 

@@ -16,7 +16,7 @@ The issue is important because PatchBay's purpose is long-horizon natural-langua
 
 ## Short Version
 
-The latest RetailMind run did not look like a full PatchBay execution failure.
+The latest SampleRepo run did not look like a full PatchBay execution failure.
 
 The relevant workers had:
 
@@ -60,7 +60,7 @@ That report is not fake, but the logs suggest it may partly describe ChatGPT's i
 
 ## Runtime Reality From Logs
 
-In the copied runtime state, the main latest RetailMind workers were not missing sessions. They had process IDs and Codex session IDs.
+In the copied runtime state, the main latest SampleRepo workers were not missing sessions. They had process IDs and Codex session IDs.
 
 Timestamps below are UTC.
 
@@ -75,11 +75,11 @@ Important contrast:
 
 | Worker | Runtime state |
 | --- | --- |
-| `RetailMind UI Quick Mapper` | `completed`, `last_event=turn.completed`, result file present. |
-| `RetailMind Pipeline Capability Mapper` | `completed`, `last_event=turn.completed`, result file present. |
-| `RetailMind Docs Reality Mapper` | multiple completed turns with result files. |
+| `SampleRepo UI Quick Mapper` | `completed`, `last_event=turn.completed`, result file present. |
+| `SampleRepo Pipeline Capability Mapper` | `completed`, `last_event=turn.completed`, result file present. |
+| `SampleRepo Docs Reality Mapper` | multiple completed turns with result files. |
 
-The copied state for `RetailMind UI Quick Mapper` does not support the idea that this exact worker was failed at the end of the inspected window. It was completed in the runtime state available locally.
+The copied state for `SampleRepo UI Quick Mapper` does not support the idea that this exact worker was failed at the end of the inspected window. It was completed in the runtime state available locally.
 
 ## Tool Usage Pattern During The Latest Run
 
@@ -269,15 +269,15 @@ They may have been:
 
 PatchBay's current public surface does not make that distinction clear enough.
 
-### Not Confirmed: `RetailMind UI Quick Mapper` Failed
+### Not Confirmed: `SampleRepo UI Quick Mapper` Failed
 
-The copied durable state says `RetailMind UI Quick Mapper` completed successfully.
+The copied durable state says `SampleRepo UI Quick Mapper` completed successfully.
 
 ChatGPT may have referred to an earlier transient state, a different worker, a stale list item, or its own interpretation. This needs exact repro before treating that specific worker as a tracking-mismatch bug.
 
 ### Not Confirmed: PatchBay Lost A Live Process In The Latest Window
 
-The specific "Job was marked running, but no live Codex process is tracked" error exists in code and has happened in prior sessions. But in the latest copied RetailMind evidence, the main stopped `RM ...` workers had tracked PIDs and sessions before cancellation.
+The specific "Job was marked running, but no live Codex process is tracked" error exists in code and has happened in prior sessions. But in the latest copied SampleRepo evidence, the main stopped `RM ...` workers had tracked PIDs and sessions before cancellation.
 
 The latest incident is more clearly a liveness/reporting/management problem than a missing-process tracking problem.
 

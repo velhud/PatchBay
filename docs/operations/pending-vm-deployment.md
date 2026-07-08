@@ -1,18 +1,15 @@
-# Pending VM Deployment
+# Pending Private Deployment
 
-Status: operator reminder.
+Status: public-safe placeholder.
 
-Before experimenting with the new multi-machine hub/edge runtime on the
-Scaleway VM, deploy the current stable PatchBay main branch commit:
+PatchBay can be deployed on private VMs or workbench machines, but machine
+names, domains, tokens, SSH details, and operator-specific rollout notes do not
+belong in this public repository.
 
-```text
-4da8706 Plan multi-machine hub architecture
-```
+Use this file only to preserve the boundary:
 
-That commit is the deployable baseline that existed before hub/edge
-implementation started. It should be installed on the VM first so the current
-single-machine PatchBay improvements are preserved in the running service before
-multi-machine experiments begin.
-
-Do not treat this note as a deployment record. It is a reminder for the next VM
-deployment step.
+- public docs may describe generic hub/edge deployment steps;
+- private deployment targets and access details belong in the operator's
+  private runbook or infrastructure repository;
+- this file is not a deployment record and should not be treated as current
+  production state.

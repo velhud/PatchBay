@@ -36,7 +36,7 @@ while the hub provides a common coordination surface.
 
 Examples:
 
-- one ChatGPT conversation manages RetailMind backend work on a VM;
+- one ChatGPT conversation manages SampleRepo backend work on a VM;
 - another manages UI or documentation work on a local machine;
 - another acts as a reviewer/synthesis conversation;
 - all of them can see relevant campaign state, machine status, worker reports,
@@ -184,7 +184,7 @@ Messages should be structured but natural-language first:
   "message_id": "msg_...",
   "campaign_id": "camp_...",
   "from": "chatgpt_session_...",
-  "to": ["chatgpt_session_...", "machine:ucl-vm", "channel:review"],
+  "to": ["chatgpt_session_...", "machine:cloud-edge-a", "channel:review"],
   "kind": "question|report|handoff|review_request|decision|note",
   "text": "...",
   "references": []

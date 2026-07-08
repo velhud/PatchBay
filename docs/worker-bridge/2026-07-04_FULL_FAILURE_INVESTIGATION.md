@@ -2,7 +2,7 @@
 
 ## Scope
 
-This investigation reviewed the latest RetailMind/PatchBay VM session, prior reported ChatGPT complaints, and the current PatchBay code paths for worker lifecycle, workspace discovery, tool schemas, ownership, tool-card rendering, and manager-first prompting.
+This investigation reviewed the latest SampleRepo/PatchBay VM session, prior reported ChatGPT complaints, and the current PatchBay code paths for worker lifecycle, workspace discovery, tool schemas, ownership, tool-card rendering, and manager-first prompting.
 
 The goal was not to restrict ChatGPT or remove direct tools. The goal was to preserve the PatchBay philosophy: ChatGPT should manage competent Codex workers through natural language, use several workers when useful, and use direct file/search/diff tools only for orientation, tiny work, verification, or concrete escalation.
 

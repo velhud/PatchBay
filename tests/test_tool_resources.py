@@ -331,7 +331,7 @@ def test_tool_card_renders_worker_creation_compactly(tmp_path):
         tool_output={
             "structuredContent": {
                 "worker_id": "worker_test",
-                "name": "RetailMind UI Mapper",
+                "name": "SampleRepo UI Mapper",
                 "state": "working",
             },
             "_meta": {"patchbay/tool_name": "codex_worker_start"},
@@ -341,7 +341,7 @@ def test_tool_card_renders_worker_creation_compactly(tmp_path):
     _assert_compact_receipt(html)
     visible = _assert_human_receipt_text(html)
     assert "Worker creation · in progress" in visible
-    assert "RetailMind UI Mapper started" in visible
+    assert "SampleRepo UI Mapper started" in visible
 
 
 def test_tool_card_renders_command_error_and_repo_busy_compactly(tmp_path):

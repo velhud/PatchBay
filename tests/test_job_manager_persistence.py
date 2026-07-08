@@ -164,7 +164,7 @@ def test_terminal_job_clears_live_current_command_state(tmp_path):
         current_phase="command_running",
         current_item_type="command_execution",
         current_item_status="started",
-        current_command_preview="rg RetailMind",
+        current_command_preview="rg SampleRepo",
         current_command_started_at=time.time() - 30,
     )
 
@@ -176,12 +176,12 @@ def test_terminal_job_clears_live_current_command_state(tmp_path):
     assert job.current_item_status is None
     assert job.current_command_preview is None
     assert job.current_command_started_at is None
-    assert job.last_command_preview == "rg RetailMind"
+    assert job.last_command_preview == "rg SampleRepo"
 
     reloaded = JobManager(config)
     reloaded_job = reloaded.get_job(job_id)
     assert reloaded_job.current_command_preview is None
-    assert reloaded_job.last_command_preview == "rg RetailMind"
+    assert reloaded_job.last_command_preview == "rg SampleRepo"
 
 
 def test_job_manager_preserves_running_jobs_for_executor_reconciliation_on_reload(tmp_path):
