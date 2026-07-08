@@ -8,7 +8,7 @@ server:
   codex_startup_serialization_enabled: true  # serialize auth/session startup only; full turns still run concurrently
   stale_running_job_grace_seconds: 600  # restart/stale reconciliation window; not a worker turn timeout
   job_cleanup_after_hours: 24
-  max_request_bytes: 1048576
+  max_request_bytes: 16777216
   enable_cors: false
   allowed_origins:
     - http://127.0.0.1:3000
@@ -88,15 +88,15 @@ security:
   allowed_config_override_prefixes:
     - ""
   context_dir: .ai-bridge
-  max_read_bytes: 200000
-  max_write_bytes: 500000
-  max_diff_bytes: 200000
-  max_search_results: 100
-  search_timeout_ms: 10000
-  max_search_timeout_ms: 60000
-  max_tree_entries: 500
-  max_skill_count: 120
-  max_skill_bytes: 40000
+  max_read_bytes: 5000000
+  max_write_bytes: 10000000
+  max_diff_bytes: 5000000
+  max_search_results: 1000
+  search_timeout_ms: 30000
+  max_search_timeout_ms: 300000
+  max_tree_entries: 5000
+  max_skill_count: 500
+  max_skill_bytes: 200000
   blocked_globs: []
 
 power_tools:
@@ -105,8 +105,8 @@ power_tools:
   bash_transcript: compact
   bash_session_id: ""
   require_bash_session: false
-  bash_timeout_ms: 180000
-  bash_max_output_bytes: 500000
+  bash_timeout_ms: 1800000
+  bash_max_output_bytes: 5000000
   codex_session_read: true
   codex_home: "~/.codex"
   codex_session_max_messages: 80
@@ -118,7 +118,7 @@ power_tools:
 workers:
   worktree_root: ""
   ignore_user_config: false
-  file_response_max_bytes: 25000
+  file_response_max_bytes: 1000000
   heartbeat_fresh_seconds: 120
   heartbeat_quiet_seconds: 600
   status_recommended_poll_seconds: 20

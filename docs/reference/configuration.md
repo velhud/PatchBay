@@ -40,7 +40,7 @@ server:
   job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
   codex_session_start_timeout_seconds: 180  # fail only when no Codex JSON session appears after process start
   stale_running_job_grace_seconds: 600  # restart/stale reconciliation window, not a worker turn timeout
-  max_request_bytes: 1048576
+  max_request_bytes: 16777216
   enable_cors: false
 
 app:
@@ -79,12 +79,21 @@ security:
   allow_dangerously_bypass: true
   allowed_env_keys:
     - "*"
-  search_timeout_ms: 10000
-  max_search_timeout_ms: 60000
+  max_read_bytes: 5000000
+  max_write_bytes: 10000000
+  max_diff_bytes: 5000000
+  max_search_results: 1000
+  search_timeout_ms: 30000
+  max_search_timeout_ms: 300000
+  max_tree_entries: 5000
+  max_skill_count: 500
+  max_skill_bytes: 200000
 
 power_tools:
   direct_write: true
   bash_mode: "full"
+  bash_timeout_ms: 1800000
+  bash_max_output_bytes: 5000000
   codex_session_read: true
 
 logging:
@@ -100,7 +109,7 @@ logging:
 
 workers:
   worktree_root: ""
-  file_response_max_bytes: 25000
+  file_response_max_bytes: 1000000
   heartbeat_fresh_seconds: 120
   heartbeat_quiet_seconds: 600
   status_recommended_poll_seconds: 20
