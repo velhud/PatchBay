@@ -16,6 +16,11 @@ from typing import Any
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 from patchbay.hub.runtime import HubRuntime
 
 
@@ -81,7 +86,16 @@ def config_payload(root: Path, port: int) -> dict[str, Any]:
             "require_for_tunnel": True,
             "tunnel_mode": "none",
         },
-        "hub": {"state_file": str(root / "hub-state.json"), "heartbeat_stale_seconds": 90},
+        "hub": {
+            "state_file": str(root / "hub-state.json"),
+            "heartbeat_stale_seconds": 90,
+            "routing": {
+                "enabled": True,
+                "min_disk_free_bytes": 1024,
+                "allow_queue_when_full": False,
+                "weights": {"worker_ratio": 0.60, "memory_ratio": 0.20, "cpu_ratio": 0.20},
+            },
+        },
         "repositories": {"default": str(root), "allowed": [str(root)]},
         "security": {"require_git_repo": False, "default_sandbox": "danger-full-access"},
         "power_tools": {"direct_write": True, "bash_mode": "full", "codex_session_read": True},
@@ -108,15 +122,20 @@ def run() -> dict[str, Any]:
         env["PATCHBAY_HTTP_TOKEN"] = token
         env["PATCHBAY_HOME"] = str(root / "home")
         entries = [entry for entry in env.get("PYTHONPATH", "").split(os.pathsep) if entry]
-        source = str(Path(__file__).resolve().parents[1] / "src")
+        source = str(SRC_ROOT)
         if source not in entries:
             entries.insert(0, source)
         env["PYTHONPATH"] = os.pathsep.join(entries)
 
-        code = HubRuntime(config).create_enrollment_code(name="Live Edge", tags=["live"])["code"]
+        code_runtime = HubRuntime(config)
+        edge_codes = {
+            "live-edge": code_runtime.create_enrollment_code(name="Live Edge", tags=["live", "idle"])["code"],
+            "busy-edge": code_runtime.create_enrollment_code(name="Busy Edge", tags=["live", "busy"])["code"],
+            "hot-edge": code_runtime.create_enrollment_code(name="Hot Edge", tags=["live", "hot"])["code"],
+        }
         process = subprocess.Popen(
             [sys.executable, "-m", "patchbay.hub.server"],
-            cwd=str(Path(__file__).resolve().parents[1]),
+            cwd=str(REPO_ROOT),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -126,22 +145,78 @@ def run() -> dict[str, Any]:
         try:
             wait_ready(base_url, token)
 
-            enroll, _ = post_json(
-                f"{base_url}/edge/enroll",
-                {
-                    "code": code,
-                    "machine_id": "live-edge",
-                    "display_name": "Live Edge",
-                    "tags": ["live"],
-                    "capabilities": {"codex_worker_tools": True},
-                    "workspaces": [{"alias": "tmp", "path": str(root)}],
-                },
-            )
-            node_token = enroll["node_token"]
+            enrollments: dict[str, dict[str, Any]] = {}
+            node_tokens: dict[str, str] = {}
+            for machine_id, code in edge_codes.items():
+                enroll, _ = post_json(
+                    f"{base_url}/edge/enroll",
+                    {
+                        "code": code,
+                        "machine_id": machine_id,
+                        "display_name": machine_id.replace("-", " ").title(),
+                        "tags": ["live"],
+                        "capabilities": {"codex_worker_tools": True, "max_concurrent_jobs": 4, "queue_enabled": True},
+                        "workspaces": [{"alias": "tmp", "path": str(root)}],
+                    },
+                )
+                enrollments[machine_id] = enroll
+                node_tokens[machine_id] = enroll["node_token"]
             heartbeat, _ = post_json(
                 f"{base_url}/edge/heartbeat",
-                {"machine_id": "live-edge", "worker_status": {"worker_lines": ["live worker: idle"]}},
-                token=node_token,
+                {
+                    "machine_id": "live-edge",
+                    "worker_status": {"worker_lines": ["live worker: idle"]},
+                    "resource_status": {
+                        "active_workers": 0,
+                        "max_concurrent_jobs": 4,
+                        "free_worker_slots": 4,
+                        "queue_enabled": True,
+                        "cpu_percent": 5,
+                        "memory_used_percent": 10,
+                        "memory_available_bytes": 9_000_000_000,
+                        "disk_free_bytes": 10_000_000,
+                        "disk_used_percent": 20,
+                    },
+                },
+                token=node_tokens["live-edge"],
+            )
+            post_json(
+                f"{base_url}/edge/heartbeat",
+                {
+                    "machine_id": "busy-edge",
+                    "worker_status": {"worker_lines": ["worker A: running", "worker B: running"]},
+                    "resource_status": {
+                        "active_workers": 2,
+                        "max_concurrent_jobs": 4,
+                        "free_worker_slots": 2,
+                        "queue_enabled": True,
+                        "cpu_percent": 30,
+                        "memory_used_percent": 40,
+                        "memory_available_bytes": 6_000_000_000,
+                        "disk_free_bytes": 10_000_000,
+                        "disk_used_percent": 25,
+                    },
+                },
+                token=node_tokens["busy-edge"],
+            )
+            post_json(
+                f"{base_url}/edge/heartbeat",
+                {
+                    "machine_id": "hot-edge",
+                    "worker_status": {"worker_lines": ["worker A: running"]},
+                    "resource_status": {
+                        "active_workers": 1,
+                        "max_concurrent_jobs": 4,
+                        "free_worker_slots": 3,
+                        "queue_enabled": True,
+                        "cpu_percent": 95,
+                        "memory_used_percent": 90,
+                        "memory_available_bytes": 1_000_000_000,
+                        "disk_free_bytes": 10_000_000,
+                        "disk_used_percent": 75,
+                    },
+                },
+                token=node_tokens["hot-edge"],
             )
             init_response, init_headers = post_json(
                 f"{base_url}/mcp",
@@ -172,14 +247,105 @@ def run() -> dict[str, Any]:
                 session_id=session_id,
             )
             command_id = queued["result"]["structuredContent"]["command_id"]
-            polled, _ = post_json(f"{base_url}/edge/poll", {"machine_id": "live-edge"}, token=node_token)
+            polled, _ = post_json(f"{base_url}/edge/poll", {"machine_id": "live-edge"}, token=node_tokens["live-edge"])
             if polled["command"]["command_id"] != command_id:
                 raise RuntimeError("Edge did not claim the queued command")
             done, _ = post_json(
                 f"{base_url}/edge/result",
                 {"machine_id": "live-edge", "command_id": command_id, "result": {"ok": True}},
-                token=node_token,
+                token=node_tokens["live-edge"],
             )
+            recommendation, _ = post_json(
+                f"{base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {"name": "patchbay_machine_recommend", "arguments": {}},
+                },
+                token=token,
+                session_id=session_id,
+            )
+            selected = recommendation["result"]["structuredContent"]["selected_machine_id"]
+            if selected != "live-edge":
+                raise RuntimeError(f"Router selected {selected}, expected live-edge")
+            auto_queued, _ = post_json(
+                f"{base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "patchbay_worker_start_auto",
+                        "arguments": {"name": "Auto Smoke", "brief": "No-op auto smoke task."},
+                    },
+                },
+                token=token,
+                session_id=session_id,
+            )
+            auto_payload = auto_queued["result"]["structuredContent"]
+            if auto_payload["machine_id"] != "live-edge":
+                raise RuntimeError(f"Auto worker queued on {auto_payload['machine_id']}, expected live-edge")
+            auto_polled, _ = post_json(f"{base_url}/edge/poll", {"machine_id": "live-edge"}, token=node_tokens["live-edge"])
+            if auto_polled["command"]["command_id"] != auto_payload["command_id"]:
+                raise RuntimeError("Edge did not claim the auto-routed command")
+            post_json(
+                f"{base_url}/edge/result",
+                {"machine_id": "live-edge", "command_id": auto_payload["command_id"], "result": {"ok": True}},
+                token=node_tokens["live-edge"],
+            )
+            post_json(
+                f"{base_url}/edge/heartbeat",
+                {
+                    "machine_id": "live-edge",
+                    "worker_status": {"worker_lines": ["worker A: running", "worker B: running", "worker C: running"]},
+                    "resource_status": {
+                        "active_workers": 3,
+                        "max_concurrent_jobs": 4,
+                        "free_worker_slots": 1,
+                        "queue_enabled": True,
+                        "cpu_percent": 90,
+                        "memory_used_percent": 90,
+                        "memory_available_bytes": 1_000_000_000,
+                        "disk_free_bytes": 10_000_000,
+                        "disk_used_percent": 30,
+                    },
+                },
+                token=node_tokens["live-edge"],
+            )
+            post_json(
+                f"{base_url}/edge/heartbeat",
+                {
+                    "machine_id": "busy-edge",
+                    "worker_status": {"worker_lines": []},
+                    "resource_status": {
+                        "active_workers": 0,
+                        "max_concurrent_jobs": 4,
+                        "free_worker_slots": 4,
+                        "queue_enabled": True,
+                        "cpu_percent": 15,
+                        "memory_used_percent": 20,
+                        "memory_available_bytes": 8_000_000_000,
+                        "disk_free_bytes": 10_000_000,
+                        "disk_used_percent": 25,
+                    },
+                },
+                token=node_tokens["busy-edge"],
+            )
+            changed_recommendation, _ = post_json(
+                f"{base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {"name": "patchbay_machine_recommend", "arguments": {}},
+                },
+                token=token,
+                session_id=session_id,
+            )
+            changed_selected = changed_recommendation["result"]["structuredContent"]["selected_machine_id"]
+            if changed_selected != "busy-edge":
+                raise RuntimeError(f"Router selected {changed_selected}, expected busy-edge after heartbeat load changed")
             command_status, _ = post_json(
                 f"{base_url}/mcp",
                 {
@@ -197,11 +363,14 @@ def run() -> dict[str, Any]:
             return {
                 "ok": True,
                 "base_url": base_url,
-                "machine_id": enroll["machine"]["machine_id"],
+                "machine_id": enrollments["live-edge"]["machine"]["machine_id"],
                 "heartbeat_accepted": heartbeat["accepted"],
                 "mcp_server": init_response["result"]["serverInfo"]["name"],
                 "fleet_summary": fleet["result"]["structuredContent"]["summary"],
                 "command_id": command_id,
+                "auto_command_id": auto_payload["command_id"],
+                "initial_router_selection": selected,
+                "changed_router_selection": changed_selected,
                 "completed_state": done["state"],
             }
         finally:

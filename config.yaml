@@ -41,6 +41,14 @@ hub:
   state_file:
   heartbeat_stale_seconds: 90
   max_events: 1000
+  routing:
+    enabled: false
+    min_disk_free_bytes: 2147483648
+    allow_queue_when_full: false
+    weights:
+      worker_ratio: 0.60
+      memory_ratio: 0.20
+      cpu_ratio: 0.20
 
 tunnel:
   hostname: ""

@@ -21,6 +21,8 @@ PatchBay use.
 - Stores edge profiles privately under `PATCHBAY_HOME/runtime/hub/edge-profile.json`.
 - Lets each edge advertise local capabilities, allowed workspaces, and compact worker status.
 - Lets ChatGPT queue worker commands for a selected `machine_id`.
+- Optionally recommends or auto-selects the least-busy eligible online machine
+  by compact availability telemetry only when `hub.routing.enabled: true`.
 - Lets the selected edge poll, execute the local `codex_worker_*` command through the existing `ToolHandler`, and post the result back.
 
 V1 uses HTTPS polling. WebSocket streaming, mailbox channels, campaign
@@ -84,8 +86,10 @@ machine:
 - `patchbay_fleet_status`
 - `patchbay_machine_list`
 - `patchbay_machine_workspaces`
+- `patchbay_machine_recommend`
 - `patchbay_worker_options`
 - `patchbay_worker_start`
+- `patchbay_worker_start_auto`
 - `patchbay_worker_message`
 - `patchbay_worker_status`
 - `patchbay_worker_wait`
@@ -97,12 +101,46 @@ machine:
 ChatGPT should start with `patchbay_fleet_status`, choose a machine by
 workspace/capability, then route worker commands with explicit `machine_id`.
 
+If `hub.routing.enabled` is true, ChatGPT may use
+`patchbay_machine_recommend` or `patchbay_worker_start_auto` when the user did
+not name a machine. This router is deliberately simple and mechanical: it uses
+online state, worker slots, CPU, memory, disk feasibility, and explicit
+`required_tags`. It does not classify task meaning, complexity, model choice, or
+coding-vs-documentation intent. Explicit `machine_id` selection always overrides
+auto-routing.
+
+Public/default config keeps routing disabled:
+
+```yaml
+hub:
+  routing:
+    enabled: false
+    min_disk_free_bytes: 2147483648
+    allow_queue_when_full: false
+    weights:
+      worker_ratio: 0.60
+      memory_ratio: 0.20
+      cpu_ratio: 0.20
+```
+
+Private deployments can enable only:
+
+```yaml
+hub:
+  routing:
+    enabled: true
+```
+
 ## Boundaries
 
 - Hub state is a compact projection, not the source of truth for local repos.
 - Edge machines keep local Codex auth, repositories, worker state, worktrees,
   logs, and credentials.
-- Hub does not receive raw Codex credentials or raw local logs.
+- Hub does not receive raw Codex credentials, raw local logs, prompts, file
+  contents, or private paths beyond already-advertised workspace projections.
+- Edge heartbeat resource telemetry is compact: active worker count, configured
+  max workers, free slots, queue flag, CPU percent when cheaply available,
+  memory pressure, and disk capacity numbers for the work/log/repo area.
 - A node token controls one machine only.
 - Single-machine `patchbay start` remains unchanged and should remain the
   default for ordinary use.

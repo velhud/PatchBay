@@ -24,6 +24,14 @@ the user names a project or repository, inspect patchbay_machine_workspaces and
 choose machines that advertise that workspace. Use multiple machines when work
 benefits from parallel investigation or separate implementation lanes.
 
+When hub availability routing is enabled, patchbay_machine_recommend and
+patchbay_worker_start_auto may choose the least-busy eligible online machine.
+This auto-routing is availability-only: current worker slots, CPU, memory, disk
+feasibility, online state, and explicit required tags. It does not infer task
+meaning, task complexity, or model needs. Use auto-routing only when the user has
+not named a machine; explicit machine_id always overrides it. If routing is
+disabled, choose machine_id explicitly.
+
 Workers are machine-local employees. Do not assume a Codex worker can migrate
 between machines. Use machine_id explicitly when starting, messaging, inspecting,
 stopping, or integrating a worker. For cross-machine synthesis, collect reports
@@ -38,6 +46,13 @@ machine and use direct inspection only for focused verification or escalation.
 
 def _string_schema(description: str = "") -> dict[str, Any]:
     payload = {"type": "string"}
+    if description:
+        payload["description"] = description
+    return payload
+
+
+def _string_array_schema(description: str = "") -> dict[str, Any]:
+    payload: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
     if description:
         payload["description"] = description
     return payload
@@ -82,6 +97,11 @@ HUB_TOOLS = [
         {"machine_id": _string_schema("Optional machine_id filter.")},
     ),
     _tool(
+        "patchbay_machine_recommend",
+        "Recommend the least-busy eligible online machine using availability-only routing. Read-only; no semantic task classification.",
+        {"required_tags": _string_array_schema("Optional required machine tags. All listed tags must match.")},
+    ),
+    _tool(
         "patchbay_worker_options",
         "Queue a request for model/reasoning options on a selected machine. Use before choosing model/reasoning for workers when needed.",
         {"machine_id": _string_schema("Target PatchBay machine id.")},
@@ -101,6 +121,21 @@ HUB_TOOLS = [
             "reasoning_effort": _string_schema("Optional reasoning effort."),
         },
         ["machine_id", "name", "brief"],
+        read_only=False,
+    ),
+    _tool(
+        "patchbay_worker_start_auto",
+        "Start a named Codex worker on the least-busy eligible online machine when hub availability routing is enabled.",
+        {
+            "name": _string_schema("Human worker name."),
+            "brief": _string_schema("Natural-language worker brief."),
+            "repo_path": _string_schema("Optional machine-local repo path or configured alias."),
+            "workspace_mode": _string_schema("isolated_write, read_only, or shared_write."),
+            "model": _string_schema("Optional Codex model."),
+            "reasoning_effort": _string_schema("Optional reasoning effort."),
+            "required_tags": _string_array_schema("Optional required machine tags. All listed tags must match."),
+        },
+        ["name", "brief"],
         read_only=False,
     ),
     _tool(
@@ -257,12 +292,37 @@ class HubProtocol:
             )
         if name == "patchbay_machine_workspaces":
             return self.runtime.machine_workspaces(machine_id=str(arguments.get("machine_id") or ""))
+        if name == "patchbay_machine_recommend":
+            return self.runtime.recommend_machine(required_tags=arguments.get("required_tags") or [])
         if name == "patchbay_command_status":
             return self.runtime.command_status(
                 command_id=str(arguments.get("command_id") or ""),
                 machine_id=str(arguments.get("machine_id") or ""),
                 state=str(arguments.get("state") or ""),
             )
+        if name == "patchbay_worker_start_auto":
+            recommendation = self.runtime.recommend_machine(required_tags=arguments.get("required_tags") or [])
+            selected_machine_id = str(recommendation.get("selected_machine_id") or "")
+            if not recommendation.get("enabled"):
+                return {
+                    "accepted": False,
+                    "error": "Hub availability routing is disabled.",
+                    "routing": recommendation,
+                    "recommended_next_action": "Use patchbay_worker_start with an explicit machine_id.",
+                }
+            if not selected_machine_id:
+                return {
+                    "accepted": False,
+                    "error": "No eligible machine is available for auto-routing.",
+                    "routing": recommendation,
+                    "recommended_next_action": "Wait for capacity, relax required_tags, or use explicit machine_id if you intend to override routing.",
+                }
+            routed_args = {key: value for key, value in arguments.items() if key not in {"required_tags"} and value not in (None, "")}
+            command = self.runtime.create_command(machine_id=selected_machine_id, action="codex_worker_start", arguments=routed_args)
+            command["accepted"] = True
+            command["routing"] = recommendation
+            command["note"] = "Command queued by availability-only routing. Explicit machine_id still overrides auto-routing."
+            return command
         action_map = {
             "patchbay_worker_options": "codex_worker_options",
             "patchbay_worker_start": "codex_worker_start",
@@ -291,6 +351,13 @@ class HubProtocol:
     def _text(self, payload: Mapping[str, Any], tool_name: str) -> str:
         if tool_name == "patchbay_fleet_status":
             return str(payload.get("summary") or "Fleet status ready")
+        if tool_name == "patchbay_machine_recommend":
+            if not payload.get("enabled"):
+                return "Hub availability routing is disabled. Use explicit machine_id."
+            selected = payload.get("selected_machine_id") or "none"
+            return f"Availability recommendation ready. Selected machine: {selected}."
+        if tool_name == "patchbay_worker_start_auto" and not payload.get("accepted"):
+            return str(payload.get("recommended_next_action") or payload.get("error") or "Auto-routing did not queue a worker.")
         if "command_id" in payload:
             return f"{payload.get('action')} queued on {payload.get('machine_id')} as {payload.get('command_id')} ({payload.get('state')})."
         rendered = json.dumps(payload, indent=2)

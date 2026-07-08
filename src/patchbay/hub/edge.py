@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 import time
 import urllib.error
@@ -127,6 +128,105 @@ def build_workspaces(config: Mapping[str, Any]) -> list[dict[str, Any]]:
     return workspaces
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _active_workers_from_status(status: Mapping[str, Any]) -> int:
+    active = status.get("active")
+    if isinstance(active, bool):
+        return int(active)
+    if isinstance(active, int):
+        return max(0, active)
+    counts = status.get("counts")
+    if isinstance(counts, Mapping):
+        return max(0, _as_int(counts.get("active"), 0))
+    workers = status.get("workers")
+    if isinstance(workers, list):
+        return len(workers)
+    return 0
+
+
+def _memory_status() -> dict[str, Any]:
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.exists():
+        return {}
+    values: dict[str, int] = {}
+    for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            key = parts[0].rstrip(":")
+            values[key] = _as_int(parts[1]) * 1024
+    total = values.get("MemTotal", 0)
+    available = values.get("MemAvailable", 0)
+    if total <= 0 or available < 0:
+        return {}
+    used_percent = max(0.0, min(100.0, ((total - available) / total) * 100.0))
+    return {
+        "memory_used_percent": round(used_percent, 2),
+        "memory_available_bytes": available,
+        "memory_total_bytes": total,
+    }
+
+
+def _cpu_percent_estimate() -> float | None:
+    try:
+        load_one, _, _ = os.getloadavg()
+    except (AttributeError, OSError):
+        return None
+    cpu_count = os.cpu_count() or 1
+    return round(max(0.0, min(100.0, (load_one / cpu_count) * 100.0)), 2)
+
+
+def _nearest_existing_path(path: Path) -> Path:
+    current = path.expanduser().resolve(strict=False)
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current if current.exists() else Path.cwd()
+
+
+def _disk_telemetry_path(config: Mapping[str, Any]) -> Path:
+    workers = config.get("workers") if isinstance(config.get("workers"), Mapping) else {}
+    logging_config = config.get("logging") if isinstance(config.get("logging"), Mapping) else {}
+    repositories = config.get("repositories") if isinstance(config.get("repositories"), Mapping) else {}
+    for value in (
+        workers.get("worktree_root"),
+        logging_config.get("job_logs_dir"),
+        repositories.get("default"),
+    ):
+        if value:
+            return _nearest_existing_path(Path(str(value)))
+    return Path.cwd()
+
+
+def build_resource_status(config: Mapping[str, Any], status: Mapping[str, Any]) -> dict[str, Any]:
+    capabilities = build_capabilities(config)
+    active_workers = _active_workers_from_status(status)
+    max_jobs = max(0, _as_int(capabilities.get("max_concurrent_jobs"), 0))
+    free_slots = max(0, max_jobs - active_workers) if max_jobs else 0
+    resource_status: dict[str, Any] = {
+        "active_workers": active_workers,
+        "max_concurrent_jobs": max_jobs,
+        "free_worker_slots": free_slots,
+        "queue_enabled": bool(capabilities.get("queue_enabled", False)),
+    }
+    cpu_percent = _cpu_percent_estimate()
+    if cpu_percent is not None:
+        resource_status["cpu_percent"] = cpu_percent
+    resource_status.update(_memory_status())
+    try:
+        usage = shutil.disk_usage(_disk_telemetry_path(config))
+        total = max(1, usage.total)
+        resource_status["disk_free_bytes"] = usage.free
+        resource_status["disk_used_percent"] = round(((usage.total - usage.free) / total) * 100.0, 2)
+    except OSError:
+        pass
+    return resource_status
+
+
 async def worker_status(handler: ToolHandler) -> dict[str, Any]:
     try:
         result = await handler.handle_tool_call("codex_worker_status", {}, context=RequestContext.anonymous())
@@ -199,11 +299,13 @@ class EdgeRunner:
         return str(self.profile.get("node_token") or "")
 
     async def heartbeat(self) -> dict[str, Any]:
+        status = await worker_status(self.handler)
         payload = {
             "machine_id": self.machine_id,
             "capabilities": build_capabilities(self.config),
             "workspaces": build_workspaces(self.config),
-            "worker_status": await worker_status(self.handler),
+            "worker_status": status,
+            "resource_status": build_resource_status(self.config, status),
         }
         return await asyncio.to_thread(post_json, self.hub_url, "/edge/heartbeat", payload, token=self.token)
 

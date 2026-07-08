@@ -348,8 +348,10 @@ Initial hub mode tools:
 | `patchbay_fleet_status` | Compact status of online/offline machines and active workers. |
 | `patchbay_machine_list` | List machines, tags, capabilities, and health. |
 | `patchbay_machine_workspaces` | Show workspaces on one or all machines. |
+| `patchbay_machine_recommend` | Recommend the least-busy eligible online machine when optional availability routing is enabled. |
 | `patchbay_worker_options` | Show model/reasoning options per machine or selected machine. |
 | `patchbay_worker_start` | Start a worker on a selected machine. |
+| `patchbay_worker_start_auto` | Start a worker on the least-busy eligible online machine when optional availability routing is enabled. |
 | `patchbay_worker_message` | Continue a worker on its machine. |
 | `patchbay_worker_status` | Show worker/team status across one machine or fleet. |
 | `patchbay_worker_wait` | Patient status wait across one machine or fleet. |
@@ -402,6 +404,48 @@ Examples:
 
 This is guidance for ChatGPT, not deterministic routing code. The model should
 use these facts intelligently.
+
+## Optional Availability Router
+
+V1 also includes a simple hub-side availability router. It is off by default:
+
+```yaml
+hub:
+  routing:
+    enabled: false
+    min_disk_free_bytes: 2147483648
+    allow_queue_when_full: false
+    weights:
+      worker_ratio: 0.60
+      memory_ratio: 0.20
+      cpu_ratio: 0.20
+```
+
+Private deployments may set only:
+
+```yaml
+hub:
+  routing:
+    enabled: true
+```
+
+This router is not a semantic scheduler. It does not classify task complexity,
+task type, model choice, project meaning, or coding-vs-documentation intent. It
+only selects the least-busy eligible online machine by current resource
+projection:
+
+- active workers divided by configured max workers;
+- CPU pressure;
+- memory pressure;
+- disk space as a feasibility guard;
+- online/offline state;
+- free worker slot, unless queueing is explicitly permitted;
+- explicit `required_tags`, when the manager provides them.
+
+If the user names a machine, ChatGPT must use explicit `machine_id`. If the user
+does not name a machine and routing is enabled, ChatGPT may call
+`patchbay_machine_recommend` to verify the choice or `patchbay_worker_start_auto`
+to queue directly to the selected least-busy machine.
 
 ## Cross-Machine Worker Context
 

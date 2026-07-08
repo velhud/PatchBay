@@ -263,6 +263,7 @@ async def edge_heartbeat(request: Request):
             capabilities=payload.get("capabilities") if isinstance(payload.get("capabilities"), dict) else None,
             workspaces=payload.get("workspaces") if isinstance(payload.get("workspaces"), list) else None,
             worker_status=payload.get("worker_status") if isinstance(payload.get("worker_status"), dict) else None,
+            resource_status=payload.get("resource_status") if isinstance(payload.get("resource_status"), dict) else None,
         )
         return JSONResponse(result)
     except ValueError as error:

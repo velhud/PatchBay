@@ -35,8 +35,10 @@ fleet-native manager surface and queues commands to the selected edge machine:
 | `patchbay_fleet_status` | Compact status of online/offline machines and visible worker projections. |
 | `patchbay_machine_list` | List enrolled machines, tags, capabilities, and safe workspace projections. |
 | `patchbay_machine_workspaces` | Show advertised workspaces on one machine or the whole fleet. |
+| `patchbay_machine_recommend` | Recommend the least-busy eligible online machine when optional availability routing is enabled. |
 | `patchbay_worker_options` | Route a model/reasoning options request to one machine. |
 | `patchbay_worker_start` | Start a worker on a selected machine. |
+| `patchbay_worker_start_auto` | Start a worker on the least-busy eligible online machine when optional availability routing is enabled. |
 | `patchbay_worker_message` | Continue a worker on the same machine. |
 | `patchbay_worker_status` | Show cached fleet worker status or queue a machine-local refresh. |
 | `patchbay_worker_wait` | Queue a patient status refresh on one machine. |
@@ -50,6 +52,14 @@ start with fleet status, choose machines by workspace/capability, use explicit
 `machine_id`, and collect reports for cross-machine synthesis. Hub state is a
 projection and command queue; edge machines keep local Codex auth, repositories,
 worker state, worktrees, and authority policy.
+
+The optional hub router is availability-only. It is off by default in public
+config and, when enabled, compares current worker load, CPU pressure, memory
+pressure, disk feasibility, online state, and explicit required tags. It must
+not infer task type, complexity, model choice, repository meaning, or
+documentation-vs-coding intent. ChatGPT should use auto-routing only when the
+user has not named a machine; explicit `machine_id` selection remains the
+normal override and is unchanged.
 
 ## Current Stable Tools
 
