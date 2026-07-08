@@ -28,7 +28,7 @@ def test_cors_disabled_by_default():
 
 def test_request_size_limit_configured_by_default():
     config = load_default_config()
-    assert config["server"]["max_request_bytes"] == 1_048_576
+    assert config["server"]["max_request_bytes"] == 16_777_216
 
 
 def test_http_auth_defaults_are_public_exposure_ready():
