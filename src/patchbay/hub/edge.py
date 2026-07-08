@@ -275,11 +275,32 @@ def _configured_disk_override(config: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _is_windows_host_mount(path: Path) -> bool:
+    try:
+        if not os.path.ismount(path):
+            return False
+    except OSError:
+        return False
+    mounts = Path("/proc/mounts")
+    if not mounts.exists():
+        return True
+    try:
+        lines = mounts.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    mount_path = str(path)
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == mount_path:
+            return parts[2].lower() in {"drvfs", "9p"}
+    return False
+
+
 def _windows_host_disk_status() -> dict[str, Any]:
     if not _is_wsl():
         return {}
     mount = Path("/mnt/c")
-    if mount.exists():
+    if mount.exists() and _is_windows_host_mount(mount):
         try:
             usage = shutil.disk_usage(mount)
         except OSError:

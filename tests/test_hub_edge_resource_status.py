@@ -19,6 +19,21 @@ def test_wsl_virtual_disk_does_not_become_effective_free(monkeypatch, tmp_path):
     assert "PATCHBAY_EDGE_DISK_FREE_BYTES" in status["disk_telemetry_warning"]
 
 
+def test_wsl_plain_mnt_c_directory_is_not_host_disk(monkeypatch, tmp_path):
+    mnt_c = tmp_path / "mnt" / "c"
+    mnt_c.mkdir(parents=True)
+    monkeypatch.setattr(edge, "_is_wsl", lambda: True)
+    monkeypatch.setattr(edge, "_disk_telemetry_path", lambda config: tmp_path)
+    monkeypatch.setattr(edge.shutil, "disk_usage", lambda path: SimpleNamespace(total=1_000, used=100, free=900))
+    monkeypatch.setattr(edge, "Path", lambda value: mnt_c if value == "/mnt/c" else type(tmp_path)(value))
+    monkeypatch.setattr(edge.os.path, "ismount", lambda path: False)
+
+    status = edge.build_resource_status({"server": {"max_concurrent_jobs": 4}}, {"active": 0})
+
+    assert status["disk_telemetry_confidence"] == "virtualized"
+    assert "disk_free_bytes" not in status
+
+
 def test_configured_disk_override_is_effective_disk_status(monkeypatch, tmp_path):
     monkeypatch.setattr(edge, "_is_wsl", lambda: True)
     monkeypatch.setattr(edge, "_windows_host_disk_status", lambda: {})
@@ -41,6 +56,7 @@ def test_configured_disk_override_is_effective_disk_status(monkeypatch, tmp_path
 
 def test_wsl_host_disk_status_caps_virtual_filesystem_free(monkeypatch, tmp_path):
     monkeypatch.setattr(edge, "_is_wsl", lambda: True)
+    monkeypatch.setattr(edge, "_is_windows_host_mount", lambda path: True)
     monkeypatch.setattr(edge, "_disk_telemetry_path", lambda config: tmp_path)
     monkeypatch.setattr(edge.shutil, "disk_usage", lambda path: SimpleNamespace(total=1_000, used=100, free=900))
     monkeypatch.setattr(
