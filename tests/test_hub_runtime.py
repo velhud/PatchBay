@@ -285,6 +285,26 @@ def test_hub_routing_resolves_repo_name_under_workspace_root(tmp_path):
     assert projection["resolved_repo_path"] == "/workspace/repos/RetailMind"
 
 
+def test_hub_routing_prefers_advertised_repo_over_generic_workspace_root(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(
+        runtime,
+        "dell",
+        workspaces=[
+            {"alias": "projects", "path": "/home/patchbay/projects", "exists": True, "git": False},
+            {"alias": "PatchBay", "path": "/home/patchbay/workbench/PatchBay", "exists": True, "git": True},
+        ],
+    )
+
+    created = runtime.create_work_group(title="PatchBay smoke", goal="Verify repo matching", repo_path="PatchBay")
+
+    group = created["work_group"]
+    assert group["repo_path"] == "/home/patchbay/workbench/PatchBay"
+    assert group["requested_repo_path"] == "PatchBay"
+    claimed = runtime.claim_next_command(machine_id="dell", token=token)
+    assert claimed["command"]["arguments"]["repo_path"] == "/home/patchbay/workbench/PatchBay"
+
+
 def test_hub_work_group_create_persists_and_queues_preflight(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     token = enroll_online(runtime, "edge")

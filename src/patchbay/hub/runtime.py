@@ -464,6 +464,11 @@ class HubRuntime:
         workspaces = machine.get("workspaces") or []
         if not workspaces:
             return True, None
+
+        # Prefer directly advertised repositories before treating a repo name as
+        # a child of a broad workspace root. Real edges can advertise both
+        # "/home/.../projects" and a specific "PatchBay" repo; the specific repo
+        # must win or grouped preflight runs against the generic parent folder.
         for workspace in workspaces:
             projection = deepcopy(workspace)
             workspace_path = _workspace_base_path(workspace)
@@ -474,16 +479,22 @@ class HubRuntime:
                 projection["match_kind"] = "workspace_path"
                 return True, projection
 
-            haystack = " ".join(
-                str(workspace.get(key) or "")
-                for key in ("alias", "repo_name", "root", "path", "branch")
-            ).lower()
-            if value in haystack:
+            metadata_values = {
+                str(workspace.get(key) or "").strip().lower()
+                for key in ("alias", "repo_name", "name")
+                if str(workspace.get(key) or "").strip()
+            }
+            if workspace_path:
+                metadata_values.add(posixpath.basename(workspace_path).lower())
+            if value in metadata_values:
                 projection["requested_repo_path"] = requested
                 projection["resolved_repo_path"] = workspace_path or requested
                 projection["match_kind"] = "workspace_metadata"
                 return True, projection
 
+        for workspace in workspaces:
+            projection = deepcopy(workspace)
+            workspace_path = _workspace_base_path(workspace)
             if workspace_path and not workspace.get("git") and _is_safe_relative_repo_path(requested):
                 resolved = posixpath.normpath(posixpath.join(workspace_path, requested))
                 if resolved == workspace_path or not resolved.startswith(workspace_path.rstrip("/") + "/"):

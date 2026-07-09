@@ -204,7 +204,11 @@ the Hub can resolve a safe relative repo name underneath that root. For example,
 `<advertised-workspace-root>/RetailMind`. The group stores both the requested
 value and the resolved machine-local path. Edge preflight remains the source of
 truth: it must prove the resolved path exists, is allowed, and is the intended
-repo before grouped workers can start.
+repo before grouped workers can start. If a machine advertises both a broad
+workspace root and a specific repository alias, the specific advertised
+repository wins. This keeps a request such as `PatchBay` pinned to the
+advertised PatchBay checkout instead of a generic projects folder that happens
+to be able to contain a child named `PatchBay`.
 
 Once a group is pinned, later grouped workers stay on that machine even if
 another machine becomes less busy. If the pinned machine is full or offline,
