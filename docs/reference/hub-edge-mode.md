@@ -49,6 +49,11 @@ behind a tunnel, use the same tokenized URL pattern as normal PatchBay:
 https://example.com/patchbay-hub/mcp?patchbay_token=<token>
 ```
 
+A private deployment may also mount the Hub at an existing copied ChatGPT
+Server URL such as `/patchbay/mcp` so the operator does not have to recreate the
+ChatGPT connector. In that rollout shape, keep the old single-machine runtime
+available on a separate fallback path while `/patchbay/mcp` serves Hub tools.
+
 ## Enroll An Edge Machine
 
 On the hub machine:
@@ -184,6 +189,15 @@ This router is deliberately simple and mechanical: it uses online state, worker
 slots, CPU, memory, disk feasibility, workspace projections, allow-lists, and
 explicit `required_tags`. It does not classify task meaning, complexity, model
 choice, or coding-vs-documentation intent.
+
+`repo_path` can be a human repo name, a machine-local absolute path, or an
+advertised workspace alias. When a machine advertises a non-git workspace root,
+the Hub can resolve a safe relative repo name underneath that root. For example,
+`RetailMind` can resolve to the pinned machine's local
+`<advertised-workspace-root>/RetailMind`. The group stores both the requested
+value and the resolved machine-local path. Edge preflight remains the source of
+truth: it must prove the resolved path exists, is allowed, and is the intended
+repo before grouped workers can start.
 
 Once a group is pinned, later grouped workers stay on that machine even if
 another machine becomes less busy. If the pinned machine is full or offline,

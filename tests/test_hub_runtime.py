@@ -31,7 +31,7 @@ def hub_config(tmp_path: Path, *, routing_enabled: bool = False):
     }
 
 
-def enroll_online(runtime: HubRuntime, machine_id: str, *, token_name: str | None = None, tags=None, resources=None):
+def enroll_online(runtime: HubRuntime, machine_id: str, *, token_name: str | None = None, tags=None, resources=None, workspaces=None):
     code = runtime.create_enrollment_code(name=machine_id)["code"]
     enrolled = runtime.enroll_machine(code=code, machine_id=machine_id, display_name=machine_id, tags=tags or [])
     token = enrolled["node_token"]
@@ -39,6 +39,7 @@ def enroll_online(runtime: HubRuntime, machine_id: str, *, token_name: str | Non
         machine_id=machine_id,
         token=token,
         capabilities={"codex_worker_tools": True, "max_concurrent_jobs": 4, "queue_enabled": True},
+        workspaces=workspaces,
         worker_status={"worker_lines": []},
         resource_status={
             "active_workers": 0,
@@ -212,6 +213,23 @@ def test_hub_routing_required_tags_filter_candidates(tmp_path):
     assert any("missing required tags" in reason for reason in rejected["untagged"])
 
 
+def test_hub_routing_resolves_repo_name_under_workspace_root(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(
+        runtime,
+        "jack",
+        workspaces=[{"alias": "repos", "path": "/workspace/repos", "exists": True, "git": False}],
+    )
+
+    result = runtime.recommend_machine(repo_path="RetailMind")
+
+    assert result["selected_machine_id"] == "jack"
+    projection = result["ranked_candidates"][0]["workspace_projection"]
+    assert projection["match_kind"] == "relative_repo_under_workspace"
+    assert projection["requested_repo_path"] == "RetailMind"
+    assert projection["resolved_repo_path"] == "/workspace/repos/RetailMind"
+
+
 def test_hub_work_group_create_persists_and_queues_preflight(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     token = enroll_online(runtime, "edge")
@@ -229,6 +247,23 @@ def test_hub_work_group_create_persists_and_queues_preflight(tmp_path):
     assert listed["groups"][0]["work_group_id"] == group["work_group_id"]
     claimed = restarted.claim_next_command(machine_id="edge", token=token)
     assert claimed["command"]["work_group_id"] == group["work_group_id"]
+
+
+def test_hub_work_group_create_stores_resolved_repo_path_for_edge_preflight(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(
+        runtime,
+        "jack",
+        workspaces=[{"alias": "repos", "path": "/workspace/repos", "exists": True, "git": False}],
+    )
+
+    created = runtime.create_work_group(title="RetailMind task", goal="Do the thing", repo_path="RetailMind")
+
+    group = created["work_group"]
+    assert group["repo_path"] == "/workspace/repos/RetailMind"
+    assert group["requested_repo_path"] == "RetailMind"
+    claimed = runtime.claim_next_command(machine_id="jack", token=token)
+    assert claimed["command"]["arguments"]["repo_path"] == "/workspace/repos/RetailMind"
 
 
 def test_hub_work_group_idempotency_key_reuses_same_group(tmp_path):
@@ -258,6 +293,41 @@ def test_hub_auto_worker_start_requires_ok_preflight(tmp_path):
                 "brief": "Read docs.",
             }
         )
+
+
+def test_grouped_worker_start_uses_group_resolved_repo_path(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(
+        runtime,
+        "jack",
+        workspaces=[{"alias": "repos", "path": "/workspace/repos", "exists": True, "git": False}],
+    )
+    created = runtime.create_work_group(title="RetailMind task", goal="Do the thing", repo_path="RetailMind")
+    group_id = created["work_group"]["work_group_id"]
+    claimed_preflight = runtime.claim_next_command(machine_id="jack", token=token)
+    runtime.finish_command(
+        machine_id="jack",
+        token=token,
+        command_id=claimed_preflight["command"]["command_id"],
+        result={"ok": True, "repo_exists": True, "git_repo": True},
+    )
+
+    queued = runtime.queue_auto_worker_start(
+        arguments={
+            "work_group_id": group_id,
+            "lane": "reader",
+            "auto_routing_ok": True,
+            "name": "Reader",
+            "brief": "Read.",
+            "repo_path": "RetailMind",
+            "workspace_mode": "read_only",
+        }
+    )
+
+    claimed = runtime.claim_next_command(machine_id="jack", token=token)
+    assert queued["accepted"] is True
+    assert claimed["command"]["action"] == "codex_worker_start"
+    assert claimed["command"]["arguments"]["repo_path"] == "/workspace/repos/RetailMind"
 
 
 def test_hub_grouped_auto_start_stays_on_pinned_machine_after_load_changes(tmp_path):

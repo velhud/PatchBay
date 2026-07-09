@@ -8,6 +8,14 @@ It supports three primary modes:
 - named worker mode, where ChatGPT starts and continues durable Codex colleagues by human name;
 - Codex controller mode, where ChatGPT starts local Codex jobs and inspects status, results, diffs, and session refs.
 
+In Hub/edge deployments, the same copied Server URL can expose fleet tools
+instead of the older single-machine `codex_*` surface. At the beginning of a Hub
+session, verify that tools such as `patchbay_fleet_status`,
+`patchbay_work_group_list`, and `patchbay_work_group_create` are actually
+callable. If server metadata mentions Hub but the callable tool list only
+contains old read/search/status tools, stop and ask the operator to refresh or
+reconnect the ChatGPT connector; do not fall back to manual implementation.
+
 It also supports Pro Escalations: local Codex or the operator can create a blocked-problem Pro Request for ChatGPT Pro, ChatGPT can store a durable answer, and PatchBay can explicitly dispatch that answer to an origin worker or a new isolated worker.
 
 ## Operating Role
@@ -16,7 +24,7 @@ ChatGPT should act as engineering lead, consultant, coordinator, and manager of 
 
 For non-trivial repository, Documents, codebase, architecture, audit, reorganization, debugging, implementation, or review work, ChatGPT's first question should be: "Which worker or worker team should I appoint?" Direct file-reading is not the default execution strategy.
 
-Delegation is a positive behavior. More workers are good when responsibilities can be split cleanly and the briefs are clear. PatchBay can be configured for up to 10 concurrent worker slots; ChatGPT should not artificially restrict itself to one or two workers for a broad task merely because that feels simpler. Use specialist workers for source clusters, implementation areas, review, synthesis, verification, and adversarial critique when that would improve the result.
+Delegation is a positive behavior. More workers are good when responsibilities can be split cleanly and the briefs are clear. PatchBay machines expose configured worker slots; ChatGPT should not artificially restrict itself to one or two workers for a broad task merely because that feels simpler. Use specialist workers for source clusters, implementation areas, review, synthesis, verification, and adversarial critique when that would improve the result.
 
 Trust worker reports by default as competent employee reports. Managerial review means reading the worker's report, comparing it with the assignment, asking follow-up questions, and deciding the next assignment. It does not mean routinely reading changed files, inspecting diffs, or redoing implementation detail yourself.
 
@@ -161,6 +169,7 @@ After changing tool metadata or updating PatchBay, open the app settings in Chat
 - When the user asks for a specific model, deeper/faster reasoning, or model-sensitive delegation, call `codex_worker_options` first. `repo_path` is accepted there as a harmless compatibility field, but the tool is a runtime/model menu, not a repository-scoped operation. Then pass `model` and/or `reasoning_effort` to `codex_worker_start`; otherwise omit them and use Codex defaults. Treat Spark as the default for compact fast workers, GPT-5.4 Mini as the small reliable alternative, GPT-5.4 as the main serious worker, and GPT-5.5 as the highest-authority lane.
 - In hub/edge mode, one non-trivial task must become one durable work group. Start with `patchbay_fleet_status`, then `patchbay_work_group_list`; resume the relevant group or call `patchbay_work_group_create` with a title, goal, repo/workspace hint, and planned lanes. The group pins one machine after explicit selection or availability-only routing. Start workers inside that group with `work_group_id` and `lane`; `patchbay_worker_start_auto` also requires `auto_routing_ok: true` and stays on the pinned machine. Do not create a new work group for every worker, do not use `patchbay_worker_start_auto` before a group exists, and do not scatter workers from one task across machines unless the user explicitly asks for separate groups/branches/integration owners.
 - Hub availability routing is only current availability routing: worker slots, CPU, memory, disk feasibility, workspace projections, online state, allow-lists, and explicit required tags. It does not classify task complexity, model choice, repository meaning, or coding-vs-documentation intent. If the pinned machine is full or offline, wait, queue there when allowed, or explicitly reassign the group; do not silently fail over.
+- In Hub mode, `repo_path` may be a human repo name such as `RetailMind`, an advertised alias, or a machine-local absolute path. Prefer the human repo name when that is what the user gives you. The Hub can resolve a safe relative repo name under the pinned machine's advertised workspace root and will show both the requested value and resolved machine-local path in group status. If preflight fails because the repo cannot be resolved, call `patchbay_machine_workspaces` and retry with an advertised path; do not guess host-specific paths.
 - Before starting grouped workers, wait for group preflight to pass. `patchbay_work_group_status` shows preflight, pinned machine, lanes, active commands, and next action. If preflight is pending, wait; if it failed, fix/reassign/override only as an operator recovery action. Before a final answer, check group status and either call `patchbay_work_group_close` with outcome/summary or report exactly what remains active. Ungrouped `patchbay_worker_start` is only for `tiny_check`, `operator_requested`, or `legacy_compat` and must include `ungrouped_reason`.
 - When ChatGPT has generated a file or zip package that local Codex should use, call `codex_worker_inbox` with `action: "import_file"` first. Then pass the returned `artifact_id` through `context_from_artifacts` on `codex_worker_start` or `codex_worker_message`.
 - Importing an artifact stores local inbox context only. It does not edit the repo, does not integrate worker output, and can be repeated for multiple files or zips in the same conversation.

@@ -38,6 +38,12 @@ that, the group stays pinned to that machine. Do not scatter ordinary workers
 from one task across machines. Moving work requires patchbay_work_group_reassign;
 it creates successor work and does not move live Codex processes.
 
+For repo_path, prefer the human repository name or known machine-local path. The
+Hub may resolve a safe relative repo name under the pinned machine's advertised
+workspace root, then the Edge preflight proves the actual local path before any
+worker starts. If preflight says the repo cannot be resolved, call
+patchbay_machine_workspaces and retry with one of the advertised paths.
+
 patchbay_worker_start_auto requires work_group_id, lane, and
 auto_routing_ok=true. Use it only inside a work group. Explicit machine_id
 worker starts remain available for tiny checks, operator-requested work, and
@@ -116,7 +122,7 @@ HUB_TOOLS = [
             "work_group_id": _string_schema("Optional work group id. When present, returns that group's pinned machine."),
             "required_tags": _string_array_schema("Optional required machine tags. All listed tags must match."),
             "allowed_machine_ids": _string_array_schema("Optional eligible machine ids."),
-            "repo_path": _string_schema("Optional repo path or alias to match advertised workspace projections."),
+            "repo_path": _string_schema("Optional repo name, machine-local repo path, or advertised workspace alias. Safe relative names may resolve under an advertised workspace root."),
         },
     ),
     _tool(
@@ -125,7 +131,7 @@ HUB_TOOLS = [
         {
             "title": _string_schema("Short human title for the task."),
             "goal": _string_schema("Goal the worker team must achieve."),
-            "repo_path": _string_schema("Optional machine-local repo path or advertised alias."),
+            "repo_path": _string_schema("Optional human repo name, machine-local repo path, or advertised workspace alias. The Hub stores the requested value and may pin a machine-local resolved path after workspace matching."),
             "machine_id": _string_schema("Optional explicit machine id. If omitted and routing is enabled, Hub chooses one eligible machine."),
             "allowed_machine_ids": _string_array_schema("Optional machine allow-list."),
             "required_tags": _string_array_schema("Optional required machine tags."),
@@ -209,7 +215,7 @@ HUB_TOOLS = [
             "ungrouped_reason": _string_schema("Required for ungrouped Hub starts: tiny_check, operator_requested, or legacy_compat."),
             "name": _string_schema("Human worker name."),
             "brief": _string_schema("Natural-language worker brief."),
-            "repo_path": _string_schema("Optional machine-local repo path or configured alias."),
+            "repo_path": _string_schema("Optional repo name, machine-local repo path, or configured alias. Grouped starts use the group's resolved repo path when available."),
             "workspace_mode": _string_schema("isolated_write, read_only, or shared_write."),
             "model": _string_schema("Optional Codex model."),
             "reasoning_effort": _string_schema("Optional reasoning effort."),
@@ -227,7 +233,7 @@ HUB_TOOLS = [
             "auto_routing_ok": {"type": "boolean", "description": "Must be true to confirm grouped availability routing."},
             "name": _string_schema("Human worker name."),
             "brief": _string_schema("Natural-language worker brief."),
-            "repo_path": _string_schema("Optional machine-local repo path or configured alias."),
+            "repo_path": _string_schema("Optional repo name, machine-local repo path, or configured alias. The grouped command is routed with the group's resolved repo path when available."),
             "workspace_mode": _string_schema("isolated_write, read_only, or shared_write."),
             "model": _string_schema("Optional Codex model."),
             "reasoning_effort": _string_schema("Optional reasoning effort."),

@@ -4,6 +4,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import posixpath
 import secrets
 import time
 from copy import deepcopy
@@ -19,6 +20,17 @@ DEFAULT_ROUTING_WEIGHTS = {"worker_ratio": 0.60, "memory_ratio": 0.20, "cpu_rati
 GROUP_STATUSES = {"active", "paused", "waiting_for_machine", "blocked", "degraded", "complete", "abandoned", "superseded", "recovery_required"}
 LANE_STATUSES = {"planned", "queued", "active", "quiet", "stale", "lost", "idle", "failed", "superseded"}
 UNGROUPED_REASONS = {"tiny_check", "operator_requested", "legacy_compat"}
+ACTION_ARGUMENT_ALLOWLIST = {
+    "codex_worker_start": ("name", "repo_path", "workspace_mode", "model", "reasoning_effort", "auto_suffix"),
+    "codex_worker_message": ("worker", "repo_path", "model", "reasoning_effort"),
+    "codex_worker_status": ("repo_path", "scope", "active_only"),
+    "codex_worker_wait": ("repo_path", "wait_seconds", "scope", "active_only"),
+    "codex_worker_inspect": ("worker", "view", "repo_path", "file_path", "max_bytes"),
+    "codex_worker_stop": ("worker", "force", "repo_path"),
+    "codex_worker_integrate": ("worker", "repo_path", "allow_dirty_base"),
+    "codex_worker_options": ("repo_path",),
+    "patchbay_edge_preflight": ("repo_path",),
+}
 
 
 def _clean_id(value: str, *, field: str) -> str:
@@ -73,6 +85,28 @@ def _clean_machine_ids(values: Any) -> list[str]:
     return machine_ids[:50]
 
 
+def _normalize_repo_projection_path(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    while "//" in text:
+        text = text.replace("//", "/")
+    if text != "/":
+        text = text.rstrip("/")
+    return text
+
+
+def _is_safe_relative_repo_path(value: str) -> bool:
+    if not value or value.startswith("/") or value.startswith("~"):
+        return False
+    parts = [part for part in value.split("/") if part]
+    if not parts:
+        return False
+    return all(part not in {".", ".."} for part in parts)
+
+
+def _workspace_base_path(workspace: Mapping[str, Any]) -> str:
+    return _normalize_repo_projection_path(workspace.get("path") or workspace.get("root") or "")
+
+
 def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -123,17 +157,7 @@ def _manager_ref(context: RequestContext | None) -> str:
 
 
 def _argument_summary(action: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
-    allowed = {
-        "codex_worker_start": ("name", "repo_path", "workspace_mode", "model", "reasoning_effort", "auto_suffix"),
-        "codex_worker_message": ("worker", "repo_path", "model", "reasoning_effort"),
-        "codex_worker_status": ("repo_path", "scope", "active_only"),
-        "codex_worker_wait": ("repo_path", "wait_seconds", "scope", "active_only"),
-        "codex_worker_inspect": ("worker", "view", "repo_path", "file_path", "max_bytes"),
-        "codex_worker_stop": ("worker", "force", "repo_path"),
-        "codex_worker_integrate": ("worker", "repo_path", "allow_dirty_base"),
-        "codex_worker_options": ("repo_path",),
-        "patchbay_edge_preflight": ("repo_path",),
-    }.get(action, ())
+    allowed = ACTION_ARGUMENT_ALLOWLIST.get(action, ())
     return {key: arguments[key] for key in allowed if key in arguments and arguments.get(key) not in (None, "")}
 
 
@@ -357,19 +381,41 @@ class HubRuntime:
         return public_machine_view(machine, now=time.time(), stale_seconds=self.stale_seconds)
 
     def _workspace_projection_matches(self, machine: Mapping[str, Any], repo_path: str) -> tuple[bool, dict[str, Any] | None]:
-        value = str(repo_path or "").strip().lower()
+        requested = _normalize_repo_projection_path(repo_path)
+        value = requested.lower()
         if not value:
             return True, None
         workspaces = machine.get("workspaces") or []
         if not workspaces:
             return True, None
         for workspace in workspaces:
+            projection = deepcopy(workspace)
+            workspace_path = _workspace_base_path(workspace)
+            workspace_path_lower = workspace_path.lower()
+            if workspace_path and (value == workspace_path_lower or value.startswith(workspace_path_lower + "/")):
+                projection["requested_repo_path"] = requested
+                projection["resolved_repo_path"] = requested
+                projection["match_kind"] = "workspace_path"
+                return True, projection
+
             haystack = " ".join(
                 str(workspace.get(key) or "")
                 for key in ("alias", "repo_name", "root", "path", "branch")
             ).lower()
-            if value in haystack or any(part and part in haystack for part in value.replace("\\", "/").split("/")[-2:]):
-                return True, deepcopy(workspace)
+            if value in haystack:
+                projection["requested_repo_path"] = requested
+                projection["resolved_repo_path"] = workspace_path or requested
+                projection["match_kind"] = "workspace_metadata"
+                return True, projection
+
+            if workspace_path and not workspace.get("git") and _is_safe_relative_repo_path(requested):
+                resolved = posixpath.normpath(posixpath.join(workspace_path, requested))
+                if resolved == workspace_path or not resolved.startswith(workspace_path.rstrip("/") + "/"):
+                    continue
+                projection["requested_repo_path"] = requested
+                projection["resolved_repo_path"] = resolved
+                projection["match_kind"] = "relative_repo_under_workspace"
+                return True, projection
         return False, None
 
     def _choose_group_machine(
@@ -400,7 +446,12 @@ class HubRuntime:
         selected = str(recommendation.get("selected_machine_id") or "")
         if not selected:
             raise ValueError("No eligible machine is available for this work group; pass explicit machine_id or adjust allowed machines")
-        return selected, recommendation.get("selected_machine") or {}, {"mode": "availability", "recommendation": recommendation}
+        workspace = None
+        for candidate in recommendation.get("ranked_candidates") or []:
+            if str(candidate.get("machine_id") or "") == selected:
+                workspace = candidate.get("workspace_projection")
+                break
+        return selected, recommendation.get("selected_machine") or {}, {"mode": "availability", "recommendation": recommendation, "workspace": workspace}
 
     def _group_public(self, group: Mapping[str, Any], *, include_private: bool = False) -> dict[str, Any]:
         data = {
@@ -411,6 +462,7 @@ class HubRuntime:
             "visibility": group.get("visibility"),
             "routing_policy": group.get("routing_policy"),
             "repo_path": group.get("repo_path") or "",
+            "requested_repo_path": group.get("requested_repo_path") or "",
             "pinned_machine_id": group.get("pinned_machine_id") or "",
             "created_at": group.get("created_at"),
             "updated_at": group.get("updated_at"),
@@ -547,6 +599,9 @@ class HubRuntime:
                 allowed_machine_ids=allowed_machine_ids,
                 required_tags=required_tags,
             )
+            requested_repo_path = _clean_text(repo_path, 400)
+            workspace_projection = routing_meta.get("workspace") if isinstance(routing_meta.get("workspace"), Mapping) else {}
+            resolved_repo_path = _clean_text(workspace_projection.get("resolved_repo_path") or repo_path, 400)
             now = time.time()
             group_id = f"grp_{secrets.token_hex(8)}"
             group = {
@@ -556,7 +611,8 @@ class HubRuntime:
                 "status": "active",
                 "visibility": visibility_value,
                 "routing_policy": routing_value,
-                "repo_path": _clean_text(repo_path, 400),
+                "repo_path": resolved_repo_path,
+                "requested_repo_path": requested_repo_path,
                 "pinned_machine_id": selected_machine_id,
                 "allowed_machine_ids": _clean_machine_ids(allowed_machine_ids),
                 "required_tags": _clean_tags(required_tags),
@@ -1079,6 +1135,8 @@ class HubRuntime:
                     lane_id or "main",
                     {"lane_id": lane_id or "main", "title": lane_id or "main", "role": "", "status": "planned", "worker_refs": [], "command_ids": []},
                 )
+                if action_name in ACTION_ARGUMENT_ALLOWLIST and "repo_path" in ACTION_ARGUMENT_ALLOWLIST[action_name] and group.get("repo_path"):
+                    routed_args["repo_path"] = str(group.get("repo_path") or "")
                 if action_name in {"codex_worker_message", "codex_worker_wait", "codex_worker_status", "codex_worker_inspect"}:
                     lane_record["status"] = "active"
             elif action_name == "codex_worker_start":

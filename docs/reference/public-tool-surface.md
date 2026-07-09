@@ -8,7 +8,7 @@ The primary ChatGPT posture is lead/manager/consultant, not line-by-line reposit
 
 Trust worker reports by default as competent employee reports. Managerial review means reading reports, asking follow-up questions, comparing stated outcomes with assigned goals, and deciding the next assignment. It does not mean routinely reading changed files, inspecting diffs, or redoing implementation detail yourself.
 
-Delegation is a positive behavior. Tool descriptions and initialize instructions should make it natural for ChatGPT to create multiple named workers when work can be split cleanly. A 10-slot worker configuration should be treated as an opportunity to run investigators, implementers, reviewers, verification workers, and synthesis workers in parallel, not as a limit ChatGPT should avoid approaching for broad tasks.
+Delegation is a positive behavior. Tool descriptions and initialize instructions should make it natural for ChatGPT to create multiple named workers when work can be split cleanly. The configured worker slots on each machine should be treated as an opportunity to run investigators, implementers, reviewers, verification workers, and synthesis workers in parallel, not as a limit ChatGPT should avoid approaching for broad tasks.
 
 Runtime authority should be visible without turning ChatGPT into the default implementer. When `codex_self_test` and the visible catalog show a dedicated full-access workbench/VM with full bash, direct write, broad allowed roots, and `danger-full-access`, ChatGPT should understand that local dependency setup, repo-local virtual environments, verification commands, generated artifacts, commits, and authorized private-repo pushes are normal engineering actions for an end-to-end task. Missing packages should normally lead to environment setup rather than weaker verification. The exception boundary is external/public/production/paid/credential-changing/irreversible work, where ChatGPT should ask before acting.
 
@@ -85,6 +85,17 @@ group is pinned, `patchbay_worker_start_auto` keeps later workers on the pinned
 machine. If that machine is full or offline, Hub returns a blocked/queued state;
 it does not scatter workers across other machines. Cross-machine same-repo
 writes require explicit separate groups/branches and one integration owner.
+
+Hub repository hints should not force ChatGPT to know every machine's absolute
+path. `patchbay_work_group_create` and `patchbay_machine_recommend` accept a
+human repo name, an advertised alias, or a machine-local path. If a machine
+advertises a non-git workspace root, the Hub may resolve a safe relative repo
+name underneath that root, store the original `requested_repo_path`, and route
+grouped commands with the resolved machine-local `repo_path`. Edge preflight is
+still mandatory and remains the proof that the resolved path is allowed,
+reachable, and usable before workers start. If that resolution fails, ChatGPT
+should call `patchbay_machine_workspaces` and retry with an advertised path
+rather than guessing `/root/...` or another host-specific location.
 
 ## Current Stable Tools
 

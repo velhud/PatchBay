@@ -156,7 +156,10 @@ def run() -> dict[str, Any]:
                         "display_name": machine_id.replace("-", " ").title(),
                         "tags": ["live"],
                         "capabilities": {"codex_worker_tools": True, "max_concurrent_jobs": 4, "queue_enabled": True},
-                        "workspaces": [{"alias": "tmp", "path": str(root)}],
+                        "workspaces": [
+                            {"alias": "tmp", "path": str(root), "git": True},
+                            {"alias": "repos", "path": str(root / "repos"), "exists": True, "git": False},
+                        ],
                     },
                 )
                 enrollments[machine_id] = enroll
@@ -429,6 +432,14 @@ def run() -> dict[str, Any]:
             second_payload = second_auto["result"]["structuredContent"]
             if second_payload["machine_id"] != "live-edge":
                 raise RuntimeError(f"Second grouped auto worker queued on {second_payload['machine_id']}, expected live-edge")
+            second_polled, _ = post_json(f"{base_url}/edge/poll", {"machine_id": "live-edge"}, token=node_tokens["live-edge"])
+            if second_polled["command"]["command_id"] != second_payload["command_id"]:
+                raise RuntimeError("Edge did not claim the second grouped command")
+            post_json(
+                f"{base_url}/edge/result",
+                {"machine_id": "live-edge", "command_id": second_payload["command_id"], "result": {"ok": True}},
+                token=node_tokens["live-edge"],
+            )
             command_status, _ = post_json(
                 f"{base_url}/mcp",
                 {
@@ -443,6 +454,46 @@ def run() -> dict[str, Any]:
             state = command_status["result"]["structuredContent"]["commands"][0]["state"]
             if state != "completed":
                 raise RuntimeError(f"Command state was {state}, expected completed")
+            friendly_group, _ = post_json(
+                f"{base_url}/mcp",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 12,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "patchbay_work_group_create",
+                        "arguments": {
+                            "title": "Friendly repo smoke",
+                            "goal": "Verify a human repo name resolves under an advertised workspace root.",
+                            "repo_path": "RetailMind",
+                            "allowed_machine_ids": ["live-edge"],
+                            "lanes": ["preflight"],
+                        },
+                    },
+                },
+                token=token,
+                session_id=session_id,
+            )
+            friendly_payload = friendly_group["result"]["structuredContent"]["work_group"]
+            expected_friendly_repo = str(root / "repos" / "RetailMind")
+            if friendly_payload["requested_repo_path"] != "RetailMind":
+                raise RuntimeError("Friendly group did not preserve requested repo_path")
+            if friendly_payload["repo_path"] != expected_friendly_repo:
+                raise RuntimeError(f"Friendly group resolved {friendly_payload['repo_path']}, expected {expected_friendly_repo}")
+            friendly_preflight, _ = post_json(f"{base_url}/edge/poll", {"machine_id": "live-edge"}, token=node_tokens["live-edge"])
+            if friendly_preflight["command"]["action"] != "patchbay_edge_preflight":
+                raise RuntimeError("Edge did not claim friendly group preflight command")
+            if friendly_preflight["command"]["arguments"]["repo_path"] != expected_friendly_repo:
+                raise RuntimeError("Friendly preflight did not receive the resolved machine-local repo_path")
+            post_json(
+                f"{base_url}/edge/result",
+                {
+                    "machine_id": "live-edge",
+                    "command_id": friendly_preflight["command"]["command_id"],
+                    "result": {"ok": True, "repo_exists": True, "git_repo": True, "branch": "main", "head": "abc123"},
+                },
+                token=node_tokens["live-edge"],
+            )
             return {
                 "ok": True,
                 "base_url": base_url,
@@ -458,6 +509,8 @@ def run() -> dict[str, Any]:
                 "changed_router_selection": changed_selected,
                 "group_router_selection_after_load_change": group_selected,
                 "completed_state": done["state"],
+                "friendly_repo_requested": friendly_payload["requested_repo_path"],
+                "friendly_repo_resolved": friendly_payload["repo_path"],
             }
         finally:
             process.terminate()
