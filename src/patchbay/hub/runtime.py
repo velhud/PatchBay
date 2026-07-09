@@ -972,6 +972,10 @@ class HubRuntime:
             now = time.time()
             final_status = "complete" if outcome_text.lower() in {"complete", "completed", "success", "done"} else "abandoned"
             group["status"] = final_status
+            if not active:
+                for lane in group.setdefault("lanes", {}).values():
+                    if lane.get("status") in {"queued", "active", "quiet", "stale"}:
+                        lane["status"] = "idle"
             group["outcome"] = outcome_text
             group["summary"] = summary_text
             group["closed_at"] = now

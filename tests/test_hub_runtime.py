@@ -585,6 +585,40 @@ def test_hub_work_group_close_clears_current_group_pointer(tmp_path):
     assert listed["current_work_group_id"] == ""
 
 
+def test_hub_work_group_close_sets_completed_active_lanes_idle(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(runtime, "edge")
+    created = runtime.create_work_group(title="Task", goal="Do the thing", lanes=["reader"])
+    group_id = created["work_group"]["work_group_id"]
+    complete_next_preflight(runtime, machine_id="edge", token=token)
+    runtime.queue_auto_worker_start(
+        arguments={
+            "work_group_id": group_id,
+            "lane": "reader",
+            "auto_routing_ok": True,
+            "name": "Reader",
+            "brief": "Read docs.",
+        }
+    )
+    worker_start = runtime.claim_next_command(machine_id="edge", token=token)["command"]
+    runtime.finish_command(
+        machine_id="edge",
+        token=token,
+        command_id=worker_start["command_id"],
+        result={"worker_id": "wrk_reader", "name": "Reader"},
+    )
+
+    active_status = runtime.work_group_status(work_group_id=group_id)
+    assert active_status["counts"]["active_lanes"] == 1
+
+    closed = runtime.close_work_group(work_group_id=group_id, outcome="complete", summary="Done")
+
+    assert closed["accepted"] is True
+    assert closed["work_group"]["lanes"]["reader"]["status"] == "idle"
+    closed_status = runtime.work_group_status(work_group_id=group_id)
+    assert closed_status["counts"]["active_lanes"] == 0
+
+
 def test_hub_work_group_reassign_supersedes_old_lanes_and_queues_preflight(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     token_a = enroll_online(runtime, "a")

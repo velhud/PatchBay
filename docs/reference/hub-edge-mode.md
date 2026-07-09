@@ -164,6 +164,11 @@ patchbay_work_group_status until work completes
 patchbay_work_group_close or report what remains active
 ```
 
+When a work group closes and no command is still queued or running, Hub settles
+non-problem lane statuses to `idle`. The closed group still preserves worker
+refs, command records, reports, and worktrees, but default status/count output
+should not make completed lanes look like current active work.
+
 Hard rules for ChatGPT:
 
 - one user task equals one work group;
