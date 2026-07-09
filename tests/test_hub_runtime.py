@@ -136,6 +136,61 @@ def test_hub_routing_disabled_returns_disabled_response(tmp_path):
     assert "explicit machine_id" in result["recommended_next_action"]
 
 
+def test_hub_retired_machine_hidden_from_default_fleet_and_visible_for_audit(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    old_token = enroll_online(runtime, "old-edge")
+    enroll_online(runtime, "new-edge")
+
+    retired = runtime.retire_machine(machine_id="old-edge", reason="superseded", superseded_by="new-edge")
+
+    assert retired["accepted"] is True
+    assert retired["machine"]["status"] == "retired"
+    fleet = runtime.fleet_status()
+    assert [machine["machine_id"] for machine in fleet["machines"]] == ["new-edge"]
+    assert fleet["hidden_retired_count"] == 1
+    assert "1 retired machine hidden" in fleet["summary"]
+
+    listed = runtime.list_machines(include_retired=True)
+    statuses = {machine["machine_id"]: machine["status"] for machine in listed["machines"]}
+    assert statuses["old-edge"] == "retired"
+    assert statuses["new-edge"] == "online"
+
+    with pytest.raises(ValueError, match="retired"):
+        runtime.heartbeat(machine_id="old-edge", token=old_token)
+
+
+def test_hub_retired_machine_excluded_from_recommendation_and_commands(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    enroll_online(runtime, "old-edge", resources={"active_workers": 0, "free_worker_slots": 4})
+    enroll_online(runtime, "new-edge", resources={"active_workers": 3, "free_worker_slots": 1})
+    runtime.retire_machine(machine_id="old-edge", reason="superseded", superseded_by="new-edge")
+
+    recommendation = runtime.recommend_machine()
+
+    assert recommendation["selected_machine_id"] == "new-edge"
+    assert {candidate["machine_id"] for candidate in recommendation["rejected_candidates"]} == set()
+    with pytest.raises(ValueError, match="retired"):
+        runtime.queue_worker_command(
+            machine_id="old-edge",
+            action="codex_worker_status",
+            arguments={"machine_id": "old-edge", "refresh": True},
+        )
+
+
+def test_hub_retired_machine_can_be_restored(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    token = enroll_online(runtime, "edge")
+    runtime.retire_machine(machine_id="edge", reason="maintenance")
+
+    restored = runtime.restore_machine(machine_id="edge")
+    heartbeat = runtime.heartbeat(machine_id="edge", token=token)
+
+    assert restored["accepted"] is True
+    assert restored["machine"]["status"] == "online"
+    assert heartbeat["accepted"] is True
+    assert runtime.fleet_status()["hidden_retired_count"] == 0
+
+
 def test_hub_routing_rejects_offline_machine(tmp_path):
     runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
     code = runtime.create_enrollment_code(name="offline")["code"]

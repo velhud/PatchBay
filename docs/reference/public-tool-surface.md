@@ -74,6 +74,14 @@ The instruction surface should be unambiguous about these prohibitions:
 Hub state is a projection and command queue; edge machines keep local Codex
 auth, repositories, worker state, worktrees, and authority policy.
 
+Default Hub machine views represent current operating capacity. Retired or
+superseded edge enrollments are hidden from `patchbay_fleet_status`, default
+`patchbay_machine_list`, default `patchbay_machine_workspaces`, and availability
+recommendations. `patchbay_machine_list(include_retired=true)` is an audit tool
+for diagnosing old machine identities; retired machines must not be selected for
+ordinary work and old node tokens are rejected until the operator restores or
+re-enrolls the machine.
+
 The optional hub router is availability-only. It is off by default in public
 config and, when enabled, compares current worker load, CPU pressure, memory
 pressure, disk feasibility, workspace projections, online state, allow-lists,

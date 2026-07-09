@@ -163,11 +163,17 @@ def _argument_summary(action: str, arguments: Mapping[str, Any]) -> dict[str, An
 
 def public_machine_view(machine: Mapping[str, Any], *, now: float, stale_seconds: int) -> dict[str, Any]:
     last_seen = float(machine.get("last_seen_at") or 0)
-    status = "online" if last_seen and now - last_seen <= stale_seconds else "offline"
+    retired_at = machine.get("retired_at")
+    retired = bool(retired_at)
+    status = "retired" if retired else ("online" if last_seen and now - last_seen <= stale_seconds else "offline")
     return {
         "machine_id": machine.get("machine_id"),
         "display_name": machine.get("display_name"),
         "status": status,
+        "retired": retired,
+        "retired_at": retired_at or None,
+        "retired_reason": machine.get("retired_reason") or "",
+        "superseded_by": machine.get("superseded_by") or "",
         "tags": list(machine.get("tags") or []),
         "role": machine.get("role") or "",
         "last_seen_at": machine.get("last_seen_at"),
@@ -283,7 +289,66 @@ class HubRuntime:
         machine = payload.get("machines", {}).get(node_id)
         if not machine or machine.get("token_hash") != token_hash(str(token or "")):
             raise ValueError("Unauthorized edge node")
+        if machine.get("retired_at"):
+            raise ValueError("Edge node is retired; restore it or enroll a new machine_id before it can heartbeat or claim commands")
         return machine
+
+    def retire_machine(
+        self,
+        *,
+        machine_id: str,
+        reason: str = "",
+        superseded_by: str = "",
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        node_id = _clean_id(machine_id, field="machine_id")
+        successor = _optional_clean_id(superseded_by, field="superseded_by") if superseded_by else ""
+        reason_text = _clean_text(reason, 500)
+        now = time.time()
+
+        def mutate(payload: dict[str, Any]) -> dict[str, Any]:
+            machine = payload.setdefault("machines", {}).get(node_id)
+            if not machine:
+                raise ValueError(f"Unknown machine_id: {node_id}")
+            if successor and successor not in payload.get("machines", {}):
+                raise ValueError(f"Unknown superseded_by machine_id: {successor}")
+            machine["retired_at"] = machine.get("retired_at") or now
+            machine["retired_reason"] = reason_text
+            machine["superseded_by"] = successor
+            machine["retired_by"] = _manager_ref(context)
+            machine["updated_at"] = now
+            self.store.append_event(
+                payload,
+                "machine.retired",
+                {"machine_id": node_id, "reason": reason_text, "superseded_by": successor, "manager_ref": _manager_ref(context)},
+            )
+            return {
+                "accepted": True,
+                "machine": public_machine_view(machine, now=now, stale_seconds=self.stale_seconds),
+                "recommended_next_action": "Default fleet views now hide this retired machine. Use include_retired=true for audit/history.",
+            }
+
+        return self.store.update(mutate)
+
+    def restore_machine(self, *, machine_id: str, context: RequestContext | None = None) -> dict[str, Any]:
+        node_id = _clean_id(machine_id, field="machine_id")
+        now = time.time()
+
+        def mutate(payload: dict[str, Any]) -> dict[str, Any]:
+            machine = payload.setdefault("machines", {}).get(node_id)
+            if not machine:
+                raise ValueError(f"Unknown machine_id: {node_id}")
+            for key in ("retired_at", "retired_reason", "superseded_by", "retired_by"):
+                machine.pop(key, None)
+            machine["updated_at"] = now
+            self.store.append_event(payload, "machine.restored", {"machine_id": node_id, "manager_ref": _manager_ref(context)})
+            return {
+                "accepted": True,
+                "machine": public_machine_view(machine, now=now, stale_seconds=self.stale_seconds),
+                "recommended_next_action": "The machine may heartbeat again with its existing node token.",
+            }
+
+        return self.store.update(mutate)
 
     def heartbeat(
         self,
@@ -316,14 +381,18 @@ class HubRuntime:
 
         return self.store.update(mutate)
 
-    def list_machines(self, *, query: str = "", tags: Any = None, include_offline: bool = True) -> dict[str, Any]:
+    def list_machines(self, *, query: str = "", tags: Any = None, include_offline: bool = True, include_retired: bool = False) -> dict[str, Any]:
         payload = self.store.read()
         now = time.time()
         wanted_tags = set(_clean_tags(tags))
         query_text = str(query or "").strip().lower()
         machines = []
+        hidden_retired = 0
         for machine in payload.get("machines", {}).values():
             view = public_machine_view(machine, now=now, stale_seconds=self.stale_seconds)
+            if view["status"] == "retired" and not include_retired:
+                hidden_retired += 1
+                continue
             if not include_offline and view["status"] != "online":
                 continue
             if wanted_tags and not wanted_tags.intersection(set(view.get("tags") or [])):
@@ -338,25 +407,31 @@ class HubRuntime:
             "count": len(machines),
             "online_count": sum(1 for machine in machines if machine["status"] == "online"),
             "offline_count": sum(1 for machine in machines if machine["status"] == "offline"),
+            "retired_count": sum(1 for machine in machines if machine["status"] == "retired"),
+            "hidden_retired_count": hidden_retired,
             "hub_id": payload.get("hub_id"),
         }
 
     def fleet_status(self) -> dict[str, Any]:
-        machines = self.list_machines()["machines"]
+        machine_payload = self.list_machines()
+        machines = machine_payload["machines"]
         active_workers = []
         for machine in machines:
             worker_status = machine.get("worker_status") if isinstance(machine.get("worker_status"), dict) else {}
             for line in worker_status.get("worker_lines") or []:
                 active_workers.append({"machine_id": machine["machine_id"], "status_line": line})
+        hidden = _as_int(machine_payload.get("hidden_retired_count"), 0)
+        hidden_suffix = f"; {hidden} retired machine hidden" if hidden == 1 else (f"; {hidden} retired machines hidden" if hidden else "")
         return {
-            "summary": f"{sum(1 for m in machines if m['status'] == 'online')}/{len(machines)} machines online; {len(active_workers)} worker status lines visible",
+            "summary": f"{sum(1 for m in machines if m['status'] == 'online')}/{len(machines)} machines online; {len(active_workers)} worker status lines visible{hidden_suffix}",
             "machines": machines,
+            "hidden_retired_count": hidden,
             "active_workers": active_workers[:50],
             "recommended_next_action": "Choose a machine_id and start or inspect workers.",
         }
 
-    def machine_workspaces(self, *, machine_id: str = "") -> dict[str, Any]:
-        payload = self.list_machines()
+    def machine_workspaces(self, *, machine_id: str = "", include_retired: bool = False) -> dict[str, Any]:
+        payload = self.list_machines(include_retired=include_retired)
         machines = payload["machines"]
         if machine_id:
             node_id = _clean_id(machine_id, field="machine_id")
@@ -372,6 +447,7 @@ class HubRuntime:
                 for machine in machines
             ],
             "count": len(machines),
+            "hidden_retired_count": payload.get("hidden_retired_count", 0),
         }
 
     def _machine_view(self, payload: Mapping[str, Any], machine_id: str) -> dict[str, Any] | None:
@@ -1150,6 +1226,8 @@ class HubRuntime:
                 raise ValueError("machine_id is required for routed worker commands")
             if not target_machine or target_machine not in payload.get("machines", {}):
                 raise ValueError(f"Unknown machine_id: {target_machine}")
+            if payload["machines"][target_machine].get("retired_at"):
+                raise ValueError("Target machine is retired; restore it or choose an active machine")
             context_for_edge = context
             if group_id or lane_id:
                 metadata = _public_context(context)
@@ -1337,7 +1415,9 @@ class HubRuntime:
         resources = machine.get("resource_status") if isinstance(machine.get("resource_status"), Mapping) else {}
         tags = set(machine.get("tags") or [])
         reasons: list[str] = []
-        if machine.get("status") != "online":
+        if machine.get("status") == "retired":
+            reasons.append("retired")
+        elif machine.get("status") != "online":
             reasons.append("offline")
         if not bool(capabilities.get("codex_worker_tools")):
             reasons.append("codex worker tools unavailable")

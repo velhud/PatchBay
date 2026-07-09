@@ -60,6 +60,12 @@ final answers, check work-group status and either close the group or report what
 remains active. Direct manual file reading is not the default manager behavior;
 delegate repository work to workers and use direct inspection only for focused
 verification, escalation, or tiny checks.
+
+Normal fleet views hide retired/superseded machines. Retired machines are old
+edge enrollments kept only for audit/history and must not be treated as current
+capacity. If an expected machine is missing, call patchbay_machine_list with
+include_retired=true only to diagnose whether it was retired; otherwise ask the
+operator to enroll or restore the machine instead of routing work to it.
 """
 
 
@@ -108,12 +114,16 @@ HUB_TOOLS = [
             "query": _string_schema("Optional machine name/tag search."),
             "tags": {"type": "array", "items": {"type": "string"}},
             "include_offline": {"type": "boolean"},
+            "include_retired": {"type": "boolean", "description": "Defaults to false. Use only for audit/history of old edge enrollments."},
         },
     ),
     _tool(
         "patchbay_machine_workspaces",
         "Show advertised workspaces on one machine or the whole fleet so ChatGPT can choose where to route work.",
-        {"machine_id": _string_schema("Optional machine_id filter.")},
+        {
+            "machine_id": _string_schema("Optional machine_id filter."),
+            "include_retired": {"type": "boolean", "description": "Defaults to false. Use only for audit/history."},
+        },
     ),
     _tool(
         "patchbay_machine_recommend",
@@ -415,9 +425,13 @@ class HubProtocol:
                 query=str(arguments.get("query") or ""),
                 tags=arguments.get("tags") or [],
                 include_offline=bool(arguments.get("include_offline", True)),
+                include_retired=bool(arguments.get("include_retired", False)),
             )
         if name == "patchbay_machine_workspaces":
-            return self.runtime.machine_workspaces(machine_id=str(arguments.get("machine_id") or ""))
+            return self.runtime.machine_workspaces(
+                machine_id=str(arguments.get("machine_id") or ""),
+                include_retired=bool(arguments.get("include_retired", False)),
+            )
         if name == "patchbay_machine_recommend":
             return self.runtime.recommend_machine(
                 work_group_id=str(arguments.get("work_group_id") or ""),

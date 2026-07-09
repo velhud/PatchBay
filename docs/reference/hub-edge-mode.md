@@ -176,6 +176,13 @@ Hard rules for ChatGPT:
 - use separate groups/branches/integration owners for deliberate cross-machine
   same-repo work.
 
+Default fleet views hide retired or superseded machines. A retired machine is
+an old edge enrollment preserved for audit/history after an operator deliberately
+replaced or decommissioned it. ChatGPT should not treat retired entries as
+current capacity and should not route work to them. Use
+`patchbay_machine_list` with `include_retired: true` only when diagnosing why an
+expected machine is missing.
+
 `patchbay_worker_start_auto` is no longer a per-worker scatter router. It
 requires `work_group_id`, `lane`, and `auto_routing_ok: true`, then queues the
 worker on the group's pinned machine. `patchbay_worker_start` with explicit
@@ -252,8 +259,35 @@ hub:
   disk telemetry as `virtualized` and does not present that virtual number as
   effective routing free space.
 - A node token controls one machine only.
+- Retiring a machine disables its old node token for heartbeat/claim calls,
+  hides it from default fleet status/list/workspace views, and excludes it from
+  recommendations. It does not delete history or rewrite old commands/groups.
 - Single-machine `patchbay start` remains unchanged and should remain the
   default for ordinary use.
+
+## Retiring Or Restoring Edge Enrollments
+
+Use operator CLI commands for lifecycle administration; this is not part of the
+normal ChatGPT manager workflow.
+
+```bash
+patchbay hub machine retire <machine-id> \
+  --reason "superseded by replacement edge" \
+  --superseded-by <replacement-machine-id> \
+  --json
+```
+
+Retirement is for stale, replaced, or intentionally decommissioned edge IDs. It
+preserves audit history while preventing old enrollments from confusing normal
+fleet status or availability routing. If an edge was retired by mistake and the
+same node token/profile should be allowed again:
+
+```bash
+patchbay hub machine restore <machine-id> --json
+```
+
+For a truly new machine identity, create a fresh enrollment code and enroll the
+edge under the new `machine_id` instead of restoring an obsolete one.
 
 For WSL or other virtualized edges where the host disk is not readable, set a
 conservative explicit override on the edge:

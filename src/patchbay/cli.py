@@ -450,6 +450,8 @@ def hub_main(argv: Iterable[str] | None = None) -> int:
         return 1
     if command == "enroll-code":
         return hub_enroll_code_main(rest)
+    if command == "machine":
+        return hub_machine_main(rest)
     print(f"Unknown hub command: {command}\n\n{_hub_help()}", file=sys.stderr)
     return 2
 
@@ -478,6 +480,41 @@ def hub_enroll_code_main(argv: Iterable[str] | None = None) -> int:
         ttl_minutes=parsed.ttl_minutes,
     )
     print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else f"Enrollment code: {result['code']}")
+    return 0
+
+
+def hub_machine_main(argv: Iterable[str] | None = None) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if not args or args[0] in {"-h", "--help"}:
+        print(_hub_machine_help())
+        return 0
+    command, rest = args[0], args[1:]
+    if command not in {"retire", "restore"}:
+        print(f"Unknown machine command: {command}\n\n{_hub_machine_help()}", file=sys.stderr)
+        return 2
+    from patchbay.hub.runtime import HubRuntime
+
+    parser = argparse.ArgumentParser(description=f"{command.title()} a PatchBay Hub edge enrollment.")
+    parser.add_argument("machine_id", help="Machine id to update.")
+    parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+    parser.add_argument("--reason", default="", help="Reason for retirement. Used only by retire.")
+    parser.add_argument("--superseded-by", default="", help="Replacement machine id. Used only by retire.")
+    parser.add_argument("--json", action="store_true")
+    parsed = parser.parse_args(rest)
+    runtime = HubRuntime(load_config(parsed.config))
+    if command == "retire":
+        result = runtime.retire_machine(
+            machine_id=parsed.machine_id,
+            reason=parsed.reason,
+            superseded_by=parsed.superseded_by,
+        )
+    else:
+        result = runtime.restore_machine(machine_id=parsed.machine_id)
+    if parsed.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        machine = result.get("machine") if isinstance(result.get("machine"), dict) else {}
+        print(f"{machine.get('machine_id', parsed.machine_id)}: {machine.get('status', command)}")
     return 0
 
 
@@ -948,6 +985,8 @@ def _hub_help() -> str:
 Usage:
   patchbay hub start --config config.yaml
   patchbay hub enroll-code create --name <machine-name> [--tag laptop] [--json]
+  patchbay hub machine retire <machine-id> [--reason <text>] [--superseded-by <machine-id>] [--json]
+  patchbay hub machine restore <machine-id> [--json]
 
 Hub mode is optional. It exposes one MCP server that routes work to enrolled PatchBay Edge machines."""
 
@@ -957,6 +996,16 @@ def _hub_enroll_code_help() -> str:
 
 Usage:
   patchbay hub enroll-code create --name <machine-name> [--tag laptop] [--ttl-minutes 30] [--json]"""
+
+
+def _hub_machine_help() -> str:
+    return """PatchBay Hub machine administration
+
+Usage:
+  patchbay hub machine retire <machine-id> [--reason <text>] [--superseded-by <machine-id>] [--json]
+  patchbay hub machine restore <machine-id> [--json]
+
+Retired machines are preserved for audit/history, hidden from default fleet views, excluded from routing, and rejected by old edge tokens."""
 
 
 def _edge_help() -> str:

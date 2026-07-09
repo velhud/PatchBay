@@ -75,8 +75,27 @@ def test_hub_initialize_and_tool_list(tmp_path):
     assert "patchbay_worker_start" in names
     assert "patchbay_worker_start_auto" in names
     assert "patchbay_worker_integrate" in names
+    machine_list_tool = next(tool for tool in tools["result"]["tools"] if tool["name"] == "patchbay_machine_list")
+    assert "include_retired" in machine_list_tool["inputSchema"]["properties"]
     status_tool = next(tool for tool in tools["result"]["tools"] if tool["name"] == "patchbay_worker_status")
     assert status_tool["annotations"]["readOnlyHint"] is False
+
+
+def test_hub_protocol_machine_list_hides_retired_by_default(tmp_path):
+    runtime = HubRuntime(hub_config(tmp_path, routing_enabled=True))
+    old_code = runtime.create_enrollment_code(name="Old")["code"]
+    runtime.enroll_machine(code=old_code, machine_id="old", display_name="Old")
+    new_code = runtime.create_enrollment_code(name="New")["code"]
+    runtime.enroll_machine(code=new_code, machine_id="new", display_name="New")
+    runtime.retire_machine(machine_id="old", reason="superseded", superseded_by="new")
+    protocol = HubProtocol(runtime)
+
+    current = call(protocol, "patchbay_machine_list")
+    audit = call(protocol, "patchbay_machine_list", {"include_retired": True})
+
+    assert [machine["machine_id"] for machine in current["machines"]] == ["new"]
+    assert current["hidden_retired_count"] == 1
+    assert {machine["machine_id"]: machine["status"] for machine in audit["machines"]}["old"] == "retired"
 
 
 def test_hub_protocol_queues_worker_start_for_machine(tmp_path):
