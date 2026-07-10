@@ -865,6 +865,7 @@ class HubRuntimeV2:
                     if old.get(field) and immutable.get(field) and old[field] != immutable[field]:
                         raise HubStoreV2Conflict(f"immutable_fleet_worker_{field}_conflict")
                 immutable = {**deepcopy(old), **{key: value for key, value in immutable.items() if value}}
+                immutable["created_at"] = old.get("created_at", received_at)
             self.store.put_entity(
                 FLEET_WORKER_ENTITY,
                 identity.fleet_worker_ref,
@@ -885,6 +886,17 @@ class HubRuntimeV2:
                     "tombstoned": False,
                 }
             )
+            existing_projection = self.store.get_entity(
+                WORKER_PROJECTION_ENTITY, identity.fleet_worker_ref
+            )
+            if (
+                existing_projection is not None
+                and not existing_projection["record"].get("tombstoned")
+                and value.get("content_sha256")
+                and existing_projection["record"].get("content_sha256")
+                == value.get("content_sha256")
+            ):
+                continue
             self._upsert_entity(WORKER_PROJECTION_ENTITY, identity.fleet_worker_ref, worker_projection)
 
         tombstones = projection.get("tombstones") or []

@@ -250,7 +250,7 @@ class ProtocolClient:
         return deepcopy(response["result"]["structuredContent"])
 
 
-def enroll_edge(app: HubAppV2) -> None:
+def enroll_edge(app: HubAppV2) -> dict[str, Any]:
     code = app.runtime.create_enrollment_code(name="Alpha", tags=["linux", "codex"])["code"]
     enrolled = app.runtime.enroll_machine(
         code=code,
@@ -294,6 +294,52 @@ def enroll_edge(app: HubAppV2) -> None:
         },
     )
     assert heartbeat["projection_accepted"] is True
+    return enrolled
+
+
+@pytest.mark.asyncio
+async def test_worker_wait_ignores_unchanged_worker_snapshots_on_new_heartbeats(
+    tmp_path,
+):
+    app = HubAppV2(tmp_path / "hub-v2.sqlite3", edge_delivery=FakeEdgeDelivery())
+    enrolled = enroll_edge(app)
+    worker = {
+        "edge_worker_id": "worker-stable",
+        "name": "Stable Worker",
+        "work_group_id": "",
+        "worker_state": "available",
+        "turn_state": "working",
+        "liveness": "active",
+        "content_revision": "sha256:stable",
+        "content_sha256": "stable",
+    }
+
+    app.runtime.heartbeat(
+        machine_id=MACHINE_ID,
+        token=enrolled["node_token"],
+        edge_generation=EDGE_GENERATION,
+        projection_revision=2,
+        worker_projection={"snapshot_kind": "full", "workers": [worker]},
+    )
+    initial = app.projection_port.query(view="status", filters={}, route={})
+    revision = initial["projection_revision"]
+
+    app.runtime.heartbeat(
+        machine_id=MACHINE_ID,
+        token=enrolled["node_token"],
+        edge_generation=EDGE_GENERATION,
+        projection_revision=3,
+        worker_projection={"snapshot_kind": "full", "workers": [worker]},
+        resource_status={"cpu_percent": 75.0},
+    )
+    repeated = app.projection_port.query(view="status", filters={}, route={})
+    waited = await app.projection_port.wait(
+        filters={}, route={}, since_revision=revision, timeout_seconds=0.05
+    )
+
+    assert repeated["projection_revision"] == revision
+    assert waited["changed"] is False
+    assert waited["projection_revision"] == revision
 
 
 @pytest.mark.asyncio
