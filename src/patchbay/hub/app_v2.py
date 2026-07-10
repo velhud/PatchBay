@@ -1183,6 +1183,8 @@ class HubAppV2:
             dict(await self.runtime.handle_tool_call(name, arguments, context=context))
         )
         delivered = await self.dispatch_port.dispatch_pending(context=context)
+        if name == "patchbay_operation_status" and arguments.get("include_result"):
+            return self._refresh_operation_status_result(arguments, result)
         if not delivered:
             return result
         if name in {"patchbay_work_group_create", "patchbay_work_group_resume", "patchbay_work_group_reassign"}:
@@ -1191,8 +1193,6 @@ class HubAppV2:
             return await self._refresh_worker_result(name, arguments, result, context=context)
         if name in _PRO_REQUEST_MUTATION_TOOLS:
             return self._refresh_pro_request_result(result)
-        if name == "patchbay_operation_status" and arguments.get("include_result"):
-            return self._refresh_operation_status_result(arguments, result)
         return result
 
     def _refresh_operation_status_result(
