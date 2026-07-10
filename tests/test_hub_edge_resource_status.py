@@ -4,6 +4,24 @@ from patchbay.hub import edge
 from patchbay.hub.runtime import HubRuntime
 
 
+def test_full_history_projection_counts_only_active_workers(monkeypatch, tmp_path):
+    monkeypatch.setattr(edge, "_disk_telemetry_path", lambda config: tmp_path)
+    status = edge.build_resource_status(
+        {"server": {"max_concurrent_jobs": 25}},
+        {
+            "workers": [
+                {"turn_state": "idle"},
+                {"turn_state": "completed"},
+                {"turn_state": "working"},
+                {"state": "starting"},
+            ]
+        },
+    )
+
+    assert status["active_workers"] == 2
+    assert status["free_worker_slots"] == 23
+
+
 def test_wsl_virtual_disk_does_not_become_effective_free(monkeypatch, tmp_path):
     monkeypatch.setattr(edge, "_is_wsl", lambda: True)
     monkeypatch.setattr(edge, "_windows_host_disk_status", lambda: {})

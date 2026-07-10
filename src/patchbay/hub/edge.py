@@ -224,7 +224,13 @@ def _active_workers_from_status(status: Mapping[str, Any]) -> int:
         return max(0, _as_int(counts.get("active"), 0))
     workers = status.get("workers")
     if isinstance(workers, list):
-        return len(workers)
+        return sum(
+            1
+            for worker in workers
+            if isinstance(worker, Mapping)
+            and str(worker.get("turn_state") or worker.get("state") or "")
+            in {"starting", "working"}
+        )
     return 0
 
 
