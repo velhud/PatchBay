@@ -17,9 +17,26 @@
 - Added installable onboarding/transport commands: `patchbay`, `patchbay-stdio`, `patchbay setup`, `patchbay settings`, stdio MCP transport, explicit `patchbay install-cloudflared`, ngrok/stable tunnel shortcuts, and URL copy/open controls.
 - Clarified multi-repository launcher behavior: `--root` narrows the allowed root set and every additional repository must be passed with `--allow-root` or configured under `repositories.allowed`.
 - Fixed worker lifecycle reconciliation so a job is not falsely marked failed while its executor task is still parsing a just-exited Codex process, successful completion clears stale transient error text, and completed durable job records are cleaned on load.
+- Added Hub V2's exact 31-tool manager surface, durable work groups and lanes,
+  availability-only machine placement with one-machine group pinning, routed
+  workspace inspection, full natural-language worker lifecycle parity, signed
+  integration, operation recovery, and durable Hub/Edge restart continuity.
+- Fixed deterministic Edge refusals such as duplicate worker names so they
+  return terminal actionable errors instead of uncertain outcomes; reruns can
+  use unique names or `auto_suffix`.
+- Made Hub worker waits state-sensitive: ordinary machine heartbeats and
+  resource telemetry no longer wake worker waits, and an omitted
+  `since_revision` now waits from the worker's current projection rather than
+  returning historical state immediately.
 - Verified local MCP probing, real worker phase evals, real `codex_plan_job` execution, and direct tokenized public-tunnel MCP artifact worker simulation with Codex CLI `0.142.2`.
+- Verified the production public Hub connector outside-in with the exact 31
+  exposed tools, a durable group on a real Edge, two parallel Codex workers,
+  same-worker continuation, signed isolated-worktree integration without an
+  automatic commit, base-checkout verification, cleanup, and group closure.
 - Added CodexPro attribution in `NOTICE` and README.
-- Public release remains pending real ChatGPT Developer Mode natural tool selection, ChatGPT-originated worker flow through a token-gated tunnel when advertised, apply-job, and resume evals on disposable repos.
+- Independent ChatGPT browser-conversation behavior remains deployment-specific
+  operational evidence; the generic public connector acceptance contract is
+  documented under `docs/testing/public-hub-acceptance.md`.
 
 ## v0.1.0
 
