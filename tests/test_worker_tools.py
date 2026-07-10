@@ -97,6 +97,61 @@ async def test_tool_handler_exposes_worker_option_menu(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_tool_handler_forwards_worker_integrate_tokens(monkeypatch, tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    handler = ToolHandler(config, manager, executor)
+    captured = {}
+
+    async def fake_integrate_worker(**kwargs):
+        captured.update(kwargs)
+        return {"applied": True}
+
+    monkeypatch.setattr(handler.worker_runtime, "integrate_worker", fake_integrate_worker)
+
+    result = await handler.handle_tool_call(
+        "codex_worker_integrate",
+        {
+            "worker": "Implementer",
+            "preview_token": "pit2.signed-preview",
+            "idempotency_key": "integrate-attempt-1",
+        },
+    )
+
+    assert result == {"applied": True}
+    assert captured["preview_token"] == "pit2.signed-preview"
+    assert captured["idempotency_key"] == "integrate-attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_tool_handler_forwards_worker_stop_discard_confirmation(monkeypatch, tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    handler = ToolHandler(config, manager, executor)
+    captured = {}
+
+    async def fake_stop_worker(**kwargs):
+        captured.update(kwargs)
+        return {"workspace_cleaned": True}
+
+    monkeypatch.setattr(handler.worker_runtime, "stop_worker", fake_stop_worker)
+
+    result = await handler.handle_tool_call(
+        "codex_worker_stop",
+        {
+            "worker": "Implementer",
+            "cleanup_workspace": True,
+            "discard_unintegrated_changes": True,
+        },
+    )
+
+    assert result == {"workspace_cleaned": True}
+    assert captured["discard_unintegrated_changes"] is True
+
+
+@pytest.mark.asyncio
 async def test_tool_handler_exposes_natural_worker_flow(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
