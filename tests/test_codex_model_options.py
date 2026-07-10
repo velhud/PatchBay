@@ -64,8 +64,11 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
         "GPT-5.6 Terra",
         "GPT-5.6 Sol",
     }
-    assert "Specialized ultra-fast worker" in ladder["Spark"]["role"]
-    assert "quota pressure" in ladder["GPT-5.4 Mini"]["caveats"]
+    assert "Preferred first-choice small worker" in ladder["Spark"]["role"]
+    assert "Prefer it over GPT-5.4 Mini" in ladder["Spark"]["role"]
+    assert "fall back immediately to GPT-5.4 Mini" in ladder["Spark"]["caveats"]
+    assert "automatic operational fallback" in ladder["GPT-5.4 Mini"]["caveats"]
+    assert "choose Spark first" in guidance["manager_rule"]
     assert "legacy serious-worker fallback" in ladder["GPT-5.4"]["role"]
     assert "Legacy frontier fallback" in ladder["GPT-5.5"]["role"]
     assert "Default compact standard worker" in ladder["GPT-5.6 Luna"]["role"]

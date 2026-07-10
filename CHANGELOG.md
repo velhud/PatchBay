@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Made Spark the preferred first choice over GPT-5.4 Mini for bounded small-worker assignments, with an explicit immediate Mini fallback when Spark is unavailable, quota-depleted, or context-constrained.
+
 - Rewrote public positioning docs around PatchBay as a powerful ChatGPT-to-local-Codex control plane that eliminates copy-paste between ChatGPT context and local Codex execution.
 - Expanded README and architecture diagrams to cover the current service graph: MCP sessions, tool modes, descriptors, Apps card, workspace context, workers, artifact inbox, job execution, power tools, repo locks, and runtime state.
 - Reworked Quick Start around the real ChatGPT connector flow: start PatchBay with a tokenized HTTPS `/mcp` tunnel, create the ChatGPT connector, add it in a new chat, and verify `codex_self_test` plus `codex_open_workspace`.

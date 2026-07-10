@@ -103,6 +103,9 @@ def test_initialize_is_manager_first_and_carries_frozen_contract_metadata():
     assert "GPT-5.6 Luna" in HUB_V2_INSTRUCTIONS
     assert "GPT-5.6 Terra" in HUB_V2_INSTRUCTIONS
     assert "GPT-5.6 Sol" in HUB_V2_INSTRUCTIONS
+    assert "choose Spark first" in HUB_V2_INSTRUCTIONS
+    assert "immediately continue or retry the same assignment" in HUB_V2_INSTRUCTIONS
+    assert "preserve the lane and record the fallback" in HUB_V2_INSTRUCTIONS
     assert "0.144.1 exposes ultra" in HUB_V2_INSTRUCTIONS
     assert "tool-call" in HUB_V2_INSTRUCTIONS
     assert "continuation note" in HUB_V2_INSTRUCTIONS

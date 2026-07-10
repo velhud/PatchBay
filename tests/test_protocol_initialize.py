@@ -62,6 +62,8 @@ def test_initialize_includes_server_instructions():
     assert "GPT-5.6 Luna as the default compact standard worker" in result["instructions"]
     assert "GPT-5.6 Terra as the default serious worker" in result["instructions"]
     assert "GPT-5.6 Sol for highest-authority" in result["instructions"]
+    assert "choose Spark first" in result["instructions"]
+    assert "immediately continue or retry the same assignment with GPT-5.4 Mini" in result["instructions"]
     assert "0.144.1 exposes ultra" in result["instructions"]
     assert "explicit named PatchBay workers" in result["instructions"]
     assert "integration_preview" in result["instructions"]

@@ -213,7 +213,7 @@ First, if the task needs a specific Codex model or reasoning depth, call `codex_
 }
 ```
 
-Then pass the selected values only when they matter. Optimize for expected subscription use to a verified result: GPT-5.6 Luna is the compact standard default, GPT-5.6 Terra is the main serious worker, and GPT-5.6 Sol is the highest-authority lane. Spark is a separate-quota, latency-first preview choice for tiny bounded work; GPT-5.4 Mini is the quota-saving choice for simple high-volume work; GPT-5.4 and GPT-5.5 are availability or evidence-backed regression fallbacks. The installed Codex catalog returned by `codex_worker_options` is the authority for which models and reasoning efforts are currently usable.
+Then pass the selected values only when they matter. Optimize for expected subscription use to a verified result: GPT-5.6 Luna is the compact standard default, GPT-5.6 Terra is the main serious worker, and GPT-5.6 Sol is the highest-authority lane. For bounded small-worker assignments that either Spark or GPT-5.4 Mini can handle, choose Spark first because it is dramatically faster and uses a separate preview quota. If Spark is unavailable, depleted, or too context-constrained, immediately continue or retry the same assignment with GPT-5.4 Mini. GPT-5.4 and GPT-5.5 are availability or evidence-backed regression fallbacks. The installed Codex catalog returned by `codex_worker_options` is the authority for which models and reasoning efforts are currently usable.
 
 ```json
 {

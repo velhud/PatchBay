@@ -31,23 +31,25 @@ MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
         {
             "model_family": "Spark",
             "role": (
-                "Specialized ultra-fast worker for tiny, bounded, latency-sensitive reading, edits, tests, and "
-                "interactive exploration when its separate research-preview quota is available."
+                "Preferred first-choice small worker for bounded reading, focused search, direct checks, simple edits, "
+                "tests, documentation, extraction, and interactive exploration. Prefer it over GPT-5.4 Mini whenever "
+                "the assignment fits because Spark is dramatically faster and uses a separate research-preview quota."
             ),
             "reasoning": "Use medium or high for ordinary compact work; use higher reasoning only when the brief is still small but judgment matters.",
             "caveats": (
-                "Spark is not the general small-worker default: it is less capable than GPT-5.4 Mini on published "
-                "coding evaluations, has a smaller context window, is Pro-only during preview, and may queue or deplete."
+                "Spark has a smaller context window and slightly lower published coding results than GPT-5.4 Mini. "
+                "Do not force it onto work that needs broader context or stronger judgment. If Spark is unavailable, "
+                "its preview quota is depleted, or its context is insufficient, fall back immediately to GPT-5.4 Mini."
             ),
         },
         {
             "model_family": "GPT-5.4 Mini",
             "role": (
-                "Quota-saving standard worker for simple, deterministic, high-volume tasks when maximizing included "
-                "subscription capacity matters more than the stronger judgment of GPT-5.6 Luna."
+                "Immediate fallback for the same bounded small-worker assignments when Spark is unavailable, quota-"
+                "depleted, or context-constrained; also use it directly when a small task exceeds Spark's context or reliability."
             ),
             "reasoning": "Use medium or high for routine trusted worker tasks.",
-            "caveats": "Use GPT-5.6 Luna by default for compact standard work; keep Mini for genuine quota pressure or simple work.",
+            "caveats": "Between Spark and Mini, choose Spark first whenever it can handle the assignment; Mini is the automatic operational fallback.",
         },
         {
             "model_family": "GPT-5.4",
@@ -97,8 +99,10 @@ MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
     ],
     "manager_rule": (
         "For worker teams, use GPT-5.6 Luna for compact standard lanes, GPT-5.6 Terra for the main serious lanes, "
-        "and GPT-5.6 Sol for final authority or unusually hard synthesis. Use Spark for tiny latency-sensitive work, "
-        "GPT-5.4 Mini under genuine quota pressure, and GPT-5.4/GPT-5.5 as availability or regression fallbacks."
+        "and GPT-5.6 Sol for final authority or unusually hard synthesis. For every bounded small-worker assignment "
+        "that either Spark or GPT-5.4 Mini could handle, choose Spark first for its speed and separate preview quota; "
+        "fall back immediately to GPT-5.4 Mini when Spark is unavailable, depleted, or too context-constrained. Keep "
+        "GPT-5.4/GPT-5.5 as availability or regression fallbacks."
     ),
     "cost_rule": (
         "Optimize expected subscription use to a verified correct result, not nominal cost per turn. Prefer the live "

@@ -48,8 +48,8 @@ The model policy is advisory and optimizes expected subscription use to a verifi
 - GPT-5.6 Luna is the compact standard default.
 - GPT-5.6 Terra is the main serious worker for normal above-average tasks.
 - GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, unresolved problems, sensitive/final judgment, and unusually hard synthesis.
-- Spark is the separate-quota, latency-first preview choice for tiny bounded work.
-- GPT-5.4 Mini is the quota-saving choice for simple high-volume work.
+- Spark is the preferred first choice over GPT-5.4 Mini for every bounded small-worker assignment it can handle because it is dramatically faster and uses a separate preview quota.
+- GPT-5.4 Mini is the immediate fallback when Spark is unavailable, quota-depleted, or too context-constrained; continue or retry the same assignment instead of abandoning the lane.
 - GPT-5.4 and GPT-5.5 are availability, compatibility, or evidence-backed regression fallbacks.
 
 The installed Codex catalog is authoritative for availability and supported efforts. PatchBay accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, while individual models may expose only a subset. Codex CLI `0.144.1` exposes `ultra` on supported models such as Terra and Sol; it may automatically delegate inside one worker. Explicit named PatchBay workers remain preferred when visible lanes, reports, worktrees, or integration control matter.

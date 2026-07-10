@@ -139,7 +139,7 @@ Model-selection guidance is not a hard router. It should help ChatGPT manage wor
 - GPT-5.6 Luna is the default compact standard worker for bounded implementation, investigation, tests, review helpers, and high-volume team lanes.
 - GPT-5.6 Terra is the default serious worker for normal above-average repository work, multi-step analysis, implementation, debugging, verification, and most investigator/implementer/reviewer lanes.
 - GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and the hardest implementation or review lanes.
-- Spark is reserved for tiny latency-sensitive work when its separate research-preview quota is useful. GPT-5.4 Mini is the quota-saving choice for simple high-volume work.
+- Spark is the preferred first choice over GPT-5.4 Mini for bounded small-worker assignments it can handle because it is dramatically faster and uses a separate research-preview quota. GPT-5.4 Mini is the immediate fallback when Spark is unavailable, depleted, or too context-constrained; continue or retry the same assignment rather than abandoning the lane.
 - GPT-5.4 and GPT-5.5 remain availability, compatibility, or evidence-backed regression fallbacks.
 - Optimize expected subscription use to a verified result, not nominal cost per turn. Codex CLI `0.144.1` exposes `ultra` as a reasoning effort on supported models such as Terra and Sol; it may automatically delegate inside one worker. Prefer explicit named PatchBay workers when visible lanes, reports, worktrees, or integration control matter.
 
@@ -292,7 +292,7 @@ These descriptors are not only API documentation; they are part of the model pro
 - what should be inspected before a mutating follow-up;
 - what validation or blocked-state behavior ChatGPT should report after the tool result.
 - when consequential worker assignments should request durable report files or changed-file evidence instead of relying on a compressed chat/tool summary.
-- when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool, including the advisory Luna / Terra / Sol defaults and the specialized or fallback roles of Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5.
+- when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool, including the advisory Luna / Terra / Sol defaults, the Spark-first / GPT-5.4 Mini-fallback small-worker rule, and the fallback roles of GPT-5.4 and GPT-5.5.
 - that paging, byte caps, and bounded result fields are response-stability controls, not an instruction to save tokens or avoid necessary evidence.
 - that worker failure diagnostics such as `codex_auth_refresh_failed` are manager-facing operational facts, not repository-analysis conclusions.
 

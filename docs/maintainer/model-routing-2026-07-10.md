@@ -11,12 +11,12 @@ PatchBay should optimize expected subscription use to a verified correct result,
 | Compact standard worker | GPT-5.6 Luna | Much stronger than the older small models and close to GPT-5.5 on several coding tasks, with materially higher included capacity than frontier models. |
 | Main serious worker | GPT-5.6 Terra | Broadly matches or exceeds GPT-5.5 while retaining an everyday subscription-usage profile. |
 | Highest-authority worker | GPT-5.6 Sol | Strongest broad model; use for hard synthesis, architecture, unresolved failures, sensitive review, and final judgment. |
-| Tiny latency-sensitive worker | GPT-5.3-Codex-Spark | Separate Pro preview quota and extreme speed; keep tasks bounded because intelligence and context are lower. |
-| Maximum-capacity simple worker | GPT-5.4 Mini | Highest standard included message capacity; use only when the task is simple enough that Luna's higher success probability is not worth the difference. |
+| Preferred small worker | GPT-5.3-Codex-Spark | First choice for bounded small-worker assignments because its separate Pro preview quota and extreme speed materially increase throughput; keep tasks bounded because intelligence and context are lower. |
+| Small-worker fallback | GPT-5.4 Mini | Immediate fallback when Spark is unavailable, preview-quota depleted, or too context-constrained; also use directly when a small task needs Mini's broader context or slightly stronger reliability. |
 | Legacy serious fallback | GPT-5.4 | Use for temporary 5.6 unavailability, compatibility, or a proven regression. |
 | Legacy frontier fallback | GPT-5.5 | Use for temporary 5.6 unavailability or task families where its long-context, multimodal, or tool behavior is measurably better. |
 
-Normal worker teams should therefore use Luna for compact lanes, Terra for primary investigator/implementer/reviewer lanes, and Sol for authority or difficult synthesis. Escalate after evidence of failure or uncertainty; do not assign Sol to every lane.
+Normal worker teams should therefore use Luna for compact lanes, Terra for primary investigator/implementer/reviewer lanes, and Sol for authority or difficult synthesis. Within the bounded small-worker lane, always try Spark before Mini when the assignment fits, then fall back immediately to Mini if Spark is unavailable, depleted, or context-inadequate. Escalate after evidence of failure or uncertainty; do not assign Sol to every lane.
 
 ## Intelligence evidence
 

@@ -66,10 +66,13 @@ Codex catalog is the availability and effort authority. Use GPT-5.6 Luna for
 compact standard lanes, GPT-5.6 Terra for most serious investigator,
 implementer, debugger, and reviewer lanes, and GPT-5.6 Sol for highest-authority
 architecture, difficult synthesis, unresolved failures, sensitive judgment, or
-final review. Spark is for tiny latency-sensitive work with its separate quota;
-GPT-5.4 Mini is for genuinely simple high-volume work or quota pressure; GPT-5.4
-and GPT-5.5 are availability, compatibility, or evidence-backed regression
-fallbacks. Codex CLI 0.144.1 exposes ultra for supported models such as Terra
+final review. For every bounded small-worker assignment that either Spark or
+GPT-5.4 Mini can handle, choose Spark first because it is dramatically faster
+and uses a separate preview quota. If Spark is unavailable, quota-depleted, or
+too context-constrained, immediately continue or retry the same assignment with
+GPT-5.4 Mini; preserve the lane and record the fallback rather than abandoning
+the task. GPT-5.4 and GPT-5.5 are availability, compatibility, or evidence-backed
+regression fallbacks. Codex CLI 0.144.1 exposes ultra for supported models such as Terra
 and Sol; it may delegate internally inside one worker. Prefer explicit named
 PatchBay lanes when visible ownership, reports, worktrees, or integration matter.
 
