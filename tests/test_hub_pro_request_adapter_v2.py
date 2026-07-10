@@ -784,6 +784,8 @@ async def test_production_hub_routes_remote_edge_pro_requests_end_to_end(tmp_pat
             "patchbay_pro_request_read", read_args, context=context
         )
         if read["status"] == "pending":
+            await asyncio.sleep(0)
+            assert not run_task.done(), repr(run_task.exception())
             await _wait_for_terminal_operation(app, read["operation"]["operation_id"])
             completed_read = await app.handle_tool_call(
                 "patchbay_operation_status",

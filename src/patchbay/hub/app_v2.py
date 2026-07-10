@@ -1191,7 +1191,33 @@ class HubAppV2:
             return await self._refresh_worker_result(name, arguments, result, context=context)
         if name in _PRO_REQUEST_MUTATION_TOOLS:
             return self._refresh_pro_request_result(result)
+        if name == "patchbay_operation_status" and arguments.get("include_result"):
+            return self._refresh_operation_status_result(arguments, result)
         return result
+
+    def _refresh_operation_status_result(
+        self,
+        arguments: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Decorate completed remote results exactly as their owning tool does."""
+
+        refreshed = deepcopy(dict(result))
+        operation_id = str(arguments.get("operation_id") or "")
+        operation = self.store.get_operation(operation_id) if operation_id else None
+        if (
+            operation is None
+            or not isinstance(self.pro_request_adapter, FleetHubProRequestAdapterV2)
+            or not str(operation.get("tool") or "").startswith("patchbay_pro_request_")
+        ):
+            return refreshed
+        decorated = self.pro_request_adapter.operation_result(operation)
+        if decorated.get("status") == "pending":
+            return refreshed
+        payload = deepcopy(dict(refreshed.get("result") or {}))
+        payload["domain_result"] = deepcopy(dict(decorated.get("result") or {}))
+        refreshed["result"] = payload
+        return refreshed
 
     def _refresh_pro_request_result(self, result: Mapping[str, Any]) -> dict[str, Any]:
         operation_id = str(_mapping(result.get("operation")).get("operation_id") or "")
