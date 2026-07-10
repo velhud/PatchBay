@@ -621,7 +621,7 @@ async def _wait_for_terminal_operation(app: Any, operation_id: str) -> None:
 
     # The production-shaped Edge loop may share a small CI/VM CPU. Keep this
     # bounded, but do not turn scheduler contention into a false failure.
-    await asyncio.wait_for(wait(), timeout=15)
+    await asyncio.wait_for(wait(), timeout=60)
 
 
 @pytest.mark.asyncio
@@ -802,6 +802,7 @@ async def test_production_hub_routes_remote_edge_pro_requests_end_to_end(tmp_pat
             read_result = read["result"]
             validate_hub_v2_tool_output("patchbay_pro_request_read", read)
         assert "SECRET-PROJECTION-SENTINEL" in read_result["report_markdown"]
+        assert "machine_id" in read_result, completed_read if read["status"] == "pending" else read
         assert read_result["machine_id"] == machine_id
         assert read_result["edge_generation"] == generation
 
