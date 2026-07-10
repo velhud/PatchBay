@@ -89,6 +89,18 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "patch_sha256": {"type": "string"},
         "patch_bytes": {"type": "integer"},
         "patch_truncated": {"type": "boolean"},
+        "preview_token": {"type": "string"},
+        "preview_token_id": {"type": "string"},
+        "preview_token_expires_at": {"type": "number"},
+        "apply_disposition": {"type": "string"},
+        "idempotent_replay": {"type": "boolean"},
+        "reconciled_after_crash": {"type": "boolean"},
+        "blocked": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "stale_bindings": {"type": "array", "items": {"type": "string"}},
+        "discard_unintegrated_changes": {"type": "boolean"},
+        "discard_confirmation_required": {"type": "boolean"},
+        "unintegrated_changed_files": {"type": "array", "items": {"type": "string"}},
         "base_revision": {"type": "string"},
         "worker_base_revision": {"type": "string"},
         "model": {"type": "string"},
@@ -235,7 +247,7 @@ WORKER_EXECUTION_OPTION_PROPERTIES: Dict[str, Any] = {
     },
     "reasoning_effort": {
         "type": "string",
-        "enum": ["minimal", "low", "medium", "high", "xhigh"],
+        "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
         "description": (
             "Optional Codex reasoning effort for supported models. Omit to use the selected model or Codex default."
         ),
@@ -249,7 +261,7 @@ WORKER_TOOLS = [
             "Read-only progressive setup menu for worker execution choices. Call this when ChatGPT needs to "
             "choose a Codex model or reasoning effort before starting or continuing a worker. It loads bounded "
             "model metadata from the installed Codex runtime/catalog, returns advisory model-selection guidance "
-            "for Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5, and explains which fields to pass to "
+            "for GPT-5.6 Sol, Terra, and Luna plus GPT-5.5, GPT-5.4, GPT-5.4 Mini, and Spark, and explains which fields to pass to "
             "codex_worker_start or codex_worker_message. repo_path is accepted as a harmless compatibility field "
             "and ignored because this is a runtime/model menu, not a repository operation. The guidance is a judgment "
             "aid, not a hard router."
@@ -704,7 +716,10 @@ WORKER_TOOLS = [
             "Apply an explicitly accepted isolated writing worker result to the base checkout after inspecting "
             "the report/diff and preferably view=integration_preview. This is the human-level act: use this "
             "colleague's result. It does not commit, does not delete the worker worktree, and refuses dirty-base "
-            "or conflicted application unless an expert override is supplied. If the worker belongs to another "
+            "or conflicted application unless an expert override is supplied. Hub-routed integration requires the "
+            "signed opaque preview_token from the matching integration_preview plus an idempotency_key; the local "
+            "single-machine flow keeps both fields optional. Reusing a successfully applied token returns the prior "
+            "result without applying twice. If the worker belongs to another "
             "MCP connection, retry with takeover=true only after user confirmation."
         ),
         "inputSchema": {
@@ -728,6 +743,20 @@ WORKER_TOOLS = [
                         "with this integration. Unexpected dirty files still block unless allow_dirty_base=true."
                     ),
                 },
+                "preview_token": {
+                    "type": "string",
+                    "description": (
+                        "Optional signed opaque token returned by view=integration_preview. Required for Hub-routed "
+                        "integration and validated whenever supplied."
+                    ),
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": (
+                        "Optional stable caller key for the local flow; required by Hub so apply disposition can be "
+                        "recovered after response loss."
+                    ),
+                },
                 **WORKER_TAKEOVER_PROPERTIES,
             },
             "required": ["worker"],
@@ -743,8 +772,10 @@ WORKER_TOOLS = [
             "view=status first when the worker has recent heartbeat or checkpoints. If the worker still looks live or "
             "has been active for less than the configured confirmation grace window, the first stop call returns "
             "stop_confirmation_required instead of cancelling; wait longer or call again with force=true after a "
-            "deliberate manager decision. Set cleanup_workspace=true only when the "
-            "user intentionally wants to discard that worker's isolated worktree. If the worker belongs to "
+            "deliberate manager decision. Set cleanup_workspace=true only when the user intentionally wants to remove "
+            "that worker's isolated worktree. Cleanup with no changes, or with changes already integrated, remains "
+            "compatible with the legacy local flow. Discarding unintegrated changes additionally requires explicit "
+            "discard_unintegrated_changes=true. If the worker belongs to "
             "another MCP connection, retry with takeover=true only after user confirmation."
         ),
         "inputSchema": {
@@ -759,6 +790,13 @@ WORKER_TOOLS = [
                 "cleanup_workspace": {
                     "type": "boolean",
                     "description": "When true, discard the isolated worker worktree after stopping active work.",
+                },
+                "discard_unintegrated_changes": {
+                    "type": "boolean",
+                    "description": (
+                        "Explicit confirmation required with cleanup_workspace=true when the isolated worktree contains "
+                        "changes that have not been integrated."
+                    ),
                 },
                 "force": {
                     "type": "boolean",

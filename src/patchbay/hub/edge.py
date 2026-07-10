@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -21,7 +23,21 @@ from patchbay.security import redact_sensitive_output
 from patchbay.tools.handler import ToolHandler
 
 
-EDGE_PROFILE_VERSION = 1
+EDGE_PROFILE_VERSION = 2
+EDGE_PROTOCOL_VERSION = "2"
+_DEFAULT_MAX_BACKGROUND_COMMANDS = 4
+_MAX_BACKGROUND_COMMANDS = 64
+
+
+def _new_edge_generation() -> str:
+    return f"edgegen_{secrets.token_hex(12)}"
+
+
+def _ensure_edge_generation(profile: dict[str, Any]) -> bool:
+    if str(profile.get("edge_generation") or "").strip():
+        return False
+    profile["edge_generation"] = _new_edge_generation()
+    return True
 
 
 def edge_profile_path(environ: Mapping[str, str] | None = None) -> Path:
@@ -90,7 +106,7 @@ def build_capabilities(config: Mapping[str, Any]) -> dict[str, Any]:
     server_config = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
     security_config = config.get("security", {}) if isinstance(config.get("security"), dict) else {}
     power_config = config.get("power_tools", {}) if isinstance(config.get("power_tools"), dict) else {}
-    return {
+    capabilities = {
         "codex_worker_tools": True,
         "max_concurrent_jobs": server_config.get("max_concurrent_jobs"),
         "queue_enabled": bool(server_config.get("queue_enabled", False)),
@@ -98,6 +114,60 @@ def build_capabilities(config: Mapping[str, Any]) -> dict[str, Any]:
         "direct_write": bool(power_config.get("direct_write", False)),
         "bash_mode": power_config.get("bash_mode", "off"),
     }
+    capabilities.update(_hub_v2_contract_capabilities())
+    return capabilities
+
+
+def _hub_v2_contract_capabilities() -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "protocol_version": EDGE_PROTOCOL_VERSION,
+        "contract_version": "",
+        "manifest_hash": "",
+        "schema_hash": "",
+        "contract_hash": "",
+        "action_capability_version": "",
+        "action_capabilities": {},
+        "action_capability_versions": {},
+    }
+    try:
+        tool_surface = importlib.import_module("patchbay.hub.tool_surface")
+        action_map = getattr(tool_surface, "HUB_V2_EDGE_ACTION_MAP")
+        action_specs = getattr(tool_surface, "HUB_V2_ACTION_SPECS")
+        default_action_version = str(getattr(tool_surface, "HUB_V2_ACTION_CAPABILITY_VERSION"))
+        action_capabilities: dict[str, str] = {}
+        for public_name, action in dict(action_map).items():
+            action_name = str(action or "").strip()
+            if not action_name:
+                continue
+            spec = action_specs.get(public_name) if isinstance(action_specs, Mapping) else None
+            version = spec.get("capability_version") if isinstance(spec, Mapping) else default_action_version
+            action_capabilities[action_name] = str(version or default_action_version)
+        for spec in action_specs.values():
+            if not isinstance(spec, Mapping):
+                continue
+            version = str(spec.get("capability_version") or default_action_version)
+            view_actions = spec.get("view_actions")
+            if isinstance(view_actions, Mapping):
+                for action in view_actions.values():
+                    action_name = str(action or "").strip()
+                    if action_name:
+                        action_capabilities[action_name] = version
+        fields.update(
+            {
+                "contract_version": str(getattr(tool_surface, "HUB_V2_CONTRACT_VERSION")),
+                "manifest_hash": str(getattr(tool_surface, "HUB_V2_MANIFEST_HASH")),
+                "schema_hash": str(getattr(tool_surface, "HUB_V2_SCHEMA_HASH")),
+                "contract_hash": str(getattr(tool_surface, "HUB_V2_CONTRACT_HASH")),
+                "action_capability_version": default_action_version,
+                "action_capabilities": dict(sorted(action_capabilities.items())),
+                "action_capability_versions": dict(sorted(action_capabilities.items())),
+            }
+        )
+    except Exception:
+        # WP-00 may be landing concurrently. Empty contract fields advertise an
+        # incompatible Edge without breaking V1 enrollment or heartbeats.
+        pass
+    return fields
 
 
 def build_workspaces(config: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -559,6 +629,8 @@ def enroll_edge(
     token = str(result.get("node_token") or "")
     if not token:
         raise RuntimeError("Hub did not return a node token")
+    machine = result.get("machine") if isinstance(result.get("machine"), Mapping) else {}
+    edge_generation = str(result.get("edge_generation") or machine.get("edge_generation") or "").strip()
     profile = {
         "hub_url": normalize_hub_url(hub_url),
         "machine_id": machine_id,
@@ -568,6 +640,10 @@ def enroll_edge(
         "node_token": token,
         "enrolled_at": time.time(),
     }
+    if edge_generation:
+        profile["edge_generation"] = edge_generation
+    else:
+        _ensure_edge_generation(profile)
     profile_path = save_edge_profile(profile, environ=environ)
     return {"profile_path": profile_path, "profile": public_edge_profile(profile), "machine": result.get("machine")}
 
@@ -577,12 +653,24 @@ class EdgeRunner:
 
     def __init__(self, config: dict[str, Any], profile: Mapping[str, Any] | None = None):
         self.config = config
+        self._persist_profile = profile is None
         self.profile = dict(profile or load_edge_profile())
         if not self.profile:
             raise ValueError("No edge profile found. Run `patchbay edge enroll` first.")
+        profile_changed = _ensure_edge_generation(self.profile)
+        self._edge_generation = str(self.profile["edge_generation"])
+        self._projection_revision = max(0, _as_int(self.profile.get("projection_revision"), 0))
+        self.profile["projection_revision"] = self._projection_revision
+        if profile_changed and self._persist_profile:
+            save_edge_profile(self.profile)
         self.manager = JobManager(config)
         self.executor = JobExecutor(config, self.manager)
         self.handler = ToolHandler(config, self.manager, self.executor)
+        self._command_tasks: set[asyncio.Task[dict[str, Any]]] = set()
+        self._target_locks: dict[str, asyncio.Lock] = {}
+        self._target_lock_users: dict[str, int] = {}
+        self._background_errors: list[str] = []
+        self._command_task_limit = self._max_background_commands()
 
     @property
     def hub_url(self) -> str:
@@ -596,10 +684,43 @@ class EdgeRunner:
     def token(self) -> str:
         return str(self.profile.get("node_token") or "")
 
+    @property
+    def edge_generation(self) -> str:
+        return self._edge_generation
+
+    @property
+    def projection_revision(self) -> int:
+        return self._projection_revision
+
+    @property
+    def background_errors(self) -> tuple[str, ...]:
+        return tuple(self._background_errors)
+
+    def _max_background_commands(self) -> int:
+        hub_config = self.config.get("hub") if isinstance(self.config.get("hub"), Mapping) else {}
+        edge_config = hub_config.get("edge") if isinstance(hub_config.get("edge"), Mapping) else {}
+        server_config = self.config.get("server") if isinstance(self.config.get("server"), Mapping) else {}
+        configured = edge_config.get("max_concurrent_commands")
+        if configured is None:
+            configured = server_config.get("max_concurrent_jobs")
+        limit = _as_int(configured, _DEFAULT_MAX_BACKGROUND_COMMANDS)
+        return max(1, min(limit, _MAX_BACKGROUND_COMMANDS))
+
+    def _advance_projection_revision(self) -> int:
+        self._projection_revision += 1
+        self.profile["edge_generation"] = self._edge_generation
+        self.profile["projection_revision"] = self._projection_revision
+        if self._persist_profile:
+            save_edge_profile(self.profile)
+        return self._projection_revision
+
     async def heartbeat(self) -> dict[str, Any]:
+        projection_revision = self._advance_projection_revision()
         status = await worker_status(self.handler)
         payload = {
             "machine_id": self.machine_id,
+            "edge_generation": self.edge_generation,
+            "projection_revision": projection_revision,
             "capabilities": build_capabilities(self.config),
             "workspaces": build_workspaces(self.config),
             "worker_status": status,
@@ -612,7 +733,11 @@ class EdgeRunner:
             post_json,
             self.hub_url,
             "/edge/poll",
-            {"machine_id": self.machine_id},
+            {
+                "machine_id": self.machine_id,
+                "edge_generation": self.edge_generation,
+                "projection_revision": self.projection_revision,
+            },
             token=self.token,
         )
 
@@ -621,9 +746,80 @@ class EdgeRunner:
             post_json,
             self.hub_url,
             "/edge/result",
-            {"machine_id": self.machine_id, "command_id": command_id, "result": result or {}, "error": error},
+            {
+                "machine_id": self.machine_id,
+                "edge_generation": self.edge_generation,
+                "projection_revision": self.projection_revision,
+                "command_id": command_id,
+                "result": result or {},
+                "error": error,
+            },
             token=self.token,
         )
+
+    def _command_compatibility_error(self, command: Mapping[str, Any]) -> str:
+        requirements: dict[str, Any] = {}
+        for key in ("requirements", "required_contract"):
+            value = command.get(key)
+            if isinstance(value, Mapping):
+                requirements.update(value)
+
+        def required(*keys: str) -> str:
+            for key in keys:
+                value = command.get(key)
+                if value not in (None, ""):
+                    return str(value)
+            for key in keys:
+                nested_key = key.removeprefix("required_")
+                value = requirements.get(nested_key)
+                if value not in (None, ""):
+                    return str(value)
+            return ""
+
+        capabilities = build_capabilities(self.config)
+        comparisons = (
+            (
+                "protocol_version",
+                required("required_protocol_version", "required_protocol"),
+                str(capabilities.get("protocol_version") or ""),
+            ),
+            ("contract_version", required("required_contract_version"), str(capabilities.get("contract_version") or "")),
+            (
+                "contract_hash",
+                required("required_contract_hash", "required_hash"),
+                str(capabilities.get("contract_hash") or ""),
+            ),
+            ("manifest_hash", required("required_manifest_hash"), str(capabilities.get("manifest_hash") or "")),
+            ("schema_hash", required("required_schema_hash"), str(capabilities.get("schema_hash") or "")),
+            (
+                "edge_generation",
+                required("required_edge_generation", "required_generation", "edge_generation"),
+                self.edge_generation,
+            ),
+        )
+        mismatches = [
+            f"{field} requires {expected!r}, edge has {actual!r}"
+            for field, expected, actual in comparisons
+            if expected and expected != actual
+        ]
+
+        action = str(command.get("action") or "")
+        required_action_version = required("required_action_capability_version")
+        required_action_versions = command.get("required_action_capabilities")
+        if not isinstance(required_action_versions, Mapping):
+            required_action_versions = requirements.get("action_capabilities")
+        if not required_action_version and isinstance(required_action_versions, Mapping):
+            required_action_version = str(required_action_versions.get(action) or "")
+        if required_action_version:
+            action_capabilities = capabilities.get("action_capabilities")
+            actual_action_version = (
+                str(action_capabilities.get(action) or "") if isinstance(action_capabilities, Mapping) else ""
+            )
+            if required_action_version != actual_action_version:
+                mismatches.append(
+                    f"action capability {action!r} requires {required_action_version!r}, edge has {actual_action_version!r}"
+                )
+        return "; ".join(mismatches)
 
     async def execute_command(self, command: Mapping[str, Any]) -> dict[str, Any]:
         command_id = str(command.get("command_id") or "")
@@ -632,6 +828,17 @@ class EdgeRunner:
         if not command_id or not action:
             return {"skipped": True, "reason": "No command claimed"}
         try:
+            compatibility_error = self._command_compatibility_error(command)
+            if compatibility_error:
+                return await self.send_result(
+                    command_id,
+                    result={
+                        "status": "blocked",
+                        "reason": "incompatible_edge_contract",
+                        "details": compatibility_error,
+                    },
+                    error=f"incompatible_edge_contract: {compatibility_error}",
+                )
             public_context = command.get("context") if isinstance(command.get("context"), dict) else {}
             public_context = dict(public_context)
             if command.get("work_group_id"):
@@ -648,6 +855,118 @@ class EdgeRunner:
         except Exception as error:
             return await self.send_result(command_id, error=str(error))
 
+    def _command_target_key(self, command: Mapping[str, Any]) -> str:
+        for key in ("target_ref", "fleet_worker_ref", "operation_target"):
+            value = command.get(key)
+            if value:
+                return f"target:{value}"
+        target = command.get("target")
+        if isinstance(target, Mapping):
+            for key in ("fleet_worker_ref", "worker", "worker_id", "name", "repo_path", "workspace_ref"):
+                value = target.get(key)
+                if value:
+                    return f"{key}:{value}"
+        elif target:
+            return f"target:{target}"
+
+        action = str(command.get("action") or "")
+        arguments = command.get("arguments") if isinstance(command.get("arguments"), Mapping) else {}
+        if action in {
+            "codex_worker_message",
+            "codex_worker_stop",
+            "codex_worker_integrate",
+            "codex_worker_cleanup",
+        }:
+            for key in ("fleet_worker_ref", "worker", "worker_id"):
+                value = arguments.get(key)
+                if value:
+                    return f"{key}:{value}"
+        if action == "codex_worker_start" and arguments.get("name"):
+            return f"worker_name:{arguments.get('repo_path') or ''}:{arguments['name']}"
+        return ""
+
+    async def _execute_claimed_command(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        target_key = self._command_target_key(command)
+        if not target_key:
+            return await self.execute_command(command)
+        lock = self._target_locks.setdefault(target_key, asyncio.Lock())
+        self._target_lock_users[target_key] = self._target_lock_users.get(target_key, 0) + 1
+        try:
+            async with lock:
+                return await self.execute_command(command)
+        finally:
+            remaining = self._target_lock_users.get(target_key, 1) - 1
+            if remaining > 0:
+                self._target_lock_users[target_key] = remaining
+            else:
+                self._target_lock_users.pop(target_key, None)
+                if self._target_locks.get(target_key) is lock:
+                    self._target_locks.pop(target_key, None)
+
+    def _collect_command_task(self, task: asyncio.Task[dict[str, Any]]) -> None:
+        self._command_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as error:
+            self._background_errors.append(str(error))
+
+    def _schedule_command(self, command: Mapping[str, Any]) -> bool:
+        if len(self._command_tasks) >= self._command_task_limit:
+            return False
+        command_id = str(command.get("command_id") or "unknown")
+        task = asyncio.create_task(self._execute_claimed_command(command), name=f"patchbay-edge-{command_id}")
+        self._command_tasks.add(task)
+        task.add_done_callback(self._collect_command_task)
+        return True
+
+    async def _heartbeat_loop(self, interval: float) -> None:
+        while True:
+            await self.heartbeat()
+            await asyncio.sleep(interval)
+
+    async def _poll_loop(self, interval: float) -> None:
+        while True:
+            poll_result = await self.poll()
+            command = poll_result.get("command") if isinstance(poll_result.get("command"), dict) else None
+            if command and not self._schedule_command(command):
+                command_id = str(command.get("command_id") or "")
+                if command_id:
+                    await self.send_result(
+                        command_id,
+                        result={"status": "blocked", "reason": "edge_execution_capacity"},
+                        error="edge_execution_capacity: background command limit reached",
+                    )
+            await asyncio.sleep(interval)
+
+    async def shutdown(self, *, cancel: bool = False, timeout_seconds: float | None = None) -> None:
+        tasks = tuple(self._command_tasks)
+        if not tasks:
+            self._target_locks.clear()
+            self._target_lock_users.clear()
+            return
+        if cancel:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            hub_config = self.config.get("hub") if isinstance(self.config.get("hub"), Mapping) else {}
+            edge_config = hub_config.get("edge") if isinstance(hub_config.get("edge"), Mapping) else {}
+            timeout = _as_float(
+                timeout_seconds if timeout_seconds is not None else edge_config.get("shutdown_timeout_seconds"),
+                5.0,
+            )
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=max(0.0, timeout))
+            except asyncio.TimeoutError:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        self._command_tasks.clear()
+        self._target_locks.clear()
+        self._target_lock_users.clear()
+
     async def run_once(self) -> dict[str, Any]:
         heartbeat_result = await self.heartbeat()
         poll_result = await self.poll()
@@ -658,7 +977,19 @@ class EdgeRunner:
         return {"heartbeat": heartbeat_result, "poll": poll_result, "executed": True, "result": result}
 
     async def run_loop(self, interval_seconds: float = 5) -> None:
-        interval = max(1.0, float(interval_seconds))
-        while True:
-            await self.run_once()
-            await asyncio.sleep(interval)
+        interval = max(0.01, float(interval_seconds))
+        control_tasks = (
+            asyncio.create_task(self._heartbeat_loop(interval), name="patchbay-edge-heartbeat"),
+            asyncio.create_task(self._poll_loop(interval), name="patchbay-edge-poll"),
+        )
+        cancelled = False
+        try:
+            await asyncio.gather(*control_tasks)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            for task in control_tasks:
+                task.cancel()
+            await asyncio.gather(*control_tasks, return_exceptions=True)
+            await self.shutdown(cancel=cancelled)

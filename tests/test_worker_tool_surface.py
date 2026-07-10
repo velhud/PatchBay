@@ -20,7 +20,16 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "models" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "reasoning_efforts" in by_name["codex_worker_options"]["outputSchema"]["properties"]
     assert "model_selection_guidance" in by_name["codex_worker_options"]["outputSchema"]["properties"]
-    assert "Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5" in by_name["codex_worker_options"]["description"]
+    assert "GPT-5.6 Sol, Terra, and Luna" in by_name["codex_worker_options"]["description"]
+    assert by_name["codex_worker_start"]["inputSchema"]["properties"]["reasoning_effort"]["enum"] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
     assert "repo_path is accepted as a harmless compatibility field" in by_name["codex_worker_options"]["description"]
     assert "repo_path" in by_name["codex_worker_options"]["inputSchema"]["properties"]
     assert "not a hard router" in by_name["codex_worker_options"]["description"]

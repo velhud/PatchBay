@@ -127,6 +127,7 @@ It is especially useful when you:
 | **ChatGPT connector use** | ChatGPT-ready descriptors, setup output, tokenized tunnel URLs, and worker-first tool mode |
 | **Workspace context** | Repository tree, file reads, search, git status/diff, AGENTS, skills, context packs, and `.ai-bridge` handoffs |
 | **Codex workers** | Named workers, continuation, status, reports, peer context, changed-file inspection, diffs, and stop/integrate controls |
+| **Model-aware delegation** | Live Codex catalog discovery plus advisory Luna/Terra/Sol routing, specialized legacy fallbacks, and per-worker reasoning effort |
 | **Isolation** | Isolated writing worktrees by default, with explicit integration back to the base checkout |
 | **Artifacts** | Import ChatGPT-generated files or zip packages into worker context |
 | **Repository boundary** | Allowed roots, path guard, tokenized public access, tool modes, and mutation locks |
@@ -212,7 +213,7 @@ More detail: [SECURITY.md](SECURITY.md), [docs/security/product-boundary.md](doc
 | **Repository controls** | Allowed roots, path guard, token-gated public tunnels, per-repo mutation locks, and dirty-base checks |
 | **Artifacts** | ChatGPT-generated files/zips can be imported into worker context without editing the repo |
 | **Power modes** | `worker`, `standard`, `full`, and `minimal` tool surfaces with runtime-aware tool advertisement |
-| **Optional hub/edge mode** | `patchbay hub start` plus `patchbay edge start` can expose several enrolled machines behind one ChatGPT connector, with durable work groups pinning each task to one machine |
+| **Optional hub/edge mode** | Set `hub.control_plane: v2`; `patchbay hub start` plus `patchbay edge start` exposes the exact 31-tool manager surface across enrolled machines, with durable work groups pinning each task to one machine. Omitting the setting preserves V1 compatibility. |
 
 ## Current status
 

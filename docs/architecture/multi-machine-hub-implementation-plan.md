@@ -2,6 +2,14 @@
 
 Status: V1 implemented as optional hub/edge mode.
 
+> **Target-architecture notice:** This page records the shipped V1 design and
+> remains current-state and historical implementation evidence. Its reduced Hub
+> control surface is not the accepted Hub V2 contract. The canonical implemented
+> rebuild contract is the
+> [Hub Manager Control Plane Rebuild](hub-control-plane-rebuild/README.md),
+> including the exact 31-tool manager surface, durable state model, operation
+> semantics, migration sequence, and real acceptance evidence.
+
 Implementation note: the first shipped version uses simple HTTP polling rather
 than WebSocket/RPC streaming. That was deliberate: polling is easier to test,
 works through ordinary outbound HTTPS, and keeps normal single-machine PatchBay

@@ -209,23 +209,23 @@ First, if the task needs a specific Codex model or reasoning depth, call `codex_
 
 ```json
 {
-  "model": "gpt-5.3-codex-spark"
+  "model": "gpt-5.6-terra"
 }
 ```
 
-Then pass the selected values only when they matter. Spark is the default for compact small workers because it is fast and effectively free; GPT-5.4 Mini is the small reliable alternative; GPT-5.4 is the main serious worker for normal above-average tasks; GPT-5.5 is for highest-authority, creative, unresolved, sensitive, or final-judgment work.
+Then pass the selected values only when they matter. Optimize for expected subscription use to a verified result: GPT-5.6 Luna is the compact standard default, GPT-5.6 Terra is the main serious worker, and GPT-5.6 Sol is the highest-authority lane. Spark is a separate-quota, latency-first preview choice for tiny bounded work; GPT-5.4 Mini is the quota-saving choice for simple high-volume work; GPT-5.4 and GPT-5.5 are availability or evidence-backed regression fallbacks. The installed Codex catalog returned by `codex_worker_options` is the authority for which models and reasoning efforts are currently usable.
 
 ```json
 {
   "name": "Repository Implementer",
   "brief": "Create a tiny note file named worker-note.txt, run the smallest useful verification, and report what changed.",
   "repo_path": "/absolute/path/to/disposable/repo",
-  "model": "gpt-5.3-codex-spark",
-  "reasoning_effort": "medium"
+  "model": "gpt-5.6-terra",
+  "reasoning_effort": "high"
 }
 ```
 
-`codex_worker_start` defaults to `workspace_mode: "isolated_write"`, so the worker writes in an external private worktree. Omit `model` and `reasoning_effort` to use Codex defaults. Follow-up `codex_worker_message` calls keep the worker's prior model/reasoning unless you intentionally override them. Treat the worker as a continuing specialist: if the first report is too compressed, missing evidence, missing validation, contradicted by another worker, or important enough to drive a decision, message the same worker again instead of treating the first answer as final. For consequential writable audits or implementation, ask the worker to create a durable report file such as `worker-report-<topic>.md` or changed-file evidence in its workspace. Read-only workers do not write source-checkout report files; they expose structured reports, partial reports, and live checkpoints through PatchBay. Direct read/search tools remain available for orientation, focused verification, exact line checks, and tiny tasks, but broad work should be delegated. For advisory work, ask for read-only mode explicitly:
+`codex_worker_start` defaults to `workspace_mode: "isolated_write"`, so the worker writes in an external private worktree. Omit `model` and `reasoning_effort` to use Codex defaults. PatchBay accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, but each model may support only a subset; use the menu returned by `codex_worker_options`. `max` is a reasoning effort. Ultra is a separate multi-agent Codex mode and is not a PatchBay worker field; use explicit named PatchBay worker teams when responsibilities split cleanly. Follow-up `codex_worker_message` calls keep the worker's prior model/reasoning unless you intentionally override them. Treat the worker as a continuing specialist: if the first report is too compressed, missing evidence, missing validation, contradicted by another worker, or important enough to drive a decision, message the same worker again instead of treating the first answer as final. For consequential writable audits or implementation, ask the worker to create a durable report file such as `worker-report-<topic>.md` or changed-file evidence in its workspace. Read-only workers do not write source-checkout report files; they expose structured reports, partial reports, and live checkpoints through PatchBay. Direct read/search tools remain available for orientation, focused verification, exact line checks, and tiny tasks, but broad work should be delegated. For advisory work, ask for read-only mode explicitly:
 
 ```json
 {

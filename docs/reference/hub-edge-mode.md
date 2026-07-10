@@ -1,6 +1,11 @@
 # Optional Hub/Edge Mode
 
-Status: V1 implemented, optional, not the default runtime.
+Status: V2 implemented and live verified; optional, with V1 compatibility.
+
+Set `hub.control_plane: v2` on the Hub and every Edge to use the complete
+manager control plane. Omitting the setting preserves the V1 compatibility
+runtime. Design and implementation evidence is in the
+[Hub Manager Control Plane Rebuild](../architecture/hub-control-plane-rebuild/README.md).
 
 PatchBay normally runs as one local MCP server connected to one machine. Hub/edge
 mode adds an optional fleet layer:
@@ -13,21 +18,27 @@ Use it when one ChatGPT connector should see several machines and route Codex
 worker tasks to the right one. Do not enable it for ordinary single-machine
 PatchBay use.
 
-## What V1 Does
+## What V2 Does
 
 - Runs a separate `patchbay hub start` MCP server.
 - Enrolls machines with short-lived one-use pairing codes.
-- Stores hub state privately under `PATCHBAY_HOME`, or `hub.state_file` when configured.
+- Stores transactional SQLite/WAL state privately under `PATCHBAY_HOME`, or
+  `hub.state_db` when configured.
 - Stores edge profiles privately under `PATCHBAY_HOME/runtime/hub/edge-profile.json`.
 - Lets each edge advertise local capabilities, allowed workspaces, and compact worker status.
-- Lets ChatGPT queue worker commands for a selected `machine_id`.
+- Exposes the exact 31-tool manager surface and returns semantic worker results
+  or durable pending operations, not synthetic command-success receipts.
 - Adds durable work groups: one user task becomes one group, lanes are workers
   inside that group, and the group is pinned to one machine.
 - Optionally chooses the least-busy eligible online machine when a work group is
   created and no explicit `machine_id` is supplied.
-- Lets the selected edge poll, execute the local `codex_worker_*` command through the existing `ToolHandler`, and post the result back.
+- Lets the selected Edge claim fenced operations, execute the mature local
+  `codex_worker_*` action through the existing `ToolHandler`, publish worker
+  projections, and durably upload results.
+- Keeps heartbeat, projection, claim, execution, lease renewal, result upload,
+  and reconciliation independently scheduled.
 
-V1 uses HTTPS polling. WebSocket streaming, mailbox channels, campaign
+V2 uses HTTPS polling. WebSocket streaming, mailbox channels, campaign
 coordination, and multiple ChatGPT conversations coordinating through one Hub
 are future extensions. The multi-conversation idea is preserved in
 [Multi-ChatGPT hub coordination idea](../architecture/multi-chatgpt-hub-coordination-idea.md).
@@ -39,6 +50,7 @@ task; future campaigns/channels can build on the same state model.
 ```bash
 export PATCHBAY_HOME="$HOME/.patchbay-hub"
 export PATCHBAY_HTTP_TOKEN='<long-random-token>'
+# Set `hub.control_plane: v2` in config.yaml.
 patchbay hub start --config config.yaml --host 127.0.0.1 --port 8000
 ```
 
@@ -66,6 +78,7 @@ On the edge machine:
 
 ```bash
 export PATCHBAY_HOME="$HOME/.patchbay-edge"
+# Set `hub.control_plane: v2` in config.yaml.
 patchbay edge enroll \
   --hub https://example.com/patchbay-hub \
   --code PB-ABCD-1234 \
@@ -128,71 +141,52 @@ The Hub can only route to an edge that is actually heartbeating.
 
 ## ChatGPT-Facing Hub Tools
 
-Hub mode exposes fleet-native tools, not every direct local file tool from every
-machine:
+Hub V2 exposes exactly 31 tools in five manager-facing families:
 
-- `patchbay_fleet_status`
-- `patchbay_machine_list`
-- `patchbay_machine_workspaces`
-- `patchbay_machine_recommend`
-- `patchbay_work_group_create`
-- `patchbay_work_group_list`
-- `patchbay_work_group_status`
-- `patchbay_work_group_resume`
-- `patchbay_work_group_close`
-- `patchbay_work_group_reassign`
-- `patchbay_worker_options`
-- `patchbay_worker_start`
-- `patchbay_worker_start_auto`
-- `patchbay_worker_message`
-- `patchbay_worker_status`
-- `patchbay_worker_wait`
-- `patchbay_worker_inspect`
-- `patchbay_worker_stop`
-- `patchbay_worker_integrate`
-- `patchbay_command_status`
+- fleet and discovery: `patchbay_fleet_status`, `patchbay_workspace_list`;
+- groups: `patchbay_work_group_create`, `patchbay_work_group_list`,
+  `patchbay_work_group_status`, `patchbay_work_group_resume`,
+  `patchbay_work_group_reassign`, `patchbay_work_group_close`;
+- workers and artifacts: `patchbay_worker_options`, `patchbay_worker_inbox`,
+  `patchbay_worker_start`, `patchbay_worker_start_batch`,
+  `patchbay_worker_message`, `patchbay_worker_list`, `patchbay_worker_status`,
+  `patchbay_worker_wait`, `patchbay_worker_inspect`,
+  `patchbay_worker_integrate`, `patchbay_worker_stop`;
+- exceptional manager inspection: `patchbay_workspace_open`,
+  `patchbay_workspace_tree`, `patchbay_workspace_search`,
+  `patchbay_workspace_read_file`, `patchbay_workspace_changes`;
+- Pro Requests and recovery: `patchbay_pro_request_list`,
+  `patchbay_pro_request_read`, `patchbay_pro_request_claim`,
+  `patchbay_pro_request_respond`, `patchbay_pro_request_dispatch`,
+  `patchbay_pro_request_close`, `patchbay_operation_status`.
 
-For non-trivial tasks, ChatGPT should use this lifecycle:
+Normal lifecycle:
 
 ```text
 patchbay_fleet_status
+patchbay_workspace_list
 patchbay_work_group_list
 patchbay_work_group_resume or patchbay_work_group_create
-patchbay_work_group_status
-patchbay_worker_start_auto or patchbay_worker_start with work_group_id/lane
-patchbay_work_group_status until work completes
-patchbay_work_group_close or report what remains active
+patchbay_work_group_status until Edge preflight is ready
+patchbay_worker_start_batch and/or patchbay_worker_start inside named lanes
+patchbay_worker_wait / patchbay_worker_status
+patchbay_worker_message for corrections and follow-up turns
+patchbay_worker_inspect for reports, files, changes, and integration preview
+patchbay_worker_integrate only after accepting a signed preview
+patchbay_work_group_close or explicitly report what remains active
 ```
 
-When a work group closes and no command is still queued or running, Hub settles
-non-problem lane statuses to `idle`. The closed group still preserves worker
-refs, command records, reports, and worktrees, but default status/count output
-should not make completed lanes look like current active work.
+One user task equals one durable group. Do not create one group per worker.
+Group creation performs availability-only placement once and pins the group to
+that machine. Worker starts infer the machine from `work_group_id`; they do not
+route independently. If the pinned machine is unavailable, wait or explicitly
+create successor work with `patchbay_work_group_reassign`. Never pretend that a
+live Codex process moved between machines.
 
-Hard rules for ChatGPT:
-
-- one user task equals one work group;
-- do not create one group per worker;
-- do not call `patchbay_worker_start_auto` before a group exists;
-- do not treat `patchbay_machine_recommend` as permission to scatter workers;
-- do not start grouped workers until group preflight is `ok`;
-- if the pinned machine is full/offline, wait, queue there when allowed, or
-  explicitly reassign the group;
-- use separate groups/branches/integration owners for deliberate cross-machine
-  same-repo work.
-
-Default fleet views hide retired or superseded machines. A retired machine is
-an old edge enrollment preserved for audit/history after an operator deliberately
-replaced or decommissioned it. ChatGPT should not treat retired entries as
-current capacity and should not route work to them. Use
-`patchbay_machine_list` with `include_retired: true` only when diagnosing why an
-expected machine is missing.
-
-`patchbay_worker_start_auto` is no longer a per-worker scatter router. It
-requires `work_group_id`, `lane`, and `auto_routing_ok: true`, then queues the
-worker on the group's pinned machine. `patchbay_worker_start` with explicit
-`machine_id` still exists for tiny checks, operator-requested work, and legacy
-compatibility, but ungrouped starts must supply `ungrouped_reason`.
+Mutating tools require a caller-stable `idempotency_key`. A `pending` result
+means Hub accepted the durable operation but Edge/Codex has not yet produced a
+semantic result. Continue with `patchbay_operation_status` or the relevant
+worker/group wait tool; do not repeat the mutation with a new key.
 
 If `hub.routing.enabled` is true, ChatGPT may use
 `patchbay_work_group_create` without `machine_id`. The Hub then chooses one

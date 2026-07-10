@@ -55,13 +55,24 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
     guidance = result["model_selection_guidance"]
     assert "hard router" in guidance["summary"]
     ladder = {item["model_family"]: item for item in guidance["default_ladder"]}
-    assert "Default for small workers" in ladder["Spark"]["role"]
-    assert "much faster and effectively free" in ladder["Spark"]["caveats"]
-    assert "not the first choice for complex decision-heavy work" in ladder["GPT-5.4 Mini"]["caveats"]
-    assert "Main serious worker" in ladder["GPT-5.4"]["role"]
-    assert "as merely a fallback" in ladder["GPT-5.4"]["caveats"]
-    assert "Highest-authority model" in ladder["GPT-5.5"]["role"]
-    assert "Do not spend GPT-5.5 as the main worker" in ladder["GPT-5.5"]["caveats"]
+    assert set(ladder) == {
+        "Spark",
+        "GPT-5.4 Mini",
+        "GPT-5.4",
+        "GPT-5.5",
+        "GPT-5.6 Luna",
+        "GPT-5.6 Terra",
+        "GPT-5.6 Sol",
+    }
+    assert "Specialized ultra-fast worker" in ladder["Spark"]["role"]
+    assert "quota pressure" in ladder["GPT-5.4 Mini"]["caveats"]
+    assert "legacy serious-worker fallback" in ladder["GPT-5.4"]["role"]
+    assert "Legacy frontier fallback" in ladder["GPT-5.5"]["role"]
+    assert "Default compact standard worker" in ladder["GPT-5.6 Luna"]["role"]
+    assert "Default serious worker" in ladder["GPT-5.6 Terra"]["role"]
+    assert "Highest-authority worker" in ladder["GPT-5.6 Sol"]["role"]
+    assert "verified correct result" in guidance["cost_rule"]
+    assert "not a reasoning_effort value" in guidance["ultra_note"]
     assert result["selected_model"]["reasoning_efforts"] == [
         {"effort": "low", "description": "Fast"},
         {"effort": "high", "description": "Deep"},
@@ -72,7 +83,10 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
 def test_worker_option_validation_rejects_unsafe_values():
     assert validate_worker_model("gpt-5.5") == "gpt-5.5"
     assert validate_reasoning_effort("HIGH") == "high"
+    assert validate_reasoning_effort("none") == "none"
+    assert validate_reasoning_effort("max") == "max"
     assert build_reasoning_config_override("xhigh") == 'model_reasoning_effort="xhigh"'
+    assert build_reasoning_config_override("max") == 'model_reasoning_effort="max"'
 
     with pytest.raises(ValueError, match="model"):
         validate_worker_model("gpt-5.5; rm -rf /")

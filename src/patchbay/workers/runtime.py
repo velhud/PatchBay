@@ -11,6 +11,7 @@ import asyncio
 from copy import deepcopy
 import fnmatch
 import hashlib
+import json
 import logging
 import re
 import shutil
@@ -21,6 +22,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from patchbay.artifacts import ArtifactStore
+from patchbay.hub.integration_tokens import (
+    INTEGRATION_PREVIEW_TOKEN_VERSION,
+    IntegrationPreviewTokenError,
+    canonical_sha256,
+    format_signed_token,
+    issue_signed_token,
+    new_signing_secret,
+    verify_signed_token,
+)
 from patchbay.workers.model_options import build_reasoning_config_override, validate_reasoning_effort, validate_worker_model
 from patchbay.jobs.manager import JobInfo, JobManager, JobState
 from patchbay.ownership import (
@@ -57,13 +67,18 @@ WORKER_WORK_RUN_STARTED_AT_OPTION = "_worker_work_run_started_at"
 WORKER_WORK_RUN_LAST_ACTIVITY_AT_OPTION = "_worker_work_run_last_activity_at"
 WORKER_WORK_GROUP_ID_OPTION = "_worker_work_group_id"
 WORKER_LANE_ID_OPTION = "_worker_lane_id"
+WORKER_REVIEW_DISPOSITION_OPTION = "_worker_review_disposition"
+WORKER_INTEGRATION_TOKENS_OPTION = "_worker_integration_tokens_v2"
 WORKER_INCLUDED_UNTRACKED_BASE_FILES_OPTION = "_worker_included_untracked_base_files"
 WORKER_INCLUDED_UNTRACKED_BASE_DIGESTS_OPTION = "_worker_included_untracked_base_digests"
 WORKER_WORKSPACE_MODES = {"isolated_write", "read_only", "shared_write"}
 WORKER_VISIBILITY_SCOPES = {"current", "conversation", "recent", "history", "all"}
+WORKER_REVIEW_DISPOSITIONS = {"unreviewed", "accepted", "rejected", "not_required"}
 MAX_WORKER_NAME_CHARS = 120
 MAX_WORKER_MESSAGE_CHARS = 200_000
 MAX_PUBLIC_REPORT_CHARS = 24_000
+MAX_PROJECTION_SUMMARY_CHARS = 2_000
+MAX_PROJECTION_CHANGED_FILES = 100
 MAX_INSPECT_WAIT_SECONDS = 30
 MAX_CONTEXT_WORKERS = 10
 MAX_CONTEXT_REPORT_CHARS = 8_000
@@ -79,6 +94,9 @@ DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 20
 DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 10
 DEFAULT_STOP_CONFIRMATION_GRACE_SECONDS = 300
 DEFAULT_WORKER_RECENT_SCOPE_SECONDS = 4 * 60 * 60
+DEFAULT_INTEGRATION_PREVIEW_TOKEN_TTL_SECONDS = 5 * 60
+MAX_INTEGRATION_PREVIEW_TOKEN_TTL_SECONDS = 60 * 60
+MAX_PENDING_INTEGRATION_TOKENS = 16
 MAX_STATUS_LINE_CHARS = 260
 MAX_PARTIAL_NOTE_PREVIEW_CHARS = 220
 WORKER_CONTEXT_DETAILS = {"report", "changes", "diff", "review"}
@@ -526,13 +544,48 @@ class WorkerRuntime:
                         request_context=request_context,
                     )
                 if view == "integration_preview":
-                    return self._integration_preview(
+                    return await self._locked_integration_preview(
                         jobs,
                         accepted_dirty_base=accepted_dirty_base,
                         request_context=request_context,
                     )
                 raise ValueError("view must be one of: report, compact, status, diagnostics, changes, diff, file, integration_preview")
             await asyncio.sleep(0.25)
+
+    async def _locked_integration_preview(
+        self,
+        jobs: list[JobInfo],
+        *,
+        accepted_dirty_base: Optional[list[str]],
+        request_context: Optional[RequestContext],
+    ) -> Dict[str, Any]:
+        workspace = self._workspace_for_jobs(jobs)
+        if workspace["mode"] != "isolated_write" or not workspace["available"]:
+            return self._integration_preview(
+                jobs,
+                accepted_dirty_base=accepted_dirty_base,
+                request_context=request_context,
+            )
+        base_repo = self._validated_base_repo(workspace)
+        try:
+            async with self.repo_locks.hold(base_repo, operation="codex_worker_integration_preview"):
+                return self._integration_preview(
+                    jobs,
+                    accepted_dirty_base=accepted_dirty_base,
+                    request_context=request_context,
+                )
+        except RepoMutationBusy as busy:
+            view = self._changes_view(jobs, request_context=request_context)
+            view.update(
+                {
+                    "view": "integration_preview",
+                    "applied": False,
+                    "can_apply": False,
+                    "apply_check": "repo_busy",
+                    **busy.public_payload(),
+                }
+            )
+            return view
 
     async def list_workers(
         self,
@@ -612,6 +665,44 @@ class WorkerRuntime:
         if apply_monitoring_cooldown:
             self._store_monitoring_response(list_cache_key, payload)
         return payload
+
+    def projection_snapshot(
+        self,
+        *,
+        previous_edge_worker_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return the durable full-history worker projection used by Hub V2.
+
+        Projection reads deliberately bypass reconciliation, monitoring cooldowns,
+        and manager delta annotation. Edge transport owns monotonic delivery
+        revisions; this method provides deterministic content revisions so it can
+        suppress duplicate snapshots without coupling to manager polling.
+        """
+        groups = sorted(self._worker_groups(), key=lambda jobs: self._worker_identity(jobs)[0])
+        workers = [self._worker_projection(jobs) for jobs in groups]
+        current_ids = [str(worker["edge_worker_id"]) for worker in workers]
+        previous_ids = self._normalize_projection_worker_ids(previous_edge_worker_ids)
+        tombstones = [
+            {"edge_worker_id": worker_id}
+            for worker_id in sorted(set(previous_ids) - set(current_ids))
+        ]
+        content = {
+            "snapshot_version": 2,
+            "snapshot_kind": "full",
+            "full_history": True,
+            "complete_worker_set": True,
+            "omission_means_tombstone": True,
+            "previous_edge_worker_ids": previous_ids,
+            "present_edge_worker_ids": current_ids,
+            "tombstones": tombstones,
+            "workers": workers,
+        }
+        content_sha256 = self._projection_content_sha256(content)
+        return {
+            **content,
+            "content_revision": f"sha256:{content_sha256}",
+            "content_sha256": content_sha256,
+        }
 
     async def worker_status(
         self,
@@ -756,6 +847,7 @@ class WorkerRuntime:
         worker: str,
         repo_path: Optional[str] = None,
         cleanup_workspace: bool = False,
+        discard_unintegrated_changes: Optional[bool] = None,
         force: bool = False,
         request_context: Optional[RequestContext] = None,
         takeover: bool = False,
@@ -791,14 +883,24 @@ class WorkerRuntime:
 
         cleaned = False
         cleanup_note = ""
+        discard_confirmation_required = False
+        unintegrated_changes: list[str] = []
         if cleanup_workspace:
-            cleaned = self._cleanup_worker_workspace(jobs)
-            jobs = self._resolve_worker(worker, repo_path=repo_path)
-            cleanup_note = (
-                " The isolated worker workspace was discarded."
-                if cleaned
-                else " No isolated worker workspace was available to discard."
-            )
+            unintegrated_changes = self._unintegrated_changed_files(jobs)
+            discard_confirmation_required = bool(unintegrated_changes) and discard_unintegrated_changes is not True
+            if discard_confirmation_required:
+                cleanup_note = (
+                    " The isolated worker workspace was preserved because it contains unintegrated changes. "
+                    "Set discard_unintegrated_changes=true only after explicitly deciding to discard them."
+                )
+            else:
+                cleaned = self._cleanup_worker_workspace(jobs)
+                jobs = self._resolve_worker(worker, repo_path=repo_path)
+                cleanup_note = (
+                    " The isolated worker workspace was discarded."
+                    if cleaned
+                    else " No isolated worker workspace was available to discard."
+                )
 
         view = self._public_view(jobs, request_context=request_context, include_change_state=False)
         view.update(
@@ -806,6 +908,9 @@ class WorkerRuntime:
                 "stopped": cancelled,
                 "stop_confirmation_required": False,
                 "workspace_cleaned": cleaned,
+                "discard_unintegrated_changes": discard_unintegrated_changes is True,
+                "discard_confirmation_required": discard_confirmation_required,
+                "unintegrated_changed_files": unintegrated_changes,
                 "note": (
                     "Active work was stopped. The Codex conversation remains available for a later message."
                     if cancelled
@@ -844,6 +949,8 @@ class WorkerRuntime:
         repo_path: Optional[str] = None,
         allow_dirty_base: bool = False,
         accepted_dirty_base: Optional[list[str]] = None,
+        preview_token: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
         request_context: Optional[RequestContext] = None,
         takeover: bool = False,
         takeover_reason: str = "",
@@ -862,16 +969,128 @@ class WorkerRuntime:
         )
         if refusal:
             return refusal
+        token = str(preview_token or "").strip()
+        idempotency = str(idempotency_key or "").strip()
+        requires_token = self._hub_context_requires_preview_token(request_context)
+        if requires_token and not token:
+            return self._integration_blocked_result(
+                jobs,
+                request_context=request_context,
+                reason="preview_token_required",
+                note="Hub integration requires the signed preview_token returned by integration_preview.",
+            )
         workspace = self._workspace_for_jobs(jobs)
         base_repo = self._validated_base_repo(workspace)
         try:
             async with self.repo_locks.hold(base_repo, operation="codex_worker_integrate"):
+                token_state: Dict[str, Any] | None = None
+                token_record: Dict[str, Any] | None = None
+                token_id = ""
+                if token:
+                    token_state, token_id, token_record, blocked = self._load_integration_token(
+                        jobs,
+                        token=token,
+                        idempotency_key=idempotency,
+                        request_context=request_context,
+                    )
+                    if blocked:
+                        return blocked
+                    assert token_state is not None and token_record is not None
+                    disposition = str(token_record.get("disposition") or "issued")
+                    if disposition in {"applied", "failed"}:
+                        return self._integration_token_replay(token_record)
+                    if disposition == "applying":
+                        reconciliation = self._reconcile_applying_token(base_repo, token_record)
+                        if reconciliation == "applied":
+                            recovered_preview = dict(token_record.get("preview") or {})
+                            recovered_patch_info = dict(token_record.get("patch_info") or {})
+                            applied = self._applied_integration_result(
+                                jobs,
+                                preview=recovered_preview,
+                                patch_info=recovered_patch_info,
+                                base_repo=base_repo,
+                                request_context=request_context,
+                                takeover=takeover,
+                            )
+                            token_record.update(
+                                {
+                                    "disposition": "applied",
+                                    "applied_at": time.time(),
+                                    "post_apply_file_fingerprints": self._integration_file_fingerprints(
+                                        base_repo, recovered_preview.get("changed_files") or []
+                                    ),
+                                    "result": applied,
+                                    "reconciled_after_crash": True,
+                                }
+                            )
+                            self._persist_integration_token_state(
+                                jobs,
+                                token_state,
+                                request_context=request_context,
+                                takeover=takeover,
+                                takeover_reason=takeover_reason,
+                                integrated_result=applied,
+                            )
+                            replay = deepcopy(applied)
+                            replay.update(
+                                {
+                                    "idempotent_replay": True,
+                                    "apply_disposition": "applied",
+                                    "reconciled_after_crash": True,
+                                }
+                            )
+                            return replay
+                        if reconciliation == "outcome_unknown":
+                            return self._integration_blocked_result(
+                                jobs,
+                                request_context=request_context,
+                                reason="integration_outcome_unknown",
+                                note=(
+                                    "A previous integration attempt lost its response and the checkout no longer "
+                                    "proves whether the patch was applied. Preserve both workspaces and inspect manually."
+                                ),
+                                preview_token_id=token_id,
+                            )
+
                 preview = self._integration_preview(
                     jobs,
                     allow_dirty_base=allow_dirty_base,
                     accepted_dirty_base=accepted_dirty_base,
                     request_context=request_context,
+                    issue_preview_token=False,
                 )
+                if token_record is not None:
+                    expires_at = float((token_record.get("claims") or {}).get("expires_at") or 0)
+                    if expires_at <= time.time():
+                        return self._integration_blocked_result(
+                            jobs,
+                            request_context=request_context,
+                            reason="preview_token_expired",
+                            note="The integration preview token expired. Request a fresh integration_preview.",
+                            preview_token_id=token_id,
+                        )
+                    current_bindings = self._integration_binding_claims(
+                        jobs,
+                        preview=preview,
+                        allow_dirty_base=allow_dirty_base,
+                        accepted_dirty_base=accepted_dirty_base,
+                        request_context=request_context,
+                    )
+                    expected_bindings = dict((token_record.get("claims") or {}).get("bindings") or {})
+                    if canonical_sha256(current_bindings) != canonical_sha256(expected_bindings):
+                        stale_bindings = sorted(
+                            key
+                            for key in set(current_bindings) | set(expected_bindings)
+                            if current_bindings.get(key) != expected_bindings.get(key)
+                        )
+                        return self._integration_blocked_result(
+                            jobs,
+                            request_context=request_context,
+                            reason="stale_preview_token",
+                            note="The worker, workspace, patch, base checkout, or accepted dirty patterns changed. Request a fresh integration_preview.",
+                            preview_token_id=token_id,
+                            stale_bindings=stale_bindings,
+                        )
                 if not preview.get("can_apply"):
                     preview.update(
                         {
@@ -882,6 +1101,22 @@ class WorkerRuntime:
                     return preview
 
                 patch, patch_info = self._integration_patch(jobs)
+                if token_record is not None and token_state is not None:
+                    token_record.update(
+                        {
+                            "disposition": "applying",
+                            "idempotency_key": idempotency,
+                            "apply_started_at": time.time(),
+                            "patch": patch,
+                            "patch_info": deepcopy(patch_info),
+                            "preview": self._integration_preview_for_disposition(preview),
+                            "pre_apply_dirty_fingerprint": self._dirty_worktree_fingerprint(base_repo),
+                            "pre_apply_file_fingerprints": self._integration_file_fingerprints(
+                                base_repo, preview.get("changed_files") or []
+                            ),
+                        }
+                    )
+                    self._persist_integration_token_state(jobs, token_state)
                 result = subprocess.run(
                     ["git", "apply", "--whitespace=nowarn", "-"],
                     cwd=base_repo,
@@ -907,41 +1142,44 @@ class WorkerRuntime:
                     "note": "The worker result passed preview earlier but git refused to apply it to the base checkout.",
                 }
             )
+            if token_record is not None and token_state is not None:
+                token_record.update(
+                    {
+                        "disposition": "failed",
+                        "failed_at": time.time(),
+                        "result": deepcopy(preview),
+                    }
+                )
+                self._persist_integration_token_state(jobs, token_state)
             return preview
 
-        latest = jobs[-1]
-        options = dict(latest.options or {})
-        options["_worker_integrated_at"] = time.time()
-        options["_worker_integrated_changed_files"] = preview.get("changed_files", [])
-        options["_worker_integrated_patch_sha256"] = patch_info.get("patch_sha256", "")
-        options = merge_owner_metadata(options, request_context, existing=options)
-        if takeover:
-            options["_mcp_takeover_reason"] = clean_takeover_reason(takeover_reason)
-            options["_mcp_takeover_at"] = time.time()
-        options.update(self._request_interaction_metadata(request_context, existing=latest.options or {}))
-        self.job_manager.update_job_options(latest.job_id, options)
-
-        applied = self._public_view(self._resolve_worker(worker, repo_path=repo_path), request_context=request_context)
-        applied.update(
-            {
-                "applied": True,
-                "can_apply": False,
-                "integration_state": "applied_to_checkout",
-                "changed_files": preview.get("changed_files", []),
-                "change_count": preview.get("change_count", 0),
-                "main_changed_files": self._base_changed_files(base_repo),
-                "patch_sha256": patch_info.get("patch_sha256", ""),
-                "skipped_files": patch_info.get("skipped_files", []),
-                "note": (
-                    f"{applied['name']}'s accepted result was applied to the base checkout. "
-                    "Review, test, and commit it from the normal repository workflow. "
-                    "The worker worktree was preserved."
-                ),
-            }
+        applied = self._applied_integration_result(
+            jobs,
+            preview=preview,
+            patch_info=patch_info,
+            base_repo=base_repo,
+            request_context=request_context,
+            takeover=takeover,
         )
-        if takeover:
-            applied["takeover_performed"] = True
-            applied["note"] = "Control was transferred to this MCP connection. " + applied["note"]
+        if token_record is not None and token_state is not None:
+            token_record.update(
+                {
+                    "disposition": "applied",
+                    "applied_at": time.time(),
+                    "post_apply_file_fingerprints": self._integration_file_fingerprints(
+                        base_repo, preview.get("changed_files") or []
+                    ),
+                    "result": deepcopy(applied),
+                }
+            )
+        self._persist_integration_token_state(
+            jobs,
+            token_state,
+            request_context=request_context,
+            takeover=takeover,
+            takeover_reason=takeover_reason,
+            integrated_result=applied,
+        )
         self._clear_monitoring_caches()
         return applied
 
@@ -1562,6 +1800,18 @@ class WorkerRuntime:
             self.job_manager.update_job_options(job.job_id, options)
         return True
 
+    def _unintegrated_changed_files(self, jobs: list[JobInfo]) -> list[str]:
+        changed_files = self._changed_files(jobs)
+        if not changed_files:
+            return []
+        _, patch_info = self._integration_patch(jobs)
+        current_patch_sha256 = str(patch_info.get("patch_sha256") or "")
+        for job in reversed(jobs):
+            integrated_patch_sha256 = str((job.options or {}).get("_worker_integrated_patch_sha256") or "")
+            if current_patch_sha256 and integrated_patch_sha256 == current_patch_sha256:
+                return []
+        return changed_files
+
     def _worker_groups(self) -> list[list[JobInfo]]:
         groups: Dict[str, list[JobInfo]] = {}
         for job in self.job_manager.jobs.values():
@@ -1664,6 +1914,207 @@ class WorkerRuntime:
             if model or reasoning:
                 return model, reasoning
         return "", ""
+
+    def _normalize_projection_worker_ids(self, worker_ids: Optional[Iterable[str]]) -> list[str]:
+        if worker_ids is None:
+            return []
+        values: Iterable[str] = [worker_ids] if isinstance(worker_ids, str) else worker_ids
+        return sorted({str(worker_id).strip() for worker_id in values if str(worker_id).strip()})
+
+    def _projection_content_sha256(self, value: Dict[str, Any]) -> str:
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _worker_projection(self, jobs: list[JobInfo]) -> Dict[str, Any]:
+        latest = jobs[-1]
+        options = latest.options or {}
+        edge_worker_id, worker_name = self._worker_identity(jobs)
+        workspace = self._workspace_for_jobs(jobs)
+        session_id = self._session_for_jobs(jobs)
+        turn_state = self._projection_turn_state(latest, session_id=session_id)
+        liveness = self._projection_liveness(jobs, session_id=session_id)
+        change_summary = self._projection_change_summary(jobs, workspace=workspace)
+        integration_state = self._projection_integration_state(
+            jobs,
+            workspace=workspace,
+            change_summary=change_summary,
+        )
+        review_disposition = self._projection_review_disposition(
+            jobs,
+            turn_state=turn_state,
+            integration_state=integration_state,
+        )
+        repo_path = str(workspace["base_repo_path"])
+        workspace_id = "ws_" + hashlib.sha256(repo_path.encode("utf-8")).hexdigest()[:24]
+        latest_activity_at = self._latest_activity_timestamp(latest)
+        created_at_values = [
+            float(value)
+            for job in jobs
+            for value in (job.started_at, job.launch_started_at, job.process_started_at, job.completed_at)
+            if value is not None
+        ]
+        report_summary = self._projection_report_summary(jobs)
+        checkpoint_summary = self._latest_checkpoint_summary(jobs)
+        worker = {
+            "edge_worker_id": edge_worker_id,
+            "worker_id": edge_worker_id,
+            "name": worker_name,
+            "workspace_id": workspace_id,
+            "workspace_name": Path(repo_path).name or "workspace",
+            "workspace_mode": workspace["mode"],
+            "workspace_available": bool(workspace["available"]),
+            "workspace_discarded": bool(workspace["discarded"]),
+            "work_group_id": str(options.get(WORKER_WORK_GROUP_ID_OPTION) or ""),
+            "lane_id": str(options.get(WORKER_LANE_ID_OPTION) or ""),
+            "chatgpt_session_ref": str(options.get(WORKER_CHATGPT_SESSION_REF_OPTION) or ""),
+            "work_run_ref": str(options.get(WORKER_WORK_RUN_REF_OPTION) or ""),
+            "worker_state": self._projection_worker_state(latest, workspace=workspace),
+            "turn_state": turn_state,
+            "liveness": liveness,
+            "integration_state": integration_state,
+            "review_disposition": review_disposition,
+            "has_session": bool(session_id),
+            "can_message": bool(
+                session_id
+                and workspace["available"]
+                and turn_state not in {"queued", "starting", "working"}
+            ),
+            "turn_count": len(jobs),
+            "report_summary": report_summary,
+            "checkpoint_summary": checkpoint_summary,
+            "checkpoint_count": self._checkpoint_count_for_jobs(jobs),
+            "change_summary": change_summary,
+            "created_at": min(created_at_values) if created_at_values else None,
+            "last_activity_at": float(latest_activity_at) if latest_activity_at is not None else None,
+            "latest_turn_started_at": float(latest.started_at) if latest.started_at is not None else None,
+            "latest_turn_completed_at": float(latest.completed_at) if latest.completed_at is not None else None,
+        }
+        content_sha256 = self._projection_content_sha256(worker)
+        worker.update(
+            {
+                "content_revision": f"sha256:{content_sha256}",
+                "content_sha256": content_sha256,
+            }
+        )
+        return worker
+
+    def _projection_worker_state(self, latest: JobInfo, *, workspace: Dict[str, Any]) -> str:
+        if latest.state == JobState.CANCELLED:
+            return "stopped"
+        if not workspace["available"]:
+            return "workspace_missing"
+        return "available"
+
+    def _projection_turn_state(self, latest: JobInfo, *, session_id: Optional[str]) -> str:
+        if latest.state == JobState.PENDING:
+            if latest.launch_started_at is None and latest.process_started_at is None:
+                return "queued"
+            return "starting"
+        if latest.state == JobState.RUNNING:
+            if latest.process_started_at is None or not session_id:
+                return "starting"
+            return "working"
+        return {
+            JobState.COMPLETED: "completed",
+            JobState.FAILED: "failed",
+            JobState.CANCELLED: "cancelled",
+        }[latest.state]
+
+    def _projection_liveness(self, jobs: list[JobInfo], *, session_id: Optional[str]) -> str:
+        latest = jobs[-1]
+        if latest.state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}:
+            return "terminal"
+        latest_partial_note = self._latest_partial_note_for_jobs(jobs)
+        status = str(
+            self._liveness_for_job(
+                latest,
+                session_id=session_id,
+                latest_partial_note=latest_partial_note,
+            ).get("status")
+            or "starting"
+        )
+        return status if status in {"starting", "active", "quiet", "stale", "lost"} else "starting"
+
+    def _projection_change_summary(
+        self,
+        jobs: list[JobInfo],
+        *,
+        workspace: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if workspace["mode"] == "read_only":
+            changed_files: list[str] = []
+            available = True
+        elif not workspace["available"]:
+            changed_files = []
+            available = False
+        else:
+            try:
+                changed_files = self._changed_files(jobs)
+                available = True
+            except Exception:
+                changed_files = []
+                available = False
+        return {
+            "available": available,
+            "has_changes": bool(changed_files) if available else None,
+            "change_count": len(changed_files) if available else None,
+            "changed_files": changed_files[:MAX_PROJECTION_CHANGED_FILES],
+            "truncated": len(changed_files) > MAX_PROJECTION_CHANGED_FILES,
+        }
+
+    def _projection_integration_state(
+        self,
+        jobs: list[JobInfo],
+        *,
+        workspace: Dict[str, Any],
+        change_summary: Dict[str, Any],
+    ) -> str:
+        if self._integration_state_for_jobs(jobs) == "applied_to_checkout":
+            return "applied_to_checkout"
+        if workspace["discarded"]:
+            return "discarded"
+        if workspace["mode"] in {"read_only", "shared_write"}:
+            return "not_applicable"
+        if not workspace["available"] or not change_summary["available"]:
+            return "uncertain"
+        return "not_integrated" if change_summary["has_changes"] else "no_changes"
+
+    def _projection_review_disposition(
+        self,
+        jobs: list[JobInfo],
+        *,
+        turn_state: str,
+        integration_state: str,
+    ) -> str:
+        for job in reversed(jobs):
+            disposition = str((job.options or {}).get(WORKER_REVIEW_DISPOSITION_OPTION) or "").strip()
+            if disposition in WORKER_REVIEW_DISPOSITIONS:
+                return disposition
+        if integration_state == "applied_to_checkout":
+            return "accepted"
+        if turn_state == "completed" and integration_state in {"not_applicable", "no_changes"}:
+            return "not_required"
+        return "unreviewed"
+
+    def _projection_report_summary(self, jobs: list[JobInfo]) -> str:
+        latest = jobs[-1]
+        if latest.state in {JobState.PENDING, JobState.RUNNING}:
+            checkpoint = self._latest_checkpoint_summary(jobs)
+            if checkpoint:
+                report = checkpoint
+            else:
+                previous = next(
+                    (
+                        job
+                        for job in reversed(jobs[:-1])
+                        if job.state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+                    ),
+                    None,
+                )
+                report = self._report_for_job(previous, jobs) if previous is not None else "The latest worker turn is active."
+        else:
+            report = self._report_for_job(latest, jobs)
+        return self._clip_text(str(report).strip(), MAX_PROJECTION_SUMMARY_CHARS)
 
     def _status_poll_key(self, request_context: Optional[RequestContext]) -> str:
         if request_context:
@@ -2613,6 +3064,433 @@ class WorkerRuntime:
         hunk = f"@@ -0,0 +1,{len(lines)} @@\n"
         return header + hunk + "".join("+" + line for line in lines)
 
+    def _hub_context_requires_preview_token(self, request_context: Optional[RequestContext]) -> bool:
+        if request_context is None:
+            return False
+        if str(request_context.tool_mode or "").strip().lower() == "hub":
+            return True
+        return bool(
+            not request_context.has_transport_session
+            and (request_context.work_group_id or request_context.lane_id)
+        )
+
+    def _integration_identity(self, request_context: Optional[RequestContext]) -> tuple[str, str]:
+        context = request_context or RequestContext.anonymous()
+        principal = str(
+            context.owner_ref
+            or context.chatgpt_subject_ref
+            or context.chatgpt_organization_ref
+            or context.client_ref
+            or "anonymous"
+        ).strip()
+        participant = str(
+            context.chatgpt_session_ref
+            or context.client_ref
+            or principal
+        ).strip()
+        return principal or "anonymous", participant or principal or "anonymous"
+
+    def _integration_token_ttl_seconds(self) -> float:
+        hub_config = self.config.get("hub") if isinstance(self.config.get("hub"), dict) else {}
+        raw = hub_config.get(
+            "integration_preview_token_ttl_seconds",
+            self.config.get("workers", {}).get(
+                "integration_preview_token_ttl_seconds",
+                DEFAULT_INTEGRATION_PREVIEW_TOKEN_TTL_SECONDS,
+            ),
+        )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = DEFAULT_INTEGRATION_PREVIEW_TOKEN_TTL_SECONDS
+        return min(MAX_INTEGRATION_PREVIEW_TOKEN_TTL_SECONDS, max(1.0, value))
+
+    def _integration_token_state_for_jobs(self, jobs: list[JobInfo]) -> Dict[str, Any]:
+        state: Dict[str, Any] = {
+            "version": INTEGRATION_PREVIEW_TOKEN_VERSION,
+            "signing_secret": "",
+            "tokens": {},
+        }
+        for job in jobs:
+            raw = (job.options or {}).get(WORKER_INTEGRATION_TOKENS_OPTION)
+            if not isinstance(raw, dict):
+                continue
+            if not state["signing_secret"] and raw.get("signing_secret"):
+                state["signing_secret"] = str(raw["signing_secret"])
+            raw_tokens = raw.get("tokens")
+            if isinstance(raw_tokens, dict):
+                for token_id, record in raw_tokens.items():
+                    if isinstance(record, dict):
+                        state["tokens"][str(token_id)] = deepcopy(record)
+        if not state["signing_secret"]:
+            state["signing_secret"] = new_signing_secret()
+        return state
+
+    def _persist_integration_token_state(
+        self,
+        jobs: list[JobInfo],
+        token_state: Optional[Dict[str, Any]],
+        *,
+        request_context: Optional[RequestContext] = None,
+        takeover: bool = False,
+        takeover_reason: str = "",
+        integrated_result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        latest = jobs[-1]
+        options = dict(latest.options or {})
+        if token_state is not None:
+            options[WORKER_INTEGRATION_TOKENS_OPTION] = deepcopy(token_state)
+        if integrated_result is not None:
+            options["_worker_integrated_at"] = time.time()
+            options["_worker_integrated_changed_files"] = list(integrated_result.get("changed_files") or [])
+            options["_worker_integrated_patch_sha256"] = str(integrated_result.get("patch_sha256") or "")
+            options = merge_owner_metadata(options, request_context, existing=options)
+            if takeover:
+                options["_mcp_takeover_reason"] = clean_takeover_reason(takeover_reason)
+                options["_mcp_takeover_at"] = time.time()
+            options.update(self._request_interaction_metadata(request_context, existing=latest.options or {}))
+        self.job_manager.update_job_options(latest.job_id, options)
+
+    def _issue_integration_preview_token(
+        self,
+        jobs: list[JobInfo],
+        *,
+        preview: Dict[str, Any],
+        allow_dirty_base: bool,
+        accepted_dirty_base: Optional[list[str]],
+        request_context: Optional[RequestContext],
+    ) -> Dict[str, Any]:
+        now = time.time()
+        bindings = self._integration_binding_claims(
+            jobs,
+            preview=preview,
+            allow_dirty_base=allow_dirty_base,
+            accepted_dirty_base=accepted_dirty_base,
+            request_context=request_context,
+        )
+        bindings_sha256 = canonical_sha256(bindings)
+        state = self._integration_token_state_for_jobs(jobs)
+        tokens = state["tokens"]
+        token_id = ""
+        record: Dict[str, Any] | None = None
+        for candidate_id, candidate in tokens.items():
+            claims = candidate.get("claims") if isinstance(candidate, dict) else None
+            if (
+                isinstance(claims, dict)
+                and candidate.get("disposition") == "issued"
+                and claims.get("bindings_sha256") == bindings_sha256
+                and float(claims.get("expires_at") or 0) > now
+            ):
+                token_id = str(candidate_id)
+                record = candidate
+                break
+        if record is None:
+            token, token_id = issue_signed_token(state["signing_secret"])
+            expires_at = now + self._integration_token_ttl_seconds()
+            record = {
+                "token_id": token_id,
+                "claims": {
+                    "issued_at": now,
+                    "expires_at": expires_at,
+                    "bindings": bindings,
+                    "bindings_sha256": bindings_sha256,
+                },
+                "disposition": "issued",
+                "idempotency_key": "",
+            }
+            tokens[token_id] = record
+        else:
+            token = format_signed_token(state["signing_secret"], token_id)
+            expires_at = float((record.get("claims") or {}).get("expires_at") or 0)
+        self._prune_pending_integration_tokens(state, now=now)
+        self._persist_integration_token_state(jobs, state)
+        preview.update(
+            {
+                "preview_token": token,
+                "preview_token_id": token_id,
+                "preview_token_expires_at": expires_at,
+                "apply_disposition": "issued",
+            }
+        )
+        return preview
+
+    def _prune_pending_integration_tokens(self, state: Dict[str, Any], *, now: float) -> None:
+        tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
+        removable = [
+            (str(token_id), float(((record.get("claims") or {}).get("issued_at") or 0)))
+            for token_id, record in tokens.items()
+            if isinstance(record, dict)
+            and record.get("disposition") == "issued"
+            and float(((record.get("claims") or {}).get("expires_at") or 0)) <= now
+        ]
+        for token_id, _ in removable:
+            tokens.pop(token_id, None)
+        pending = sorted(
+            (
+                (str(token_id), float(((record.get("claims") or {}).get("issued_at") or 0)))
+                for token_id, record in tokens.items()
+                if isinstance(record, dict) and record.get("disposition") == "issued"
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        for token_id, _ in pending[MAX_PENDING_INTEGRATION_TOKENS:]:
+            tokens.pop(token_id, None)
+
+    def _load_integration_token(
+        self,
+        jobs: list[JobInfo],
+        *,
+        token: str,
+        idempotency_key: str,
+        request_context: Optional[RequestContext],
+    ) -> tuple[Optional[Dict[str, Any]], str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        state = self._integration_token_state_for_jobs(jobs)
+        try:
+            token_id = verify_signed_token(token, state["signing_secret"])
+        except IntegrationPreviewTokenError:
+            return None, "", None, self._integration_blocked_result(
+                jobs,
+                request_context=request_context,
+                reason="invalid_preview_token",
+                note="The integration preview token is invalid for this worker. Request a fresh integration_preview.",
+            )
+        record = state["tokens"].get(token_id)
+        if not isinstance(record, dict):
+            return None, token_id, None, self._integration_blocked_result(
+                jobs,
+                request_context=request_context,
+                reason="invalid_preview_token",
+                note="The integration preview token is unknown for this worker. Request a fresh integration_preview.",
+                preview_token_id=token_id,
+            )
+        bindings = (record.get("claims") or {}).get("bindings") or {}
+        principal, participant = self._integration_identity(request_context)
+        if bindings.get("principal_ref") != principal:
+            return None, token_id, None, self._integration_blocked_result(
+                jobs,
+                request_context=request_context,
+                reason="preview_token_principal_mismatch",
+                note="The integration preview token belongs to a different principal.",
+                preview_token_id=token_id,
+            )
+        if bindings.get("participant_ref") != participant:
+            return None, token_id, None, self._integration_blocked_result(
+                jobs,
+                request_context=request_context,
+                reason="preview_token_participant_mismatch",
+                note="The integration preview token belongs to a different participant.",
+                preview_token_id=token_id,
+            )
+        recorded_key = str(record.get("idempotency_key") or "")
+        if recorded_key and recorded_key != idempotency_key:
+            return None, token_id, None, self._integration_blocked_result(
+                jobs,
+                request_context=request_context,
+                reason="idempotency_payload_conflict",
+                note="This preview token is already bound to a different idempotency_key.",
+                preview_token_id=token_id,
+            )
+        return state, token_id, record, None
+
+    def _integration_token_replay(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        disposition = str(record.get("disposition") or "")
+        result = deepcopy(record.get("result") or {})
+        result.update(
+            {
+                "idempotent_replay": True,
+                "apply_disposition": disposition,
+                "preview_token_id": str(record.get("token_id") or ""),
+            }
+        )
+        return result
+
+    def _integration_blocked_result(
+        self,
+        jobs: list[JobInfo],
+        *,
+        request_context: Optional[RequestContext],
+        reason: str,
+        note: str,
+        **details: Any,
+    ) -> Dict[str, Any]:
+        view = self._public_view(jobs, request_context=request_context, include_change_state=False)
+        view.update(
+            {
+                "status": "blocked",
+                "blocked": True,
+                "reason": reason,
+                "applied": False,
+                "can_apply": False,
+                "apply_disposition": "blocked",
+                "note": note,
+                **details,
+            }
+        )
+        return view
+
+    def _integration_binding_claims(
+        self,
+        jobs: list[JobInfo],
+        *,
+        preview: Dict[str, Any],
+        allow_dirty_base: bool,
+        accepted_dirty_base: Optional[list[str]],
+        request_context: Optional[RequestContext],
+    ) -> Dict[str, Any]:
+        workspace = self._workspace_for_jobs(jobs)
+        base_repo = self._validated_base_repo(workspace)
+        worker_id, _ = self._worker_identity(jobs)
+        projection = self._worker_projection(jobs)
+        principal, participant = self._integration_identity(request_context)
+        accepted_patterns = sorted(
+            self._normalize_glob_patterns(accepted_dirty_base, field_name="accepted_dirty_base")
+        )
+        workspace_projection = {
+            "workspace_id": str(projection.get("workspace_id") or ""),
+            "workspace_mode": str(workspace.get("mode") or ""),
+            "base_repo_sha256": hashlib.sha256(base_repo.encode("utf-8")).hexdigest(),
+            "worker_base_head": str(workspace.get("base_revision") or ""),
+        }
+        return {
+            "principal_ref": principal,
+            "participant_ref": participant,
+            "worker_id": worker_id,
+            "worker_revision": str(projection.get("content_revision") or ""),
+            "workspace_projection_sha256": canonical_sha256(workspace_projection),
+            "base_head": self._git_head(base_repo),
+            "patch_sha256": str(preview.get("patch_sha256") or ""),
+            "dirty_worktree_fingerprint": self._dirty_worktree_fingerprint(base_repo),
+            "accepted_dirty_base": accepted_patterns,
+            "allow_dirty_base": bool(allow_dirty_base),
+        }
+
+    def _dirty_worktree_fingerprint(self, base_repo: str) -> str:
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            cwd=base_repo,
+            capture_output=True,
+            timeout=15,
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"],
+            cwd=base_repo,
+            capture_output=True,
+            timeout=30,
+        )
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=base_repo,
+            capture_output=True,
+            timeout=15,
+        )
+        untracked_paths = [
+            value.decode("utf-8", errors="surrogateescape")
+            for value in untracked.stdout.split(b"\0")
+            if value
+        ]
+        payload = {
+            "status_sha256": hashlib.sha256(status.stdout).hexdigest(),
+            "tracked_diff_sha256": hashlib.sha256(diff.stdout).hexdigest(),
+            "untracked": self._integration_file_fingerprints(base_repo, untracked_paths),
+        }
+        return f"sha256:{canonical_sha256(payload)}"
+
+    def _integration_file_fingerprints(self, root: str, paths: Iterable[str]) -> Dict[str, str]:
+        base = Path(root).expanduser().resolve()
+        fingerprints: Dict[str, str] = {}
+        for raw_path in sorted({str(path).replace("\\", "/") for path in paths if str(path).strip()}):
+            path = base / raw_path
+            try:
+                if path.is_symlink():
+                    value = "symlink:" + hashlib.sha256(str(path.readlink()).encode("utf-8")).hexdigest()
+                elif path.is_file():
+                    value = "file:" + self._file_sha256(path)
+                elif path.exists():
+                    value = "other"
+                else:
+                    value = "missing"
+            except OSError:
+                value = "unreadable"
+            fingerprints[raw_path] = value
+        return fingerprints
+
+    def _git_apply_check(self, base_repo: str, patch: str, *, reverse: bool = False) -> bool:
+        command = ["git", "apply"]
+        if reverse:
+            command.append("--reverse")
+        command.extend(["--check", "--whitespace=nowarn", "-"])
+        result = subprocess.run(
+            command,
+            cwd=base_repo,
+            input=patch,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.returncode == 0
+
+    def _reconcile_applying_token(self, base_repo: str, record: Dict[str, Any]) -> str:
+        patch = str(record.get("patch") or "")
+        if not patch:
+            return "outcome_unknown"
+        changed_files = list((record.get("preview") or {}).get("changed_files") or [])
+        current_files = self._integration_file_fingerprints(base_repo, changed_files)
+        before_files = dict(record.get("pre_apply_file_fingerprints") or {})
+        current_dirty = self._dirty_worktree_fingerprint(base_repo)
+        before_dirty = str(record.get("pre_apply_dirty_fingerprint") or "")
+        forward_applies = self._git_apply_check(base_repo, patch)
+        reverse_applies = self._git_apply_check(base_repo, patch, reverse=True)
+        if forward_applies and current_files == before_files and current_dirty == before_dirty:
+            return "not_applied"
+        if reverse_applies and not forward_applies:
+            return "applied"
+        if reverse_applies and current_files != before_files:
+            return "applied"
+        if forward_applies and not reverse_applies:
+            return "not_applied"
+        return "outcome_unknown"
+
+    def _integration_preview_for_disposition(self, preview: Dict[str, Any]) -> Dict[str, Any]:
+        stored = deepcopy(preview)
+        stored.pop("preview_token", None)
+        return stored
+
+    def _applied_integration_result(
+        self,
+        jobs: list[JobInfo],
+        *,
+        preview: Dict[str, Any],
+        patch_info: Dict[str, Any],
+        base_repo: str,
+        request_context: Optional[RequestContext],
+        takeover: bool,
+    ) -> Dict[str, Any]:
+        applied = self._public_view(jobs, request_context=request_context)
+        applied.update(
+            {
+                "applied": True,
+                "can_apply": False,
+                "integration_state": "applied_to_checkout",
+                "apply_disposition": "applied",
+                "idempotent_replay": False,
+                "changed_files": list(preview.get("changed_files") or []),
+                "change_count": int(preview.get("change_count") or 0),
+                "main_changed_files": self._base_changed_files(base_repo),
+                "patch_sha256": str(patch_info.get("patch_sha256") or ""),
+                "skipped_files": list(patch_info.get("skipped_files") or []),
+                "note": (
+                    f"{applied['name']}'s accepted result was applied to the base checkout. "
+                    "Review, test, and commit it from the normal repository workflow. "
+                    "The worker worktree was preserved."
+                ),
+            }
+        )
+        if takeover:
+            applied["takeover_performed"] = True
+            applied["note"] = "Control was transferred to this MCP connection. " + applied["note"]
+        return applied
+
     def _integration_preview(
         self,
         jobs: list[JobInfo],
@@ -2620,6 +3498,7 @@ class WorkerRuntime:
         allow_dirty_base: bool = False,
         accepted_dirty_base: Optional[list[str]] = None,
         request_context: Optional[RequestContext] = None,
+        issue_preview_token: bool = True,
     ) -> Dict[str, Any]:
         view = self._changes_view(jobs, request_context=request_context)
         latest = jobs[-1]
@@ -2737,6 +3616,14 @@ class WorkerRuntime:
             )
             if base_moved:
                 view["note"] += " The base branch moved since the worker started, but the patch still applies."
+            if issue_preview_token:
+                return self._issue_integration_preview_token(
+                    jobs,
+                    preview=view,
+                    allow_dirty_base=allow_dirty_base,
+                    accepted_dirty_base=accepted_dirty_base,
+                    request_context=request_context,
+                )
             return view
 
         conflict_summary = self._safe_public_text(

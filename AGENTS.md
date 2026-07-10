@@ -46,6 +46,7 @@ The repo still supports local maintainer workflows, but do not describe the app 
 - Preserve the manager-first PatchBay contract in every ChatGPT-facing prompt surface: ChatGPT manages local Codex workers; workers execute non-trivial repository/Documents/codebase investigation, implementation, review, verification, and synthesis. Direct read/search/git tools must remain available, but describe them as manager inspection instruments for orientation, worker briefing context, focused verification, exact line/diff checks, reviewing worker evidence, specific doubts, tiny tasks, and quick checks where a worker brief would be worse than the check itself. Do not remove reader tools to force behavior, and do not add deterministic prompt/tool filters that block broad natural-language delegation.
 - Encourage multi-worker teams when the task can be split cleanly. PatchBay may expose up to 10 concurrent worker slots, and ChatGPT should be prompted to use investigators, implementers, reviewers, verification workers, and synthesis workers rather than doing broad work manually.
 - When changing Hub fleet lifecycle behavior such as enrollment, retirement, restore, machine visibility, routing eligibility, or group pinning, update runtime tests, public tool schemas, Hub initialize instructions, `docs/reference/hub-edge-mode.md`, `docs/reference/public-tool-surface.md`, and `docs/user/chatgpt-instructions.md` together. Default ChatGPT fleet views should show current usable capacity, while audit/history opt-ins can expose retired or superseded machine records.
+- Preserve the Hub V2 exact 31-tool manager contract. Hub must retain full natural-language worker lifecycle parity (start, batch, message, list, status, wait, inspect, integrate, stop, inbox/options), then add fleet, durable groups, focused workspace inspection, Pro Requests, and operation recovery. Do not replace semantic worker results with command receipts, expose a partial V2 catalog, or route workers in one group independently across machines.
 - When changing Hub workspace/repo resolution, preserve this priority: exact machine-local paths and explicitly advertised repo aliases beat broad workspace-root relative guesses. A generic root such as `/workspace/repos` may resolve `RetailMind` to `/workspace/repos/RetailMind`, but it must not steal a request from a later specific advertised alias such as `PatchBay`.
 - Preserve the full-access workbench posture in ChatGPT-facing instructions: when the runtime self-test/catalog exposes a dedicated VM or local workbench with full bash, direct writes, `danger-full-access`, and authenticated access, ChatGPT should treat dependency installation, repo-local virtualenvs, verification, commits, and authorized private-repo pushes as normal engineering work for an end-to-end task. The caution boundary is public/external/production/paid/credential-changing/irreversible work, not ordinary local VM setup.
 - Treat paging, `max_bytes`, and bounded result fields as transport/result-stability boundaries, not token-saving policy. Do not document them as reasons to avoid needed evidence.
@@ -89,6 +90,14 @@ For connector or ChatGPT-facing changes, also run:
 
 ```bash
 python scripts/live_mcp_eval.py --json
+```
+
+For Hub/Edge changes, also run both compatibility and production-shaped fleet
+evaluators:
+
+```bash
+python scripts/live_hub_edge_eval.py --json
+python scripts/live_hub_v2_eval.py --json
 ```
 
 For Codex CLI execution changes, record the current `codex --version` in the verification notes.

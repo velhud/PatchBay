@@ -17,6 +17,7 @@ The repository root keeps the practical entrypoints: `README.md`, `QUICKSTART.md
 ## Architecture
 
 - [Architecture overview](architecture/overview.md)
+- [Hub V2 manager control-plane design and implementation record](architecture/hub-control-plane-rebuild/README.md)
 - [Multi-machine orchestration options](architecture/multi-machine-orchestration-options.md)
 - [Multi-machine hub implementation plan](architecture/multi-machine-hub-implementation-plan.md)
 - [Multi-ChatGPT hub coordination idea](architecture/multi-chatgpt-hub-coordination-idea.md)

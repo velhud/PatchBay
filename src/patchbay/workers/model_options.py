@@ -16,60 +16,97 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     tomllib = None  # type: ignore[assignment]
 
 
-REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 MAX_MODEL_ID_CHARS = 160
 MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,159}$")
 
 
 MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
     "summary": (
-        "Choose the worker model by task complexity, context size, and decision authority. "
-        "This is advisory guidance for intelligent delegation, not a hard router or prompt filter."
+        "Choose the worker model by task complexity, context size, decision authority, and expected cost to a "
+        "verified result. This is advisory guidance for intelligent delegation, not a hard router or prompt filter. "
+        "The installed Codex catalog remains the authority for current availability."
     ),
     "default_ladder": [
         {
             "model_family": "Spark",
             "role": (
-                "Default for small workers: compact reading, straightforward repo checks, direct bounded tasks, "
-                "small code/test/exploration work, and fast helper lanes."
+                "Specialized ultra-fast worker for tiny, bounded, latency-sensitive reading, edits, tests, and "
+                "interactive exploration when its separate research-preview quota is available."
             ),
             "reasoning": "Use medium or high for ordinary compact work; use higher reasoning only when the brief is still small but judgment matters.",
             "caveats": (
-                "Prefer Spark over GPT-5.4 Mini when available because it is much faster and effectively free, "
-                "but watch for smaller context and occasional quota depletion."
+                "Spark is not the general small-worker default: it is less capable than GPT-5.4 Mini on published "
+                "coding evaluations, has a smaller context window, is Pro-only during preview, and may queue or deplete."
             ),
         },
         {
             "model_family": "GPT-5.4 Mini",
             "role": (
-                "Small reliable worker for many low/moderate-risk tasks, especially when Spark is unavailable, "
-                "quota-limited, too context-constrained, or when OpenAI-compatible behavior is useful."
+                "Quota-saving standard worker for simple, deterministic, high-volume tasks when maximizing included "
+                "subscription capacity matters more than the stronger judgment of GPT-5.6 Luna."
             ),
             "reasoning": "Use medium or high for routine trusted worker tasks.",
-            "caveats": "Good for many tasks, but not the first choice for complex decision-heavy work.",
+            "caveats": "Use GPT-5.6 Luna by default for compact standard work; keep Mini for genuine quota pressure or simple work.",
         },
         {
             "model_family": "GPT-5.4",
             "role": (
-                "Main serious worker for normal above-average tasks: substantial repository work, multi-step analysis, "
-                "implementation planning, debugging, verification, and decisions that need a very good model but not frontier authority."
+                "Stable legacy serious-worker fallback when GPT-5.6 Terra is unavailable or a known task-specific "
+                "regression makes the older behavior preferable."
             ),
             "reasoning": "Use medium/high for most serious work; use xhigh when the task is hard enough to justify deeper thought.",
-            "caveats": "Do not treat GPT-5.4 as merely a fallback; it is the major model for serious ordinary worker lanes.",
+            "caveats": "GPT-5.6 Terra replaces GPT-5.4 as the normal serious-worker default.",
         },
         {
             "model_family": "GPT-5.5",
             "role": (
-                "Highest-authority model for innovation, creative architecture, difficult synthesis, unresolved problems, "
-                "sensitive or final judgment, and work where the best reasoning quality matters more than speed."
+                "Legacy frontier fallback for known regressions, compatibility checks, or periods when GPT-5.6 is "
+                "unavailable; it remains strong on long context, multimodal work, and selected tool evaluations."
             ),
             "reasoning": "Use high or xhigh for serious final/creative/authority work.",
-            "caveats": "Do not spend GPT-5.5 as the main worker for every case; delegate ordinary serious work to GPT-5.4.",
+            "caveats": "Prefer GPT-5.6 Terra for price-performance and GPT-5.6 Sol for highest authority unless evidence favors GPT-5.5.",
+        },
+        {
+            "model_family": "GPT-5.6 Luna",
+            "role": (
+                "Default compact standard worker for bounded implementation, investigation, tests, review helpers, "
+                "and high-volume team lanes that need substantially more judgment than Mini or Spark."
+            ),
+            "reasoning": "Use low/medium for routine work and high/xhigh when a compact lane still needs meaningful judgment.",
+            "caveats": "Escalate long-context, difficult scientific, architectural, ambiguous, or final-authority work to Terra or Sol.",
+        },
+        {
+            "model_family": "GPT-5.6 Terra",
+            "role": (
+                "Default serious worker for normal above-average repository work, multi-step analysis, implementation, "
+                "debugging, verification, and most investigator/implementer/reviewer lanes."
+            ),
+            "reasoning": "Use medium/high normally, xhigh for hard work, and max only when the live catalog supports it and the task justifies the extra use.",
+            "caveats": "Use Sol when maximum authority, creativity, ambiguity resolution, or final judgment is worth the additional subscription use.",
+        },
+        {
+            "model_family": "GPT-5.6 Sol",
+            "role": (
+                "Highest-authority worker for innovation, creative architecture, difficult synthesis, unresolved problems, "
+                "sensitive or final judgment, and the hardest implementation or review lanes."
+            ),
+            "reasoning": "Use high/xhigh for serious authority work and max for the hardest justified tasks when supported.",
+            "caveats": "Do not use Sol for every lane; delegate ordinary serious work to Terra and compact work to Luna.",
         },
     ],
     "manager_rule": (
-        "For worker teams, use Spark or GPT-5.4 Mini for compact helper lanes, GPT-5.4 for the main serious workers, "
-        "and GPT-5.5 for the final authority, creative architecture, or unusually hard synthesis lane."
+        "For worker teams, use GPT-5.6 Luna for compact standard lanes, GPT-5.6 Terra for the main serious lanes, "
+        "and GPT-5.6 Sol for final authority or unusually hard synthesis. Use Spark for tiny latency-sensitive work, "
+        "GPT-5.4 Mini under genuine quota pressure, and GPT-5.4/GPT-5.5 as availability or regression fallbacks."
+    ),
+    "cost_rule": (
+        "Optimize expected subscription use to a verified correct result, not nominal cost per turn. Prefer the live "
+        "Codex usage dashboard and catalog over hard-coded prices, because credits, included limits, and preview quotas change."
+    ),
+    "ultra_note": (
+        "Ultra is a separate multi-agent execution mode, not a reasoning_effort value. PatchBay does not expose it as "
+        "a worker field; use explicit named PatchBay worker teams when parallel responsibilities are clear."
     ),
 }
 
@@ -141,7 +178,7 @@ def worker_option_menu(
         "allows_custom_model_string": True,
         "worker_start_fields": {
             "model": "Optional string. Omit to use Codex default; otherwise pass one of the returned model ids or a current Codex model id.",
-            "reasoning_effort": "Optional string: minimal, low, medium, high, or xhigh. Omit to use Codex/model default.",
+            "reasoning_effort": "Optional string: none, minimal, low, medium, high, xhigh, or max. Omit to use Codex/model default; the selected model may support only a subset.",
         },
         "next_step": (
             "Call codex_worker_start with name, brief, optional workspace_mode, and optional model/reasoning_effort. "

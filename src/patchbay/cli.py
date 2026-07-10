@@ -71,6 +71,12 @@ def default_config_path() -> str:
     return str(candidates[0])
 
 
+def _hub_v2_enabled(config: Mapping[str, Any]) -> bool:
+    hub = config.get("hub") if isinstance(config.get("hub"), Mapping) else {}
+    version = str(hub.get("control_plane") or hub.get("protocol_version") or "").strip().lower()
+    return version in {"2", "v2", "hub-v2"}
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
     if not args or args[0] in {"-h", "--help", "help"}:
@@ -446,7 +452,8 @@ def hub_main(argv: Iterable[str] | None = None) -> int:
         _prepend_source_path(env)
         runtime_path = _write_temp_runtime_config_for_cli(config)
         env["PATCHBAY_CONFIG"] = runtime_path
-        os.execvpe(sys.executable, [sys.executable, "-m", "patchbay.hub.server"], env)
+        module = "patchbay.hub.server_v2" if _hub_v2_enabled(config) else "patchbay.hub.server"
+        os.execvpe(sys.executable, [sys.executable, "-m", module], env)
         return 1
     if command == "enroll-code":
         return hub_enroll_code_main(rest)
@@ -465,8 +472,6 @@ def hub_enroll_code_main(argv: Iterable[str] | None = None) -> int:
     if command != "create":
         print(f"Unknown enroll-code command: {command}\n\n{_hub_enroll_code_help()}", file=sys.stderr)
         return 2
-    from patchbay.hub.runtime import HubRuntime
-
     parser = argparse.ArgumentParser(description="Create a one-use PatchBay Hub edge enrollment code.")
     parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
     parser.add_argument("--name", required=True, help="Human label for the enrolling machine.")
@@ -474,11 +479,25 @@ def hub_enroll_code_main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--ttl-minutes", type=int, default=30)
     parser.add_argument("--json", action="store_true")
     parsed = parser.parse_args(rest)
-    result = HubRuntime(load_config(parsed.config)).create_enrollment_code(
-        name=parsed.name,
-        tags=parsed.tag,
-        ttl_minutes=parsed.ttl_minutes,
-    )
+    config = load_config(parsed.config)
+    if _hub_v2_enabled(config):
+        from patchbay.hub.runtime_v2 import HubRuntimeV2
+
+        runtime = HubRuntimeV2(config)
+    else:
+        from patchbay.hub.runtime import HubRuntime
+
+        runtime = HubRuntime(config)
+    try:
+        result = runtime.create_enrollment_code(
+            name=parsed.name,
+            tags=parsed.tag,
+            ttl_minutes=parsed.ttl_minutes,
+        )
+    finally:
+        close = getattr(runtime, "close", None)
+        if callable(close):
+            close()
     print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else f"Enrollment code: {result['code']}")
     return 0
 
@@ -492,8 +511,6 @@ def hub_machine_main(argv: Iterable[str] | None = None) -> int:
     if command not in {"retire", "restore"}:
         print(f"Unknown machine command: {command}\n\n{_hub_machine_help()}", file=sys.stderr)
         return 2
-    from patchbay.hub.runtime import HubRuntime
-
     parser = argparse.ArgumentParser(description=f"{command.title()} a PatchBay Hub edge enrollment.")
     parser.add_argument("machine_id", help="Machine id to update.")
     parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
@@ -501,19 +518,34 @@ def hub_machine_main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--superseded-by", default="", help="Replacement machine id. Used only by retire.")
     parser.add_argument("--json", action="store_true")
     parsed = parser.parse_args(rest)
-    runtime = HubRuntime(load_config(parsed.config))
-    if command == "retire":
-        result = runtime.retire_machine(
-            machine_id=parsed.machine_id,
-            reason=parsed.reason,
-            superseded_by=parsed.superseded_by,
-        )
+    config = load_config(parsed.config)
+    if _hub_v2_enabled(config):
+        from patchbay.hub.runtime_v2 import HubRuntimeV2
+
+        runtime = HubRuntimeV2(config)
     else:
-        result = runtime.restore_machine(machine_id=parsed.machine_id)
+        from patchbay.hub.runtime import HubRuntime
+
+        runtime = HubRuntime(config)
+    try:
+        if command == "retire":
+            values = {
+                "machine_id": parsed.machine_id,
+                "reason": parsed.reason,
+            }
+            if not _hub_v2_enabled(config):
+                values["superseded_by"] = parsed.superseded_by
+            result = runtime.retire_machine(**values)
+        else:
+            result = runtime.restore_machine(machine_id=parsed.machine_id)
+    finally:
+        close = getattr(runtime, "close", None)
+        if callable(close):
+            close()
     if parsed.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
-        machine = result.get("machine") if isinstance(result.get("machine"), dict) else {}
+        machine = result.get("machine") if isinstance(result.get("machine"), dict) else result
         print(f"{machine.get('machine_id', parsed.machine_id)}: {machine.get('status', command)}")
     return 0
 
@@ -525,8 +557,6 @@ def edge_main(argv: Iterable[str] | None = None) -> int:
         return 0
     command, rest = args[0], args[1:]
     if command == "enroll":
-        from patchbay.hub.edge import enroll_edge
-
         parser = argparse.ArgumentParser(description="Enroll this machine with a PatchBay Hub.")
         parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
         parser.add_argument("--hub", required=True, help="Hub base URL or MCP URL.")
@@ -537,34 +567,68 @@ def edge_main(argv: Iterable[str] | None = None) -> int:
         parser.add_argument("--role", default="")
         parser.add_argument("--json", action="store_true")
         parsed = parser.parse_args(rest)
-        result = enroll_edge(
-            load_config(parsed.config),
-            hub_url=parsed.hub,
-            code=parsed.code,
-            machine_id=parsed.machine_id,
-            display_name=parsed.machine_name,
-            tags=parsed.tag,
-            role=parsed.role,
-        )
+        config = load_config(parsed.config)
+        if _hub_v2_enabled(config):
+            from patchbay.hub.edge_client_v2 import enroll_edge_v2
+
+            result = asyncio.run(
+                enroll_edge_v2(
+                    config,
+                    hub_url=parsed.hub,
+                    code=parsed.code,
+                    machine_id=parsed.machine_id,
+                    display_name=parsed.machine_name,
+                    tags=parsed.tag,
+                    role=parsed.role,
+                )
+            )
+        else:
+            from patchbay.hub.edge import enroll_edge
+
+            result = enroll_edge(
+                config,
+                hub_url=parsed.hub,
+                code=parsed.code,
+                machine_id=parsed.machine_id,
+                display_name=parsed.machine_name,
+                tags=parsed.tag,
+                role=parsed.role,
+            )
         print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else f"Edge profile saved: {result['profile_path']}")
         return 0
     if command == "start":
-        from patchbay.hub.edge import EdgeRunner
-
         parser = argparse.ArgumentParser(description="Run the PatchBay Edge polling loop.")
         parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
         parser.add_argument("--interval-seconds", type=float, default=5)
         parsed = parser.parse_args(rest)
-        asyncio.run(EdgeRunner(load_config(parsed.config)).run_loop(interval_seconds=parsed.interval_seconds))
+        config = load_config(parsed.config)
+        if _hub_v2_enabled(config):
+            from patchbay.hub.edge_client_v2 import create_edge_v2_runner
+
+            runner = create_edge_v2_runner(config)
+            asyncio.run(runner.run())
+        else:
+            from patchbay.hub.edge import EdgeRunner
+
+            asyncio.run(EdgeRunner(config).run_loop(interval_seconds=parsed.interval_seconds))
         return 0
     if command == "run-once":
-        from patchbay.hub.edge import EdgeRunner
-
         parser = argparse.ArgumentParser(description="Run one PatchBay Edge heartbeat/poll/execute cycle.")
         parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
         parser.add_argument("--json", action="store_true")
         parsed = parser.parse_args(rest)
-        result = asyncio.run(EdgeRunner(load_config(parsed.config)).run_once())
+        config = load_config(parsed.config)
+        if _hub_v2_enabled(config):
+            from patchbay.hub.edge_client_v2 import create_edge_v2_runner
+
+            runner = create_edge_v2_runner(config)
+            result = asyncio.run(runner.run_once())
+            if not runner.execution.journal.closed:
+                runner.execution.journal.close()
+        else:
+            from patchbay.hub.edge import EdgeRunner
+
+            result = asyncio.run(EdgeRunner(config).run_once())
         print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else yaml.safe_dump(result, sort_keys=False))
         return 0
     if command == "status":

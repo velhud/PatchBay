@@ -11,6 +11,8 @@ For the detailed release matrix, see [docs/testing/evals.md](docs/testing/evals.
 
 ## Baseline
 
+Model-routing changes must cover the live-catalog menu, all seven documented worker families, `none`/`max` reasoning validation, initialize instructions, and public tool schemas. Tests should not require a newly announced model to be present in the maintainer's local Codex catalog during a staged rollout.
+
 Install runtime and test dependencies before running the suite:
 
 ```bash
@@ -279,6 +281,35 @@ curl -i -X POST http://127.0.0.1:8000/mcp \
 
 Save the returned `Mcp-Session-Id` header and use it for `tools/list`, `resources/list`, and `tools/call`.
 
+For Hub compatibility and Hub V2 control-plane changes, run both fleet
+evaluators:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python scripts/live_hub_edge_eval.py --json
+PYTHONDONTWRITEBYTECODE=1 python scripts/live_hub_v2_eval.py --json
+```
+
+The V2 evaluator uses two production-shaped Edge runners and the HTTP/MCP pull
+transport. It proves the exact 31-tool catalog, workspace projection, group
+preflight and machine pinning, parallel batch start, same-worker follow-up,
+inspection, signed integration without commit, durable result recovery, group
+closure, and Hub/Edge restart persistence.
+
+Hub V2 release tests must also cross the real production handler boundary. A
+custom evaluator handler is not sufficient evidence for integration, cleanup,
+or Pro Request behavior. Regression coverage must prove that:
+
+- signed integration tokens and idempotency keys reach `WorkerRuntime` through
+  `ToolHandler`;
+- explicit isolated-worktree discard consent reaches worker cleanup;
+- more than 100 historical dispatches or result receipts cannot starve new
+  work or acknowledgement delivery;
+- temporary artifact URLs are carried through transient dispatch state rather
+  than retained as durable operation payloads;
+- group close and reassignment account for every associated worker operation;
+- all six Pro Request tools route to the owning Edge and expose only sanitized
+  fleet projections at the Hub.
+
 ## Release Evals Still Required
 
 Before public release, run all of these against disposable repos:
@@ -298,6 +329,8 @@ Before public release, run all of these against disposable repos:
 - `codex --version` is recorded.
 - Compile and pytest pass.
 - `scripts/live_mcp_eval.py --json` passes.
+- `scripts/live_hub_edge_eval.py --json` passes for V1 compatibility.
+- `scripts/live_hub_v2_eval.py --json` passes for the complete 31-tool V2 group/worker lifecycle.
 - `scripts/worker_phase1_eval.py --timeout 600` passes for read-only worker continuity, or the Codex-auth/environment blocker is reported.
 - `scripts/worker_phase2_eval.py --timeout 900` passes for isolated writing worker continuity, or the Codex-auth/environment blocker is reported.
 - `scripts/worker_phase3_eval.py --timeout 900` passes for multi-worker peer context relay, or the Codex-auth/environment blocker is reported.

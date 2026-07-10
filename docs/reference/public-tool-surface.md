@@ -26,84 +26,49 @@ Generic `read`, `write`, `edit`, and `bash` aliases are powerful. PatchBay keeps
 
 ## Optional Hub Tool Surface
 
-Hub mode is a separate optional MCP server. It does not expose every direct
-single-machine `codex_*` tool from every edge machine. It exposes a smaller
-fleet-native manager surface and queues commands to the selected edge machine:
+Hub V2 is selected with `hub.control_plane: v2`. It exposes the exact 31-tool
+manager surface in [Hub Manager Tool Contract](../architecture/hub-control-plane-rebuild/hub-manager-tool-contract.md)
+and executes mature local actions through machine-local Edge `ToolHandler`
+instances. V1 remains available as a compatibility runtime.
 
-| Tool | Role |
-| --- | --- |
-| `patchbay_fleet_status` | Compact status of online/offline machines and visible worker projections. |
-| `patchbay_machine_list` | List enrolled machines, tags, capabilities, and safe workspace projections. |
-| `patchbay_machine_workspaces` | Show advertised workspaces on one machine or the whole fleet. |
-| `patchbay_machine_recommend` | With `work_group_id`, report the pinned machine or blocked reason; without a group, provide read-only availability advice. |
-| `patchbay_work_group_create` | Create one durable task group, choose/pin one machine, and queue edge preflight. |
-| `patchbay_work_group_list` | List current/owned/recent/history groups without dumping stale history by default. |
-| `patchbay_work_group_status` | Show group state, pinned machine, lanes, commands, preflight, and next action. |
-| `patchbay_work_group_resume` | Make an existing group current and queue fresh preflight. |
-| `patchbay_work_group_close` | Close a group with outcome/summary; refuses by default while active commands remain. |
-| `patchbay_work_group_reassign` | Move successor work to another machine without pretending live workers moved. |
-| `patchbay_worker_options` | Route a model/reasoning options request to one machine. |
-| `patchbay_worker_start` | Start a worker on an explicit machine or inside a group/lane. Ungrouped Hub starts require `ungrouped_reason`. |
-| `patchbay_worker_start_auto` | Start a worker inside an existing group/lane on the group's pinned machine; requires `work_group_id`, `lane`, and `auto_routing_ok: true`. |
-| `patchbay_worker_message` | Continue a worker on the same machine. |
-| `patchbay_worker_status` | Show cached fleet worker status or queue a machine-local refresh. |
-| `patchbay_worker_wait` | Queue a patient status refresh on one machine. |
-| `patchbay_worker_inspect` | Inspect one worker through its machine-local PatchBay runtime. |
-| `patchbay_worker_stop` | Stop one worker turn on the owning machine. |
-| `patchbay_worker_integrate` | Apply an accepted isolated worker result on the owning machine. |
-| `patchbay_command_status` | Inspect hub-routed command state. |
+The five families are:
 
-Hub initialize instructions must tell ChatGPT to behave as a fleet manager. For
-non-trivial Hub tasks, the default lifecycle is:
+- fleet/discovery: `patchbay_fleet_status`, `patchbay_workspace_list`;
+- groups: create, list, status, resume, reassign, and close;
+- workers/artifacts: options, inbox, start, batch start, message, list, status,
+  wait, inspect, integrate, and stop;
+- focused manager workspace inspection: open, tree, search, read file, changes;
+- Pro Requests and operation recovery: six Pro Request actions plus
+  `patchbay_operation_status`.
+
+The exact names and schemas come from `patchbay.hub.tool_surface`; Hub does not
+maintain a second handwritten reduced catalog.
+
+For non-trivial Hub tasks, the lifecycle is:
 
 ```text
-fleet status -> group list -> resume or create one group -> start workers in
-lanes -> monitor group status -> close the group or report active work
+fleet status -> workspace list -> group list -> resume or create one group ->
+wait for preflight -> start a worker team in lanes -> wait/status -> natural
+language follow-ups -> inspect accepted evidence -> integrate when requested ->
+close the group or report active work
 ```
 
-The instruction surface should be unambiguous about these prohibitions:
+One task equals one durable group, not one group per worker. Availability-only
+routing chooses a machine once at group creation. Every worker in the group is
+routed to that pinned machine. A full or offline pinned machine blocks/waits;
+it never causes silent per-worker scattering. Reassignment creates successor
+work and never pretends to move live Codex processes.
 
-- no one-group-per-worker pattern;
-- no `patchbay_worker_start_auto` before `patchbay_work_group_create` or
-  `patchbay_work_group_resume`;
-- no per-worker least-busy scatter for workers in the same task;
-- no grouped worker start while preflight is pending or failed, except explicit
-  operator recovery override;
-- no silent failover from a pinned machine to a different machine.
+Hub state is a durable projection and operation broker. Edge machines retain
+local Codex auth, repositories, worker sessions, worktrees, path authority, and
+effect journals. Mutating calls require stable idempotency keys. `pending`
+means accepted for durable execution, not completed; managers recover with
+`patchbay_operation_status` or the worker/group wait tools.
 
-Hub state is a projection and command queue; edge machines keep local Codex
-auth, repositories, worker state, worktrees, and authority policy.
-
-Default Hub machine views represent current operating capacity. Retired or
-superseded edge enrollments are hidden from `patchbay_fleet_status`, default
-`patchbay_machine_list`, default `patchbay_machine_workspaces`, and availability
-recommendations. `patchbay_machine_list(include_retired=true)` is an audit tool
-for diagnosing old machine identities; retired machines must not be selected for
-ordinary work and old node tokens are rejected until the operator restores or
-re-enrolls the machine.
-
-The optional hub router is availability-only. It is off by default in public
-config and, when enabled, compares current worker load, CPU pressure, memory
-pressure, disk feasibility, workspace projections, online state, allow-lists,
-and explicit required tags. It must not infer task type, complexity, model
-choice, repository meaning, or documentation-vs-coding intent.
-
-Auto-routing chooses a machine for a work group, not for each worker. After a
-group is pinned, `patchbay_worker_start_auto` keeps later workers on the pinned
-machine. If that machine is full or offline, Hub returns a blocked/queued state;
-it does not scatter workers across other machines. Cross-machine same-repo
-writes require explicit separate groups/branches and one integration owner.
-
-Hub repository hints should not force ChatGPT to know every machine's absolute
-path. `patchbay_work_group_create` and `patchbay_machine_recommend` accept a
-human repo name, an advertised alias, or a machine-local path. If a machine
-advertises a non-git workspace root, the Hub may resolve a safe relative repo
-name underneath that root, store the original `requested_repo_path`, and route
-grouped commands with the resolved machine-local `repo_path`. Edge preflight is
-still mandatory and remains the proof that the resolved path is allowed,
-reachable, and usable before workers start. If that resolution fails, ChatGPT
-should call `patchbay_machine_workspaces` and retry with an advertised path
-rather than guessing `/root/...` or another host-specific location.
+Hub repository hints may be human names, advertised aliases, or machine-local
+paths. Edge preflight remains the proof that the resolved path is allowed,
+reachable, and usable. Use `patchbay_workspace_list` rather than guessing host
+paths when resolution fails.
 
 ## Current Stable Tools
 
@@ -165,16 +130,18 @@ Worker execution options use progressive disclosure:
 - `codex_worker_options` is not repository-scoped. Do not pass `repo_path`; choose the model/reasoning menu, then pass selected values to worker start/message.
 - `codex_worker_start` accepts optional `model` and `reasoning_effort`; omit them to use Codex defaults.
 - `codex_worker_message` inherits the worker's prior `model` and `reasoning_effort` unless a follow-up intentionally overrides one of them.
-- Reasoning is restricted to Codex config-supported values: `minimal`, `low`, `medium`, `high`, and `xhigh`.
+- Reasoning accepts the Codex configuration values `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the selected model's live catalog entry may support only a subset.
 - PatchBay may serialize the auth/session-start segment of `codex exec` per Codex home while keeping full worker turns concurrent after session creation. This avoids rotating-token races and is separate from `max_concurrent_jobs`.
 - If `latest_turn.failure_category` is `codex_auth_refresh_failed`, ChatGPT should report that local Codex re-authentication is required and should not keep launching replacement workers until the host login is repaired.
 
 Model-selection guidance is not a hard router. It should help ChatGPT manage worker teams intelligently:
 
-- Spark is the default for compact small workers: small reading tasks, straightforward checks, direct bounded fixes, tests, and exploration. It is preferred over GPT-5.4 Mini when available because it is much faster and effectively free, but it has a smaller context window and quota can deplete.
-- GPT-5.4 Mini is the small reliable alternative for many low/moderate-risk tasks, especially when Spark is unavailable, quota-limited, too context-constrained, or when a compatible small OpenAI model is useful.
-- GPT-5.4 is the main serious worker, not merely a fallback. Use it for normal above-average repository work, multi-step analysis, implementation planning, debugging, verification, and decisions that need a very good model but not frontier authority.
-- GPT-5.5 is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and work where the best reasoning quality matters more than speed.
+- GPT-5.6 Luna is the default compact standard worker for bounded implementation, investigation, tests, review helpers, and high-volume team lanes.
+- GPT-5.6 Terra is the default serious worker for normal above-average repository work, multi-step analysis, implementation, debugging, verification, and most investigator/implementer/reviewer lanes.
+- GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and the hardest implementation or review lanes.
+- Spark is reserved for tiny latency-sensitive work when its separate research-preview quota is useful. GPT-5.4 Mini is the quota-saving choice for simple high-volume work.
+- GPT-5.4 and GPT-5.5 remain availability, compatibility, or evidence-backed regression fallbacks.
+- Optimize expected subscription use to a verified result, not nominal cost per turn. Ultra is a separate multi-agent Codex mode, not a reasoning effort or PatchBay worker field.
 
 Worker file inspection:
 
@@ -325,7 +292,7 @@ These descriptors are not only API documentation; they are part of the model pro
 - what should be inspected before a mutating follow-up;
 - what validation or blocked-state behavior ChatGPT should report after the tool result.
 - when consequential worker assignments should request durable report files or changed-file evidence instead of relying on a compressed chat/tool summary.
-- when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool, including the advisory Spark / GPT-5.4 Mini / GPT-5.4 / GPT-5.5 worker-selection ladder.
+- when to use a progressive menu such as `codex_worker_options` instead of hardcoding dynamic choices into a primary mutating tool, including the advisory Luna / Terra / Sol defaults and the specialized or fallback roles of Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5.
 - that paging, byte caps, and bounded result fields are response-stability controls, not an instruction to save tokens or avoid necessary evidence.
 - that worker failure diagnostics such as `codex_auth_refresh_failed` are manager-facing operational facts, not repository-analysis conclusions.
 
