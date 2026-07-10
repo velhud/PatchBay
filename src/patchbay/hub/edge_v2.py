@@ -27,6 +27,7 @@ from patchbay.hub.tool_surface import (
 )
 from patchbay.protocol.context import RequestContext
 from patchbay.security import public_error_message, redact_sensitive_output
+from patchbay.tools.errors import PublicToolRefusal
 
 
 _OUTCOME_BY_PUBLIC_STATUS = {
@@ -252,6 +253,8 @@ class EdgeExecutionService:
                 if not isinstance(domain_result, Mapping):
                     raise TypeError("ToolHandler results must be objects")
                 domain_result = redact_sensitive_output(dict(domain_result))
+            except PublicToolRefusal as refusal:
+                return self._record_handler_refusal(plan, refusal)
             except Exception as error:
                 return self._record_uncertain_handler_outcome(plan, error)
 
@@ -806,6 +809,41 @@ class EdgeExecutionService:
             },
             error=safe_error,
             uncertain=True,
+            edge_generation=self.edge_generation,
+        )
+
+    def _record_handler_refusal(
+        self,
+        plan: Mapping[str, Any],
+        refusal: PublicToolRefusal,
+    ) -> dict[str, Any]:
+        """Persist a known pre-effect refusal without inventing uncertainty."""
+
+        result = {
+            "accepted": False,
+            "reason": refusal.reason,
+            "message": refusal.public_message,
+        }
+        self.journal.mark_effect_recorded(
+            str(plan["operation_id"]),
+            str(plan["attempt_id"]),
+            int(plan["fencing_token"]),
+            effect={
+                "action": str(plan["action"]),
+                "public_status": "blocked",
+                "domain_result_hash": semantic_payload_hash(result),
+                "correlation": {},
+            },
+            edge_generation=self.edge_generation,
+        )
+        return self.journal.record_result(
+            operation_id=str(plan["operation_id"]),
+            attempt_id=str(plan["attempt_id"]),
+            fencing_token=int(plan["fencing_token"]),
+            outcome="blocked",
+            result=result,
+            error="",
+            uncertain=False,
             edge_generation=self.edge_generation,
         )
 

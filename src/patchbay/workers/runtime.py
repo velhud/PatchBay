@@ -48,6 +48,7 @@ from patchbay.repo_locks import (
     mark_repo_lock_options,
 )
 from patchbay.security import redact_sensitive_output, validate_allowed_path
+from patchbay.tools.errors import WorkerNameConflict
 
 
 WORKER_ID_OPTION = "_worker_id"
@@ -238,10 +239,7 @@ class WorkerRuntime:
             if auto_suffix:
                 worker_name = self._unique_worker_name(worker_name, repo_path=repo_path)
             else:
-                raise ValueError(
-                    f"A worker named {worker_name!r} already exists in this workspace. Continue it with "
-                    "codex_worker_message, pass auto_suffix=true, or choose another human-readable name for this workspace."
-                )
+                raise WorkerNameConflict(worker_name)
 
         worker_id = f"wrk_{uuid.uuid4().hex[:20]}"
         workspace = self._prepare_workspace(

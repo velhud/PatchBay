@@ -13,6 +13,7 @@ from patchbay.hub.edge_journal import (
 )
 from patchbay.hub.edge_v2 import EdgeAttemptFenceError, EdgeExecutionService
 from patchbay.protocol.context import RequestContext
+from patchbay.tools.errors import WorkerNameConflict
 
 
 EDGE_GENERATION = "edgegen-service-test"
@@ -73,6 +74,7 @@ class FakeToolHandler:
         self.effects = 0
         self.active = 0
         self.maximum_active = 0
+        self.refusal: Exception | None = None
 
     async def handle_tool_call(
         self,
@@ -94,6 +96,9 @@ class FakeToolHandler:
             if self.delay:
                 await asyncio.sleep(self.delay)
             self.effects += 1
+            if self.refusal is not None:
+                self.effects -= 1
+                raise self.refusal
             if self.crash_after_effect:
                 raise SimulatedProcessCrash("process stopped after domain effect")
             return deepcopy(self.result)
@@ -321,6 +326,32 @@ async def test_blocked_domain_result_is_a_durable_semantic_receipt(tmp_path: Pat
     assert receipt["error"] == ""
     assert journal.get_attempt("attempt-service-1")["state"] == "result_ready"
     assert execution.pending_results()[0]["result"]["reason"] == "repo_busy"
+    journal.close()
+
+
+@pytest.mark.asyncio
+async def test_known_pre_effect_refusal_is_blocked_not_outcome_unknown(
+    tmp_path: Path,
+) -> None:
+    handler = FakeToolHandler()
+    handler.refusal = WorkerNameConflict("Reader")
+    journal, execution = service(tmp_path / "edge.sqlite3", handler)
+
+    receipt = await execution.execute_attempt(operation_attempt())
+
+    assert handler.effects == 0
+    assert receipt["outcome"] == "blocked"
+    assert receipt["uncertain"] is False
+    assert receipt["error"] == ""
+    assert receipt["result"] == {
+        "accepted": False,
+        "reason": "worker_name_conflict",
+        "message": (
+            "A worker named 'Reader' already exists in this workspace. Continue it with "
+            "patchbay_worker_message, pass auto_suffix=true, or choose another human-readable name."
+        ),
+    }
+    assert journal.get_attempt("attempt-service-1")["state"] == "result_ready"
     journal.close()
 
 
