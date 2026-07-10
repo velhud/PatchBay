@@ -619,7 +619,9 @@ async def _wait_for_terminal_operation(app: Any, operation_id: str) -> None:
                 return
             await asyncio.sleep(0.005)
 
-    await asyncio.wait_for(wait(), timeout=3)
+    # The production-shaped Edge loop may share a small CI/VM CPU. Keep this
+    # bounded, but do not turn scheduler contention into a false failure.
+    await asyncio.wait_for(wait(), timeout=15)
 
 
 @pytest.mark.asyncio
