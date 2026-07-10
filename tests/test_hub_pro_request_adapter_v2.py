@@ -785,14 +785,23 @@ async def test_production_hub_routes_remote_edge_pro_requests_end_to_end(tmp_pat
         )
         if read["status"] == "pending":
             await _wait_for_terminal_operation(app, read["operation"]["operation_id"])
-            read = await app.handle_tool_call(
-                "patchbay_pro_request_read", read_args, context=context
+            completed_read = await app.handle_tool_call(
+                "patchbay_operation_status",
+                {
+                    "operation_id": read["operation"]["operation_id"],
+                    "include_result": True,
+                },
+                context=context,
             )
-        assert read["status"] == "ok"
-        assert "SECRET-PROJECTION-SENTINEL" in read["result"]["report_markdown"]
-        assert read["result"]["machine_id"] == machine_id
-        assert read["result"]["edge_generation"] == generation
-        validate_hub_v2_tool_output("patchbay_pro_request_read", read)
+            assert completed_read["status"] == "ok"
+            read_result = completed_read["result"]["domain_result"]
+            validate_hub_v2_tool_output("patchbay_operation_status", completed_read)
+        else:
+            read_result = read["result"]
+            validate_hub_v2_tool_output("patchbay_pro_request_read", read)
+        assert "SECRET-PROJECTION-SENTINEL" in read_result["report_markdown"]
+        assert read_result["machine_id"] == machine_id
+        assert read_result["edge_generation"] == generation
 
         async def mutate(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
             arguments = {**arguments, "work_group_id": group_id}
