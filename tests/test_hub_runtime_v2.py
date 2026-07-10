@@ -194,11 +194,22 @@ def test_duplicate_projection_revision_is_ignored_without_losing_heartbeat_fresh
         projection_revision=1,
         capabilities={"contract_hash": "wrong"},
         workspaces=[],
+        resource_status={
+            "active_workers": 2,
+            "max_concurrent_jobs": 8,
+            "free_worker_slots": 6,
+            "cpu_percent": 42.0,
+            "memory_used_percent": 55.0,
+            "disk_free_bytes": 9_000_000_000,
+        },
     )
 
     assert duplicate["projection_accepted"] is False
     assert duplicate["current_projection_revision"] == 1
     assert runtime.fleet_status()["result"]["machines"][0]["compatibility"] == "compatible"
+    resources = runtime.fleet_status()["result"]["machines"][0]["resource_status"]
+    assert resources["free_worker_slots"] == 6
+    assert resources["cpu_percent"] == 42.0
     assert runtime.workspace_list()["result"]["count"] == 1
 
 

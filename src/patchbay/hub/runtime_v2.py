@@ -471,14 +471,18 @@ class HubRuntimeV2:
 
         machine_record["last_seen_at"] = now
         machine_record["updated_at"] = now
+        # Resource pressure is heartbeat telemetry, not a versioned workspace or
+        # worker projection. Refresh it even when the Edge repeats the current
+        # projection revision; otherwise normal projection-first loops leave the
+        # availability router permanently blind to CPU, memory, disk, and slots.
+        if resource_status is not None:
+            machine_record["resource_status"] = deepcopy(dict(resource_status))
         if accepted:
             machine_record["projection_revision"] = revision
             if capabilities is not None:
                 machine_record["capabilities"] = deepcopy(dict(capabilities))
             if worker_status is not None:
                 machine_record["worker_status"] = deepcopy(dict(worker_status))
-            if resource_status is not None:
-                machine_record["resource_status"] = deepcopy(dict(resource_status))
         current = self.store.get_entity(MACHINE_ENTITY, machine_id)
         if current is None:
             raise HubStoreV2Conflict("machine_disappeared")
