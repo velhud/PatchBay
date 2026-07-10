@@ -32,7 +32,8 @@
 - Verified the production public Hub connector outside-in with the exact 31
   exposed tools, a durable group on a real Edge, two parallel Codex workers,
   same-worker continuation, signed isolated-worktree integration without an
-  automatic commit, base-checkout verification, cleanup, and group closure.
+  automatic commit, base-checkout verification, cleanup, and group closure;
+  a separate single-worker start-to-integration scenario passed as well.
 - Added CodexPro attribution in `NOTICE` and README.
 - Independent ChatGPT browser-conversation behavior remains deployment-specific
   operational evidence; the generic public connector acceptance contract is

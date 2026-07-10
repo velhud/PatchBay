@@ -302,6 +302,8 @@ the server's returned instructions and 31 tools, a disposable Edge repository,
 real Codex workers, same-worker follow-up, signed integration, base verification,
 cleanup, group closure, and a reconnect check. Calling representative tools
 once or testing an internal handler directly is not live acceptance.
+The release evidence must also include one supplemental consequential flow
+through the single `patchbay_worker_start` entry path, not only batch start.
 
 Hub wait regression coverage must prove that an omitted `since_revision`
 snapshots current worker state, ordinary Edge heartbeats/resource telemetry do

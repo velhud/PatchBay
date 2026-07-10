@@ -34,6 +34,13 @@ Run against a disposable git repository on a real enrolled Edge:
 12. reconnect with a new MCP transport session and prove the durable group and
    worker history remain coherent.
 
+Run one supplemental single-worker scenario through `patchbay_worker_start`
+(not only the batch starter): start one isolated writer, wait for completion,
+inspect its report and signed integration preview, integrate, verify the base
+checkout, clean the worker workspace, and close the group. This proves the
+single and batch manager entry paths both reach the same consequential worker
+lifecycle.
+
 Use unique worker names or `auto_suffix: true` for repeated acceptance runs.
 Duplicate-name refusal must be terminal and actionable, never reported as an
 unknown mutation outcome.
