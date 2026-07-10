@@ -513,7 +513,9 @@ class HubWorkerAdapterV2:
         if "worker" in EDGE_ARGUMENT_FIELDS[action] and normalized.edge_worker_id:
             edge_arguments["worker"] = normalized.edge_worker_id
 
-        public_context = context.public_metadata() if context is not None else {}
+        public_context = (
+            context.durable_operation_metadata() if context is not None else {}
+        )
         if normalized.work_group_id:
             public_context["work_group_id"] = normalized.work_group_id
         if normalized.lane_id:
@@ -656,7 +658,9 @@ class HubWorkerAdapterV2:
         parent_payload = {
             "action": "compound.codex_worker_start",
             "target": route.edge_target(),
-            "context": context.public_metadata() if context is not None else {},
+            "context": (
+                context.durable_operation_metadata() if context is not None else {}
+            ),
             "work_group_id": route.work_group_id,
             "shared_brief": args["shared_brief"],
             "items": [deepcopy(spec) for spec in child_specs],

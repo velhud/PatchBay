@@ -1059,6 +1059,39 @@ async def test_completed_batch_retry_replays_parent_result_without_recreating_ch
 
 
 @pytest.mark.asyncio
+async def test_batch_retry_ignores_volatile_request_activity_metadata():
+    adapter, _, broker, _ = make_adapter()
+    first_context = RequestContext(
+        client_ref="client-stable",
+        chatgpt_session_ref="conversation-stable",
+        work_run_ref="run-stable",
+        work_run_started_at=100.0,
+        work_run_last_activity_at=101.0,
+        active_mcp_sessions=1,
+    )
+    retry_context = RequestContext(
+        client_ref="client-stable",
+        chatgpt_session_ref="conversation-stable",
+        work_run_ref="run-stable",
+        work_run_started_at=100.0,
+        work_run_last_activity_at=150.0,
+        active_mcp_sessions=7,
+    )
+
+    first = await adapter.handle_tool_call(
+        "patchbay_worker_start_batch", batch_arguments(), context=first_context
+    )
+    replay = await adapter.handle_tool_call(
+        "patchbay_worker_start_batch", batch_arguments(), context=retry_context
+    )
+
+    assert replay["operation"]["operation_id"] == first["operation"]["operation_id"]
+    assert broker.create_calls[0]["payload"] == broker.create_calls[1]["payload"]
+    assert "work_run_last_activity_at" not in broker.create_calls[0]["payload"]["context"]
+    assert "active_mcp_sessions" not in broker.create_calls[0]["payload"]["context"]
+
+
+@pytest.mark.asyncio
 async def test_real_broker_idempotency_replays_and_conflicts_semantically(tmp_path):
     store = HubStoreV2(tmp_path / "hub-v2.sqlite3")
     broker = OperationBroker(store)

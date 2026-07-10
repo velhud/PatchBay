@@ -1400,7 +1400,9 @@ class FleetHubProRequestAdapterV2(HubProRequestAdapterV2):
             "action": name.replace(PRO_REQUEST_TOOL_PREFIX, CANONICAL_TOOL_PREFIX, 1),
             "arguments": self._edge_arguments(args, association, include_expected=True),
             "target": self._edge_target(association, args),
-            "context": context.public_metadata() if context is not None else {},
+            "context": (
+                context.durable_operation_metadata() if context is not None else {}
+            ),
             "machine_id": association["machine_id"],
             "edge_generation": association["edge_generation"],
         }

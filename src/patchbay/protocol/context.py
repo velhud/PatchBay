@@ -143,3 +143,11 @@ class RequestContext:
         if self.active_mcp_sessions is not None:
             data["active_mcp_sessions"] = self.active_mcp_sessions
         return data
+
+    def durable_operation_metadata(self) -> dict[str, Any]:
+        """Return stable public context suitable for idempotent operation payloads."""
+
+        data = self.public_metadata()
+        data.pop("work_run_last_activity_at", None)
+        data.pop("active_mcp_sessions", None)
+        return data
