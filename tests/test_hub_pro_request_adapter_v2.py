@@ -773,15 +773,19 @@ async def test_production_hub_routes_remote_edge_pro_requests_end_to_end(tmp_pat
         request_ref = listed["result"]["requests"][0]["request_ref"]
         assert request_ref != created["id"]
 
+        read_args = {
+            "request_id": request_ref,
+            "work_group_id": group_id,
+            "include_report": True,
+        }
         read = await app.handle_tool_call(
-            "patchbay_pro_request_read",
-            {
-                "request_id": request_ref,
-                "work_group_id": group_id,
-                "include_report": True,
-            },
-            context=context,
+            "patchbay_pro_request_read", read_args, context=context
         )
+        if read["status"] == "pending":
+            await _wait_for_terminal_operation(app, read["operation"]["operation_id"])
+            read = await app.handle_tool_call(
+                "patchbay_pro_request_read", read_args, context=context
+            )
         assert read["status"] == "ok"
         assert "SECRET-PROJECTION-SENTINEL" in read["result"]["report_markdown"]
         assert read["result"]["machine_id"] == machine_id
