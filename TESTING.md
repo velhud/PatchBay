@@ -295,6 +295,20 @@ preflight and machine pinning, parallel batch start, same-worker follow-up,
 inspection, signed integration without commit, durable result recovery, group
 closure, and Hub/Edge restart persistence.
 
+The final Hub release gate is the outside-in public connector scenario in
+[`docs/testing/public-hub-acceptance.md`](docs/testing/public-hub-acceptance.md).
+It must use the real authenticated public MCP URL, a fresh client that sees only
+the server's returned instructions and 31 tools, a disposable Edge repository,
+real Codex workers, same-worker follow-up, signed integration, base verification,
+cleanup, group closure, and a reconnect check. Calling representative tools
+once or testing an internal handler directly is not live acceptance.
+
+Hub wait regression coverage must prove that an omitted `since_revision`
+snapshots current worker state, ordinary Edge heartbeats/resource telemetry do
+not wake the wait, and only worker projection changes or timeout complete it.
+Duplicate worker names must return a terminal pre-effect refusal with guidance
+to use a unique name or `auto_suffix`, never `outcome_unknown`.
+
 Hub V2 release tests must also cross the real production handler boundary. A
 custom evaluator handler is not sufficient evidence for integration, cleanup,
 or Pro Request behavior. Regression coverage must prove that:

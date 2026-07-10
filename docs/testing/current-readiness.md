@@ -2,13 +2,15 @@
 
 This page preserves the detailed readiness matrix that used to live near the top of the root README. The README now keeps only a compact product-facing status summary.
 
-PatchBay is **pre-release verified**, not public-release complete.
+PatchBay Hub V2 is implemented and release-verified. Deployment-specific raw
+evidence remains private; the public repository records the generic verification
+contract and collaborator-safe results.
 
 | Area | Status |
 | --- | --- |
 | Codex CLI baseline | Current local verification recorded `codex-cli 0.142.2` |
 | Python checks | `compileall` passes |
-| Test suite | `356` tests pass |
+| Test suite | `623` tests pass at the current Hub V2 release baseline |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Pro Escalation request loop | Unit tests and the live MCP probe cover CLI create, MCP list/read/claim/respond, CLI response readback, and blocked origin-worker dispatch |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |
@@ -18,11 +20,11 @@ PatchBay is **pre-release verified**, not public-release complete.
 | Real MCP worker negative-case trial | `scripts/real_mcp_worker_trial.py --include-safety-cases` passes direct MCP worker lifecycle and negative cases |
 | Direct multi-client MCP trial | `scripts/real_mcp_worker_trial.py --multi-client --include-safety-cases --tool-mode worker --json` passes two-session tool-mode, ownership, takeover, safety refusals, preview, integration, and artifact sanitization checks |
 | Fresh-worker stop protection | A focused live MCP probe confirms ordinary `codex_worker_stop` on a newly started worker returns `stop_confirmation_required: true`; `force: true` then stops it |
-| Public tunnel MCP probe | Earlier tokenized ngrok MCP simulator passed health, `initialize`, worker-mode `tools/list`, artifact inbox import/list/inspect, isolated worker artifact attachment/read, integration exclusion, and cleanup; current run blocked only because no validation ngrok hostname was provided |
+| Public Hub V2 acceptance | Authenticated production tunnel passed initialize, exact 31-tool discovery, fleet/workspace discovery, durable group preflight, real parallel Codex workers, patient wait, report inspection, signed integration without commit, and base verification against a disposable Edge repository |
 | Real Codex through MCP | `codex_plan_job` completes through PatchBay |
 | Current Codex JSONL parsing | `agent_message` results parse into structured output |
-| Active ChatGPT Pro VM worker use | Working reliably in current internal use for ChatGPT Pro to a private PatchBay VM managing local Codex workers; occasional small bugs are still expected |
-| Parallel ChatGPT browser conversations | Pending; multiple independent ChatGPT browser conversations sharing one Server URL have not yet been tried |
+| Active ChatGPT Pro VM worker use | Operational through Hub V2 and enrolled Edges; the public acceptance contract must still be rerun for connector-facing releases |
+| Multi-client state | Durable Hub/group state and fresh MCP transport reconnection are covered; independent ChatGPT browser conversations remain a deployment-specific operational exercise |
 | Real apply-job diff eval from ChatGPT | Pending |
 | Real resume/continuation eval from ChatGPT | Pending |
 

@@ -4,7 +4,7 @@ Design ID: `HUB-MANAGER-CONTROL-PLANE-V2`
 
 Date: 2026-07-09
 
-Decision status: `CONFLICT_REVIEW_COMPLETE_WORKPACKETS_NEXT`
+Decision status: `IMPLEMENTED_VERIFIED_DEPLOYED`
 
 ## Context
 
@@ -86,19 +86,21 @@ Risks not accepted:
 
 - [x] cross-solution-conflict-review completed
 - [x] blocking contract ambiguities resolved in `resolved-contract-addendum.md`
-- [ ] WorkPacket planning after conflict review
-- [ ] implementation
-- [ ] standard verification
-- [ ] live acceptance
-- [ ] release/deployment
+- [x] WorkPacket planning after conflict review
+- [x] implementation
+- [x] standard verification
+- [x] local production-shaped live evaluation
+- [x] authenticated public-tunnel acceptance with real Edge/Codex workers
+- [x] release/deployment
 
-## Not Verified
+## Residual Verification Boundary
 
-- no V2 code exists yet;
-- no state migration has run;
-- no V2 tool has been exposed to ChatGPT;
-- no real V2 worker lifecycle has run;
-- no deployment decision is authorized by this design.
+- external Codex authentication and subscription quota remain provider/account
+  dependencies rather than Hub guarantees;
+- every deployment must rerun the public connector scenario because local and
+  synthetic tests cannot prove the actual ChatGPT-visible catalog;
+- deployment-specific evidence remains private and is not stored in this public
+  repository.
 
 ## Artifact Links
 
