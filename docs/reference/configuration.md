@@ -13,7 +13,7 @@ Recommended Codex CLI baseline for the current branch:
 
 ```bash
 codex --version
-# codex-cli 0.142.2
+# codex-cli 0.144.1
 ```
 
 Install dependencies:

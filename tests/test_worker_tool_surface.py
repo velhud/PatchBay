@@ -29,7 +29,10 @@ def test_worker_tools_are_public_with_semantic_schemas():
         "high",
         "xhigh",
         "max",
+        "ultra",
     ]
+    assert "automatic internal delegation" in by_name["codex_worker_start"]["inputSchema"]["properties"]["reasoning_effort"]["description"]
+    assert "task/product purpose" in by_name["codex_worker_start"]["inputSchema"]["properties"]["brief"]["description"]
     assert "repo_path is accepted as a harmless compatibility field" in by_name["codex_worker_options"]["description"]
     assert "repo_path" in by_name["codex_worker_options"]["inputSchema"]["properties"]
     assert "not a hard router" in by_name["codex_worker_options"]["description"]
@@ -62,7 +65,7 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "durable report file" in by_name["codex_worker_start"]["description"]
     assert "live checkpoints" in by_name["codex_worker_start"]["description"]
     assert "start multiple workers with separate responsibilities" in by_name["codex_worker_start"]["description"]
-    assert "up to 10 concurrent worker slots" in by_name["codex_worker_start"]["description"]
+    assert "configured concurrent worker capacity" in by_name["codex_worker_start"]["description"]
     assert "workspace_mode=read_only" in by_name["codex_worker_start"]["description"]
     assert by_name["codex_worker_message"]["inputSchema"]["required"] == ["worker", "message"]
     assert "context_detail" in by_name["codex_worker_message"]["inputSchema"]["properties"]

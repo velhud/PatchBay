@@ -72,7 +72,8 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
     assert "Default serious worker" in ladder["GPT-5.6 Terra"]["role"]
     assert "Highest-authority worker" in ladder["GPT-5.6 Sol"]["role"]
     assert "verified correct result" in guidance["cost_rule"]
-    assert "not a reasoning_effort value" in guidance["ultra_note"]
+    assert "0.144.1 exposes ultra as a reasoning_effort" in guidance["ultra_note"]
+    assert "explicit named PatchBay workers remain preferred" in guidance["ultra_note"]
     assert result["selected_model"]["reasoning_efforts"] == [
         {"effort": "low", "description": "Fast"},
         {"effort": "high", "description": "Deep"},
@@ -85,8 +86,10 @@ def test_worker_option_validation_rejects_unsafe_values():
     assert validate_reasoning_effort("HIGH") == "high"
     assert validate_reasoning_effort("none") == "none"
     assert validate_reasoning_effort("max") == "max"
+    assert validate_reasoning_effort("ULTRA") == "ultra"
     assert build_reasoning_config_override("xhigh") == 'model_reasoning_effort="xhigh"'
     assert build_reasoning_config_override("max") == 'model_reasoning_effort="max"'
+    assert build_reasoning_config_override("ultra") == 'model_reasoning_effort="ultra"'
 
     with pytest.raises(ValueError, match="model"):
         validate_worker_model("gpt-5.5; rm -rf /")

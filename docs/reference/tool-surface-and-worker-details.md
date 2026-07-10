@@ -52,7 +52,7 @@ The model policy is advisory and optimizes expected subscription use to a verifi
 - GPT-5.4 Mini is the quota-saving choice for simple high-volume work.
 - GPT-5.4 and GPT-5.5 are availability, compatibility, or evidence-backed regression fallbacks.
 
-The installed Codex catalog is authoritative for availability and supported efforts. PatchBay accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, while individual models may expose only a subset. Ultra is a separate multi-agent mode, not a reasoning effort or PatchBay worker field.
+The installed Codex catalog is authoritative for availability and supported efforts. PatchBay accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, while individual models may expose only a subset. Codex CLI `0.144.1` exposes `ultra` on supported models such as Terra and Sol; it may automatically delegate inside one worker. Explicit named PatchBay workers remain preferred when visible lanes, reports, worktrees, or integration control matter.
 
 Follow-up `codex_worker_message` calls inherit the worker's prior model/reasoning choices unless explicitly overridden and can attach later imported artifacts.
 

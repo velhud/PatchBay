@@ -86,15 +86,15 @@ API prices are a separate axis: Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per mill
 
 ## Reasoning and orchestration
 
-- PatchBay should accept `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, then let the selected model's live catalog determine which subset is valid.
+- PatchBay should accept `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, then let the selected model's live catalog determine which subset is valid.
 - Use low or medium for routine Luna work, medium or high for normal Terra work, and high or xhigh for Sol authority work.
 - Use `max` only when the live catalog supports it and the expected quality gain justifies the extra use. Published 5.6 results show large gains on some hard tasks but diminishing or even poor efficiency on others.
-- Ultra is a separate multi-agent mode. PatchBay currently does not expose it as a worker field. Explicit PatchBay worker teams preserve named ownership, reports, diffs, and integration state and remain the preferred orchestration surface.
+- Codex CLI `0.144.1` exposes `ultra` as a reasoning effort for GPT-5.6 Terra and Sol. It may automatically delegate subtasks inside one Codex worker. PatchBay accepts it, but explicit PatchBay worker teams preserve named ownership, independent reports, separate worktrees, diffs, and integration state and remain the preferred orchestration surface when those controls matter.
 - Continue the same worker before escalating when the issue is missing evidence or an incomplete first report. Escalate the model when the failure reflects judgment, context, or reasoning limits.
 
 ## Availability boundary
 
-General availability began July 9 with a gradual 24-hour rollout. At investigation time this machine ran `codex-cli 0.142.1`, and `codex debug models` still returned only GPT-5.5, GPT-5.4, GPT-5.4 Mini, and Spark. PatchBay must therefore describe the seven-model policy without assuming every installation has received the three 5.6 catalog entries. `codex_worker_options` is the runtime authority.
+General availability began July 9 with a gradual rollout. On July 10, `codex-cli 0.144.1` on the maintainer machine returned all seven documented worker models: GPT-5.6 Sol, Terra, and Luna; GPT-5.5; GPT-5.4; GPT-5.4 Mini; and Spark. It reported 372K context for Sol/Terra/Luna, 272K for GPT-5.5/5.4/5.4 Mini, and 128K for Spark. Terra and Sol advertised `ultra`; Luna advertised through `max`. Installations can still differ during rollout, so `codex_worker_options` remains the runtime authority.
 
 ## Sources
 

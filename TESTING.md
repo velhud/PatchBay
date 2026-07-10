@@ -11,7 +11,7 @@ For the detailed release matrix, see [docs/testing/evals.md](docs/testing/evals.
 
 ## Baseline
 
-Model-routing changes must cover the live-catalog menu, all seven documented worker families, `none`/`max` reasoning validation, initialize instructions, and public tool schemas. Tests should not require a newly announced model to be present in the maintainer's local Codex catalog during a staged rollout.
+Model-routing changes must cover the live-catalog menu, all seven documented worker families, `none`/`max`/`ultra` reasoning validation, initialize instructions, and public tool schemas. Tests should not require a newly announced model to be present in the maintainer's local Codex catalog during a staged rollout.
 
 Install runtime and test dependencies before running the suite:
 
@@ -36,7 +36,7 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/external_chatgpt_style_validation.py --
 Current verified Codex CLI baseline:
 
 ```text
-codex-cli 0.142.2
+codex-cli 0.144.1
 ```
 
 The unit suite verifies:
@@ -161,7 +161,7 @@ For execution changes, run a disposable real-Codex plan job through MCP. The exp
 5. call `codex_get_result`;
 6. confirm a clean structured summary and `session_ref` when Codex returns one.
 
-Current final validation recorded Codex CLI `0.142.2` and confirmed PatchBay parses the current JSONL `item.completed` / `agent_message` result shape. Worker verification should always record the current local `codex --version`.
+Current final validation recorded Codex CLI `0.144.1` and confirmed PatchBay parses the current JSONL `item.completed` / `agent_message` result shape. Worker verification should always record the current local `codex --version`.
 
 ## Real Codex Worker Continuity
 

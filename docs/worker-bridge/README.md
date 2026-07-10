@@ -55,7 +55,7 @@ The ChatGPT-facing prompt surface is the combination of MCP `initialize.instruct
 
 - launch with `--tool-mode worker`;
 - keep ChatGPT in the lead/manager/consultant role: use direct context tools for light orientation, worker briefing context, focused verification, and tiny exceptions, and delegate non-trivial repository work to workers instead of doing a manual line-by-line implementation loop;
-- encourage worker teams for broad work. PatchBay can expose up to 10 concurrent worker slots depending on configuration, and ChatGPT should use parallel investigators, implementers, reviewers, verification workers, and synthesis workers when responsibilities are clear;
+- encourage worker teams for broad work. ChatGPT should use configured worker capacity rather than imposing an artificial one-or-two-worker limit, and should appoint parallel investigators, implementers, reviewers, verification workers, and synthesis workers when responsibilities are clear;
 - use `codex_tool_mode_info` and `codex_tool_mode_switch` only for explicit, temporary broadening; ChatGPT may need connector refresh before newly exposed tools appear;
 - start with `codex_self_test` and `codex_open_workspace`;
 - treat one copied Server URL as one shared local state surface and use coordination-owner-relative ownership/takeover signals instead of assuming a private app instance; `active_mcp_sessions` is transport-session churn, not proof of worker ownership by itself;

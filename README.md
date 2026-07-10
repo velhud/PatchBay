@@ -20,7 +20,7 @@
   <img alt="Status: pre-release verified" src="https://img.shields.io/badge/status-pre--release%20verified-orange">
   <img alt="MCP: Streamable HTTP and stdio" src="https://img.shields.io/badge/MCP-HTTP%20%2B%20stdio-blue">
   <img alt="Runtime: Python and FastAPI" src="https://img.shields.io/badge/runtime-Python%20%2B%20FastAPI-3776AB">
-  <img alt="Codex CLI baseline: 0.142.2" src="https://img.shields.io/badge/Codex%20CLI-0.142.2-black">
+  <img alt="Codex CLI baseline: 0.144.1" src="https://img.shields.io/badge/Codex%20CLI-0.144.1-black">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
@@ -237,7 +237,7 @@ See [TESTING.md](TESTING.md), [docs/testing/evals.md](docs/testing/evals.md), an
 
 | Area | Status |
 | --- | --- |
-| Codex CLI baseline | Current local verification recorded `codex-cli 0.142.2` |
+| Codex CLI baseline | Current local verification recorded `codex-cli 0.144.1` |
 | Python checks | `compileall` passes |
 | Test suite | `281` tests pass |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |

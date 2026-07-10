@@ -97,6 +97,16 @@ def test_initialize_is_manager_first_and_carries_frozen_contract_metadata():
     assert "pending means" in HUB_V2_INSTRUCTIONS
     assert "patchbay_operation_status" in HUB_V2_INSTRUCTIONS
     assert "applies without committing" in HUB_V2_INSTRUCTIONS
+    assert "manager, architect, and team lead" in HUB_V2_INSTRUCTIONS
+    assert "Brief workers as real colleagues" in HUB_V2_INSTRUCTIONS
+    assert "task and product purpose" in HUB_V2_INSTRUCTIONS
+    assert "GPT-5.6 Luna" in HUB_V2_INSTRUCTIONS
+    assert "GPT-5.6 Terra" in HUB_V2_INSTRUCTIONS
+    assert "GPT-5.6 Sol" in HUB_V2_INSTRUCTIONS
+    assert "0.144.1 exposes ultra" in HUB_V2_INSTRUCTIONS
+    assert "tool-call" in HUB_V2_INSTRUCTIONS
+    assert "continuation note" in HUB_V2_INSTRUCTIONS
+    assert "Group close is complete only" in HUB_V2_INSTRUCTIONS
 
 
 def test_tools_list_is_the_exact_ordered_31_tool_registry_with_no_v1_only_tools():

@@ -123,7 +123,7 @@ Low-level tools for explicit job/session control:
 - `codex_interactive_reply`
 - `codex_get_config`
 
-These remain available for compatibility and power-user control. The normal ChatGPT-first path should prefer the worker facade when the user wants durable named local Codex colleagues. Current validation records Codex CLI `0.142.2` for this branch; JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
+These remain available for compatibility and power-user control. The normal ChatGPT-first path should prefer the worker facade when the user wants durable named local Codex colleagues. Current validation records Codex CLI `0.144.1` for this branch; JSONL results are parsed from `item.completed` / `agent_message` events into structured job output.
 
 `codex_resume`, `codex_interactive`, and `codex_interactive_reply` are async job starters classified as mutating/open-world in the public descriptors because they can continue sessions that write locally or call Codex externally. `codex_plan_job` remains locally read-only, but is not idempotent because it creates job state and can invoke Codex.
 

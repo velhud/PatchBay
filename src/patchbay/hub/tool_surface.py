@@ -806,7 +806,10 @@ def _worker_start_batch_descriptor() -> dict[str, Any]:
         ),
         "name": deepcopy(start_properties["name"]),
         "lane": deepcopy(GROUP_ROUTE_PROPERTIES["lane"]),
-        "mission": _string("Worker-specific natural-language mission appended to shared_brief."),
+        "mission": _string(
+            "Worker-specific natural-language responsibility appended to shared_brief. State its lane outcome, boundaries, "
+            "coordination role, deliverable, and evidence/verification expectations."
+        ),
         "workspace_mode": deepcopy(start_properties["workspace_mode"]),
         "model": deepcopy(start_properties["model"]),
         "reasoning_effort": deepcopy(start_properties["reasoning_effort"]),
@@ -827,7 +830,10 @@ def _worker_start_batch_descriptor() -> dict[str, Any]:
         _input_schema(
             {
                 "work_group_id": deepcopy(GROUP_ROUTE_PROPERTIES["work_group_id"]),
-                "shared_brief": _string("Common goal, context, constraints, and expected team deliverable."),
+                "shared_brief": _string(
+                    "Common task/product purpose, current context and authority, desired outcome, constraints and non-goals, "
+                    "team coordination assumptions, and shared evidence/verification requirements."
+                ),
                 "context_from_workers": deepcopy(start_properties["context_from_workers"]),
                 "context_from_artifacts": deepcopy(start_properties["context_from_artifacts"]),
                 "context_detail": deepcopy(start_properties["context_detail"]),

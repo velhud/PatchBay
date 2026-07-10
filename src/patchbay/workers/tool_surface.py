@@ -247,9 +247,10 @@ WORKER_EXECUTION_OPTION_PROPERTIES: Dict[str, Any] = {
     },
     "reasoning_effort": {
         "type": "string",
-        "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
         "description": (
-            "Optional Codex reasoning effort for supported models. Omit to use the selected model or Codex default."
+            "Optional Codex reasoning effort for supported models. Omit to use the selected model or Codex default. "
+            "The live Codex catalog is authoritative; ultra may trigger automatic internal delegation inside one worker."
         ),
     },
 }
@@ -371,7 +372,7 @@ WORKER_TOOLS = [
             "produce structured reports and live checkpoints through PatchBay. "
             "Defaults to an isolated writing worktree; choose workspace_mode=read_only for advisory work. "
             "For larger tasks, start multiple workers with separate responsibilities and reconcile their reports; "
-            "up to 10 concurrent worker slots may be available depending on server config. "
+            "use the configured concurrent worker capacity rather than imposing an artificial one-or-two-worker limit. "
             "Can include bounded context from other workers for review, alternatives, or handoff. When a "
             "specific model or reasoning depth matters, call codex_worker_options first, then pass model and/or "
             "reasoning_effort here. Worker names are scoped to the target workspace, so the same name can be reused "
@@ -389,7 +390,11 @@ WORKER_TOOLS = [
                 },
                 "brief": {
                     "type": "string",
-                    "description": "Natural-language assignment. Put goals, context, and expected report here.",
+                    "description": (
+                        "Natural-language colleague brief. Include task/product purpose, relevant current context and authority, "
+                        "desired outcome, scope, constraints and non-goals, relationship to parallel workers, expected deliverable, "
+                        "and evidence/verification requirements. Let the worker find relevant files unless exact paths matter."
+                    ),
                 },
                 "repo_path": {
                     "type": "string",

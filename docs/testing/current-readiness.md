@@ -8,7 +8,7 @@ contract and collaborator-safe results.
 
 | Area | Status |
 | --- | --- |
-| Codex CLI baseline | Current local verification recorded `codex-cli 0.142.2` |
+| Codex CLI baseline | Current local verification recorded `codex-cli 0.144.1` |
 | Python checks | `compileall` passes |
 | Test suite | `623` tests pass at the current Hub V2 release baseline |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |

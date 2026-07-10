@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     tomllib = None  # type: ignore[assignment]
 
 
-REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 MAX_MODEL_ID_CHARS = 160
 MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,159}$")
 
@@ -82,7 +82,7 @@ MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
                 "Default serious worker for normal above-average repository work, multi-step analysis, implementation, "
                 "debugging, verification, and most investigator/implementer/reviewer lanes."
             ),
-            "reasoning": "Use medium/high normally, xhigh for hard work, and max only when the live catalog supports it and the task justifies the extra use.",
+            "reasoning": "Use medium/high normally, xhigh for hard work, max for the hardest single-agent work, and ultra only when the live catalog supports automatic internal delegation and that behavior is appropriate.",
             "caveats": "Use Sol when maximum authority, creativity, ambiguity resolution, or final judgment is worth the additional subscription use.",
         },
         {
@@ -91,7 +91,7 @@ MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
                 "Highest-authority worker for innovation, creative architecture, difficult synthesis, unresolved problems, "
                 "sensitive or final judgment, and the hardest implementation or review lanes."
             ),
-            "reasoning": "Use high/xhigh for serious authority work and max for the hardest justified tasks when supported.",
+            "reasoning": "Use high/xhigh for serious authority work, max for the hardest single-agent work, and ultra only when the live catalog supports automatic internal delegation and that behavior is appropriate.",
             "caveats": "Do not use Sol for every lane; delegate ordinary serious work to Terra and compact work to Luna.",
         },
     ],
@@ -105,8 +105,10 @@ MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
         "Codex usage dashboard and catalog over hard-coded prices, because credits, included limits, and preview quotas change."
     ),
     "ultra_note": (
-        "Ultra is a separate multi-agent execution mode, not a reasoning_effort value. PatchBay does not expose it as "
-        "a worker field; use explicit named PatchBay worker teams when parallel responsibilities are clear."
+        "Codex CLI 0.144.1 exposes ultra as a reasoning_effort for supported models such as GPT-5.6 Terra and Sol. "
+        "Ultra can perform automatic internal task delegation inside one Codex worker. PatchBay accepts the value, "
+        "but explicit named PatchBay workers remain preferred when the manager needs visible lanes, independent reports, "
+        "separate worktrees, or controlled integration."
     ),
 }
 
@@ -178,7 +180,7 @@ def worker_option_menu(
         "allows_custom_model_string": True,
         "worker_start_fields": {
             "model": "Optional string. Omit to use Codex default; otherwise pass one of the returned model ids or a current Codex model id.",
-            "reasoning_effort": "Optional string: none, minimal, low, medium, high, xhigh, or max. Omit to use Codex/model default; the selected model may support only a subset.",
+            "reasoning_effort": "Optional string: none, minimal, low, medium, high, xhigh, max, or ultra. Omit to use Codex/model default; the selected model may support only a subset.",
         },
         "next_step": (
             "Call codex_worker_start with name, brief, optional workspace_mode, and optional model/reasoning_effort. "

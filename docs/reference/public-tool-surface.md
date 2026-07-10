@@ -130,7 +130,7 @@ Worker execution options use progressive disclosure:
 - `codex_worker_options` is not repository-scoped. Do not pass `repo_path`; choose the model/reasoning menu, then pass selected values to worker start/message.
 - `codex_worker_start` accepts optional `model` and `reasoning_effort`; omit them to use Codex defaults.
 - `codex_worker_message` inherits the worker's prior `model` and `reasoning_effort` unless a follow-up intentionally overrides one of them.
-- Reasoning accepts the Codex configuration values `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the selected model's live catalog entry may support only a subset.
+- Reasoning accepts the Codex configuration values `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; the selected model's live catalog entry may support only a subset.
 - PatchBay may serialize the auth/session-start segment of `codex exec` per Codex home while keeping full worker turns concurrent after session creation. This avoids rotating-token races and is separate from `max_concurrent_jobs`.
 - If `latest_turn.failure_category` is `codex_auth_refresh_failed`, ChatGPT should report that local Codex re-authentication is required and should not keep launching replacement workers until the host login is repaired.
 
@@ -141,7 +141,7 @@ Model-selection guidance is not a hard router. It should help ChatGPT manage wor
 - GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and the hardest implementation or review lanes.
 - Spark is reserved for tiny latency-sensitive work when its separate research-preview quota is useful. GPT-5.4 Mini is the quota-saving choice for simple high-volume work.
 - GPT-5.4 and GPT-5.5 remain availability, compatibility, or evidence-backed regression fallbacks.
-- Optimize expected subscription use to a verified result, not nominal cost per turn. Ultra is a separate multi-agent Codex mode, not a reasoning effort or PatchBay worker field.
+- Optimize expected subscription use to a verified result, not nominal cost per turn. Codex CLI `0.144.1` exposes `ultra` as a reasoning effort on supported models such as Terra and Sol; it may automatically delegate inside one worker. Prefer explicit named PatchBay workers when visible lanes, reports, worktrees, or integration control matter.
 
 Worker file inspection:
 

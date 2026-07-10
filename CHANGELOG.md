@@ -28,7 +28,15 @@
   resource telemetry no longer wake worker waits, and an omitted
   `since_revision` now waits from the worker's current projection rather than
   returning historical state immediately.
-- Verified local MCP probing, real worker phase evals, real `codex_plan_job` execution, and direct tokenized public-tunnel MCP artifact worker simulation with Codex CLI `0.142.2`.
+- Added Codex CLI `0.144.1` model guidance for GPT-5.6 Luna, Terra, and Sol,
+  accepted live-catalog `ultra` reasoning on supported models, and clarified
+  when explicit PatchBay lanes remain preferable to automatic delegation inside
+  one worker.
+- Strengthened Hub and single-machine manager instructions with colleague-quality
+  worker briefs, configured-capacity parallelism, minor-versus-serious failure
+  handling, durable continuation notes for ChatGPT limits, and terminal
+  operation/group verification before completion claims.
+- Verified local MCP probing, real worker phase evals, real `codex_plan_job` execution, and direct tokenized public-tunnel MCP artifact worker simulation with Codex CLI `0.144.1`.
 - Verified the production public Hub connector outside-in with the exact 31
   exposed tools, a durable group on a real Edge, two parallel Codex workers,
   same-worker continuation, signed isolated-worktree integration without an
