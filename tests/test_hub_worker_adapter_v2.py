@@ -696,6 +696,26 @@ async def test_projection_reads_and_hub_event_wait_never_route_sleeping_edge_cal
 
 
 @pytest.mark.asyncio
+async def test_worker_wait_without_revision_uses_current_worker_projection_as_baseline():
+    adapter, runtime, broker, projection = make_adapter()
+    args = {
+        "work_group_id": "group_alpha",
+        "wait_seconds": 20,
+        "scope": "history",
+        "limit": 20,
+    }
+
+    waited = await adapter.handle_tool_call("patchbay_worker_wait", args)
+
+    assert projection.query_calls[0]["view"] == "status"
+    assert projection.wait_calls[0]["since_revision"] == 42
+    assert projection.wait_calls[0]["timeout_seconds"] == 20.0
+    assert runtime.read_calls == []
+    assert broker.create_calls == []
+    assert waited["status"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_message_during_active_turn_is_blocked_without_an_operation():
     projection = RecordingProjection()
     projection.worker_result = {

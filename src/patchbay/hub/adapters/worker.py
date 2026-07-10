@@ -594,11 +594,31 @@ class HubWorkerAdapterV2:
         route: WorkerRoute,
         context: RequestContext | None,
     ) -> dict[str, Any]:
+        if args.get("since_revision") is None:
+            baseline = await _maybe_await(
+                self.projection.query(
+                    view="status",
+                    filters=deepcopy(dict(args)),
+                    route=route.as_port_mapping(),
+                    context=context,
+                )
+            )
+            if _is_public_envelope(baseline):
+                baseline_result = baseline.get("result")
+            else:
+                baseline_result = baseline
+            since_revision = (
+                int(baseline_result.get("projection_revision") or 0)
+                if isinstance(baseline_result, Mapping)
+                else 0
+            )
+        else:
+            since_revision = max(0, int(args.get("since_revision") or 0))
         raw = await _maybe_await(
             self.projection.wait(
                 filters=deepcopy(dict(args)),
                 route=route.as_port_mapping(),
-                since_revision=max(0, int(args.get("since_revision") or 0)),
+                since_revision=since_revision,
                 timeout_seconds=max(0.0, float(args.get("wait_seconds") or 0)),
                 context=context,
             )
