@@ -666,7 +666,7 @@ async def test_production_hub_routes_remote_edge_pro_requests_end_to_end(tmp_pat
         "hub": {
             "control_plane": "v2",
             "state_db": str(tmp_path / "hub.sqlite3"),
-                "semantic_wait_seconds": 0.5,
+                "semantic_wait_seconds": 0.0,
         },
         "auth": {"enabled": False},
     }

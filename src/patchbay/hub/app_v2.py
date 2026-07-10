@@ -1208,7 +1208,9 @@ class HubAppV2:
         if (
             operation is None
             or not isinstance(self.pro_request_adapter, FleetHubProRequestAdapterV2)
-            or not str(operation.get("tool") or "").startswith("patchbay_pro_request_")
+            or not str(operation.get("tool_name") or operation.get("tool") or "").startswith(
+                "patchbay_pro_request_"
+            )
         ):
             return refreshed
         decorated = self.pro_request_adapter.operation_result(operation)
