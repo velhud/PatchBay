@@ -151,6 +151,13 @@ include bounded identifiers in ordinary text content. This fallback keeps fleet,
 workspace, group, and model discovery inspectable when a connector client fails
 to surface structured content.
 
+During rolling upgrades, Hub may accept claim, lease, result, and reconciliation
+traffic from an older Edge only when the request matches that Edge's still-
+advertised contract and the durable attempt fences bind the operation to the
+same contract. The incompatible Edge is excluded from new placement until it
+advertises the current contract. This lets in-flight workers finish without
+weakening new-operation compatibility checks.
+
 1. Start with `codex_self_test` and `codex_open_workspace`.
 2. Use read-only context tools only enough to understand the allowed workspace and constraints.
 3. Start one or more named workers with outcome, context, constraints, deliverables, and report format.

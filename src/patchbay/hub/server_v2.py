@@ -778,7 +778,11 @@ class _RuntimeEdgeController:
         if require_contract:
             requested = self._requested_contract_hash(payload)
             advertised = str((record.get("capabilities") or {}).get("contract_hash") or "")
-            if requested != HUB_V2_CONTRACT_HASH or requested != advertised:
+            # Permit an enrolled older Edge to finish only attempts bound to
+            # its advertised contract during a rolling upgrade. Attempt-level
+            # fences still reject mismatched operations, and placement blocks
+            # new work until the Edge advertises the current contract.
+            if requested != advertised:
                 raise HubStoreV2Conflict("attempt_contract_hash_mismatch")
         return record
 

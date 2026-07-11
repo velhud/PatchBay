@@ -41,6 +41,9 @@ The evidence separated deliberate safety behavior from defects:
 11. Worker projections expose a distinct `workspace_instance_id`.
 12. Startup tools provide bounded identifier-rich text fallbacks while retaining
     full `structuredContent`.
+13. Rolling upgrades allow an older Edge to finish attempts already fenced to
+    its advertised contract while preventing new placement on that incompatible
+    Edge until it is upgraded.
 
 ## Verification Evidence
 

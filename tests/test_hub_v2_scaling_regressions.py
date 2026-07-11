@@ -13,7 +13,7 @@ from patchbay.hub.app_v2 import (
 from patchbay.hub.broker import OperationBroker
 from patchbay.hub.operations import public_envelope
 from patchbay.hub.runtime_v2 import MACHINE_ENTITY, HubRuntimeV2
-from patchbay.hub.store_v2 import HubStoreV2, semantic_payload_hash
+from patchbay.hub.store_v2 import HubStoreV2, HubStoreV2Conflict, semantic_payload_hash
 from patchbay.hub.tool_surface import HUB_V2_CONTRACT_HASH
 from patchbay.hub.transport_v2 import (
     EDGE_RECEIPT_ENTITY,
@@ -96,6 +96,34 @@ def _dispatch_record(
         },
         expected_revision=0,
     )
+
+
+def test_old_edge_contract_can_finish_fenced_attempt_during_rolling_upgrade(tmp_path) -> None:
+    store = HubStoreV2(tmp_path / "rolling-upgrade.sqlite3")
+    broker = OperationBroker(store)
+    runtime = HubRuntimeV2(store, broker=broker)
+    runtime.authenticate_machine = lambda machine_id, token, edge_generation: {
+        "machine_id": machine_id,
+        "edge_generation": edge_generation,
+        "capabilities": {"contract_hash": "previous-contract"},
+    }
+    transport = HubPullTransportBridgeV2(BoundServices(store, broker, runtime))
+    payload = {
+        "machine_id": "machine-old",
+        "edge_generation": "generation-old",
+        "contract_hash": "previous-contract",
+    }
+
+    authenticated = transport._authenticate(payload, "node-token", require_contract=True)
+
+    assert authenticated["capabilities"]["contract_hash"] == "previous-contract"
+    with pytest.raises(HubStoreV2Conflict, match="attempt_contract_hash_mismatch"):
+        transport._authenticate(
+            {**payload, "contract_hash": "different-contract"},
+            "node-token",
+            require_contract=True,
+        )
+    store.close()
 
 
 @pytest.mark.asyncio

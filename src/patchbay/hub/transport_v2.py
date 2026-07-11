@@ -1015,7 +1015,11 @@ class HubPullTransportBridgeV2:
         if require_contract:
             requested = self._requested_contract_hash(payload)
             advertised = str(_mapping(machine.get("capabilities")).get("contract_hash") or "")
-            if requested != HUB_V2_CONTRACT_HASH or requested != advertised:
+            # During a rolling upgrade, an older Edge may still own attempts
+            # created under its previously advertised contract. Placement
+            # already prevents new work on an incompatible Edge, while the
+            # attempt fences below bind claim/result to the stored contract.
+            if requested != advertised:
                 raise HubStoreV2Conflict("attempt_contract_hash_mismatch")
         return machine
 
