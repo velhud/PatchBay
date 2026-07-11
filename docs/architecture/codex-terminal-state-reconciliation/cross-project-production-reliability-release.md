@@ -52,11 +52,14 @@ The evidence separated deliberate safety behavior from defects:
     a manager poll, and explicitly lost or terminal projections do not consume
     machine capacity. This prevents historical wrappers from distorting
     availability routing after an Edge restart.
+16. An accepted dedicated worker projection refreshes both authoritative worker
+    entities and the machine's embedded fleet summary at the same revision, so
+    fleet status cannot display an older lifecycle snapshot.
 
 ## Verification Evidence
 
 - Focused connected suite: 96 passed.
-- Full suite: 644 passed; four existing FastAPI lifespan deprecation warnings.
+- Full suite: 645 passed; four existing FastAPI lifespan deprecation warnings.
 - Hub V2 live evaluation: passed with exactly 31 tools, two Edges, group pinning,
   worker continuation, isolated write, integration, preflight invalidation,
   durable result recovery, and restart recovery.

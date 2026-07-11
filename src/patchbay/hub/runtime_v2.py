@@ -483,6 +483,12 @@ class HubRuntimeV2:
                 machine_record["capabilities"] = deepcopy(dict(capabilities))
             if worker_status is not None:
                 machine_record["worker_status"] = deepcopy(dict(worker_status))
+            elif worker_projection is not None:
+                # V2 publishes the authoritative worker snapshot through the
+                # dedicated projection endpoint before the next heartbeat. Keep
+                # the fleet machine summary aligned with the same accepted
+                # revision instead of retaining an older embedded snapshot.
+                machine_record["worker_status"] = deepcopy(dict(worker_projection))
         current = self.store.get_entity(MACHINE_ENTITY, machine_id)
         if current is None:
             raise HubStoreV2Conflict("machine_disappeared")

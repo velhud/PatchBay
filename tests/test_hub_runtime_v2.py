@@ -171,6 +171,24 @@ def test_machine_generation_heartbeat_and_workspace_projection_survive_restart(t
     assert workspaces[0]["projections"][0]["local_path"] == "/srv/PatchBay"
 
 
+def test_projection_only_update_refreshes_machine_worker_status(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    worker = {
+        "edge_worker_id": "wrk_projection",
+        "name": "Projection worker",
+        "turn_state": "working",
+        "liveness": "active",
+    }
+    heartbeat_workers(runtime, enrolled, 2, [worker])
+
+    completed = dict(worker, turn_state="completed", liveness="terminal")
+    heartbeat_workers(runtime, enrolled, 3, [completed])
+
+    machine = runtime.fleet_status()["result"]["machines"][0]
+    assert machine["worker_status"]["workers"] == [completed]
+
+
 def test_reenrollment_creates_new_generation_and_preserves_old_generation_record(tmp_path):
     runtime, store, _ = make_runtime(tmp_path)
     first = enroll_online(runtime, machine_id="machine_alpha")

@@ -112,7 +112,7 @@ Use the actual public MCP surface, not internal function calls:
 Completed before commit or deployment:
 
 - `python -m compileall src scripts tests`: passed.
-- `python -m pytest tests -q`: 644 passed after the cross-project reliability refinements.
+- `python -m pytest tests -q`: 645 passed after the cross-project reliability refinements.
 - `python scripts/live_mcp_eval.py --json`: passed with 31 tools.
 - `python scripts/live_mcp_eval.py --json --exercise-terminal-reconciliation`:
   passed through public MCP worker start and inspect; the final report survived,
