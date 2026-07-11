@@ -317,6 +317,18 @@ def test_reconcile_stale_running_job_honors_live_process_pid(tmp_path):
     assert manager.get_job(job_id).state == JobState.RUNNING
 
 
+def test_zombie_process_is_not_considered_live(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    executor = JobExecutor(config, JobManager(config))
+
+    class ZombieStat:
+        def read_text(self, **kwargs):
+            return "123 (codex) Z 1 123 123 0 0 0 0 0 0 0 0 0 0 0 0 0 0 55"
+
+    monkeypatch.setattr("patchbay.jobs.executor.Path", lambda value: ZombieStat())
+    assert executor._process_pid_is_live(123) is False
+
+
 def test_reconcile_stale_running_job_honors_process_tracking_and_grace(tmp_path):
     config = make_config(tmp_path)
     config["server"]["max_concurrent_jobs"] = 0

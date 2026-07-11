@@ -214,6 +214,9 @@ async def test_preview_token_rejects_patch_base_dirty_and_pattern_staleness(tmp_
     )
     assert stale_patch["reason"] == "stale_preview_token"
     assert "patch_sha256" in stale_patch["stale_bindings"]
+    assert stale_patch["retryable"] is True
+    assert stale_patch["recommended_next_action"] == "request_fresh_integration_preview"
+    assert stale_patch["next_arguments"] == {"view": "integration_preview"}
 
     fresh_patch = await runtime.inspect_worker(
         worker="Implementer", view="integration_preview", request_context=context

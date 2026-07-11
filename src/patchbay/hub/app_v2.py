@@ -366,6 +366,67 @@ class HubRuntimeTargetPortV2:
         )
         return {"machines": deepcopy(list(envelope["result"].get("machines") or []))}
 
+    async def discover_workspaces(self, **kwargs: Any) -> dict[str, Any]:
+        """Collect one bounded live discovery page from each eligible Edge."""
+        query = str(kwargs.get("query") or "")
+        allowed = {str(value) for value in kwargs.get("machine_ids") or []}
+        required_tags = {str(value) for value in kwargs.get("required_tags") or []}
+        include_offline = bool(kwargs.get("include_offline", False))
+        max_depth = max(0, int(kwargs.get("max_depth") or 0))
+        max_results = max(1, min(int(kwargs.get("max_results") or 50), 100))
+        discovered: list[dict[str, Any]] = []
+        truncated = False
+        warnings: list[str] = []
+        for machine in self.list_machines()["machines"]:
+            machine_id = str(machine.get("machine_id") or "")
+            if allowed and machine_id not in allowed:
+                continue
+            if required_tags and not required_tags.issubset(set(machine.get("tags") or [])):
+                continue
+            if machine.get("status") != "online":
+                if include_offline:
+                    warnings.append(f"Skipped offline machine {machine_id} during live discovery.")
+                continue
+            raw = await self.edge.execute(
+                machine_id=machine_id,
+                edge_generation=str(machine.get("edge_generation") or ""),
+                action="codex_list_workspaces",
+                arguments={
+                    "query": query,
+                    "discover": True,
+                    "max_depth": max_depth,
+                    "max_results": max_results,
+                },
+                target={"machine_id": machine_id},
+                context=None,
+            )
+            envelope = normalize_domain_result(raw)
+            if envelope["status"] not in {"ok", "partial"}:
+                warnings.append(f"Workspace discovery failed on {machine_id}.")
+                continue
+            result = envelope.get("result") or {}
+            for value in result.get("workspaces") or result.get("repositories") or []:
+                if not isinstance(value, Mapping):
+                    continue
+                alias = str(value.get("alias") or value.get("name") or "")
+                discovered.append(
+                    {
+                        "machine_id": machine_id,
+                        "workspace_ref": str(value.get("workspace_ref") or alias),
+                        "workspace_projection_ref": str(value.get("workspace_projection_ref") or ""),
+                        "alias": alias,
+                        "path": str(value.get("path") or value.get("repo_path") or value.get("local_path") or ""),
+                        "git": bool(value.get("git") or value.get("git_repo")),
+                    }
+                )
+            truncated = truncated or bool(result.get("truncated"))
+        return {
+            "workspaces": discovered,
+            "truncated": truncated,
+            "next_cursor": "",
+            "warnings": warnings,
+        }
+
     async def resolve_target(
         self,
         *,
@@ -895,7 +956,11 @@ class HubBrokerEdgeDispatchPortV2:
             )
             return terminal or operation
 
-        self._apply_worker_projection(payload, envelope["result"])
+        self._apply_worker_projection(
+            payload,
+            envelope["result"],
+            source_operation_id=operation_id,
+        )
         target_state = {
             "ok": "succeeded",
             "partial": "succeeded",
@@ -951,7 +1016,11 @@ class HubBrokerEdgeDispatchPortV2:
         return current
 
     def _apply_worker_projection(
-        self, payload: Mapping[str, Any], domain: Mapping[str, Any]
+        self,
+        payload: Mapping[str, Any],
+        domain: Mapping[str, Any],
+        *,
+        source_operation_id: str = "",
     ) -> None:
         action = str(payload.get("action") or "")
         if action not in _WORKER_EDGE_ACTIONS:
@@ -1025,6 +1094,21 @@ class HubBrokerEdgeDispatchPortV2:
             )
         elif action == "codex_worker_integrate" and domain.get("applied") is True:
             projected["integration_state"] = "applied_to_checkout"
+        work_group_id = str(projected.get("work_group_id") or "")
+        if action == "codex_worker_integrate" and domain.get("applied") is True:
+            self.runtime.mark_group_preflight_refresh_required(
+                work_group_id=work_group_id,
+                reason="accepted_worker_integration_changed_base_checkout",
+                source_operation_id=source_operation_id,
+            )
+        elif action == "codex_worker_start" and str(
+            arguments.get("workspace_mode") or "isolated_write"
+        ) == "shared_write":
+            self.runtime.mark_group_preflight_refresh_required(
+                work_group_id=work_group_id,
+                reason="shared_write_worker_can_change_base_checkout",
+                source_operation_id=source_operation_id,
+            )
         machine = self.store.get_entity(MACHINE_ENTITY, machine_id)
         if machine is None:
             return

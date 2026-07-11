@@ -1088,6 +1088,10 @@ class WorkerRuntime:
                             note="The worker, workspace, patch, base checkout, or accepted dirty patterns changed. Request a fresh integration_preview.",
                             preview_token_id=token_id,
                             stale_bindings=stale_bindings,
+                            retryable=True,
+                            recommended_next_action="request_fresh_integration_preview",
+                            next_tool="codex_worker_inspect",
+                            next_arguments={"view": "integration_preview"},
                         )
                 if not preview.get("can_apply"):
                     preview.update(
@@ -1944,6 +1948,8 @@ class WorkerRuntime:
         )
         repo_path = str(workspace["base_repo_path"])
         workspace_id = "ws_" + hashlib.sha256(repo_path.encode("utf-8")).hexdigest()[:24]
+        execution_path = str(workspace.get("worktree_path") or repo_path)
+        workspace_instance_id = "wsi_" + hashlib.sha256(execution_path.encode("utf-8")).hexdigest()[:24]
         latest_activity_at = self._latest_activity_timestamp(latest)
         created_at_values = [
             float(value)
@@ -1958,8 +1964,10 @@ class WorkerRuntime:
             "worker_id": edge_worker_id,
             "name": worker_name,
             "workspace_id": workspace_id,
+            "workspace_instance_id": workspace_instance_id,
             "workspace_name": Path(repo_path).name or "workspace",
             "workspace_mode": workspace["mode"],
+            "workspace_location": self._workspace_location_label(workspace),
             "workspace_available": bool(workspace["available"]),
             "workspace_discarded": bool(workspace["discarded"]),
             "work_group_id": str(options.get(WORKER_WORK_GROUP_ID_OPTION) or ""),

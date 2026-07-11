@@ -246,6 +246,31 @@ def test_workspace_matching_prefers_specific_alias_over_generic_root(tmp_path):
     assert created["result"]["routing"]["mode"] == "availability_only"
 
 
+def test_workspace_ref_and_child_repo_path_preserve_child_binding(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enroll_online(
+        runtime,
+        machine_id="machine_root",
+        workspace_alias="repos",
+        workspace_path="/workspace/repos",
+        git=False,
+    )
+    root_ref = runtime.workspace_list()["result"]["workspaces"][0]["workspace_ref"]
+
+    created = runtime.create_work_group(
+        title="Child repository binding",
+        goal="Keep the requested repository below the advertised root.",
+        workspace_ref=root_ref,
+        repo_path="/workspace/repos/child-repo",
+        idempotency_key="child-binding-1",
+        context=context("owner"),
+    )
+
+    group = created["result"]["work_group"]
+    assert group["requested_repo_path"] == "/workspace/repos/child-repo"
+    assert group["resolved_repo_path"] == "/workspace/repos/child-repo"
+
+
 def test_availability_routing_pins_lower_pressure_machine_and_preflight_operation(tmp_path):
     runtime, store, _ = make_runtime(tmp_path)
     enroll_online(runtime, machine_id="machine_busy", active_workers=3, free_slots=1)
@@ -350,6 +375,39 @@ def test_preflight_records_snapshot_revision_and_observation_time(tmp_path):
     assert readiness["currentness"] == "current"
     assert readiness["facts_revision"] == "abc123"
     assert readiness["observed_at"] == readiness["updated_at"]
+
+
+def test_base_mutation_marks_preflight_snapshot_refresh_required_without_blocking_group(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    created = create_group(runtime, caller=context("owner"))
+    group = created["result"]["work_group"]
+    runtime.record_preflight_result(
+        work_group_id=group["work_group_id"],
+        operation_id=created["result"]["readiness"]["operation_id"],
+        result={
+            "ok": True,
+            "repo_exists": True,
+            "repo_resolved": group["resolved_repo_path"],
+            "head": "abc123",
+            "disk_free_bytes": 10_000_000_000,
+            "free_worker_slots": 2,
+        },
+    )
+
+    updated = runtime.mark_group_preflight_refresh_required(
+        work_group_id=group["work_group_id"],
+        reason="accepted_worker_integration_changed_base_checkout",
+        source_operation_id="op-integrate",
+    )
+
+    readiness = updated["readiness"]
+    assert readiness["status"] == "ready"
+    assert readiness["currentness"] == "refresh_required"
+    assert readiness["facts_revision"] == "abc123"
+    assert readiness["stale_source_operation_id"] == "op-integrate"
+    persisted = store.get_entity(WORK_GROUP_ENTITY, group["work_group_id"])["record"]
+    assert persisted["readiness"]["currentness"] == "refresh_required"
 
 
 def test_participant_current_group_mapping_and_takeover_coordination_survive_restart(tmp_path):

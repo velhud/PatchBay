@@ -909,6 +909,21 @@ async def test_batch_prevalidates_before_any_route_or_broker_side_effect():
     assert broker.child_calls == []
 
 
+@pytest.mark.asyncio
+async def test_batch_rejects_multiple_shared_write_workers_before_dispatch():
+    adapter, runtime, broker, _ = make_adapter()
+    arguments = batch_arguments()
+    for worker in arguments["workers"]:
+        worker["workspace_mode"] = "shared_write"
+
+    with pytest.raises(ValueError, match="cannot contain multiple shared_write workers"):
+        await adapter.handle_tool_call("patchbay_worker_start_batch", arguments)
+
+    assert runtime.resolve_calls == []
+    assert broker.create_calls == []
+    assert broker.child_calls == []
+
+
 def batch_arguments():
     return {
         "work_group_id": "group_alpha",

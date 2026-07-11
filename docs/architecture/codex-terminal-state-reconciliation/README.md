@@ -16,8 +16,9 @@ timeout, reduce concurrency, or change the Hub manager tool surface.
 
 The design is now implemented in the local working tree and verified through
 unit, integration, direct-MCP, Hub compatibility, Hub V2, and a dedicated
-public-MCP lingering-wrapper scenario. It remains deliberately uncommitted,
-unpushed, and undeployed pending operator approval.
+public-MCP lingering-wrapper scenario. The cross-project production follow-up
+is locally implemented and verified; release and deployment status is recorded
+in the production reliability report.
 
 ## Reading Order
 
@@ -32,3 +33,5 @@ unpushed, and undeployed pending operator approval.
 9. [Decision record](design-decision-record.md)
 10. [Conflict-review handoff](solution-to-conflict-review-handoff.md)
 11. [Additional runtime findings](additional-runtime-findings.md)
+12. [RetailMind continuation fixes](retailmind-continuation-fixes.md)
+13. [Cross-project production reliability release](cross-project-production-reliability-release.md)

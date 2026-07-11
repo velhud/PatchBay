@@ -112,7 +112,7 @@ Use the actual public MCP surface, not internal function calls:
 Completed before commit or deployment:
 
 - `python -m compileall src scripts tests`: passed.
-- `python -m pytest tests -q`: 631 passed after the final fixture refinements.
+- `python -m pytest tests -q`: 642 passed after the cross-project reliability refinements.
 - `python scripts/live_mcp_eval.py --json`: passed with 31 tools.
 - `python scripts/live_mcp_eval.py --json --exercise-terminal-reconciliation`:
   passed through public MCP worker start and inspect; the final report survived,
@@ -123,5 +123,10 @@ Completed before commit or deployment:
   surface, group pinning, worker continuation, integration, and restart
   recovery.
 - Codex CLI recorded during verification: `0.144.1`.
+
+The release also verifies zombie PID detection, terminal-report recovery before
+manager cancellation, exact child-repository binding, live Edge workspace
+discovery, group-scoped aggregate monitoring, nullable Hub projection fields,
+distinct workspace-instance identity, and identifier-rich MCP text fallback.
 
 No release, push, service restart, or machine deployment was performed.

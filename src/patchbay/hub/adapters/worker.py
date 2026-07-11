@@ -1030,6 +1030,7 @@ class HubWorkerAdapterV2:
         item_ids: set[str] = set()
         item_keys: set[str] = set()
         names: dict[str, list[Mapping[str, Any]]] = {}
+        shared_write_items: list[str] = []
         for index, value in enumerate(workers):
             if not isinstance(value, Mapping):
                 raise ValueError(f"workers[{index}] must be an object")
@@ -1045,7 +1046,14 @@ class HubWorkerAdapterV2:
                 raise ValueError(f"duplicate batch item idempotency_key: {item_key}")
             item_ids.add(item_id)
             item_keys.add(item_key)
+            if str(item.get("workspace_mode") or "isolated_write") == "shared_write":
+                shared_write_items.append(str(item["name"]).strip())
             names.setdefault(str(item["name"]).strip().casefold(), []).append(item)
+        if len(shared_write_items) > 1:
+            raise ValueError(
+                "A worker batch cannot contain multiple shared_write workers because they target one base checkout. "
+                "Use isolated_write for parallel implementation workers, or start shared_write workers sequentially."
+            )
         for duplicate_name, matching in names.items():
             if len(matching) > 1 and not all(bool(item.get("auto_suffix")) for item in matching):
                 raise ValueError(

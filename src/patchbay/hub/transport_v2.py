@@ -580,6 +580,9 @@ class HubPullTransportBridgeV2:
             self._record_group_preflight_if_needed(
                 operation_id, dispatch["record"], domain_result
             )
+            self._record_group_preflight_invalidation_if_needed(
+                operation_id, dispatch["record"], domain_result
+            )
         return {
             "accepted": True,
             "operation": saved_operation,
@@ -588,6 +591,30 @@ class HubPullTransportBridgeV2:
             ),
             "receipt_acknowledgements": [acknowledgement],
         }
+
+    def _record_group_preflight_invalidation_if_needed(
+        self,
+        operation_id: str,
+        dispatch: Mapping[str, Any],
+        domain_result: Mapping[str, Any],
+    ) -> None:
+        payload = dispatch.get("payload") if isinstance(dispatch.get("payload"), Mapping) else {}
+        action = str(payload.get("action") or "")
+        arguments = payload.get("arguments") if isinstance(payload.get("arguments"), Mapping) else {}
+        group_id = str(payload.get("work_group_id") or arguments.get("work_group_id") or "")
+        reason = ""
+        if action == "codex_worker_integrate" and domain_result.get("applied") is True:
+            reason = "accepted_worker_integration_changed_base_checkout"
+        elif action == "codex_worker_start" and str(
+            arguments.get("workspace_mode") or "isolated_write"
+        ) == "shared_write" and domain_result.get("accepted") is not False:
+            reason = "shared_write_worker_can_change_base_checkout"
+        if reason:
+            self.runtime.mark_group_preflight_refresh_required(
+                work_group_id=group_id,
+                reason=reason,
+                source_operation_id=operation_id,
+            )
 
     def edge_outbox_ack(
         self,

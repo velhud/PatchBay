@@ -299,6 +299,16 @@ class JobExecutor:
     def _process_pid_is_live(self, pid: int) -> bool:
         if pid <= 0:
             return False
+        # A zombie still answers kill(pid, 0), but it cannot make progress and
+        # must not keep a durable worker in the running state.
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            _, separator, suffix = stat_text.rpartition(")")
+            fields = suffix.strip().split() if separator else []
+            if fields and fields[0] == "Z":
+                return False
+        except OSError:
+            pass
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -1763,6 +1773,17 @@ class JobExecutor:
             logger.warning(f"Cannot cancel job {job_id}: state={job.state}")
             return {"cancelled": False, "job_id": job_id, "state": job.state.value, "reason": "Job is not running"}
 
+        # A manager stop racing a completed Codex turn must preserve completion,
+        # not overwrite the final report with cancellation metadata.
+        if job.state == JobState.RUNNING and self._recover_completed_session(job):
+            return {
+                "cancelled": False,
+                "completed": True,
+                "job_id": job_id,
+                "state": JobState.COMPLETED.value,
+                "reason": "Codex had already completed; PatchBay recovered the final report.",
+            }
+
         process = self.processes.get(job_id)
         process_signalled = False
         transitioned = self.job_manager.transition_job_terminal(
@@ -1782,6 +1803,13 @@ class JobExecutor:
             }
         if process and process.returncode is None:
             process_signalled = await self._terminate_process(job_id, process)
+        if (
+            not process_signalled
+            and isinstance(job.process_pid, int)
+            and self._recorded_process_pid_is_trustworthy(job)
+            and self._process_pid_is_live(job.process_pid)
+        ):
+            process_signalled = self._terminate_recorded_process(job).startswith("terminated")
         if not process_signalled:
             partial_result = await self._cancelled_result_from_existing_artifacts(job, reason=reason)
             self.job_manager.update_job_state(

@@ -710,7 +710,22 @@ class HubRuntimeV2:
             match_kind = "workspace_ref" if requested_ref else "all"
             priority = 0 if requested_ref else 4
             resolved_path = local_path
-            if requested_path and not requested_ref:
+            if requested_path and requested_ref:
+                folded = requested_path.casefold()
+                root = local_path.casefold() if local_path else ""
+                if local_path and (folded == root or folded.startswith(root.rstrip("/") + "/")):
+                    match_kind = "workspace_ref_and_path"
+                    resolved_path = requested_path
+                elif local_path and not projection.get("git") and _safe_relative_path(requested_path):
+                    candidate = posixpath.normpath(posixpath.join(local_path, requested_path))
+                    if candidate != local_path and candidate.startswith(local_path.rstrip("/") + "/"):
+                        match_kind = "workspace_ref_and_relative_path"
+                        resolved_path = candidate
+                    else:
+                        continue
+                else:
+                    continue
+            elif requested_path and not requested_ref:
                 folded = requested_path.casefold()
                 if local_path and (folded == local_path.casefold() or folded.startswith(local_path.casefold() + "/")):
                     priority, match_kind, resolved_path = 1, "workspace_path", requested_path
@@ -1493,6 +1508,54 @@ class HubRuntimeV2:
             public_envelope(terminal_status, result={"preflight": facts, "blockers": blockers}),
         )
         return self._group_envelope(saved["record"], operation=terminal)
+
+    def mark_group_preflight_refresh_required(
+        self,
+        *,
+        work_group_id: str,
+        reason: str,
+        source_operation_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Label persisted preflight facts as a historical snapshot after base mutation."""
+        if not work_group_id:
+            return None
+        entity = self.store.get_entity(WORK_GROUP_ENTITY, work_group_id)
+        if entity is None:
+            return None
+        group = deepcopy(entity["record"])
+        readiness = deepcopy(dict(group.get("readiness") or {}))
+        if readiness.get("status") not in {"ready", "failed"}:
+            return group
+        now = self._clock()
+        readiness.update(
+            {
+                "currentness": "refresh_required",
+                "stale_reason": str(reason or "base_checkout_may_have_changed")[:200],
+                "stale_since": now,
+                "stale_source_operation_id": str(source_operation_id or ""),
+                "updated_at": now,
+            }
+        )
+        group["readiness"] = readiness
+        group["updated_at"] = now
+        saved = self.store.put_entity(
+            WORK_GROUP_ENTITY,
+            work_group_id,
+            group,
+            expected_revision=entity["revision"],
+        )
+        self.store.append_event(
+            "work_group.preflight_refresh_required",
+            {
+                "work_group_id": work_group_id,
+                "reason": readiness["stale_reason"],
+                "source_operation_id": readiness["stale_source_operation_id"],
+            },
+            entity_type=WORK_GROUP_ENTITY,
+            entity_id=work_group_id,
+            entity_revision=saved["revision"],
+        )
+        return deepcopy(saved["record"])
 
     def list_work_groups(
         self,

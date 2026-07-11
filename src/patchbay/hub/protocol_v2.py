@@ -465,6 +465,12 @@ class HubProtocolV2:
         pieces = [f"{title}: {status}."]
         if summary:
             pieces.append(summary)
+        # Some ChatGPT connector paths have transiently failed to surface
+        # structuredContent. Keep startup/orientation tools usable by including
+        # a bounded identifier-rich fallback in ordinary MCP text content.
+        fallback = HubProtocolV2._manager_fallback_text(name, result_map)
+        if fallback:
+            pieces.append(fallback)
         operation = envelope.get("operation")
         operation_map = operation if isinstance(operation, Mapping) else {}
         operation_id = operation_map.get("operation_id")
@@ -482,6 +488,57 @@ class HubProtocolV2:
             if action:
                 pieces.append(f"Next: {action}.")
         return " ".join(pieces)
+
+    @staticmethod
+    def _manager_fallback_text(name: str, result: Mapping[str, Any]) -> str:
+        rows: list[str] = []
+        if name == "patchbay_fleet_status":
+            for value in list(result.get("machines") or [])[:12]:
+                if isinstance(value, Mapping):
+                    rows.append(
+                        f"{value.get('machine_id', '?')}={value.get('status', 'unknown')}"
+                    )
+            return "Machines: " + ", ".join(rows) + "." if rows else "No machines returned."
+        if name == "patchbay_workspace_list":
+            for value in list(result.get("workspaces") or [])[:12]:
+                if not isinstance(value, Mapping):
+                    continue
+                projections = value.get("projections") or []
+                paths = [
+                    str(item.get("repo_path") or item.get("local_path") or item.get("path") or "")
+                    for item in projections[:2]
+                    if isinstance(item, Mapping)
+                ]
+                rows.append(
+                    f"{value.get('workspace_ref', '?')}"
+                    + (f" ({', '.join(path for path in paths if path)})" if any(paths) else "")
+                )
+            return "Workspaces: " + "; ".join(rows) + "." if rows else "No workspaces returned."
+        if name == "patchbay_work_group_list":
+            for value in list(result.get("work_groups") or [])[:12]:
+                if isinstance(value, Mapping):
+                    rows.append(
+                        f"{value.get('work_group_id', '?')} [{value.get('status', 'unknown')}] {value.get('title', '')}".strip()
+                    )
+            return "Groups: " + "; ".join(rows) + "." if rows else "No work groups returned."
+        if name == "patchbay_worker_options":
+            models = result.get("models") or []
+            for value in list(models)[:16]:
+                if isinstance(value, Mapping):
+                    rows.append(str(value.get("id") or value.get("model") or value.get("name") or ""))
+                elif value:
+                    rows.append(str(value))
+            default = str(result.get("default_model") or "")
+            text = "Models: " + ", ".join(item for item in rows if item) + "." if rows else "No models returned."
+            return text + (f" Default: {default}." if default else "")
+        if name in {"patchbay_work_group_create", "patchbay_work_group_status", "patchbay_work_group_resume"}:
+            group = result.get("work_group") if isinstance(result.get("work_group"), Mapping) else {}
+            group_id = str(group.get("work_group_id") or result.get("work_group_id") or "")
+            machine_id = str(group.get("pinned_machine_id") or "")
+            readiness = result.get("readiness") if isinstance(result.get("readiness"), Mapping) else {}
+            if group_id:
+                return f"Group: {group_id}." + (f" Machine: {machine_id}." if machine_id else "") + (f" Readiness: {readiness.get('status')}." if readiness.get("status") else "")
+        return ""
 
     @staticmethod
     def _error_response(

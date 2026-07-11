@@ -228,6 +228,25 @@ def test_validated_call_dispatches_public_tool_name_and_arguments_to_injected_ha
     assert response["result"]["_meta"]["patchbay/tool_name"] == "patchbay_worker_start"
 
 
+def test_startup_tools_have_identifier_rich_text_fallbacks():
+    assert "machine_alpha=online" in HubProtocolV2._compact_text(
+        "patchbay_fleet_status",
+        public_envelope("ok", result={"machines": [{"machine_id": "machine_alpha", "status": "online"}]}),
+    )
+    assert "workspace_archive" in HubProtocolV2._compact_text(
+        "patchbay_workspace_list",
+        public_envelope("ok", result={"workspaces": [{"workspace_ref": "workspace_archive", "projections": []}]}),
+    )
+    assert "group_archive" in HubProtocolV2._compact_text(
+        "patchbay_work_group_list",
+        public_envelope("ok", result={"work_groups": [{"work_group_id": "group_archive", "status": "open", "title": "Archive"}]}),
+    )
+    assert "gpt-test" in HubProtocolV2._compact_text(
+        "patchbay_worker_options",
+        public_envelope("ok", result={"models": [{"id": "gpt-test"}], "default_model": "gpt-test"}),
+    )
+
+
 def test_pending_envelope_passes_through_without_queue_receipt_fabrication_or_text_duplication():
     large_report = "x" * 20_000
     pending = public_envelope(

@@ -266,6 +266,25 @@ async def test_specific_alias_beats_broad_workspace_relative_projection(machines
 
 
 @pytest.mark.asyncio
+async def test_workspace_ref_with_child_repo_path_keeps_child_target(machines):
+    subject, broker = adapter(machines)
+
+    result = await subject.workspace_open(
+        {
+            "machine_id": "machine_alpha",
+            "workspace_ref": "workspace_projects",
+            "repo_path": "/srv/projects/rotor-api",
+            "ungrouped_reason": "operator_requested",
+            "include_tree": False,
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert broker.calls[0]["arguments"]["repo_path"] == "/srv/projects/rotor-api"
+    assert broker.calls[1]["arguments"]["repo"] == "/srv/projects/rotor-api"
+
+
+@pytest.mark.asyncio
 async def test_group_pin_overrides_conflicting_explicit_projection(machines):
     groups = {
         "group_review": {
@@ -304,7 +323,7 @@ async def test_group_pin_overrides_conflicting_explicit_projection(machines):
 
 
 @pytest.mark.asyncio
-async def test_explicit_workspace_projection_beats_conflicting_repo_hint(machines):
+async def test_explicit_workspace_projection_rejects_conflicting_repo_hint(machines):
     subject, broker = adapter(machines)
 
     result = await subject.workspace_open(
@@ -316,8 +335,9 @@ async def test_explicit_workspace_projection_beats_conflicting_repo_hint(machine
         }
     )
 
-    assert result["status"] == "ok"
-    assert broker.calls[0]["arguments"]["repo_path"] == "/srv/projects/PatchBay"
+    assert result["status"] == "blocked"
+    assert result["result"]["reason"] == "workspace_path_mismatch"
+    assert broker.calls == []
 
 
 @pytest.mark.asyncio

@@ -535,7 +535,27 @@ class WorkspaceAdapter:
                     "The logical workspace has no projection on the requested machine.",
                     status="not_found",
                 )
-            resolved = _projection_path(projection) or repo_path
+            projection_root = _projection_path(projection)
+            if repo_path:
+                if not projection_root:
+                    resolved = repo_path
+                elif _path_is_within(repo_path, projection_root):
+                    resolved = repo_path
+                elif _safe_relative_repo_path(repo_path):
+                    candidate = posixpath.normpath(posixpath.join(projection_root, repo_path))
+                    if not _path_is_within(candidate, projection_root) or candidate == projection_root:
+                        raise _RouteError(
+                            "workspace_path_mismatch",
+                            "repo_path is not a child of the selected workspace projection.",
+                        )
+                    resolved = candidate
+                else:
+                    raise _RouteError(
+                        "workspace_path_mismatch",
+                        "repo_path is not a child of the selected workspace projection.",
+                    )
+            else:
+                resolved = projection_root
         else:
             projection, resolved = _resolve_repo_projection(projections, repo_path)
             if projection is None:
@@ -1071,6 +1091,25 @@ def _normalize_remote_path(value: str) -> str:
 def _is_absolute_remote_path(value: str) -> bool:
     text = str(value or "")
     return text.startswith("/") or bool(_WINDOWS_ABSOLUTE_RE.match(text))
+
+
+def _safe_relative_repo_path(value: str) -> bool:
+    normalized = _normalize_remote_path(value)
+    return bool(
+        normalized
+        and not _is_absolute_remote_path(value)
+        and normalized != ".."
+        and not normalized.startswith("../")
+    )
+
+
+def _path_is_within(value: str, root: str) -> bool:
+    normalized = _normalize_remote_path(value)
+    normalized_root = _normalize_remote_path(root).rstrip("/")
+    return bool(
+        normalized_root
+        and (normalized == normalized_root or normalized.startswith(normalized_root + "/"))
+    )
 
 
 def _validate_requested_path(value: str) -> None:

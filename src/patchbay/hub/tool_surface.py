@@ -826,7 +826,7 @@ def _worker_start_batch_descriptor() -> dict[str, Any]:
     }
     return _descriptor(
         "patchbay_worker_start_batch",
-        "Appoint a parallel team on one work group's pinned Edge. The whole batch is validated before dispatch; each child has stable identity and idempotency, successful children are never rolled back, and retries resume unfinished items without duplicate workers.",
+        "Appoint a parallel team on one work group's pinned Edge. The whole batch is validated before dispatch; parallel implementers should use isolated_write, and a batch with multiple shared_write workers is rejected before partial dispatch because one base checkout has one writer. Each child has stable identity and idempotency, successful children are never rolled back, and retries resume unfinished items without duplicate workers.",
         _input_schema(
             {
                 "work_group_id": deepcopy(GROUP_ROUTE_PROPERTIES["work_group_id"]),
@@ -900,7 +900,7 @@ def _worker_collection_descriptor(canonical_name: str, target_name: str) -> dict
     return _descriptor(
         target_name,
         _target_description(str(source["description"]), routing_note),
-        _input_schema(properties),
+        _input_schema(properties, required=("work_group_id",)),
         result_schema,
         source=source,
     )
@@ -1059,7 +1059,7 @@ def _workspace_descriptors() -> list[dict[str, Any]]:
             "workspace_id": {"type": "string"},
             "path": {"type": "string"},
             "text": {"type": "string"},
-            "tree": {"type": "object", "additionalProperties": True},
+            "tree": {"type": ["object", "null"], "additionalProperties": True},
             "git": {"type": "object", "additionalProperties": True},
             "matches": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
             "timed_out": {"type": "boolean"},

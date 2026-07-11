@@ -47,6 +47,8 @@ def test_worker_tools_are_public_with_semantic_schemas():
     worker_result_schema = by_name["codex_worker_start"]["outputSchema"]["properties"]
     assert worker_result_schema["work_run_started_at"]["type"] == ["number", "null"]
     assert worker_result_schema["work_run_last_activity_at"]["type"] == ["number", "null"]
+    assert worker_result_schema["last_activity_at"]["type"] == ["number", "null"]
+    assert worker_result_schema["workspace_instance_id"]["type"] == "string"
     assert by_name["codex_worker_start"]["inputSchema"]["required"] == ["name", "brief"]
     assert "workspace_mode" in by_name["codex_worker_start"]["inputSchema"]["properties"]
     assert "context_from_workers" in by_name["codex_worker_start"]["inputSchema"]["properties"]

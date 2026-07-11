@@ -253,6 +253,40 @@ async def test_stop_cannot_cancel_after_semantic_completion_is_claimed(tmp_path)
     assert manager.get_job(job_id).late_terminal_source == "manager_cancellation"
 
 
+@pytest.mark.asyncio
+async def test_stop_recovers_completed_session_report_before_cancellation(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "recover-before-stop", config["repositories"]["default"], {})
+    session_id = "session-complete-before-stop"
+    started_at = time.time() - 5
+    manager.update_job_state(
+        job_id,
+        JobState.RUNNING,
+        started_at=started_at,
+        process_started_at=started_at,
+        session_id=session_id,
+    )
+    write_session(
+        tmp_path / "codex-home",
+        session_id,
+        [{
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "last_agent_message": json.dumps({"summary": "FINAL_REPORT", "files_changed": []})},
+        }],
+    )
+
+    outcome = await executor.cancel_job(job_id, reason="manager stop raced completion")
+
+    assert outcome["cancelled"] is False
+    assert outcome["completed"] is True
+    recovered = manager.get_job(job_id)
+    assert recovered.state == JobState.COMPLETED
+    assert recovered.result["summary"] == "FINAL_REPORT"
+
+
 def test_restart_reconciliation_recovers_exact_terminal_session(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

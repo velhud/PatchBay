@@ -898,6 +898,21 @@ async def run_live_hub_v2_eval(
                 "worker_worktree_preserved": (writer_worktree / _WORKER_FILE).is_file(),
             },
         )
+        post_integration_group = await mcp.call(
+            "patchbay_work_group_status",
+            {"work_group_id": group_id, "include_workers": False},
+        )
+        _check(
+            report,
+            "integration_invalidates_preflight_snapshot",
+            post_integration_group["status"] == "ok"
+            and post_integration_group["result"].get("readiness", {}).get("status") == "ready"
+            and post_integration_group["result"].get("readiness", {}).get("currentness")
+            == "refresh_required",
+            {
+                "readiness": post_integration_group.get("result", {}).get("readiness", {}),
+            },
+        )
 
         await _wait_until(
             lambda: next(worker for worker in _workers(app, group_id) if worker["name"] == "Writer").get(

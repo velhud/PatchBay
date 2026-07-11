@@ -77,6 +77,17 @@ class FakeEdgeDelivery:
                 "models": [{"id": "gpt-test", "reasoning_efforts": ["high"]}],
                 "default_model": "gpt-test",
             }
+        if action == "codex_list_workspaces":
+            return {
+                "workspaces": [
+                    {
+                        "name": "ArchiveMind",
+                        "path": "/srv/projects/ArchiveMind",
+                        "git": True,
+                    }
+                ],
+                "truncated": False,
+            }
         if action == "codex_worker_inbox":
             return {"accepted": True, "artifacts": [], "count": 0}
         if action == "codex_worker_start":
@@ -340,6 +351,21 @@ async def test_worker_wait_ignores_unchanged_worker_snapshots_on_new_heartbeats(
     assert repeated["projection_revision"] == revision
     assert waited["changed"] is False
     assert waited["projection_revision"] == revision
+
+
+@pytest.mark.asyncio
+async def test_runtime_port_wires_live_workspace_discovery(tmp_path):
+    edge = FakeEdgeDelivery()
+    app = HubAppV2(tmp_path / "hub-v2.sqlite3", edge_delivery=edge)
+    enroll_edge(app)
+
+    result = await app.workspace_adapter.workspace_list(
+        {"query": "ArchiveMind", "discover": True, "max_depth": 3, "max_results": 10}
+    )
+
+    assert result["status"] == "ok"
+    assert result["result"]["workspaces"][0]["display_name"] == "ArchiveMind"
+    assert any(call["action"] == "codex_list_workspaces" for call in edge.calls)
 
 
 @pytest.mark.asyncio

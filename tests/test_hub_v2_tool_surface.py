@@ -344,6 +344,10 @@ def test_worker_tools_preserve_every_canonical_input_field_and_schema():
                 _strip_documentation(canonical_schema)
             ), (hub_name, field_name)
 
+    for name in ("patchbay_worker_list", "patchbay_worker_status", "patchbay_worker_wait"):
+        assert "work_group_id" in by_name[name]["inputSchema"]["required"]
+    assert by_name["patchbay_worker_status"]["outputSchema"]["properties"]["result"]["properties"]["workers"]["items"]["properties"]["last_activity_at"]["type"] == ["number", "null"]
+
 
 def test_worker_tools_add_group_fleet_routing_without_dropping_parity_fields():
     by_name = _descriptors_by_name()

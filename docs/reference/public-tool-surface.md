@@ -111,6 +111,46 @@ PatchBay distinguishes authoritative Codex completion from CLI wrapper cleanup. 
 
 Recommended ChatGPT worker-management loop:
 
+Parallel implementation workers belong in `isolated_write` worktrees. A batch
+containing more than one `shared_write` worker is rejected before dispatch,
+because multiple workers cannot safely own the same base-checkout mutation
+lock. Run a genuinely necessary shared-write lane sequentially instead.
+
+Integration preview tokens are deliberately bound to the exact worker revision,
+patch, base HEAD, dirty fingerprint, and accepted dirty patterns. A stale token
+returns `recommended_next_action: request_fresh_integration_preview`; request a
+new preview rather than retrying the obsolete token. Successful integrations
+and shared-write starts mark the group's stored preflight snapshot
+`currentness: refresh_required` while leaving ongoing work operational. The
+snapshot's prior facts remain visible as history, not asserted as live git
+state; group resume performs the strict refresh boundary.
+
+Hub worker list, status, and wait calls require an explicit `work_group_id`.
+This prevents unrelated groups from contaminating an aggregate when several
+ChatGPT conversations use the same fleet. Each isolated worker projection
+contains both the common logical `workspace_id` and a distinct
+`workspace_instance_id`; the latter identifies the actual base checkout or
+isolated worktree instance without exposing its private absolute path.
+
+When both `workspace_ref` and `repo_path` are supplied, PatchBay treats them as
+one repository binding. The path must equal or be contained by the advertised
+projection. Broad-root projections may authorize a child repository, but Hub
+must preserve that child path and reject a conflicting path instead of silently
+falling back to the root. `patchbay_workspace_list(discover=true)` performs
+bounded live discovery on eligible online Edges and merges the result with
+persisted projections.
+
+Worker process liveness distinguishes a running process from a zombie. Exact
+Codex `session_task_complete` evidence is recovered before manager cancellation,
+the final report is persisted, and stale reconciliation publishes terminal
+state. Container deployments should use an init/reaper so orphaned descendants
+do not accumulate even though the runtime itself rejects zombies as live work.
+
+Hub startup/orientation calls retain full data in `structuredContent` and also
+include bounded identifiers in ordinary text content. This fallback keeps fleet,
+workspace, group, and model discovery inspectable when a connector client fails
+to surface structured content.
+
 1. Start with `codex_self_test` and `codex_open_workspace`.
 2. Use read-only context tools only enough to understand the allowed workspace and constraints.
 3. Start one or more named workers with outcome, context, constraints, deliverables, and report format.
