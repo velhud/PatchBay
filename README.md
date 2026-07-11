@@ -214,7 +214,7 @@ More detail: [SECURITY.md](SECURITY.md), [docs/security/product-boundary.md](doc
 | **Repository controls** | Allowed roots, path guard, token-gated public tunnels, per-repo mutation locks, and dirty-base checks |
 | **Artifacts** | ChatGPT-generated files/zips can be imported into worker context without editing the repo |
 | **Power modes** | `worker`, `standard`, `full`, and `minimal` tool surfaces with runtime-aware tool advertisement |
-| **Optional hub/edge mode** | Set `hub.control_plane: v2`; `patchbay hub start` plus `patchbay edge start` exposes the exact 31-tool manager surface across enrolled machines, with durable work groups pinning each task to one machine. Omitting the setting preserves V1 compatibility. |
+| **Optional hub/edge mode** | Set `hub.control_plane: v2`; `patchbay hub start` plus `patchbay edge start` exposes the exact 31-tool manager surface across enrolled machines, with durable work groups pinning each task to one machine and an end-to-end completion contract preventing premature manager handoff. Omitting the setting preserves V1 compatibility. |
 
 ## Current status
 
@@ -240,7 +240,7 @@ See [TESTING.md](TESTING.md), [docs/testing/evals.md](docs/testing/evals.md), an
 | --- | --- |
 | Codex CLI baseline | Current local verification recorded `codex-cli 0.144.1` |
 | Python checks | `compileall` passes |
-| Test suite | `281` tests pass |
+| Test suite | `661` tests pass |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Pro Escalation request loop | Unit tests and live MCP probe cover create/list/read/claim/respond/dispatch paths |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |

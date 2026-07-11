@@ -137,6 +137,17 @@ contains both the common logical `workspace_id` and a distinct
 `workspace_instance_id`; the latter identifies the actual base checkout or
 isolated worktree instance without exposing its private absolute path.
 
+Every V2 group has an execution mode and definition of done. The public default
+is `end_to_end`; `asynchronous_handoff` must be chosen explicitly. Group and
+worker manager views expose a derived `completion_contract` with
+`manager_must_continue`, `final_response_allowed`, remaining work, and a
+recommended next action. The contract does not impose a time limit or replace
+manager judgment. It closes an instruction ambiguity: a normal end-to-end run
+must keep waiting, following up, integrating, verifying, and closing while work
+remains instead of treating a quiet interval as permission to answer early.
+`patchbay_work_group_status` supports revision-aware bounded waiting, and an
+omitted `patchbay_worker_wait.wait_seconds` uses a patient 30-second default.
+
 When both `workspace_ref` and `repo_path` are supplied, PatchBay treats them as
 one repository binding. The path must equal or be contained by the advertised
 projection. Broad-root projections may authorize a child repository, but Hub

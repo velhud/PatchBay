@@ -648,6 +648,8 @@ async def run_live_hub_v2_eval(
             {
                 "title": "Live V2 evaluator",
                 "goal": "Exercise real pull-routed worker and integration behavior.",
+                "execution_mode": "end_to_end",
+                "definition_of_done": "Workers finish, accepted changes integrate, state survives restart, and the group closes.",
                 "repo_path": "live-repo",
                 "lanes": [
                     {"lane": "research", "title": "Research", "role": "Inspect"},
@@ -657,6 +659,7 @@ async def run_live_hub_v2_eval(
             },
         )
         group = dict(created["result"]["work_group"])
+        initial_contract = dict(created["result"]["completion_contract"])
         group_id = str(group["work_group_id"])
         pinned_machine = str(group["pinned_machine_id"])
         pinned_generation = str(group["pinned_edge_generation"])
@@ -690,6 +693,14 @@ async def run_live_hub_v2_eval(
                 "runner_errors": list(pinned_edge.runner.background_errors)[-5:],
                 "journal_recovery": len(pinned_edge.journal.list_restart_recovery()),
             },
+        )
+        _check(
+            report,
+            "end_to_end_contract_blocks_premature_final",
+            group.get("execution_mode") == "end_to_end"
+            and initial_contract.get("manager_must_continue") is True
+            and initial_contract.get("final_response_allowed") is False,
+            {"completion_contract": initial_contract},
         )
 
         started = await mcp.call(
@@ -731,6 +742,13 @@ async def run_live_hub_v2_eval(
             started["status"] in {"ok", "pending"}
             and {worker["name"] for worker in projected_workers} == {"Reader", "Writer"}
             and waited["result"]["counts"]["completed"] == 2,
+        )
+        _check(
+            report,
+            "completed_workers_still_require_integration_and_closure",
+            waited["result"]["completion_contract"].get("manager_must_continue") is True
+            and waited["result"]["completion_contract"].get("final_response_allowed") is False,
+            {"completion_contract": waited["result"].get("completion_contract", {})},
         )
 
         dispatches = [
@@ -1052,7 +1070,9 @@ async def run_live_hub_v2_eval(
             "group_closed_after_receipt_recovery",
             closed["status"] == "ok"
             and closed["result"]["work_group"]["status"] == "closed"
-            and closed["result"]["work_group"]["outcome"] == "complete",
+            and closed["result"]["work_group"]["outcome"] == "complete"
+            and closed["result"]["completion_contract"].get("final_response_allowed") is True
+            and closed["result"]["completion_contract"].get("manager_must_continue") is False,
         )
         history = await restarted_mcp.call(
             "patchbay_work_group_list",

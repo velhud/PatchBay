@@ -23,6 +23,7 @@ from patchbay.hub.adapters.pro_requests import (
 from patchbay.hub.adapters.worker import HubWorkerAdapterV2, WorkerRoute
 from patchbay.hub.adapters.workspace import WorkspaceAdapter
 from patchbay.hub.broker import OperationBroker
+from patchbay.hub.groups_v2 import derive_completion_contract
 from patchbay.hub.identity import ManagerIdentity
 from patchbay.hub.operations import PUBLIC_STATUSES, normalize_domain_result, public_envelope
 from patchbay.hub.protocol_v2 import HubProtocolV2
@@ -638,6 +639,7 @@ class HubWorkerProjectionPortV2:
             limit = 50
         page = values[start : start + limit]
         projection_revision = max((item[0] for item in values), default=0)
+        all_workers = [item[1] for item in values]
         workers = [item[1] for item in page]
         counts = {
             "total": len(values),
@@ -645,7 +647,36 @@ class HubWorkerProjectionPortV2:
             "completed": sum(item[1].get("turn_state") == "completed" for item in values),
             "failed": sum(item[1].get("turn_state") == "failed" for item in values),
         }
+        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
+        group = deepcopy(group_entity["record"]) if group_entity else {}
+        operations = self.runtime._operations_for_group(group_id) if group_id else []
+        completion_contract = (
+            derive_completion_contract(group, all_workers, operations) if group else {}
+        )
+        worker_lines = [
+            " | ".join(
+                part
+                for part in (
+                    str(worker.get("name") or worker.get("fleet_worker_ref") or "worker"),
+                    str(worker.get("turn_state") or "none"),
+                    str(worker.get("liveness") or "unknown"),
+                    str(worker.get("current_phase") or ""),
+                )
+                if part
+            )
+            for worker in workers
+        ]
+        action = completion_contract.get("recommended_next_action") if completion_contract else {}
+        suggested_action = (
+            str(action.get("tool") or "") if isinstance(action, Mapping) else ""
+        )
         return {
+            "summary": (
+                f"{counts['active']} active, {counts['completed']} completed, "
+                f"{counts['failed']} failed worker turns."
+            ),
+            "suggested_action": suggested_action,
+            "worker_lines": worker_lines,
             "workers": workers,
             "count": len(workers),
             "total_known": len(values),
@@ -653,6 +684,15 @@ class HubWorkerProjectionPortV2:
             "projection_revision": projection_revision,
             "next_cursor": str(start + limit) if start + limit < len(values) else "",
             "status_current": True,
+            "minimum_next_poll_seconds": 20,
+            "recommended_next_poll_seconds": 30,
+            "poll_guidance": (
+                "Workers may remain active or quiet for many minutes. Follow the recommended action; "
+                "a wait timeout is not completion and is not a failure."
+            ),
+            "completion_contract": completion_contract,
+            "work_remaining": bool(completion_contract.get("work_remaining")),
+            "final_response_allowed": bool(completion_contract.get("final_response_allowed", True)),
         }
 
     def query(

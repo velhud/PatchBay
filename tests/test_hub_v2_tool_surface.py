@@ -366,6 +366,22 @@ def test_worker_tools_add_group_fleet_routing_without_dropping_parity_fields():
     assert stop["properties"]["reason"]["type"] == "string"
 
 
+def test_group_tools_expose_execution_and_completion_contracts():
+    by_name = _descriptors_by_name()
+    create = by_name["patchbay_work_group_create"]["inputSchema"]
+    status = by_name["patchbay_work_group_status"]["outputSchema"]
+
+    assert create["properties"]["execution_mode"]["enum"] == [
+        "end_to_end",
+        "asynchronous_handoff",
+    ]
+    assert "definition_of_done" in create["properties"]
+    result = status["properties"]["result"]["properties"]
+    assert "completion_contract" in result
+    assert "status_revision" in result
+    assert "changed" in result
+
+
 def test_worker_batch_schema_preserves_shared_and_per_worker_contracts():
     schema = _descriptors_by_name()["patchbay_worker_start_batch"]["inputSchema"]
     properties = schema["properties"]

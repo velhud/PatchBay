@@ -345,6 +345,91 @@ def test_routing_disabled_blocks_implicit_placement_and_is_reported(tmp_path):
     assert fleet["result"]["routing_enabled"] is False
 
 
+def test_work_group_defaults_to_end_to_end_completion_contract(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+
+    created = create_group(runtime, caller=context("owner"))
+    group = created["result"]["work_group"]
+    contract = created["result"]["completion_contract"]
+    persisted = store.get_entity(WORK_GROUP_ENTITY, group["work_group_id"])["record"]
+
+    assert group["execution_mode"] == "end_to_end"
+    assert group["definition_of_done"] == "Coordinate the bounded implementation."
+    assert contract["manager_must_continue"] is True
+    assert contract["final_response_allowed"] is False
+    assert contract["reason"] == "workers_or_operations_active"
+    assert contract["recommended_next_action"]["tool"] == "patchbay_worker_wait"
+    assert persisted["execution_mode"] == "end_to_end"
+    assert persisted["definition_of_done"] == group["definition_of_done"]
+
+
+def test_async_handoff_is_explicit_and_allows_a_progress_response(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+
+    created = runtime.create_work_group(
+        title="Background research",
+        goal="Run research and report later.",
+        machine_id="machine_alpha",
+        execution_mode="asynchronous_handoff",
+        definition_of_done="All research reports are complete.",
+        idempotency_key="async-handoff-group",
+        context=context("owner"),
+    )
+    group = created["result"]["work_group"]
+    contract = created["result"]["completion_contract"]
+
+    assert group["execution_mode"] == "asynchronous_handoff"
+    assert group["definition_of_done"] == "All research reports are complete."
+    assert contract["manager_must_continue"] is False
+    assert contract["final_response_allowed"] is True
+
+
+def test_work_group_status_waits_for_a_real_revision_change(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    created = create_group(runtime, caller=context("owner"))
+    group_id = created["result"]["work_group"]["work_group_id"]
+    baseline = runtime.work_group_status(
+        work_group_id=group_id,
+        context=context("owner"),
+    )["result"]["status_revision"]
+
+    async def exercise_wait():
+        async def mutate_group():
+            await asyncio.sleep(0.02)
+            entity = store.get_entity(WORK_GROUP_ENTITY, group_id)
+            record = dict(entity["record"])
+            record["summary"] = "A worker checkpoint arrived."
+            store.put_entity(
+                WORK_GROUP_ENTITY,
+                group_id,
+                record,
+                expected_revision=entity["revision"],
+            )
+
+        mutation = asyncio.create_task(mutate_group())
+        result = await runtime.handle_tool_call(
+            "patchbay_work_group_status",
+            {
+                "work_group_id": group_id,
+                "since_revision": baseline,
+                "wait_for_change_seconds": 1,
+            },
+            context=context("owner"),
+        )
+        await mutation
+        return result
+
+    waited = asyncio.run(exercise_wait())
+
+    assert waited["result"]["changed"] is True
+    assert waited["result"]["waited_seconds"] > 0
+    assert waited["result"]["status_revision"] > baseline
+    assert waited["result"]["completion_contract"]["final_response_allowed"] is False
+
+
 def test_preflight_result_is_strict_and_does_not_change_group_pin(tmp_path):
     runtime, store, _ = make_runtime(tmp_path)
     enroll_online(runtime, machine_id="machine_alpha")

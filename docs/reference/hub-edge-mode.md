@@ -48,6 +48,13 @@ are future extensions. The multi-conversation idea is preserved in
 Work groups are the current durable coordination object for one ChatGPT-managed
 task; future campaigns/channels can build on the same state model.
 
+Normal groups use `execution_mode=end_to_end` with an explicit
+`definition_of_done`. Their status includes a derived `completion_contract`.
+While that contract reports `manager_must_continue=true` or
+`final_response_allowed=false`, the manager should continue the worker loop and
+must not reinterpret a wait timeout as a task or platform execution limit.
+`asynchronous_handoff` is available only for a deliberately backgrounded task.
+
 ## Start A Hub
 
 ```bash

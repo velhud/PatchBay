@@ -26,6 +26,8 @@ ACCEPTABLE_CLOSE_DISPOSITIONS = frozenset(
     }
 )
 
+GROUP_EXECUTION_MODES = frozenset({"end_to_end", "asynchronous_handoff"})
+
 
 def derive_group_activity(
     workers: Iterable[Mapping[str, Any]],
@@ -78,6 +80,82 @@ def derive_group_activity(
     else:
         activity = "planned"
     return {"activity": activity, "counts": counts}
+
+
+def derive_completion_contract(
+    group: Mapping[str, Any],
+    workers: Iterable[Mapping[str, Any]],
+    operations: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Derive the manager's continuation obligation from durable lifecycle facts.
+
+    Semantic completion remains the manager's judgment. This contract only makes
+    the declared execution mode and exact mechanical blockers unambiguous.
+    """
+
+    worker_list = [dict(worker) for worker in workers]
+    operation_list = [dict(operation) for operation in operations]
+    activity = derive_group_activity(worker_list, operation_list)
+    mode = str(group.get("execution_mode") or "end_to_end")
+    if mode not in GROUP_EXECUTION_MODES:
+        mode = "end_to_end"
+    group_open = str(group.get("status") or "open") == "open"
+    counts = activity["counts"]
+
+    if not group_open:
+        reason = "group_terminal"
+        next_action: dict[str, Any] = {}
+    elif counts["lost"] or counts["uncertain_operations"]:
+        reason = "recovery_required"
+        next_action = {
+            "tool": "patchbay_work_group_status",
+            "reason": "Inspect authoritative recovery state before continuing.",
+            "arguments": {"work_group_id": str(group.get("work_group_id") or "")},
+        }
+    elif counts["active"] or counts["active_operations"]:
+        reason = "workers_or_operations_active"
+        next_action = {
+            "tool": "patchbay_worker_wait",
+            "reason": "Required work is still active; wait and continue managing it.",
+            "arguments": {
+                "work_group_id": str(group.get("work_group_id") or ""),
+                "wait_seconds": 30,
+            },
+        }
+    elif counts["unintegrated"]:
+        reason = "unintegrated_worker_changes"
+        next_action = {
+            "tool": "patchbay_worker_inspect",
+            "reason": "Review accepted worker evidence and integration state.",
+            "arguments": {"work_group_id": str(group.get("work_group_id") or "")},
+        }
+    elif not worker_list:
+        reason = "workers_not_started"
+        next_action = {
+            "tool": "patchbay_worker_start_batch",
+            "reason": "The end-to-end group has no workers yet.",
+            "arguments": {"work_group_id": str(group.get("work_group_id") or "")},
+        }
+    else:
+        reason = "manager_review_or_close_required"
+        next_action = {
+            "tool": "patchbay_work_group_close",
+            "reason": "Review results, request follow-up if needed, then close the group.",
+            "arguments": {"work_group_id": str(group.get("work_group_id") or "")},
+        }
+
+    final_response_allowed = not group_open or mode == "asynchronous_handoff"
+    return {
+        "execution_mode": mode,
+        "definition_of_done": str(group.get("definition_of_done") or group.get("goal") or ""),
+        "work_remaining": group_open,
+        "manager_must_continue": group_open and mode == "end_to_end",
+        "final_response_allowed": final_response_allowed,
+        "reason": reason,
+        "activity": activity["activity"],
+        "activity_counts": counts,
+        "recommended_next_action": next_action,
+    }
 
 
 def validate_close_dispositions(
@@ -155,6 +233,10 @@ def create_successor_group(
         "visibility": str(predecessor.get("visibility") or "private"),
         "routing_policy": str(predecessor.get("routing_policy") or "keep_together"),
         "shared_write_policy": str(predecessor.get("shared_write_policy") or "serialized"),
+        "execution_mode": str(predecessor.get("execution_mode") or "end_to_end"),
+        "definition_of_done": str(
+            predecessor.get("definition_of_done") or predecessor.get("goal") or ""
+        ),
         "workspace_ref": str(predecessor.get("workspace_ref") or ""),
         "pinned_machine_id": machine_id,
         "pinned_edge_generation": edge_generation,

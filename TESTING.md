@@ -302,7 +302,11 @@ The V2 evaluator uses two production-shaped Edge runners and the HTTP/MCP pull
 transport. It proves the exact 31-tool catalog, workspace projection, group
 preflight and machine pinning, parallel batch start, same-worker follow-up,
 inspection, signed integration without commit, durable result recovery, group
-closure, and Hub/Edge restart persistence.
+closure, and Hub/Edge restart persistence. It must also prove the manager
+completion contract outside-in: an `end_to_end` group reports
+`final_response_allowed=false` while preflight, worker work, integration, or
+closure remains, and reports `final_response_allowed=true` only after terminal
+closure.
 
 The final Hub release gate is the outside-in public connector scenario in
 [`docs/testing/public-hub-acceptance.md`](docs/testing/public-hub-acceptance.md).
@@ -317,6 +321,9 @@ through the single `patchbay_worker_start` entry path, not only batch start.
 Hub wait regression coverage must prove that an omitted `since_revision`
 snapshots current worker state, ordinary Edge heartbeats/resource telemetry do
 not wake the wait, and only worker projection changes or timeout complete it.
+An omitted Hub worker `wait_seconds` must use the patient 30-second manager
+default. Work-group status waits must honor `since_revision` and
+`wait_for_change_seconds` instead of silently returning immediately.
 Duplicate worker names must return a terminal pre-effect refusal with guidance
 to use a unique name or `auto_suffix`, never `outcome_unknown`.
 

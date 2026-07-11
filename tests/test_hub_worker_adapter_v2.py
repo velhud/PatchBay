@@ -162,6 +162,34 @@ class RecordingProjection:
         return deepcopy(dict(self.worker_result)) if self.worker_result is not None else None
 
 
+@pytest.mark.asyncio
+async def test_status_surfaces_the_group_continuation_action():
+    projection = RecordingProjection()
+    projection.query_result = {
+        **projection.query_result,
+        "completion_contract": {
+            "manager_must_continue": True,
+            "final_response_allowed": False,
+            "recommended_next_action": {
+                "tool": "patchbay_worker_wait",
+                "wait_seconds": 30,
+            },
+        },
+    }
+    adapter, _, _, _ = make_adapter(projection=projection)
+
+    result = await adapter.handle_tool_call(
+        "patchbay_worker_status",
+        {"work_group_id": "group_one"},
+        context=RequestContext.anonymous(),
+    )
+
+    assert result["result"]["completion_contract"]["final_response_allowed"] is False
+    assert result["next_actions"] == [
+        {"tool": "patchbay_worker_wait", "wait_seconds": 30}
+    ]
+
+
 class RecordingBroker:
     def __init__(self, *, child_results: Mapping[str, Mapping[str, Any]] | None = None):
         self.counter = 0
@@ -712,6 +740,19 @@ async def test_worker_wait_without_revision_uses_current_worker_projection_as_ba
     assert projection.wait_calls[0]["timeout_seconds"] == 20.0
     assert runtime.read_calls == []
     assert broker.create_calls == []
+    assert waited["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_worker_wait_without_seconds_uses_patient_manager_default():
+    adapter, runtime, broker, projection = make_adapter()
+
+    waited = await adapter.handle_tool_call(
+        "patchbay_worker_wait",
+        {"work_group_id": "group_alpha", "since_revision": 42},
+    )
+
+    assert projection.wait_calls[0]["timeout_seconds"] == 30.0
     assert waited["status"] == "ok"
 
 

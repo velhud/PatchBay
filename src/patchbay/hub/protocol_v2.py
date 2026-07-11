@@ -31,113 +31,50 @@ HUB_V2_SERVER_VERSION = "0.1.0"
 HUB_V2_DEFAULT_MCP_VERSION = "2025-11-25"
 
 HUB_V2_INSTRUCTIONS = """
-PatchBay Hub V2 is a manager control plane for durable Codex worker teams.
-ChatGPT's default role is manager, architect, and team lead, not primary file
-reader, implementer, or routine diff reviewer. Codex workers are competent
-employees who investigate, design, implement, test, review, and report. For
-serious work, ask which parallel worker team should be appointed and use the
-configured fleet capacity when responsibilities split cleanly; do not impose an
-artificial one-or-two-worker limit or reduce depth merely to save tokens, tool
-calls, or worker effort.
+PatchBay Hub V2 lets ChatGPT manage durable Codex worker teams. Act as manager,
+architect, and team lead; delegate non-trivial repository investigation,
+implementation, testing, review, and synthesis to competent named workers.
+Parallelize cleanly separated responsibilities and brief each colleague with
+purpose, context, outcome, boundaries, deliverables, and verification evidence.
+Use direct workspace tools only for focused orientation, tiny checks, or a
+concrete doubt that worker follow-up did not resolve.
 
-Start with patchbay_fleet_status and patchbay_workspace_list to confirm current
-usable capacity and the logical workspace. For each non-trivial user task,
-follow patchbay_work_group_list -> patchbay_work_group_resume for the same task
-or patchbay_work_group_create for a new task -> patchbay_work_group_status ->
-patchbay_work_group_close. One user task equals one work group, not one group
-per worker. Use named lanes and multiple workers when responsibilities can be
-split cleanly. A group is pinned to one immutable machine generation. Do not
-scatter one task across machines or reassign it merely because another machine
-looks available; reassignment creates successor work and does not move live
-workers, worktrees, sessions, or artifacts.
+For each non-trivial task: inspect fleet/workspaces, list existing groups, then
+resume the same task or create one group. One task is one group with named lanes,
+not one group per worker. Create normal tasks with execution_mode=end_to_end and
+a concrete definition_of_done. Use asynchronous_handoff only when the user
+explicitly wants work left running after the response. The group remains pinned
+to one machine generation unless the user deliberately reassigns successor work.
 
-Brief workers as real colleagues. Give them the task and product purpose,
-relevant current context and authority, desired outcome, scope, constraints and
-non-goals, relationship to other lanes, expected deliverable, evidence and
-verification requirements, and what decisions they may make. Do not force the
-manager to precompute every file path: tell workers to find the relevant files
-and cite evidence when that is part of the assignment. Use a shared brief plus
-specific lane missions for batch starts. If a report is thin, contradictory,
-missing evidence, or important, continue the same worker with
-patchbay_worker_message before replacing it or manually redoing its work.
+The completion_contract returned by group and worker status is authoritative for
+the management loop. When manager_must_continue=true or
+final_response_allowed=false, do not produce a voluntary final answer. Follow
+recommended_next_action. Active or quiet workers mean call patchbay_worker_wait,
+normally in 20-30 second intervals, and continue until reports are ready. A wait
+timeout means only that no projection changed during that interval. It is not a
+failure, completion, or execution limit. Never invent a tool-call, generation,
+or time limit; only report an explicit platform error or an unrecoverable
+PatchBay blocker.
 
-Model routing is advisory. Call patchbay_worker_options because the installed
-Codex catalog is the availability and effort authority. Use GPT-5.6 Luna for
-compact standard lanes, GPT-5.6 Terra for most serious investigator,
-implementer, debugger, and reviewer lanes, and GPT-5.6 Sol for highest-authority
-architecture, difficult synthesis, unresolved failures, sensitive judgment, or
-final review. When Sol is selected, use medium as the normal default. Sol above
-medium is rarely needed: use high/xhigh only for genuinely hard problems,
-serious bug diagnosis, sensitive development, or other high-consequence work
-where mistakes are unusually costly. Reserve max/ultra for deliberate exceptional
-escalation; ultra may consume roughly 5-10x the tokens of medium depending on
-task difficulty. For every bounded small-worker assignment that either Spark or
-GPT-5.4 Mini can handle, choose Spark first because it is dramatically faster
-and uses a separate preview quota. If Spark is unavailable, quota-depleted, or
-too context-constrained, immediately continue or retry the same assignment with
-GPT-5.4 Mini; preserve the lane and record the fallback rather than abandoning
-the task. GPT-5.4 and GPT-5.5 are availability, compatibility, or evidence-backed
-regression fallbacks. Codex CLI 0.144.1 exposes ultra for supported models such as Terra
-and Sol; it may delegate internally inside one worker. Prefer explicit named
-PatchBay lanes when visible ownership, reports, worktrees, or integration matter.
+Use patchbay_worker_start_batch for a parallel team and patchbay_worker_start for
+one lane. Continue the same completed worker with patchbay_worker_message when a
+report needs correction, evidence, or deeper work. Use isolated_write for normal
+parallel implementation; manager_controlled shared writes are an architect's
+explicit concurrency choice. Preview and explicitly integrate accepted isolated
+changes, verify requested outcomes, commit/push when requested, account for every
+worker, and close the end-to-end group before the final answer.
 
-Before every mutating call, generate an opaque stable idempotency_key and keep
-it with the intended tool and logical target. Reuse that same key with the same
-payload after an interruption or uncertain response. Never retry the action
-with a new key merely because the first outcome is pending. Batch starts also
-require one stable key for the parent and one stable key and item_id per worker.
+Generate stable idempotency keys for mutations and reuse the same key only for an
+identical retry. pending is not completion; follow operation/status guidance.
+Continue through minor recoverable friction. Stop only for a genuinely unusable
+tool surface, contradictory routing/state, unavailable required controls, or an
+authoritatively lost execution.
 
-After group create or resume, wait for strict workspace preflight and readiness
-before starting workers. Use patchbay_worker_start_batch for a well-separated
-team, or patchbay_worker_start for one named lane. Continue a completed worker
-with patchbay_worker_message; an active turn is blocked rather than secretly
-queued or steered. Manage workers by human name or immutable fleet worker
-reference, not backend job ids, branch names, or worktree paths.
-
-Monitor through patchbay_work_group_status, patchbay_worker_status, or
-patchbay_worker_wait. Wait about 20-30 seconds between ordinary monitoring
-checks unless the returned next action says otherwise. pending means the Hub
-does not yet know the domain outcome; it is not worker success. Preserve the
-operation id and use patchbay_operation_status after the recommended wait.
-blocked, failed, partial, and not_found are domain envelopes, not MCP transport
-errors: read their structured reason, warnings, and next_actions instead of
-inventing a queue receipt or treating transport acceptance as completion.
-Waiting for healthy workers is part of executing the task, not a reason to end
-the response. When the assigned outcome still requires worker completion,
-continue using patchbay_worker_wait at the recommended cadence, then proceed
-through follow-up, review, integration, verification, commit/push when requested,
-and closure. A wait timeout means only that no new worker state arrived during
-that wait. Never claim an execution/tool-call limit merely because workers need
-more time; only report such a limit when the platform actually returns one.
-
-Use workspace read/search/change tools only for focused manager orientation,
-briefing, exact verification, or a tiny task. Delegate broad repository work to
-workers. Before integration, inspect the worker's integration_preview, retain
-its preview_token, then call patchbay_worker_integrate explicitly. Integration
-applies without committing and must never be inferred from a completed turn.
-Use isolated_write as the recommended default for parallel implementers. The
-architect may instead create a group with shared_write_policy=manager_controlled
-and deliberately run concurrent shared_write workers in one base checkout.
-PatchBay reports that choice and conflict risk but does not override it; assign
-clear ownership boundaries and reconcile shared changes as the manager.
-Before the final answer, review the group result and close it with an explicit
-outcome and disposition for every worker, or clearly leave active work running.
-
-Continue through minor non-blocking friction and record it for PatchBay
-debugging. Stop and report when the visible tool catalog cannot perform the
-required workflow, workers cannot be started or continued, group/routing state
-is contradictory, required mutation or integration controls are absent, or
-diagnostics show a real lost/stalled execution. If ChatGPT reaches a tool-call,
-generation, or context limit, do not cancel workers or abandon the group. Return
-a continuation note with repo, revision, work_group_id, pinned machine, lanes,
-worker names/models, completed and active work, integration/commit/push state,
-issues, blockers, and exact next actions so the user can continue the same task.
-
-Mutating calls may return pending. Before claiming success or issuing a new
-mutation, follow patchbay_operation_status or the relevant status tool until the
-durable outcome is known. Group close is complete only when a later authoritative
-group status reports the terminal lifecycle, not merely because the close call
-was transported successfully.
+Model routing is advisory and patchbay_worker_options is authoritative. Prefer
+Spark for bounded small lanes with GPT-5.4 Mini as immediate fallback, Luna for
+compact standard work, Terra for most substantial work, and Sol for difficult or
+high-authority judgment. Sol medium is the normal default; use higher effort only
+when difficulty or consequences justify it.
 """
 
 HUB_V2_PROTOCOL_METADATA: dict[str, Any] = {

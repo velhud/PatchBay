@@ -20,7 +20,7 @@ contract and collaborator-safe results.
 | Real MCP worker negative-case trial | `scripts/real_mcp_worker_trial.py --include-safety-cases` passes direct MCP worker lifecycle and negative cases |
 | Direct multi-client MCP trial | `scripts/real_mcp_worker_trial.py --multi-client --include-safety-cases --tool-mode worker --json` passes two-session tool-mode, ownership, takeover, safety refusals, preview, integration, and artifact sanitization checks |
 | Fresh-worker stop protection | A focused live MCP probe confirms ordinary `codex_worker_stop` on a newly started worker returns `stop_confirmation_required: true`; `force: true` then stops it |
-| Public Hub V2 acceptance | Authenticated production tunnel passed initialize, exact 31-tool discovery, fleet/workspace discovery, durable group preflight, real parallel Codex workers, patient wait, report inspection, signed integration without commit, and base verification against a disposable Edge repository |
+| Public Hub V2 acceptance | Authenticated production tunnel passed initialize, exact 31-tool discovery, fleet/workspace discovery, durable group preflight, real parallel Codex workers, patient wait, report inspection, signed integration without commit, and base verification against a disposable Edge repository. The local outside-in evaluator additionally proves that end-to-end groups forbid finalization while work remains and permit it after authoritative closure. |
 | Real Codex through MCP | `codex_plan_job` completes through PatchBay |
 | Current Codex JSONL parsing | `agent_message` results parse into structured output |
 | Active ChatGPT Pro VM worker use | Operational through Hub V2 and enrolled Edges; the public acceptance contract must still be rerun for connector-facing releases |

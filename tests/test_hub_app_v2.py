@@ -17,7 +17,7 @@ from patchbay.hub.app_v2 import (
 )
 from patchbay.hub.broker import OperationBroker
 from patchbay.hub.protocol_v2 import HubProtocolV2
-from patchbay.hub.runtime_v2 import HubRuntimeV2
+from patchbay.hub.runtime_v2 import HubRuntimeV2, WORKER_PROJECTION_ENTITY, WORK_GROUP_ENTITY
 from patchbay.hub.store_v2 import HubStoreV2
 from patchbay.hub.tool_surface import HUB_V2_CONTRACT_HASH, HUB_V2_TOOL_NAMES
 from patchbay.protocol.context import RequestContext
@@ -351,6 +351,49 @@ async def test_worker_wait_ignores_unchanged_worker_snapshots_on_new_heartbeats(
     assert repeated["projection_revision"] == revision
     assert waited["changed"] is False
     assert waited["projection_revision"] == revision
+
+
+def test_completion_contract_uses_all_workers_not_only_the_returned_page(tmp_path):
+    app = HubAppV2(tmp_path / "hub-v2.sqlite3", edge_delivery=FakeEdgeDelivery())
+    group_id = "group_many_workers"
+    app.store.put_entity(
+        WORK_GROUP_ENTITY,
+        group_id,
+        {
+            "work_group_id": group_id,
+            "status": "open",
+            "execution_mode": "end_to_end",
+            "definition_of_done": "Every worker is complete.",
+        },
+        expected_revision=0,
+    )
+    for index in range(51):
+        app.store.put_entity(
+            WORKER_PROJECTION_ENTITY,
+            f"worker_{index:02d}",
+            {
+                "fleet_worker_ref": f"worker_{index:02d}",
+                "edge_worker_id": f"edge_worker_{index:02d}",
+                "work_group_id": group_id,
+                "name": f"Worker {index:02d}",
+                "turn_state": "working" if index == 50 else "completed",
+                "liveness": "active" if index == 50 else "completed",
+                "integration_state": "not_applicable",
+                "worker_state": "available",
+            },
+            expected_revision=0,
+        )
+
+    status = app.projection_port._query_result(
+        filters={"work_group_id": group_id, "limit": 50},
+        route={"work_group_id": group_id},
+    )
+
+    assert len(status["workers"]) == 50
+    assert status["total_known"] == 51
+    assert status["completion_contract"]["reason"] == "workers_or_operations_active"
+    assert status["completion_contract"]["activity_counts"]["active"] == 1
+    assert status["completion_contract"]["final_response_allowed"] is False
 
 
 @pytest.mark.asyncio

@@ -85,35 +85,27 @@ def test_initialize_is_manager_first_and_carries_frozen_contract_metadata():
         "patchbay/schema_hash": HUB_V2_SCHEMA_HASH,
         "patchbay/contract_hash": HUB_V2_CONTRACT_HASH,
     }
-    assert "Start with patchbay_fleet_status and patchbay_workspace_list" in HUB_V2_INSTRUCTIONS
-    assert "One user task equals one work group" in HUB_V2_INSTRUCTIONS
-    assert "patchbay_work_group_list -> patchbay_work_group_resume" in HUB_V2_INSTRUCTIONS
-    assert "patchbay_work_group_create" in HUB_V2_INSTRUCTIONS
-    assert "patchbay_work_group_status" in HUB_V2_INSTRUCTIONS
-    assert "patchbay_work_group_close" in HUB_V2_INSTRUCTIONS
-    assert "idempotency_key" in HUB_V2_INSTRUCTIONS
-    assert "Reuse that same key" in HUB_V2_INSTRUCTIONS
-    assert "20-30 seconds" in HUB_V2_INSTRUCTIONS
-    assert "pending means" in HUB_V2_INSTRUCTIONS
-    assert "patchbay_operation_status" in HUB_V2_INSTRUCTIONS
-    assert "applies without committing" in HUB_V2_INSTRUCTIONS
-    assert "manager, architect, and team lead" in HUB_V2_INSTRUCTIONS
-    assert "Brief workers as real colleagues" in HUB_V2_INSTRUCTIONS
-    assert "task and product purpose" in HUB_V2_INSTRUCTIONS
-    assert "GPT-5.6 Luna" in HUB_V2_INSTRUCTIONS
-    assert "GPT-5.6 Terra" in HUB_V2_INSTRUCTIONS
-    assert "GPT-5.6 Sol" in HUB_V2_INSTRUCTIONS
-    assert "use medium as the normal default" in HUB_V2_INSTRUCTIONS
-    assert "5-10x" in HUB_V2_INSTRUCTIONS
-    assert "choose Spark first" in HUB_V2_INSTRUCTIONS
-    assert "immediately continue or retry the same assignment" in HUB_V2_INSTRUCTIONS
-    assert "preserve the lane and record the fallback" in HUB_V2_INSTRUCTIONS
-    assert "0.144.1 exposes ultra" in HUB_V2_INSTRUCTIONS
-    assert "tool-call" in HUB_V2_INSTRUCTIONS
-    assert "continuation note" in HUB_V2_INSTRUCTIONS
-    assert "Waiting for healthy workers is part of executing the task" in HUB_V2_INSTRUCTIONS
-    assert "Never claim an execution/tool-call limit" in HUB_V2_INSTRUCTIONS
-    assert "Group close is complete only" in HUB_V2_INSTRUCTIONS
+    assert len(HUB_V2_INSTRUCTIONS) < 5_000
+    assert "manager,\narchitect, and team lead" in HUB_V2_INSTRUCTIONS
+    assert "One task is one group" in HUB_V2_INSTRUCTIONS
+    assert "execution_mode=end_to_end" in HUB_V2_INSTRUCTIONS
+    assert "asynchronous_handoff" in HUB_V2_INSTRUCTIONS
+    assert "completion_contract" in HUB_V2_INSTRUCTIONS
+    assert "final_response_allowed=false" in HUB_V2_INSTRUCTIONS
+    assert "do not produce a voluntary final answer" in HUB_V2_INSTRUCTIONS
+    assert "20-30 second intervals" in HUB_V2_INSTRUCTIONS
+    assert "timeout means" in HUB_V2_INSTRUCTIONS
+    assert "Never invent a tool-call" in HUB_V2_INSTRUCTIONS
+    assert "patchbay_worker_start_batch" in HUB_V2_INSTRUCTIONS
+    assert "patchbay_worker_message" in HUB_V2_INSTRUCTIONS
+    assert "patchbay_worker_options" in HUB_V2_INSTRUCTIONS
+    assert "Spark" in HUB_V2_INSTRUCTIONS
+    assert "GPT-5.4 Mini" in HUB_V2_INSTRUCTIONS
+    assert "Luna" in HUB_V2_INSTRUCTIONS
+    assert "Terra" in HUB_V2_INSTRUCTIONS
+    assert "Sol medium is the normal default" in HUB_V2_INSTRUCTIONS
+    assert "leave active work running" not in HUB_V2_INSTRUCTIONS
+    assert "continuation note" not in HUB_V2_INSTRUCTIONS
 
 
 def test_tools_list_is_the_exact_ordered_31_tool_registry_with_no_v1_only_tools():

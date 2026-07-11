@@ -6,6 +6,7 @@ without wiring any public server route or reimplementing Edge-owned handlers.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import inspect
@@ -22,6 +23,7 @@ from patchbay.hub.groups_v2 import (
     TERMINAL_OPERATION_STATES,
     create_successor_group,
     derive_group_activity,
+    derive_completion_contract,
     validate_close_dispositions,
 )
 from patchbay.hub.identity import (
@@ -286,6 +288,8 @@ class HubRuntimeV2:
         try:
             if name == "patchbay_operation_status":
                 return await self.operation_status(context=context, **args)
+            if name == "patchbay_work_group_status":
+                return await self._wait_for_work_group_status(args, context=context)
             if name in local:
                 if name.startswith("patchbay_work_group_") or name == "patchbay_fleet_status":
                     args["context"] = context
@@ -313,6 +317,46 @@ class HubRuntimeV2:
                 warnings=["The request conflicted with durable Hub state; no second mutation was applied."],
                 next_actions=[next_action],
             )
+
+    async def _wait_for_work_group_status(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        context: RequestContext | None,
+    ) -> dict[str, Any]:
+        args = dict(arguments)
+        requested_wait = max(0, min(_as_int(args.pop("wait_for_change_seconds", 0), 0), 30))
+        supplied_revision = args.pop("since_revision", None)
+        current = self.work_group_status(context=context, **args)
+        if current.get("status") != "ok" or requested_wait <= 0:
+            return current
+        result = current.get("result") if isinstance(current.get("result"), Mapping) else {}
+        baseline = (
+            max(0, _as_int(supplied_revision, 0))
+            if supplied_revision is not None
+            else max(0, _as_int(result.get("status_revision"), 0))
+        )
+        started = time.monotonic()
+        while _as_int(result.get("status_revision"), 0) <= baseline:
+            remaining = requested_wait - (time.monotonic() - started)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.1, remaining))
+            current = self.work_group_status(context=context, **args)
+            if current.get("status") != "ok":
+                return current
+            result = current.get("result") if isinstance(current.get("result"), Mapping) else {}
+        result = deepcopy(dict(result))
+        result["waited_seconds"] = round(time.monotonic() - started, 3)
+        result["requested_wait_seconds"] = requested_wait
+        result["changed"] = _as_int(result.get("status_revision"), 0) > baseline
+        current["result"] = result
+        contract = result.get("completion_contract")
+        if isinstance(contract, Mapping) and contract.get("manager_must_continue"):
+            action = contract.get("recommended_next_action")
+            if isinstance(action, Mapping) and action:
+                current["next_actions"] = [deepcopy(dict(action))]
+        return current
 
     # -- Machine identity and heartbeat ----------------------------------
 
@@ -1342,6 +1386,8 @@ class HubRuntimeV2:
         lanes: Any = None,
         visibility: str = "private",
         shared_write_policy: str = "serialized",
+        execution_mode: str = "end_to_end",
+        definition_of_done: str = "",
         wait_for_preflight_seconds: int = 0,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
@@ -1355,6 +1401,10 @@ class HubRuntimeV2:
         shared_write_policy_value = str(shared_write_policy or "serialized").strip().lower()
         if shared_write_policy_value not in {"serialized", "manager_controlled"}:
             raise ValueError("shared_write_policy must be serialized or manager_controlled")
+        execution_mode_value = str(execution_mode or "end_to_end").strip().lower()
+        if execution_mode_value not in {"end_to_end", "asynchronous_handoff"}:
+            raise ValueError("execution_mode must be end_to_end or asynchronous_handoff")
+        definition_of_done_value = _optional_text(definition_of_done, 8_000) or goal_value
         identity = self._manager_identity(context)
         target = str(workspace_ref or repo_path or machine_id or "fleet")
         payload = {
@@ -1368,6 +1418,8 @@ class HubRuntimeV2:
             "lanes": lanes or [],
             "visibility": visibility_value,
             "shared_write_policy": shared_write_policy_value,
+            "execution_mode": execution_mode_value,
+            "definition_of_done": definition_of_done_value,
         }
         operation = self.broker.create_operation(
             tool="patchbay_work_group_create",
@@ -1426,6 +1478,8 @@ class HubRuntimeV2:
             "visibility": visibility_value,
             "routing_policy": "keep_together",
             "shared_write_policy": shared_write_policy_value,
+            "execution_mode": execution_mode_value,
+            "definition_of_done": definition_of_done_value,
             "workspace_ref": str(projection.get("workspace_ref") or workspace_ref or ""),
             "workspace_projection_ref": str(projection.get("workspace_projection_ref") or ""),
             "repository_identity": str(projection.get("repository_identity") or ""),
@@ -2276,6 +2330,7 @@ class HubRuntimeV2:
     ) -> dict[str, Any]:
         operations = self._operations_for_group(str(group["work_group_id"]))
         activity = derive_group_activity(workers, operations)
+        completion_contract = derive_completion_contract(group, workers, operations)
         lanes: list[dict[str, Any]] = []
         lane_records = group.get("lanes") if isinstance(group.get("lanes"), Mapping) else {}
         lane_ids = set(lane_records).union(str(worker.get("lane_id") or "main") for worker in workers)
@@ -2293,6 +2348,9 @@ class HubRuntimeV2:
             "lifecycle": group.get("lifecycle"),
             "visibility": group.get("visibility"),
             "shared_write_policy": group.get("shared_write_policy") or "serialized",
+            "execution_mode": completion_contract["execution_mode"],
+            "definition_of_done": completion_contract["definition_of_done"],
+            "completion_contract": completion_contract,
             "workspace_ref": group.get("workspace_ref") or "",
             "workspace_projection_ref": group.get("workspace_projection_ref") or "",
             "requested_repo_path": group.get("requested_repo_path") or "",
@@ -2353,10 +2411,18 @@ class HubRuntimeV2:
         group_id = str(group["work_group_id"])
         workers = self._workers_for_group(group_id)
         public_group = self._public_group(group, workers=workers)
+        operations = self._operations_for_group(group_id)
+        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
+        status_revision = int(group_entity.get("revision") or 0) if group_entity else 0
+        status_revision += sum(_as_int(worker.get("projection_revision"), 0) for worker in workers)
+        status_revision += sum(_as_int(item.get("revision"), 0) for item in operations)
+        completion_contract = deepcopy(dict(public_group["completion_contract"]))
         result: dict[str, Any] = {
             "work_group": public_group,
             "lanes": deepcopy(public_group["lanes"]),
             "readiness": deepcopy(public_group["readiness"]),
+            "completion_contract": completion_contract,
+            "status_revision": status_revision,
             "routing": deepcopy(dict(group.get("routing") or {})),
             "candidate_summary": deepcopy(list(candidate_summary or [])),
             "rejection_summary": deepcopy(list(rejection_summary or [])),
@@ -2365,12 +2431,18 @@ class HubRuntimeV2:
             result["workers"] = workers
         if include_operations:
             result["operations"] = [
-                self._operation_summary(item) for item in self._operations_for_group(group_id)
+                self._operation_summary(item) for item in operations
             ]
+        next_actions: list[dict[str, Any]] = []
+        if completion_contract.get("manager_must_continue"):
+            action = completion_contract.get("recommended_next_action")
+            if isinstance(action, Mapping) and action:
+                next_actions.append(deepcopy(dict(action)))
         return public_envelope(
             "ok",
             result=result,
             operation=self._operation_summary(operation) if operation else {},
+            next_actions=next_actions,
         )
 
     def _coordination_blocker(

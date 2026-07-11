@@ -596,7 +596,7 @@ class HubWorkerAdapterV2:
                 context=context,
             )
         )
-        return self._semantic_result(raw, route=route)
+        return self._with_manager_continuation(self._semantic_result(raw, route=route))
 
     async def _projection_wait(
         self,
@@ -630,11 +630,26 @@ class HubWorkerAdapterV2:
                 filters=deepcopy(dict(args)),
                 route=route.as_port_mapping(),
                 since_revision=since_revision,
-                timeout_seconds=max(0.0, float(args.get("wait_seconds") or 0)),
+                timeout_seconds=(
+                    30.0
+                    if args.get("wait_seconds") is None
+                    else max(0.0, float(args.get("wait_seconds") or 0))
+                ),
                 context=context,
             )
         )
-        return self._semantic_result(raw, route=route)
+        return self._with_manager_continuation(self._semantic_result(raw, route=route))
+
+    @staticmethod
+    def _with_manager_continuation(envelope: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = deepcopy(dict(envelope))
+        result = normalized.get("result") if isinstance(normalized.get("result"), Mapping) else {}
+        contract = result.get("completion_contract") if isinstance(result, Mapping) else {}
+        if isinstance(contract, Mapping) and contract.get("manager_must_continue"):
+            action = contract.get("recommended_next_action")
+            if isinstance(action, Mapping) and action:
+                normalized["next_actions"] = [deepcopy(dict(action))]
+        return normalized
 
     async def _active_turn_projection(
         self,

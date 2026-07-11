@@ -255,12 +255,57 @@ _worker_result_properties.update(
     }
 )
 
+HUB_V2_COMPLETION_CONTRACT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "execution_mode": {
+            "type": "string",
+            "enum": ["end_to_end", "asynchronous_handoff"],
+        },
+        "definition_of_done": {"type": "string"},
+        "work_remaining": {"type": "boolean"},
+        "manager_must_continue": {"type": "boolean"},
+        "final_response_allowed": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "activity": {"type": "string"},
+        "activity_counts": {"type": "object", "additionalProperties": True},
+        "recommended_next_action": {"type": "object", "additionalProperties": True},
+    },
+}
+
+HUB_V2_WORKER_SUMMARY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "fleet_worker_ref": {"type": "string"},
+        "worker_id": {"type": "string"},
+        "name": {"type": "string"},
+        "work_group_id": {"type": "string"},
+        "lane_id": {"type": "string"},
+        "machine_id": {"type": "string"},
+        "workspace_mode": {"type": "string"},
+        "worker_state": {"type": "string"},
+        "turn_state": {"type": "string"},
+        "liveness": {"type": "string"},
+        "current_phase": {"type": "string"},
+        "last_activity_at": {"type": ["number", "null"]},
+        "status_line": {"type": "string"},
+        "latest_partial_note": {"type": "object", "additionalProperties": True},
+        "has_changes": {"type": "boolean"},
+        "integration_state": {"type": "string"},
+        "review_disposition": {"type": "string"},
+        "can_message_now": {"type": "boolean"},
+        "projection_revision": {"type": "integer"},
+    },
+}
+
 
 def _worker_list_result_schema() -> dict[str, Any]:
     schema = _routed_result_schema(WORKER_LIST_SCHEMA)
     schema["properties"]["workers"] = {
         "type": "array",
-        "items": deepcopy(HUB_V2_WORKER_RESULT_SCHEMA),
+        "items": deepcopy(HUB_V2_WORKER_SUMMARY_SCHEMA),
     }
     return schema
 
@@ -269,10 +314,14 @@ def _worker_status_result_schema() -> dict[str, Any]:
     schema = _routed_result_schema(WORKER_STATUS_SCHEMA)
     schema["properties"]["workers"] = {
         "type": "array",
-        "items": deepcopy(HUB_V2_WORKER_RESULT_SCHEMA),
+        "items": deepcopy(HUB_V2_WORKER_SUMMARY_SCHEMA),
     }
     schema["properties"]["projection_revision"] = {"type": "integer"}
     schema["properties"]["projection_freshness"] = {"type": "object", "additionalProperties": True}
+    schema["properties"]["completion_contract"] = deepcopy(HUB_V2_COMPLETION_CONTRACT_SCHEMA)
+    schema["properties"]["work_remaining"] = {"type": "boolean"}
+    schema["properties"]["final_response_allowed"] = {"type": "boolean"}
+    schema["properties"]["changed"] = {"type": "boolean"}
     return schema
 
 
@@ -605,9 +654,14 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
         {
             "work_group": {"type": "object", "additionalProperties": True},
             "lanes": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            "workers": {"type": "array", "items": deepcopy(HUB_V2_WORKER_RESULT_SCHEMA)},
+            "workers": {"type": "array", "items": deepcopy(HUB_V2_WORKER_SUMMARY_SCHEMA)},
             "readiness": {"type": "object", "additionalProperties": True},
             "routing": {"type": "object", "additionalProperties": True},
+            "completion_contract": deepcopy(HUB_V2_COMPLETION_CONTRACT_SCHEMA),
+            "status_revision": {"type": "integer"},
+            "waited_seconds": {"type": "number"},
+            "requested_wait_seconds": {"type": "integer"},
+            "changed": {"type": "boolean"},
             "candidate_summary": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
             "rejection_summary": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         }
@@ -615,7 +669,7 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
     return [
         _descriptor(
             "patchbay_work_group_create",
-            "Create one durable non-trivial task, select and pin one immutable machine generation by availability, and run strict workspace preflight. Group creation success and readiness are reported separately.",
+            "Use this to create one durable task and pin its worker team to one available machine. Default end_to_end mode keeps the manager in the tool loop until the group is terminal; asynchronous_handoff must be an explicit choice. Group creation and workspace readiness are reported separately.",
             _input_schema(
                 {
                     "title": _string("Short human task title."),
@@ -630,6 +684,13 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
                     "shared_write_policy": _string(
                         "Architect-selected policy for workers that directly share the base checkout. serialized keeps the repository lock; manager_controlled permits deliberate concurrent shared writers and reports the conflict risk.",
                         enum=("serialized", "manager_controlled"),
+                    ),
+                    "execution_mode": _string(
+                        "Manager completion policy. end_to_end forbids a voluntary final response while the group is open; asynchronous_handoff explicitly permits reporting active durable work.",
+                        enum=("end_to_end", "asynchronous_handoff"),
+                    ),
+                    "definition_of_done": _string(
+                        "Natural-language result and verification criteria. Defaults to goal when omitted."
                     ),
                     "wait_for_preflight_seconds": _integer("Bounded synchronous preflight wait.", minimum=0),
                     "idempotency_key": deepcopy(IDEMPOTENCY_KEY_SCHEMA),
@@ -663,7 +724,7 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
         ),
         _descriptor(
             "patchbay_work_group_status",
-            "Return the authoritative group overview derived from worker projections, operations, integrations, and machine freshness. Transport completion is never treated as worker completion.",
+            "Use this for the authoritative task overview and completion contract. When final_response_allowed is false, follow recommended_next_action instead of answering the user. wait_for_change_seconds performs a real bounded wait for group, worker, operation, or integration state change.",
             _input_schema(
                 {
                     "work_group_id": deepcopy(GROUP_ROUTE_PROPERTIES["work_group_id"]),
@@ -780,10 +841,7 @@ def _worker_start_descriptor() -> dict[str, Any]:
     properties["idempotency_key"] = deepcopy(IDEMPOTENCY_KEY_SCHEMA)
     return _descriptor(
         "patchbay_worker_start",
-        _target_description(
-            str(source["description"]),
-            "Normal starts require work_group_id and lane and route to the pinned Edge. Exceptional ungrouped starts require machine_id, a workspace_ref or repo_path, and ungrouped_reason.",
-        ),
+        "Use this when appointing one durable Codex colleague inside a work-group lane. Give a colleague-quality natural-language brief with outcome, context, boundaries, deliverable, and verification; use batch start when several independent lanes can begin together. Normal starts route to the group's pinned Edge.",
         _input_schema(
             properties,
             required=("name", "brief", "idempotency_key"),
@@ -864,10 +922,7 @@ def _worker_message_descriptor() -> dict[str, Any]:
     properties["idempotency_key"] = deepcopy(IDEMPOTENCY_KEY_SCHEMA)
     return _descriptor(
         "patchbay_worker_message",
-        _target_description(
-            str(source["description"]),
-            "V2 preserves next-turn continuation only: an active turn returns blocked with active_turn_in_progress rather than promising steering or hidden queueing.",
-        ),
+        "Use this when the same named worker should clarify, correct, deepen, review, or continue its work in natural language. Ask follow-up before manually redoing a worker's investigation. Active turns return active_turn_in_progress; wait for completion and then continue the same session.",
         _input_schema(
             properties,
             required=("work_group_id", "message", "idempotency_key"),
@@ -896,14 +951,14 @@ def _worker_collection_descriptor(canonical_name: str, target_name: str) -> dict
         if target_name == "patchbay_worker_list"
         else _worker_status_result_schema()
     )
-    routing_note = (
-        "Hub answers from authoritative worker projections."
-        if target_name != "patchbay_worker_wait"
-        else "Hub waits on projection events; it never queues a sleeping Edge command."
-    )
+    descriptions = {
+        "patchbay_worker_list": "Use this to list the named workers in one group or lane before choosing a management action. It returns compact authoritative projections, not raw transcripts.",
+        "patchbay_worker_status": "Use this for a compact authoritative group-worker status check. Follow completion_contract and recommended_next_action; active or quiet workers are not failures.",
+        "patchbay_worker_wait": "Use this when workers are active or quiet and the manager's correct action is patience. It waits for a worker projection change or a bounded timeout, defaults to 30 seconds, does not interrupt workers, and returns the next management action. A timeout is not completion or failure.",
+    }
     return _descriptor(
         target_name,
-        _target_description(str(source["description"]), routing_note),
+        descriptions[target_name],
         _input_schema(properties, required=("work_group_id",)),
         result_schema,
         source=source,
@@ -917,10 +972,7 @@ def _worker_inspect_descriptor() -> dict[str, Any]:
     properties.update(deepcopy(WORKER_SELECTOR_PROPERTIES))
     return _descriptor(
         "patchbay_worker_inspect",
-        _target_description(
-            str(source["description"]),
-            "The integration_preview view returns a short-lived token bound to principal, participant, fleet worker revision, workspace projection, patch, base, dirty fingerprint, and expiry.",
-        ),
+        "Use this to read one worker's report or investigate a concrete concern. Prefer report/compact/status for normal management; use diagnostics, files, diffs, or integration_preview only when needed. integration_preview returns the signed token required for Hub integration.",
         _input_schema(
             properties,
             required=("work_group_id",),
@@ -940,10 +992,7 @@ def _worker_integrate_descriptor() -> dict[str, Any]:
     properties["idempotency_key"] = deepcopy(IDEMPOTENCY_KEY_SCHEMA)
     return _descriptor(
         "patchbay_worker_integrate",
-        _target_description(
-            str(source["description"]),
-            "Hub mode requires preview_token and revalidates every binding under repository locks. Reusing a successful token/key returns the prior result and never applies twice.",
-        ),
+        "Use this after accepting an isolated worker result and obtaining its signed integration_preview token. Hub revalidates the worker, patch, base, and repository state, applies without committing, and makes identical retries idempotent.",
         _input_schema(
             properties,
             required=("work_group_id", "preview_token", "idempotency_key"),
@@ -975,10 +1024,7 @@ def _worker_stop_descriptor() -> dict[str, Any]:
     }
     return _descriptor(
         "patchbay_worker_stop",
-        _target_description(
-            str(source["description"]),
-            "cleanup_workspace never authorizes loss by itself; discarding unintegrated changes also requires discard_unintegrated_changes=true.",
-        ),
+        "Use this only after a deliberate decision to interrupt or retire a worker, not because it is merely quiet. Workspace cleanup never authorizes loss by itself; discarding unintegrated changes requires explicit discard_unintegrated_changes=true.",
         _input_schema(
             properties,
             required=("work_group_id", "idempotency_key"),
