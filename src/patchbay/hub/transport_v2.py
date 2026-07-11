@@ -1119,7 +1119,7 @@ class HubPullTransportBridgeV2:
             "edge_generation": self._generation_number(
                 str(payload.get("edge_generation") or "")
             ),
-            "required_contract_hash": self._requested_contract_hash(payload),
+            "required_contract_hash": self._attempt_requested_contract_hash(payload),
             "fencing_token": int(payload.get("fencing_token") or 0),
         }
         actual = {
@@ -1135,6 +1135,14 @@ class HubPullTransportBridgeV2:
             if actual[field] != value:
                 raise HubStoreV2Conflict(f"attempt_{field}_mismatch")
         return operation, attempt, contract
+
+    @staticmethod
+    def _attempt_requested_contract_hash(payload: Mapping[str, Any]) -> str:
+        """Prefer the attempt fence over current Edge metadata during recovery."""
+        for value in (payload.get("contract_hash"), payload.get("required_contract_hash")):
+            if str(value or "").strip():
+                return str(value).strip()
+        return HubPullTransportBridgeV2._requested_contract_hash(payload)
 
     def _wire_attempt(
         self,

@@ -117,6 +117,12 @@ def test_old_edge_contract_can_finish_fenced_attempt_during_rolling_upgrade(tmp_
     authenticated = transport._authenticate(payload, "node-token", require_contract=True)
 
     assert authenticated["capabilities"]["contract_hash"] == "previous-contract"
+    assert transport._attempt_requested_contract_hash(
+        {
+            "contract_hash": "attempt-contract",
+            "contract": {"contract_hash": "current-edge-contract"},
+        }
+    ) == "attempt-contract"
     with pytest.raises(HubStoreV2Conflict, match="attempt_contract_hash_mismatch"):
         transport._authenticate(
             {**payload, "contract_hash": "different-contract"},
