@@ -671,11 +671,14 @@ class WorkerRuntime:
     ) -> Dict[str, Any]:
         """Return the durable full-history worker projection used by Hub V2.
 
-        Projection reads deliberately bypass reconciliation, monitoring cooldowns,
-        and manager delta annotation. Edge transport owns monotonic delivery
-        revisions; this method provides deterministic content revisions so it can
-        suppress duplicate snapshots without coupling to manager polling.
+        Projection reads reconcile durable running jobs but bypass monitoring
+        cooldowns and manager delta annotation. This keeps machine capacity and
+        Hub lifecycle state current even when no manager is polling. Edge
+        transport owns monotonic delivery revisions; this method provides
+        deterministic content revisions so it can suppress duplicate snapshots
+        without coupling to manager polling.
         """
+        self._reconcile_active_jobs()
         groups = sorted(self._worker_groups(), key=lambda jobs: self._worker_identity(jobs)[0])
         workers = [self._worker_projection(jobs) for jobs in groups]
         current_ids = [str(worker["edge_worker_id"]) for worker in workers]

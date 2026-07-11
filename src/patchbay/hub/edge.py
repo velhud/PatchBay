@@ -230,6 +230,7 @@ def _active_workers_from_status(status: Mapping[str, Any]) -> int:
             if isinstance(worker, Mapping)
             and str(worker.get("turn_state") or worker.get("state") or "")
             in {"starting", "working"}
+            and str(worker.get("liveness") or "") not in {"lost", "terminal"}
         )
     return 0
 

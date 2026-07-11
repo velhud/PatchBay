@@ -14,6 +14,8 @@ def test_full_history_projection_counts_only_active_workers(monkeypatch, tmp_pat
                 {"turn_state": "completed"},
                 {"turn_state": "working"},
                 {"state": "starting"},
+                {"turn_state": "working", "liveness": "lost"},
+                {"turn_state": "working", "liveness": "terminal"},
             ]
         },
     )

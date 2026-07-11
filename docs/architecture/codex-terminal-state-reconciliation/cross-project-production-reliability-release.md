@@ -48,11 +48,15 @@ The evidence separated deliberate safety behavior from defects:
     generation, then use the durable operation/attempt/contract/fencing tuple;
     they do not become unrecoverable merely because the Edge later advertises a
     different contract.
+15. Periodic Hub projections reconcile durable worker state without waiting for
+    a manager poll, and explicitly lost or terminal projections do not consume
+    machine capacity. This prevents historical wrappers from distorting
+    availability routing after an Edge restart.
 
 ## Verification Evidence
 
 - Focused connected suite: 96 passed.
-- Full suite: 642 passed; four existing FastAPI lifespan deprecation warnings.
+- Full suite: 644 passed; four existing FastAPI lifespan deprecation warnings.
 - Hub V2 live evaluation: passed with exactly 31 tools, two Edges, group pinning,
   worker continuation, isolated write, integration, preflight invalidation,
   durable result recovery, and restart recovery.

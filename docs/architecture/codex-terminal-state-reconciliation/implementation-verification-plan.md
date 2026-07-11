@@ -112,7 +112,7 @@ Use the actual public MCP surface, not internal function calls:
 Completed before commit or deployment:
 
 - `python -m compileall src scripts tests`: passed.
-- `python -m pytest tests -q`: 642 passed after the cross-project reliability refinements.
+- `python -m pytest tests -q`: 644 passed after the cross-project reliability refinements.
 - `python scripts/live_mcp_eval.py --json`: passed with 31 tools.
 - `python scripts/live_mcp_eval.py --json --exercise-terminal-reconciliation`:
   passed through public MCP worker start and inspect; the final report survived,
@@ -127,6 +127,8 @@ Completed before commit or deployment:
 The release also verifies zombie PID detection, terminal-report recovery before
 manager cancellation, exact child-repository binding, live Edge workspace
 discovery, group-scoped aggregate monitoring, nullable Hub projection fields,
-distinct workspace-instance identity, and identifier-rich MCP text fallback.
+distinct workspace-instance identity, identifier-rich MCP text fallback, and
+automatic projection-time reconciliation so lost workers cannot consume router
+capacity indefinitely.
 
 No release, push, service restart, or machine deployment was performed.

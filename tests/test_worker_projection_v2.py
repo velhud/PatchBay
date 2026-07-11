@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from patchbay.jobs.executor import JobExecutor
 from patchbay.jobs.manager import JobManager, JobState
 from patchbay.workers.runtime import (
     WORKER_BASE_REPO_OPTION,
@@ -68,9 +69,14 @@ def make_config(tmp_path):
 class ProjectionExecutor:
     def __init__(self):
         self.live_job_ids = set()
+        self.reconcile_calls = 0
 
     def _job_has_live_runtime(self, job_id):
         return job_id in self.live_job_ids
+
+    def reconcile_stale_running_jobs(self):
+        self.reconcile_calls += 1
+        return {"checked": 0, "reconciled": 0, "recovered_completed": 0}
 
 
 def add_worker(
@@ -174,6 +180,7 @@ def test_projection_snapshot_separates_worker_turn_and_liveness_axes(
 
     worker = runtime.projection_snapshot()["workers"][0]
 
+    assert executor.reconcile_calls == 1
     assert worker["edge_worker_id"] == f"wrk-{label}"
     assert worker["worker_state"] == worker_state
     assert worker["turn_state"] == turn_state
@@ -218,6 +225,41 @@ def test_projection_snapshot_is_full_history_after_restart_and_emits_tombstones(
     assert snapshot["tombstones"] == [{"edge_worker_id": "wrk-removed"}]
     assert [worker["edge_worker_id"] for worker in snapshot["workers"]] == ["wrk-complete", "wrk-stopped"]
     assert snapshot["workers"][0]["report_summary"] == "Durable completed report"
+
+
+def test_projection_snapshot_reconciles_untracked_durable_running_job(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    repo = config["repositories"]["default"]
+    job_id = manager.create_job(
+        "interactive",
+        "Interrupted durable worker",
+        repo,
+        {
+            WORKER_ID_OPTION: "wrk-interrupted",
+            WORKER_NAME_OPTION: "Interrupted",
+            WORKER_MODE_OPTION: "read_only",
+            WORKER_BASE_REPO_OPTION: repo,
+            WORKER_WORK_GROUP_ID_OPTION: "grp-projection",
+            WORKER_LANE_ID_OPTION: "recovery",
+        },
+    )
+    old = time.time() - 120
+    manager.update_job_state(
+        job_id,
+        JobState.RUNNING,
+        started_at=old,
+        launch_started_at=old,
+        process_started_at=old,
+        last_heartbeat_at=old,
+        last_event="turn.running",
+    )
+    runtime = WorkerRuntime(config, manager, JobExecutor(config, manager))
+
+    worker = runtime.projection_snapshot()["workers"][0]
+
+    assert worker["turn_state"] == "failed"
+    assert worker["liveness"] == "terminal"
 
 
 def test_projection_snapshot_reports_changes_and_deterministic_content_revisions(tmp_path):
