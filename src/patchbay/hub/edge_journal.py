@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 from patchbay.hub.operations import semantic_payload_hash
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 
 ATTEMPT_STATES = frozenset(
@@ -210,6 +210,9 @@ class EdgeJournal:
                 if current_version < 1:
                     self._apply_schema_v1()
                     current_version = 1
+                if current_version < 2:
+                    self._apply_schema_v2()
+                    current_version = 2
 
                 state = self._connection.execute(
                     "SELECT edge_generation FROM edge_state WHERE singleton = 1"
@@ -327,6 +330,88 @@ class EdgeJournal:
         )
         for statement in statements:
             self._connection.execute(statement)
+
+    def _apply_schema_v2(self) -> None:
+        self._connection.execute(
+            """
+            CREATE TABLE control_loop_health (
+                loop_name TEXT PRIMARY KEY,
+                last_attempt_at REAL,
+                last_success_at REAL,
+                last_success_revision INTEGER,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_error_category TEXT NOT NULL DEFAULT '',
+                restart_count INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+
+    def record_control_loop_health(
+        self,
+        loop_name: str,
+        *,
+        attempted_at: float | None = None,
+        succeeded_at: float | None = None,
+        success_revision: int | None = None,
+        error_category: str = "",
+        restarted: bool = False,
+    ) -> dict[str, Any]:
+        """Persist compact loop health without retaining exception messages."""
+        self._require_open()
+        name = str(loop_name or "").strip()
+        if not name:
+            raise ValueError("loop_name is required")
+        with self._lock:
+            current = self._connection.execute(
+                "SELECT * FROM control_loop_health WHERE loop_name = ?", (name,)
+            ).fetchone()
+            failures = int(current["consecutive_failures"] if current else 0)
+            restarts = int(current["restart_count"] if current else 0)
+            if succeeded_at is not None:
+                failures = 0
+                error_category = ""
+            elif error_category:
+                failures += 1
+            if restarted:
+                restarts += 1
+            values = {
+                "last_attempt_at": attempted_at if attempted_at is not None else (current["last_attempt_at"] if current else None),
+                "last_success_at": succeeded_at if succeeded_at is not None else (current["last_success_at"] if current else None),
+                "last_success_revision": success_revision if success_revision is not None else (current["last_success_revision"] if current else None),
+            }
+            self._connection.execute(
+                """
+                INSERT INTO control_loop_health
+                    (loop_name, last_attempt_at, last_success_at, last_success_revision,
+                     consecutive_failures, last_error_category, restart_count, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(loop_name) DO UPDATE SET
+                    last_attempt_at=excluded.last_attempt_at,
+                    last_success_at=excluded.last_success_at,
+                    last_success_revision=excluded.last_success_revision,
+                    consecutive_failures=excluded.consecutive_failures,
+                    last_error_category=excluded.last_error_category,
+                    restart_count=excluded.restart_count,
+                    updated_at=excluded.updated_at
+                """,
+                (name, values["last_attempt_at"], values["last_success_at"], values["last_success_revision"], failures, str(error_category or "")[:120], restarts, self._clock()),
+            )
+        return self.control_loop_health(name)
+
+    def control_loop_health(self, loop_name: str = "") -> dict[str, Any]:
+        self._require_open()
+        with self._lock:
+            if loop_name:
+                rows = self._connection.execute(
+                    "SELECT * FROM control_loop_health WHERE loop_name = ?", (loop_name,)
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT * FROM control_loop_health ORDER BY loop_name"
+                ).fetchall()
+        values = {str(row["loop_name"]): dict(row) for row in rows}
+        return values.get(loop_name, {}) if loop_name else values
 
     @contextmanager
     def immediate_transaction(self) -> Iterator[sqlite3.Connection]:

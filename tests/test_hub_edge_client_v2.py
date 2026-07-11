@@ -361,6 +361,35 @@ async def test_long_task_keeps_heartbeat_projection_and_lease_renewal_independen
 
 
 @pytest.mark.asyncio
+async def test_cancelled_projection_child_is_supervised_and_restarted(tmp_path: Path) -> None:
+    capabilities = _capabilities()
+    handler = FakeToolHandler()
+    journal, execution = _service(tmp_path / "edge.sqlite3", handler, capabilities)
+    transport = FakeHttpTransport()
+    runner = _runner(execution, transport)
+
+    run_task = runner.start()
+    await _wait_until(lambda: len(transport.calls[DEFAULT_ENDPOINTS.projection]) >= 2)
+    projection_child = next(
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == "patchbay-edge-v2-projection"
+    )
+    projection_child.cancel()
+    before = len(transport.calls[DEFAULT_ENDPOINTS.projection])
+
+    await _wait_until(lambda: len(transport.calls[DEFAULT_ENDPOINTS.projection]) > before)
+    health = journal.control_loop_health("projection")
+    assert health["restart_count"] >= 1
+    assert health["last_success_revision"] >= 1
+    assert len(transport.calls[DEFAULT_ENDPOINTS.heartbeat]) >= 1
+
+    await runner.shutdown()
+    await asyncio.wait_for(run_task, timeout=1)
+    journal.close()
+
+
+@pytest.mark.asyncio
 async def test_lost_result_is_replayed_from_outbox_after_restart(tmp_path: Path) -> None:
     capabilities = _capabilities()
     path = tmp_path / "edge.sqlite3"

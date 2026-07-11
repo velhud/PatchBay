@@ -31,6 +31,11 @@ def main() -> int:
     parser.add_argument("--tool-mode", choices=["worker", "standard", "full", "minimal"], default="worker", help="Tool surface to verify. Defaults to the ChatGPT manager surface.")
     parser.add_argument("--keep-temp", action="store_true", help="Keep the disposable repo for debugging.")
     parser.add_argument("--verbose", action="store_true", help="Print launcher/server output on failure.")
+    parser.add_argument(
+        "--exercise-terminal-reconciliation",
+        action="store_true",
+        help="Run a public-MCP worker whose fake Codex wrapper lingers after task_complete.",
+    )
     args = parser.parse_args()
 
     temp_dir = Path(tempfile.mkdtemp(prefix="codex-mcp-live-eval."))
@@ -49,6 +54,9 @@ def main() -> int:
         env["HOME"] = str(temp_dir / "home")
         env["PATCHBAY_HOME"] = str(temp_dir / "runtime")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if args.exercise_terminal_reconciliation:
+            fake_bin = _write_lingering_codex(temp_dir)
+            env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
 
         config_path = _write_eval_config(temp_dir)
         process = _start_server(repo, port, env, tool_mode=args.tool_mode, config_path=config_path)
@@ -229,6 +237,9 @@ def main() -> int:
 
         self_test = client.call_tool(12, "codex_self_test", {})
         _check(report, "self_test", self_test["result"]["structuredContent"]["ready"] is True)
+
+        if args.exercise_terminal_reconciliation:
+            _exercise_terminal_reconciliation(report, client, repo)
 
         status_first = client.call_tool(121, "codex_worker_status", {"repo_path": str(repo)})
         status_first_data = status_first["result"]["structuredContent"]
@@ -412,11 +423,88 @@ def _write_eval_config(temp_dir: Path) -> Path:
     workers = config.setdefault("workers", {})
     workers["status_minimum_poll_seconds"] = 1
     workers["status_recommended_poll_seconds"] = 1
+    config.setdefault("server", {})["codex_post_completion_exit_grace_seconds"] = 0.1
     config_path.write_text(
         yaml.safe_dump(config, sort_keys=False),
         encoding="utf-8",
     )
     return config_path
+
+
+def _write_lingering_codex(temp_dir: Path) -> Path:
+    bin_dir = temp_dir / "fake-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    executable = bin_dir / "codex"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import datetime, json, os, pathlib, sys, time, uuid\n"
+        "if '--version' in sys.argv:\n"
+        "    print('codex-cli terminal-reconciliation-fixture')\n"
+        "    raise SystemExit(0)\n"
+        "session_id = str(uuid.uuid4())\n"
+        "home = pathlib.Path(os.environ.get('CODEX_HOME') or pathlib.Path.home() / '.codex')\n"
+        "source = home / 'sessions' / '2026' / '07' / '11' / f'rollout-live-{session_id}.jsonl'\n"
+        "source.parent.mkdir(parents=True, exist_ok=True)\n"
+        "now = datetime.datetime.now(datetime.timezone.utc).isoformat()\n"
+        "meta = {'timestamp': now, 'type': 'session_meta', 'payload': {'id': session_id, 'cwd': os.getcwd()}}\n"
+        "source.write_text(json.dumps(meta) + '\\n', encoding='utf-8')\n"
+        "print(json.dumps({'type': 'thread.started', 'thread_id': session_id}), flush=True)\n"
+        "time.sleep(0.2)\n"
+        "result = {'summary': 'PUBLIC_MCP_TERMINAL_RECONCILIATION_OK', 'files_changed': [], 'tests_run': ['live fixture']}\n"
+        "with source.open('a', encoding='utf-8') as handle:\n"
+        "    handle.write(json.dumps({'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': json.dumps(result)}}) + '\\n')\n"
+        "    handle.write(json.dumps({'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'task_complete', 'last_agent_message': json.dumps(result)}}) + '\\n')\n"
+        "    handle.flush()\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return bin_dir
+
+
+def _exercise_terminal_reconciliation(report: dict[str, Any], client: "McpClient", repo: Path) -> None:
+    started = client.call_tool(
+        130,
+        "codex_worker_start",
+        {
+            "name": "Terminal Reconciliation Worker",
+            "brief": "Return the requested bounded live-evaluation report.",
+            "repo_path": str(repo),
+            "workspace_mode": "read_only",
+        },
+    )
+    started_data = started["result"]["structuredContent"]
+    worker_ref = started_data.get("worker_id") or started_data.get("name") or "Terminal Reconciliation Worker"
+    deadline = time.monotonic() + 12
+    inspected_data: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        inspected = client.call_tool(
+            131,
+            "codex_worker_inspect",
+            {"worker": worker_ref, "view": "diagnostics"},
+        )
+        inspected_data = inspected["result"]["structuredContent"]
+        if inspected_data.get("state") not in {"starting", "working"}:
+            break
+        time.sleep(0.5)
+    latest_turn = inspected_data.get("latest_turn") or {}
+    report["terminal_reconciliation"] = {
+        "state": inspected_data.get("state"),
+        "report": inspected_data.get("report"),
+        "latest_turn": latest_turn,
+    }
+    _check(report, "terminal_reconciliation_worker_completed", inspected_data.get("state") == "idle")
+    _check(
+        report,
+        "terminal_reconciliation_report_preserved",
+        inspected_data.get("report") == "PUBLIC_MCP_TERMINAL_RECONCILIATION_OK",
+    )
+    _check(
+        report,
+        "terminal_reconciliation_source_visible",
+        latest_turn.get("terminal_source") == "session_task_complete"
+        and latest_turn.get("wrapper_cleanup_outcome") == "terminated_after_terminal",
+    )
 
 
 def _start_server(repo: Path, port: int, env: dict[str, str], *, tool_mode: str, config_path: Path) -> subprocess.Popen[str]:

@@ -6,6 +6,7 @@ import logging
 import subprocess
 import re
 import os
+import signal
 import time
 from dataclasses import dataclass
 from importlib.resources import files
@@ -19,6 +20,7 @@ except ImportError:  # pragma: no cover
 
 from patchbay.codex_home import resolve_codex_home
 from patchbay.jobs.manager import JobManager, JobState
+from patchbay.jobs.session_terminal import CodexSessionTerminalObserver
 from patchbay.connector.profiles import normalize_logging_paths, resolve_runtime_path
 from patchbay.repo_locks import RepoMutationLockManager
 from patchbay.security import (
@@ -50,6 +52,11 @@ class ProcessCapture:
     session_id: Optional[str] = None
     session_start_timed_out: bool = False
     total_timed_out: bool = False
+    semantic_terminal_seen: bool = False
+    terminal_source: str = ""
+    terminal_observed_at: Optional[float] = None
+    session_final_message: str = ""
+    wrapper_cleanup_outcome: str = ""
 
 
 @dataclass
@@ -130,11 +137,18 @@ class JobExecutor:
         current_time = time.time() if now is None else float(now)
         checked = 0
         reconciled: list[str] = []
+        recovered_completed: list[str] = []
 
         for job_id, job in list(self.job_manager.jobs.items()):
             if job.state != JobState.RUNNING:
                 continue
             checked += 1
+            task = self.tasks.get(job_id)
+            process = self.processes.get(job_id)
+            if not (task is not None and not task.done()) and process is None:
+                if self._recover_completed_session(job):
+                    recovered_completed.append(job_id)
+                    continue
             if self._job_has_live_runtime(job_id):
                 continue
             if job.last_heartbeat_at is not None and current_time - float(job.last_heartbeat_at) < max(grace, 10.0):
@@ -156,8 +170,100 @@ class JobExecutor:
             "checked": checked,
             "reconciled": len(reconciled),
             "job_ids": reconciled,
+            "recovered_completed": len(recovered_completed),
+            "recovered_completed_job_ids": recovered_completed,
             "grace_seconds": grace,
         }
+
+    def _recover_completed_session(self, job: Any) -> bool:
+        """Recover a persisted running job whose exact Codex session is terminal."""
+        session_id = str(getattr(job, "session_id", "") or "")
+        if not session_id:
+            return False
+        not_before = float(getattr(job, "process_started_at", None) or getattr(job, "started_at", None) or 0)
+        snapshot = CodexSessionTerminalObserver(
+            self.config,
+            session_id,
+            not_before=not_before,
+        ).poll()
+        if not snapshot.completed:
+            return False
+
+        pid = getattr(job, "process_pid", None)
+        cleanup_outcome = "process_not_live"
+        if isinstance(pid, int) and self._process_pid_is_live(pid):
+            if not getattr(job, "process_identity", None) or not self._recorded_process_pid_is_trustworthy(job):
+                return False
+            cleanup_outcome = self._terminate_recorded_process(job)
+            if self._process_pid_is_live(pid):
+                return False
+
+        result_file = self.job_logs_dir / f"{job.job_id}_result.json"
+        result = self._result_from_session_message(snapshot.final_message, result_file)
+        transitioned = self.job_manager.transition_job_terminal(
+            job.job_id,
+            JobState.COMPLETED,
+            result=result,
+            terminal_source=snapshot.source,
+            terminal_observed_at=snapshot.observed_at or time.time(),
+            wrapper_cleanup_outcome=cleanup_outcome,
+            last_heartbeat_at=time.time(),
+            last_event="session_task_complete_recovered",
+        )
+        if transitioned:
+            self.repo_locks.release_job(job.job_id)
+            logger.info("Recovered completed Codex session for durable job %s", job.job_id)
+        return transitioned
+
+    def _terminate_recorded_process(self, job: Any) -> str:
+        """Terminate a persisted process only after its exact start marker matches."""
+        pid = int(job.process_pid)
+        pgid = int(getattr(job, "process_pgid", None) or pid)
+        try:
+            if pgid == pid and os.getpgid(pid) == pgid:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return "process_not_live"
+        except (PermissionError, OSError):
+            return "cleanup_signal_failed"
+        deadline = time.time() + self._post_completion_exit_grace_seconds()
+        while self._process_pid_is_live(pid) and time.time() < deadline:
+            time.sleep(0.05)
+        if self._process_pid_is_live(pid):
+            try:
+                if pgid == pid and os.getpgid(pid) == pgid:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                return "cleanup_kill_failed"
+        return "terminated_after_terminal_recovery"
+
+    def _result_from_session_message(self, final_message: str, result_file: Path) -> Dict[str, Any]:
+        text = str(final_message or "").strip()
+        parsed: Any = None
+        if text:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+        if isinstance(parsed, dict):
+            result = dict(parsed)
+            result.setdefault("files_changed", [])
+            result.setdefault("parsed_output_schema_valid", True)
+            result.setdefault("final_structured_result", True)
+        else:
+            result = {
+                "summary": text or "Codex completed the turn without a final message.",
+                "files_changed": [],
+                "parsed_output_schema_valid": False,
+                "final_structured_result": False,
+            }
+        result["result_source"] = "session_task_complete"
+        result["turn_completed_seen"] = True
+        return self._write_result_file(result_file, result)
 
     def _job_has_live_runtime(self, job_id: str) -> bool:
         task = self.tasks.get(job_id)
@@ -173,6 +279,9 @@ class JobExecutor:
 
     def _recorded_process_pid_is_trustworthy(self, job: Any) -> bool:
         """Avoid trusting an old persisted pid forever after process tracking is lost."""
+        recorded_identity = str(getattr(job, "process_identity", "") or "")
+        if recorded_identity:
+            return self._process_identity(getattr(job, "process_pid", None)) == recorded_identity
         timestamps = [
             value
             for value in (getattr(job, "last_heartbeat_at", None), getattr(job, "process_started_at", None), getattr(job, "started_at", None))
@@ -199,6 +308,20 @@ class JobExecutor:
         except OSError:
             return False
         return True
+
+    def _process_identity(self, pid: Any) -> Optional[str]:
+        """Return a stable Linux process start marker when available."""
+        if not isinstance(pid, int) or pid <= 0:
+            return None
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except OSError:
+            return None
+        _, separator, suffix = stat_text.rpartition(")")
+        fields = suffix.strip().split() if separator else []
+        if len(fields) <= 19:
+            return None
+        return f"linux-proc-start:{fields[19]}"
 
     def _stale_running_result(self, job: Any) -> Dict[str, Any]:
         """Return a diagnostic payload for a job PatchBay can no longer track."""
@@ -347,6 +470,14 @@ class JobExecutor:
         if timeout <= 0:
             return None
         return timeout
+
+    def _post_completion_exit_grace_seconds(self) -> float:
+        """Return wrapper cleanup grace after Codex has semantically completed."""
+        configured = self.config.get("server", {}).get("codex_post_completion_exit_grace_seconds", 2)
+        try:
+            return max(0.0, min(float(configured), 30.0))
+        except (TypeError, ValueError):
+            return 2.0
         
     async def execute_job(self, job_id: str):
         """Execute a Codex job, optionally waiting for an execution slot."""
@@ -418,14 +549,18 @@ class JobExecutor:
                     stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    env=self._build_env()
+                    env=self._build_env(),
+                    start_new_session=True,
                 )
                 self.processes[job_id] = process
+                process_pid = getattr(process, "pid", None)
                 self.job_manager.update_job_state(
                     job_id,
                     JobState.RUNNING,
                     process_started_at=time.time(),
-                    process_pid=getattr(process, "pid", None),
+                    process_pid=process_pid,
+                    process_pgid=process_pid,
+                    process_identity=self._process_identity(process_pid),
                     last_heartbeat_at=time.time(),
                     current_phase="codex_process_started_waiting_for_session",
                     progress="Codex process started; waiting for session creation.",
@@ -452,6 +587,8 @@ class JobExecutor:
                     startup_gate.release("process_completed_before_session_gate_release")
                 stdout = capture.stdout
                 stderr = capture.stderr
+                if capture.semantic_terminal_seen and capture.session_final_message:
+                    stdout = self._append_session_terminal_result(stdout, capture.session_final_message)
 
                 if self._job_is_cancelled(job_id):
                     self._write_process_artifact(stdout_log, stdout)
@@ -468,7 +605,7 @@ class JobExecutor:
                         job.options,
                         reason=str(cancel_reason),
                     )
-                    self.job_manager.update_job_state(
+                    self.job_manager.transition_job_terminal(
                         job_id,
                         JobState.CANCELLED,
                         result=partial_result,
@@ -502,7 +639,7 @@ class JobExecutor:
                         reason="Codex session startup timed out before PatchBay saw a JSON session.",
                         status="failed",
                     )
-                    self.job_manager.update_job_state(
+                    self.job_manager.transition_job_terminal(
                         job_id,
                         JobState.FAILED,
                         result=startup_result,
@@ -524,7 +661,7 @@ class JobExecutor:
                         reason=f"Job timed out after {timeout} seconds.",
                         status="failed",
                     )
-                    self.job_manager.update_job_state(
+                    self.job_manager.transition_job_terminal(
                         job_id,
                         JobState.FAILED,
                         result=timeout_result,
@@ -546,14 +683,17 @@ class JobExecutor:
                 
                 result = redact_sensitive_output(result)
                 
-                if process.returncode == 0:
-                    self.job_manager.update_job_state(
+                if process.returncode == 0 or capture.semantic_terminal_seen:
+                    self.job_manager.transition_job_terminal(
                         job_id,
                         JobState.COMPLETED,
                         result=result,
                         session_id=session_id,
-                        exit_code=0,
+                        exit_code=process.returncode,
                         last_heartbeat_at=time.time(),
+                        terminal_source=capture.terminal_source or "process_exit",
+                        terminal_observed_at=capture.terminal_observed_at or time.time(),
+                        wrapper_cleanup_outcome=capture.wrapper_cleanup_outcome or "process_exited",
                     )
                     logger.info(f"Job {job_id} completed successfully")
                 else:
@@ -566,7 +706,7 @@ class JobExecutor:
                         if failure
                         else f"Codex process failed with exit code {process.returncode}. Inspect local job logs for details."
                     )
-                    self.job_manager.update_job_state(
+                    self.job_manager.transition_job_terminal(
                         job_id,
                         JobState.FAILED,
                         result=result,
@@ -588,7 +728,7 @@ class JobExecutor:
                 self.repo_locks.release_job(job_id)
                 return
             logger.error("Job %s execution failed: %s", job_id, internal_log_error(e))
-            self.job_manager.update_job_state(
+            self.job_manager.transition_job_terminal(
                 job_id,
                 JobState.FAILED,
                 error=public_error_message(e, default="Job execution failed."),
@@ -775,8 +915,18 @@ class JobExecutor:
         """Read Codex JSON events incrementally so session/heartbeat state is live."""
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
-        state: dict[str, Any] = {"session_id": None, "session_start_timed_out": False, "total_timed_out": False}
+        state: dict[str, Any] = {
+            "session_id": None,
+            "session_start_timed_out": False,
+            "total_timed_out": False,
+            "semantic_terminal_seen": False,
+            "terminal_source": "",
+            "terminal_observed_at": None,
+            "session_final_message": "",
+            "wrapper_cleanup_outcome": "",
+        }
         process_started_at = time.time()
+        session_observer: CodexSessionTerminalObserver | None = None
 
         async def feed_stdin() -> None:
             if stdin_data is None or process.stdin is None:
@@ -830,6 +980,44 @@ class JobExecutor:
             while not wait_task.done():
                 await asyncio.sleep(0.5)
                 now = time.time()
+                session_id = str(state.get("session_id") or "")
+                if session_id and session_observer is None:
+                    session_observer = CodexSessionTerminalObserver(
+                        self.config,
+                        session_id,
+                        not_before=process_started_at,
+                    )
+                if session_observer is not None and not state.get("semantic_terminal_seen"):
+                    terminal = session_observer.poll()
+                    if terminal.completed:
+                        state["semantic_terminal_seen"] = True
+                        state["terminal_source"] = terminal.source
+                        state["terminal_observed_at"] = terminal.observed_at or now
+                        state["session_final_message"] = terminal.final_message
+                        self.job_manager.claim_job_semantic_completion(
+                            job_id,
+                            source=terminal.source,
+                            observed_at=float(state["terminal_observed_at"]),
+                        )
+                        self.job_manager.update_job_state(
+                            job_id,
+                            JobState.RUNNING,
+                            last_heartbeat_at=now,
+                            last_event=terminal.source,
+                            current_phase="codex_complete_cleaning_up_wrapper",
+                            progress=(
+                                "Codex completed the turn; PatchBay is preserving the report and "
+                                "cleaning up the CLI wrapper."
+                            ),
+                        )
+                if state.get("semantic_terminal_seen"):
+                    observed_at = float(state.get("terminal_observed_at") or now)
+                    if now - observed_at >= self._post_completion_exit_grace_seconds():
+                        terminated = await self._terminate_process(job_id, process)
+                        state["wrapper_cleanup_outcome"] = (
+                            "terminated_after_terminal" if terminated else "already_exited"
+                        )
+                        break
                 if (
                     expect_session
                     and session_start_timeout is not None
@@ -857,6 +1045,11 @@ class JobExecutor:
             session_id=state.get("session_id"),
             session_start_timed_out=bool(state.get("session_start_timed_out")),
             total_timed_out=bool(state.get("total_timed_out")),
+            semantic_terminal_seen=bool(state.get("semantic_terminal_seen")),
+            terminal_source=str(state.get("terminal_source") or ""),
+            terminal_observed_at=state.get("terminal_observed_at"),
+            session_final_message=str(state.get("session_final_message") or ""),
+            wrapper_cleanup_outcome=str(state.get("wrapper_cleanup_outcome") or ""),
         )
 
     def _observe_stdout_event(self, job_id: str, chunk: bytes, state: dict[str, Any]) -> bool:
@@ -878,6 +1071,15 @@ class JobExecutor:
                 session_id = self._session_id_from_event(event)
                 checkpoint = self._checkpoint_from_event(event)
                 item = self._event_item_from_event(event)
+                if event_label == "turn.completed" and not state.get("semantic_terminal_seen"):
+                    state["semantic_terminal_seen"] = True
+                    state["terminal_source"] = "stdout_turn_completed"
+                    state["terminal_observed_at"] = now
+                    self.job_manager.claim_job_semantic_completion(
+                        job_id,
+                        source="stdout_turn_completed",
+                        observed_at=now,
+                    )
         job = self.job_manager.get_job(job_id)
         updates = self._activity_updates_from_event(
             job,
@@ -1159,6 +1361,21 @@ class JobExecutor:
             safe_text = encoded[:max_bytes].decode('utf-8', errors='replace')
             safe_text += f"\n...[log truncated to {max_bytes} bytes]"
         path.write_text(safe_text, encoding='utf-8')
+
+    def _append_session_terminal_result(self, stdout: bytes, final_message: str) -> bytes:
+        """Add a normalized final message when Codex only wrote it to session JSONL."""
+        text = str(final_message or "").strip()
+        if not text:
+            return stdout
+        event = {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": text},
+        }
+        terminal = {"type": "turn.completed", "source": "session_task_complete"}
+        suffix = (json.dumps(event) + "\n" + json.dumps(terminal) + "\n").encode("utf-8")
+        if stdout and not stdout.endswith(b"\n"):
+            return stdout + b"\n" + suffix
+        return stdout + suffix
     
     async def _parse_result(self, stdout: bytes, result_file: Path, options: Dict[str, Any] = None) -> Dict[str, Any]:
         """Parse result from Codex output."""
@@ -1364,6 +1581,35 @@ class JobExecutor:
         stderr_text = stderr.decode("utf-8", errors="replace")
         combined = f"{stderr_text}\n{stdout_text}"
         normalized = combined.lower()
+        usage_limit_markers = (
+            "usage limit",
+            "quota has been reached",
+            "quota exceeded",
+            "rate limit exceeded for your account",
+            "you have no weighted tokens left",
+        )
+        if any(marker in normalized for marker in usage_limit_markers):
+            retry_match = re.search(
+                r"(?:try again|retry|resets?)(?:\s+(?:at|after|in))?\s*[:=-]?\s*([^\n\r\"}]{1,80})",
+                combined,
+                flags=re.IGNORECASE,
+            )
+            retry_hint = retry_match.group(1).strip(" .") if retry_match else ""
+            guidance = (
+                "Codex rejected this turn because the selected account/model quota is temporarily exhausted. "
+                "Preserve the worker and retry the same assignment after quota returns; this is not a PatchBay, repository, or brief failure."
+            )
+            if retry_hint:
+                guidance += f" Reported retry guidance: {retry_hint}."
+            return {
+                "category": "codex_usage_limit",
+                "exit_code": exit_code,
+                "public_message": "Codex could not run this worker because its current usage quota is exhausted.",
+                "manager_guidance": guidance,
+                "operator_action": "Retry the same worker after quota becomes available, or explicitly choose another suitable available model.",
+                "retry_without_operator_action": True,
+                "retry_hint": retry_hint,
+            }
         if (
             "refresh_token_reused" in normalized
             or "refresh token was already used" in normalized
@@ -1519,7 +1765,21 @@ class JobExecutor:
 
         process = self.processes.get(job_id)
         process_signalled = False
-        self.job_manager.update_job_state(job_id, JobState.CANCELLED, error=reason)
+        transitioned = self.job_manager.transition_job_terminal(
+            job_id,
+            JobState.CANCELLED,
+            error=reason,
+            terminal_source="manager_cancellation",
+            terminal_observed_at=time.time(),
+        )
+        if not transitioned:
+            current = self.job_manager.get_job(job_id)
+            return {
+                "cancelled": False,
+                "job_id": job_id,
+                "state": current.state.value if current else "unknown",
+                "reason": "Job reached a terminal state before cancellation was committed",
+            }
         if process and process.returncode is None:
             process_signalled = await self._terminate_process(job_id, process)
         if not process_signalled:
@@ -1591,12 +1851,28 @@ class JobExecutor:
     async def _terminate_process(self, job_id: str, process: asyncio.subprocess.Process) -> bool:
         if process.returncode is not None:
             return False
-        process.terminate()
+        pid = getattr(process, "pid", None)
+        group_signalled = False
+        if isinstance(pid, int) and pid > 0:
+            try:
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, signal.SIGTERM)
+                    group_signalled = True
+            except (ProcessLookupError, PermissionError, OSError):
+                group_signalled = False
+        if not group_signalled:
+            process.terminate()
         try:
             await asyncio.wait_for(process.wait(), timeout=5)
         except asyncio.TimeoutError:
             logger.warning(f"Job {job_id} did not terminate gracefully; killing")
-            process.kill()
+            if group_signalled and isinstance(pid, int):
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    process.kill()
+            else:
+                process.kill()
             await process.wait()
         return True
 

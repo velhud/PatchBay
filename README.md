@@ -83,6 +83,7 @@ flowchart LR
 | **No copy-paste bridge** | Move briefs, generated files, worker reports, diffs, and follow-up instructions through MCP instead of manually shuttling text between apps. |
 | **ChatGPT as project lead** | Use ChatGPT for high-context planning, decomposition, worker assignment, report comparison, and final synthesis. |
 | **Named durable workers** | Start workers such as `Architecture Investigator`, `Backend Implementer`, `Adversarial Reviewer`, or `Verification Worker`, then continue them later by name. |
+| **Truthful terminal state** | Recover exact Codex `task_complete` evidence and final reports even when a completed CLI wrapper lingers instead of exiting normally. |
 | **Local execution stays local** | Codex still runs through your local Codex CLI against your repository, git state, dependencies, shell, and configured account. |
 | **Reviewable integration** | Inspect reports, changed files, one-file diffs, and integration previews before applying accepted worker output. |
 | **Artifact transfer** | Import ChatGPT-generated files or zip packages into local worker context without manual file handling. |

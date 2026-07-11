@@ -697,3 +697,36 @@ async def test_codex_auth_refresh_failure_is_classified_and_reported(tmp_path, m
     assert job.result["failure_diagnostic"]["retry_without_operator_action"] is False
     assert "operator re-authentication is required" in job.result["notes"]
     assert persisted["failure_diagnostic"]["category"] == "codex_auth_refresh_failed"
+
+
+@pytest.mark.asyncio
+async def test_codex_usage_limit_is_classified_without_blaming_patchbay(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "quota failure", config["repositories"]["default"], {})
+    message = "You have reached your usage limit. Try again at 11:46 PM."
+    events = [
+        {"type": "thread.started", "thread_id": "session-quota-failed"},
+        {"type": "turn.failed", "error": {"message": message}},
+    ]
+    script = (
+        "import json,sys\n"
+        "events = " + repr(events) + "\n"
+        "for event in events: print(json.dumps(event), flush=True)\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setattr(
+        executor,
+        "_build_codex_command",
+        lambda *args, **kwargs: [sys.executable, "-u", "-c", script],
+    )
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=5)
+
+    job = manager.get_job(job_id)
+    assert job.state == JobState.FAILED
+    assert job.result["failure_diagnostic"]["category"] == "codex_usage_limit"
+    assert job.result["failure_diagnostic"]["retry_without_operator_action"] is True
+    assert "11:46 PM" in job.result["failure_diagnostic"]["retry_hint"]
+    assert "not a PatchBay" in job.result["notes"]

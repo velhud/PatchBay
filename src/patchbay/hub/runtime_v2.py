@@ -965,6 +965,18 @@ class HubRuntimeV2:
         capabilities = deepcopy(dict(record.get("capabilities") or {}))
         contract_hash = str(capabilities.get("contract_hash") or "")
         compatibility = "compatible" if contract_hash == HUB_V2_CONTRACT_HASH else "incompatible"
+        resources = deepcopy(dict(record.get("resource_status") or {}))
+        projection_health = deepcopy(dict(resources.get("projection_health") or {}))
+        projection_age = projection_health.get("projection_age_seconds")
+        projection_status = "unknown"
+        if projection_health.get("last_success_at"):
+            projection_status = (
+                "stale"
+                if projection_age is not None and float(projection_age) > self.stale_seconds
+                else "current"
+            )
+        elif projection_health.get("consecutive_failures"):
+            projection_status = "failed"
         return {
             "machine_id": record.get("machine_id"),
             "display_name": record.get("display_name"),
@@ -979,7 +991,9 @@ class HubRuntimeV2:
             "projection_revision": _as_int(record.get("projection_revision"), 0),
             "capabilities": capabilities,
             "worker_status": deepcopy(dict(record.get("worker_status") or {})),
-            "resource_status": deepcopy(dict(record.get("resource_status") or {})),
+            "resource_status": resources,
+            "worker_projection_status": projection_status,
+            "projection_health": projection_health,
             "retired_at": record.get("retired_at"),
         }
 
@@ -1452,12 +1466,23 @@ class HubRuntimeV2:
         if _as_int(facts.get("free_worker_slots"), 1) <= 0 and not facts.get("queue_enabled"):
             blockers.append("capacity_blocked")
         status = "failed" if blockers else "ready"
+        observed_at = self._clock()
+        facts_revision = str(
+            facts.get("head")
+            or facts.get("head_revision")
+            or facts.get("base_revision")
+            or facts.get("revision")
+            or ""
+        )
         group["readiness"] = {
             "status": status,
             "operation_id": operation_id,
             "facts": facts,
             "blockers": blockers,
-            "updated_at": self._clock(),
+            "observed_at": observed_at,
+            "facts_revision": facts_revision,
+            "currentness": "current" if not blockers else "failed",
+            "updated_at": observed_at,
         }
         saved = self.store.put_entity(
             WORK_GROUP_ENTITY, work_group_id, group, expected_revision=group_entity["revision"]

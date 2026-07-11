@@ -222,6 +222,7 @@ Verified so far:
 - local MCP probe against a disposable repo;
 - real Codex CLI plan job through MCP, with the local `codex --version` recorded during validation;
 - current Codex JSONL `agent_message` result parsing;
+- exact-session `task_complete` observation, bounded final-message extraction, post-completion wrapper cleanup, and terminal/cancellation race arbitration;
 - token-gated local server behavior in automated tests;
 - installable CLI, stdio transport, settings profiles, and explicit tunnel binary resolution in automated tests;
 - power tools denied by default;

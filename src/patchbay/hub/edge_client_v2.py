@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import secrets
 import socket
 import time
@@ -43,6 +44,7 @@ DEFAULT_LEASE_RENEWAL_SECONDS = 10.0
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_CONCURRENT_TASKS = 4
+logger = logging.getLogger(__name__)
 MAX_CONCURRENT_TASKS = 64
 DEFAULT_OUTBOX_BATCH_SIZE = 32
 
@@ -603,16 +605,26 @@ class EdgeV2Runner:
         return self.execution.acknowledge_receipts(acknowledgements)
 
     async def heartbeat_once(self) -> dict[str, Any]:
+        loop_health = self.execution.journal.control_loop_health()
+        projection_health = dict(loop_health.get("projection") or {})
+        last_success = projection_health.get("last_success_at")
+        projection_health["projection_age_seconds"] = (
+            max(0.0, time.time() - float(last_success)) if last_success else None
+        )
         worker_status = self._latest_projection or (
             {"error": self._projection_error} if self._projection_error else {}
         )
+        resource_status = build_resource_status(self.config, worker_status)
+        resource_status["projection_health"] = projection_health
         payload = {
             **self._base_payload(),
             "projection_revision": self.execution.journal.projection_revision,
             "capabilities": dict(self.capabilities),
             "workspaces": build_workspaces(self.config),
             "worker_status": worker_status,
-            "resource_status": build_resource_status(self.config, worker_status),
+            "control_loop_health": loop_health,
+            "projection_health": projection_health,
+            "resource_status": resource_status,
             "active_edge_tasks": self.active_task_count,
             "free_edge_task_slots": max(
                 0, self.max_concurrent_tasks - self.active_task_count
@@ -1137,10 +1149,30 @@ class EdgeV2Runner:
     ) -> None:
         while not self._stop_event.is_set():
             started = time.monotonic()
+            attempted_at = time.time()
+            self.execution.journal.record_control_loop_health(
+                name, attempted_at=attempted_at
+            )
             try:
-                await operation()
+                result = await operation()
+                revision = None
+                if name == "projection" and isinstance(result, Mapping):
+                    revision = self.execution.journal.projection_revision
+                self.execution.journal.record_control_loop_health(
+                    name,
+                    attempted_at=attempted_at,
+                    succeeded_at=time.time(),
+                    success_revision=revision,
+                )
+            except asyncio.CancelledError:
+                raise
             except Exception as error:
                 self._record_background_error(name, error)
+                self.execution.journal.record_control_loop_health(
+                    name,
+                    attempted_at=attempted_at,
+                    error_category=type(error).__name__,
+                )
             remaining = max(0.0, interval - (time.monotonic() - started))
             if remaining:
                 try:
@@ -1150,6 +1182,7 @@ class EdgeV2Runner:
 
     def _record_background_error(self, source: str, error: BaseException) -> None:
         self._background_errors.append(f"{source}: {error}")
+        logger.exception("Edge control failure in %s", source, exc_info=error)
         if len(self._background_errors) > 256:
             del self._background_errors[:-256]
 
@@ -1175,21 +1208,17 @@ class EdgeV2Runner:
         try:
             await self._recover_startup()
             loops = (
-                self._heartbeat_loop(),
-                self._projection_loop(),
-                self._claim_loop(),
-                self._outbox_loop(),
-                self._reconciliation_loop(),
+                ("heartbeat", self._heartbeat_loop),
+                ("projection", self._projection_loop),
+                ("claim", self._claim_loop),
+                ("outbox", self._outbox_loop),
+                ("reconciliation", self._reconciliation_loop),
             )
-            names = (
-                "heartbeat",
-                "projection",
-                "claim",
-                "outbox",
-                "reconciliation",
-            )
-            for name, loop in zip(names, loops):
-                task = asyncio.create_task(loop, name=f"patchbay-edge-v2-{name}")
+            for name, factory in loops:
+                task = asyncio.create_task(
+                    self._supervise_control_loop(name, factory),
+                    name=f"patchbay-edge-v2-supervisor-{name}",
+                )
                 self._control_tasks.add(task)
             await self._stop_event.wait()
         except asyncio.CancelledError:
@@ -1198,6 +1227,44 @@ class EdgeV2Runner:
             raise
         finally:
             await self._shutdown(cancel_active=cancelled)
+
+    async def _supervise_control_loop(
+        self,
+        name: str,
+        factory: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Restart one failed/cancelled control loop without affecting peers."""
+        backoff = 0.1
+        while not self._stop_event.is_set():
+            child = asyncio.create_task(factory(), name=f"patchbay-edge-v2-{name}")
+            try:
+                await child
+                if self._stop_event.is_set():
+                    return
+                error = RuntimeError("control loop returned unexpectedly")
+                self._record_background_error(name, error)
+                category = "unexpected_return"
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if self._stop_event.is_set() or (current is not None and current.cancelling()):
+                    child.cancel()
+                    await asyncio.gather(child, return_exceptions=True)
+                    raise
+                category = "cancelled"
+            except Exception as error:
+                self._record_background_error(name, error)
+                category = type(error).__name__
+            self.execution.journal.record_control_loop_health(
+                name,
+                attempted_at=time.time(),
+                error_category=category,
+                restarted=True,
+            )
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
+            except asyncio.TimeoutError:
+                pass
+            backoff = min(5.0, backoff * 2.0)
 
     async def run_once(self) -> dict[str, Any]:
         """Perform one bounded control exchange for tests and diagnostics."""

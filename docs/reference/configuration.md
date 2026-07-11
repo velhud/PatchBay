@@ -39,6 +39,7 @@ server:
   queue_enabled: true
   job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
   codex_session_start_timeout_seconds: 180  # fail only when no Codex JSON session appears after process start
+  codex_post_completion_exit_grace_seconds: 2  # cleanup grace after Codex already completed the turn
   stale_running_job_grace_seconds: 600  # restart/stale reconciliation window, not a worker turn timeout
   max_request_bytes: 16777216
   enable_cors: false

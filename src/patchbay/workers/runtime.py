@@ -4335,6 +4335,14 @@ class WorkerRuntime:
             diagnostics["heartbeat_age_seconds"] = self._heartbeat_age_seconds(job)
         if job.last_event:
             diagnostics["last_event"] = str(job.last_event)
+        if job.terminal_source:
+            diagnostics["terminal_source"] = str(job.terminal_source)
+        if job.terminal_observed_at is not None:
+            diagnostics["terminal_observed_at"] = float(job.terminal_observed_at)
+        if job.wrapper_cleanup_outcome:
+            diagnostics["wrapper_cleanup_outcome"] = str(job.wrapper_cleanup_outcome)
+        if job.late_terminal_source:
+            diagnostics["late_terminal_source"] = str(job.late_terminal_source)
         if job.current_item_type:
             diagnostics["current_item_type"] = str(job.current_item_type)
         if job.current_item_status:

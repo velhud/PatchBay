@@ -329,6 +329,29 @@ def test_preflight_result_is_strict_and_does_not_change_group_pin(tmp_path):
     assert store.get_operation(preflight_id)["state"] == "blocked"
 
 
+def test_preflight_records_snapshot_revision_and_observation_time(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    created = create_group(runtime, caller=context("owner"))
+    group = created["result"]["work_group"]
+    result = runtime.record_preflight_result(
+        work_group_id=group["work_group_id"],
+        operation_id=created["result"]["readiness"]["operation_id"],
+        result={
+            "ok": True,
+            "repo_exists": True,
+            "repo_resolved": group["resolved_repo_path"],
+            "head_revision": "abc123",
+            "disk_free_bytes": 10_000_000_000,
+            "free_worker_slots": 2,
+        },
+    )
+    readiness = result["result"]["readiness"]
+    assert readiness["currentness"] == "current"
+    assert readiness["facts_revision"] == "abc123"
+    assert readiness["observed_at"] == readiness["updated_at"]
+
+
 def test_participant_current_group_mapping_and_takeover_coordination_survive_restart(tmp_path):
     runtime, store, path = make_runtime(tmp_path)
     enroll_online(runtime, machine_id="machine_alpha")

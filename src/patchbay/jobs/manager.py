@@ -50,6 +50,8 @@ class JobInfo:
     launch_started_at: Optional[float] = None
     process_started_at: Optional[float] = None
     process_pid: Optional[int] = None
+    process_pgid: Optional[int] = None
+    process_identity: Optional[str] = None
     last_heartbeat_at: Optional[float] = None
     event_count: int = 0
     stdout_bytes_seen: int = 0
@@ -71,6 +73,11 @@ class JobInfo:
     prompt_sha256: Optional[str] = None
     prompt_bytes: Optional[int] = None
     prompt_recorded_at: Optional[str] = None
+    terminal_source: Optional[str] = None
+    terminal_observed_at: Optional[float] = None
+    wrapper_cleanup_outcome: Optional[str] = None
+    late_terminal_source: Optional[str] = None
+    late_terminal_observed_at: Optional[float] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, handling enum serialization"""
@@ -114,6 +121,7 @@ class JobManager:
         self.config = config
         self.jobs: Dict[str, JobInfo] = {}
         self._admission_lock = threading.Lock()
+        self._state_lock = threading.RLock()
         self.max_concurrent = config['server']['max_concurrent_jobs']
         self.queue_enabled = bool(config.get("server", {}).get("queue_enabled", False))
         self.job_timeout = config['server']['job_timeout_seconds']
@@ -346,31 +354,90 @@ class JobManager:
     
     def update_job_state(self, job_id: str, state: JobState, **kwargs):
         """Update job state and metadata"""
-        if job_id not in self.jobs:
-            raise ValueError(f"Unknown job: {job_id}")
-        
-        job = self.jobs[job_id]
-        job.state = state
-        
-        # Update timestamps
-        if state == JobState.RUNNING and job.started_at is None:
-            job.started_at = time.time()
-        elif state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
-            job.completed_at = time.time()
+        with self._state_lock:
+            if job_id not in self.jobs:
+                raise ValueError(f"Unknown job: {job_id}")
 
-        if state in (JobState.RUNNING, JobState.COMPLETED) and "error" not in kwargs:
-            job.error = None
-        
-        # Update other fields
-        for key, value in kwargs.items():
-            if hasattr(job, key):
-                setattr(job, key, value)
+            job = self.jobs[job_id]
+            if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED) and state in (
+                JobState.PENDING,
+                JobState.RUNNING,
+            ):
+                logger.debug("Ignored state change for terminal job %s: %s -> %s", job_id, job.state, state)
+                return
+            job.state = state
 
-        if state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
-            self._normalize_terminal_job(job)
-        
-        logger.debug(f"Job {job_id} state updated: {state}")
-        self._persist_job(job)
+            # Update timestamps
+            if state == JobState.RUNNING and job.started_at is None:
+                job.started_at = time.time()
+            elif state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                job.completed_at = time.time()
+
+            if state in (JobState.RUNNING, JobState.COMPLETED) and "error" not in kwargs:
+                job.error = None
+
+            # Update other fields
+            for key, value in kwargs.items():
+                if hasattr(job, key):
+                    setattr(job, key, value)
+
+            if state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                self._normalize_terminal_job(job)
+
+            logger.debug(f"Job {job_id} state updated: {state}")
+            self._persist_job(job)
+
+    def transition_job_terminal(self, job_id: str, state: JobState, **kwargs) -> bool:
+        """Commit the first terminal decision and make later decisions no-ops."""
+        if state not in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+            raise ValueError(f"Not a terminal job state: {state}")
+        with self._state_lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise ValueError(f"Unknown job: {job_id}")
+            if (
+                state == JobState.CANCELLED
+                and job.state in (JobState.PENDING, JobState.RUNNING)
+                and job.terminal_source in {"session_task_complete", "stdout_turn_completed"}
+            ):
+                job.late_terminal_source = str(kwargs.get("terminal_source") or "manager_cancellation")
+                job.late_terminal_observed_at = float(kwargs.get("terminal_observed_at") or time.time())
+                self._persist_job(job)
+                return False
+            if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                if job.state == state:
+                    for key, value in kwargs.items():
+                        if hasattr(job, key):
+                            setattr(job, key, value)
+                    self._normalize_terminal_job(job)
+                    self._persist_job(job)
+                    return True
+                terminal_source = kwargs.get("terminal_source")
+                terminal_observed_at = kwargs.get("terminal_observed_at")
+                if terminal_source and not job.late_terminal_source:
+                    job.late_terminal_source = str(terminal_source)
+                    job.late_terminal_observed_at = (
+                        float(terminal_observed_at) if terminal_observed_at is not None else time.time()
+                    )
+                    self._persist_job(job)
+                return False
+            self.update_job_state(job_id, state, **kwargs)
+            return True
+
+    def claim_job_semantic_completion(self, job_id: str, *, source: str, observed_at: float) -> bool:
+        """Atomically record authoritative completion before wrapper cleanup."""
+        with self._state_lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise ValueError(f"Unknown job: {job_id}")
+            if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                return job.state == JobState.COMPLETED
+            if job.terminal_source and job.terminal_source != source:
+                return False
+            job.terminal_source = source
+            job.terminal_observed_at = float(observed_at)
+            self._persist_job(job)
+            return True
 
     def _normalize_terminal_job(self, job: JobInfo) -> None:
         """Clear live-only activity fields once a job reaches a terminal state."""
