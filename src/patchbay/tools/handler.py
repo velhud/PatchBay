@@ -385,6 +385,7 @@ class ToolHandler:
             cleanup_workspace=bool(args.get("cleanup_workspace", False)),
             discard_unintegrated_changes=args.get("discard_unintegrated_changes"),
             force=bool(args.get("force", False)),
+            reason=args.get("reason", ""),
             request_context=self.current_request_context(),
             takeover=bool(args.get("takeover", False)),
             takeover_reason=args.get("takeover_reason", ""),

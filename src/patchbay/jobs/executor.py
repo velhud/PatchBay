@@ -591,6 +591,11 @@ class JobExecutor:
                     total_timeout=timeout,
                     session_start_timeout=self._session_start_timeout_seconds(),
                     expect_session=bool((job.options or {}).get("json_events", True)),
+                    initial_session_id=(
+                        str((job.options or {}).get("resume_session_id") or job.session_id or "").strip()
+                        if job.mode == "resume"
+                        else ""
+                    ),
                     startup_gate=startup_gate,
                 )
                 if startup_gate is not None:
@@ -920,13 +925,14 @@ class JobExecutor:
         total_timeout: Optional[float],
         session_start_timeout: Optional[float],
         expect_session: bool,
+        initial_session_id: str = "",
         startup_gate: StartupGateLease | None = None,
     ) -> ProcessCapture:
         """Read Codex JSON events incrementally so session/heartbeat state is live."""
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
         state: dict[str, Any] = {
-            "session_id": None,
+            "session_id": str(initial_session_id or "").strip() or None,
             "session_start_timed_out": False,
             "total_timed_out": False,
             "semantic_terminal_seen": False,
@@ -937,6 +943,8 @@ class JobExecutor:
         }
         process_started_at = time.time()
         session_observer: CodexSessionTerminalObserver | None = None
+        if state["session_id"] and startup_gate is not None:
+            startup_gate.release("resume_session_known")
 
         async def feed_stdin() -> None:
             if stdin_data is None or process.stdin is None:

@@ -117,6 +117,7 @@ EDGE_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
         "cleanup_workspace",
         "discard_unintegrated_changes",
         "force",
+        "reason",
         "takeover",
         "takeover_reason",
     ),

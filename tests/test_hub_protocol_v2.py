@@ -251,6 +251,42 @@ def test_startup_tools_have_identifier_rich_text_fallbacks():
     )
 
 
+def test_nullable_workspace_and_worker_fields_survive_actual_mcp_framing():
+    workspace = HubProtocolV2(
+        RecordingHandler(public_envelope("ok", result={"workspace_id": "workspace_archive", "tree": None}))
+    )
+    worker = HubProtocolV2(
+        RecordingHandler(
+            public_envelope(
+                "ok",
+                result={
+                    "workers": [
+                        {
+                            "worker_id": "worker_archive",
+                            "name": "Archive verifier",
+                            "last_activity_at": None,
+                        }
+                    ]
+                },
+            )
+        )
+    )
+
+    workspace_response = _tool_call(
+        workspace,
+        "patchbay_workspace_open",
+        {"work_group_id": "group_archive"},
+    )
+    worker_response = _tool_call(
+        worker,
+        "patchbay_worker_status",
+        {"work_group_id": "group_archive"},
+    )
+
+    assert workspace_response["result"]["structuredContent"]["result"]["tree"] is None
+    assert worker_response["result"]["structuredContent"]["result"]["workers"][0]["last_activity_at"] is None
+
+
 def test_pending_envelope_passes_through_without_queue_receipt_fabrication_or_text_duplication():
     large_report = "x" * 20_000
     pending = public_envelope(

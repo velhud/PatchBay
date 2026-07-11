@@ -520,6 +520,43 @@ def test_participant_current_group_mapping_and_takeover_coordination_survive_res
     ] == group_id
 
 
+def test_handle_tool_call_returns_structured_idempotency_conflict(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    caller = context("owner")
+    created = create_group(runtime, caller=caller)
+    group_id = created["result"]["work_group"]["work_group_id"]
+    first = asyncio.run(
+        runtime.handle_tool_call(
+            "patchbay_work_group_resume",
+            {"work_group_id": group_id, "idempotency_key": "resume-stable-key"},
+            context=caller,
+        )
+    )
+    conflict = asyncio.run(
+        runtime.handle_tool_call(
+            "patchbay_work_group_resume",
+            {
+                "work_group_id": group_id,
+                "takeover": True,
+                "takeover_reason": "Changed semantic request.",
+                "idempotency_key": "resume-stable-key",
+            },
+            context=caller,
+        )
+    )
+
+    assert first["status"] == "ok"
+    assert conflict["status"] == "blocked"
+    assert conflict["result"] == {
+        "reason": "idempotency_payload_conflict",
+        "retry_safe": False,
+    }
+    assert "exact original arguments" in conflict["next_actions"][0]
+    validate_hub_v2_tool_output("patchbay_work_group_resume", conflict)
+    store.close()
+
+
 def test_close_refuses_active_worker_then_closes_from_authoritative_projection(tmp_path):
     runtime, store, _ = make_runtime(tmp_path)
     enrolled = enroll_online(runtime, machine_id="machine_alpha")

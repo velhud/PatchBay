@@ -1194,6 +1194,37 @@ async def test_stop_worker_allows_stale_long_command_without_confirmation(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_stop_worker_preserves_manager_reason_in_cancellation_evidence(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    started = await runtime.start_worker(
+        name="Reasoned Stop Worker",
+        brief="Keep working.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.RUNNING,
+        session_id="session-reasoned-stop",
+        process_started_at=time.time() - 900,
+        last_heartbeat_at=time.time() - 500,
+    )
+
+    result = await runtime.stop_worker(
+        worker=started["worker_id"],
+        force=True,
+        reason="Reconcile a completed verification wrapper.",
+    )
+
+    assert result["stopped"] is True
+    assert manager.get_job(job.job_id).error == "Reconcile a completed verification wrapper."
+
+
+@pytest.mark.asyncio
 async def test_stop_worker_waits_briefly_for_partial_report_artifact(tmp_path):
     config = make_config(tmp_path)
     config["workers"]["stop_artifact_wait_seconds"] = 1

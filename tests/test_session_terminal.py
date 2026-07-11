@@ -207,6 +207,43 @@ time.sleep(30)
     assert job.exit_code != 0
 
 
+@pytest.mark.asyncio
+async def test_resume_uses_known_session_when_codex_emits_no_new_thread_started(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    session_id = "session-resume-without-thread-started"
+    session_file = write_session(tmp_path / "codex-home", session_id, [])
+    final_result = {"summary": "RESUME_TERMINAL_OK", "files_changed": [], "tests_run": ["fixture"]}
+    job_id = manager.create_job(
+        "resume",
+        "continue",
+        config["repositories"]["default"],
+        {"json_events": True, "resume_session_id": session_id},
+    )
+    script = f"""
+import json, pathlib, subprocess, sys, time
+path = pathlib.Path({str(session_file)!r})
+time.sleep(0.2)
+now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+with path.open('a', encoding='utf-8') as handle:
+    handle.write(json.dumps({{'timestamp': now, 'type': 'event_msg', 'payload': {{'type': 'agent_message', 'message': json.dumps({final_result!r})}}}}) + '\\n')
+    handle.write(json.dumps({{'timestamp': now, 'type': 'event_msg', 'payload': {{'type': 'task_complete', 'last_agent_message': json.dumps({final_result!r})}}}}) + '\\n')
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+time.sleep(30)
+"""
+    monkeypatch.setattr(executor, "_build_codex_command", lambda *args, **kwargs: [sys.executable, "-u", "-c", script])
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=6)
+
+    job = manager.get_job(job_id)
+    assert job.state == JobState.COMPLETED
+    assert job.result["summary"] == "RESUME_TERMINAL_OK"
+    assert job.session_id == session_id
+    assert job.terminal_source == "session_task_complete"
+    assert job.wrapper_cleanup_outcome == "terminated_after_terminal"
+
+
 def test_first_terminal_decision_wins_and_late_source_is_recorded(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

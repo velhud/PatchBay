@@ -149,6 +149,7 @@ def test_worker_tools_are_public_with_semantic_schemas():
     assert "does not commit" in by_name["codex_worker_integrate"]["description"]
     assert "cleanup_workspace" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "force" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
+    assert "reason" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "repo_path" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "takeover" in by_name["codex_worker_stop"]["inputSchema"]["properties"]
     assert "partial checkpoints" in by_name["codex_worker_stop"]["description"]

@@ -283,19 +283,36 @@ class HubRuntimeV2:
             "patchbay_work_group_reassign": self.reassign_work_group,
             "patchbay_work_group_close": self.close_work_group,
         }
-        if name == "patchbay_operation_status":
-            return await self.operation_status(context=context, **args)
-        if name in local:
-            if name.startswith("patchbay_work_group_") or name == "patchbay_fleet_status":
-                args["context"] = context
-            result = local[name](**args)
-            if inspect.isawaitable(result):
-                result = await result
-            return result
-        family = _TOOL_FAMILY.get(name)
-        if family in ADAPTER_FAMILIES:
-            return await self.dispatch_adapter(family, name, args, context=context)
-        raise KeyError(f"Unknown Hub V2 tool: {name}")
+        try:
+            if name == "patchbay_operation_status":
+                return await self.operation_status(context=context, **args)
+            if name in local:
+                if name.startswith("patchbay_work_group_") or name == "patchbay_fleet_status":
+                    args["context"] = context
+                result = local[name](**args)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
+            family = _TOOL_FAMILY.get(name)
+            if family in ADAPTER_FAMILIES:
+                return await self.dispatch_adapter(family, name, args, context=context)
+            raise KeyError(f"Unknown Hub V2 tool: {name}")
+        except HubStoreV2Conflict as error:
+            reason = str(error or "").strip()
+            if not reason or not reason.replace("_", "").isalnum():
+                reason = "hub_state_conflict"
+            next_action = (
+                "Reuse the idempotency key only with the exact original arguments. For an intentionally different "
+                "action, use a new key; inspect the existing group or operation before retrying."
+                if reason == "idempotency_payload_conflict"
+                else "Refresh the authoritative group or operation status before deciding whether to retry."
+            )
+            return public_envelope(
+                "blocked",
+                result={"reason": reason, "retry_safe": False},
+                warnings=["The request conflicted with durable Hub state; no second mutation was applied."],
+                next_actions=[next_action],
+            )
 
     # -- Machine identity and heartbeat ----------------------------------
 

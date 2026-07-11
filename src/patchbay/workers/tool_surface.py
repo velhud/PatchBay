@@ -818,6 +818,13 @@ WORKER_TOOLS = [
                     "type": "boolean",
                     "description": "When true, confirm that ChatGPT deliberately wants to interrupt a worker that still looks live or is inside the early-stop grace window.",
                 },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Optional concise operational reason for stopping the active turn. PatchBay preserves it "
+                        "with cancellation evidence; it does not replace takeover_reason when ownership changes."
+                    ),
+                },
                 **WORKER_TAKEOVER_PROPERTIES,
             },
             "required": ["worker"],

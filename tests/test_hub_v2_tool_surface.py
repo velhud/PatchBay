@@ -363,6 +363,7 @@ def test_worker_tools_add_group_fleet_routing_without_dropping_parity_fields():
     stop = by_name["patchbay_worker_stop"]["inputSchema"]
     assert "discard_unintegrated_changes" in stop["properties"]
     assert stop["properties"]["discard_unintegrated_changes"]["type"] == "boolean"
+    assert stop["properties"]["reason"]["type"] == "string"
 
 
 def test_worker_batch_schema_preserves_shared_and_per_worker_contracts():

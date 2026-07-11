@@ -860,6 +860,7 @@ class WorkerRuntime:
         cleanup_workspace: bool = False,
         discard_unintegrated_changes: Optional[bool] = None,
         force: bool = False,
+        reason: str = "",
         request_context: Optional[RequestContext] = None,
         takeover: bool = False,
         takeover_reason: str = "",
@@ -886,7 +887,8 @@ class WorkerRuntime:
                 return confirmation
         cancelled = False
         if latest.state in (JobState.PENDING, JobState.RUNNING):
-            result = await self.job_executor.cancel_job(latest.job_id)
+            stop_reason = (str(reason or "").strip() or "Stopped by manager request")[:500]
+            result = await self.job_executor.cancel_job(latest.job_id, reason=stop_reason)
             cancelled = bool(result.get("cancelled"))
             if cancelled:
                 await self._wait_for_cancelled_turn_artifacts(latest.job_id)
