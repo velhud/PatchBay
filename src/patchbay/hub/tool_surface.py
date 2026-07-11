@@ -627,6 +627,10 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
                     "required_tags": _string_array("Require all listed machine tags."),
                     "lanes": {"type": "array", "items": lane_schema},
                     "visibility": _string("Coordination visibility inside the operator trust domain.", enum=("private", "shared")),
+                    "shared_write_policy": _string(
+                        "Architect-selected policy for workers that directly share the base checkout. serialized keeps the repository lock; manager_controlled permits deliberate concurrent shared writers and reports the conflict risk.",
+                        enum=("serialized", "manager_controlled"),
+                    ),
                     "wait_for_preflight_seconds": _integer("Bounded synchronous preflight wait.", minimum=0),
                     "idempotency_key": deepcopy(IDEMPOTENCY_KEY_SCHEMA),
                 },
@@ -826,7 +830,7 @@ def _worker_start_batch_descriptor() -> dict[str, Any]:
     }
     return _descriptor(
         "patchbay_worker_start_batch",
-        "Appoint a parallel team on one work group's pinned Edge. The whole batch is validated before dispatch; parallel implementers should use isolated_write, and a batch with multiple shared_write workers is rejected before partial dispatch because one base checkout has one writer. Each child has stable identity and idempotency, successful children are never rolled back, and retries resume unfinished items without duplicate workers.",
+        "Appoint a parallel team on one work group's pinned Edge. The whole batch is validated before dispatch. isolated_write remains the recommended parallel default; multiple shared_write workers are accepted only when the group's architect-selected shared_write_policy is manager_controlled, in which case PatchBay reports but does not prevent checkout conflicts. Each child has stable identity and idempotency, successful children are never rolled back, and retries resume unfinished items without duplicate workers.",
         _input_schema(
             {
                 "work_group_id": deepcopy(GROUP_ROUTE_PROPERTIES["work_group_id"]),

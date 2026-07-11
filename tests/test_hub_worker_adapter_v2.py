@@ -916,12 +916,31 @@ async def test_batch_rejects_multiple_shared_write_workers_before_dispatch():
     for worker in arguments["workers"]:
         worker["workspace_mode"] = "shared_write"
 
-    with pytest.raises(ValueError, match="cannot contain multiple shared_write workers"):
+    with pytest.raises(ValueError, match="shared_write_policy=serialized"):
         await adapter.handle_tool_call("patchbay_worker_start_batch", arguments)
 
-    assert runtime.resolve_calls == []
+    assert len(runtime.resolve_calls) == 1
     assert broker.create_calls == []
     assert broker.child_calls == []
+
+
+@pytest.mark.asyncio
+async def test_batch_allows_multiple_shared_write_workers_when_architect_controls_policy():
+    route = deepcopy(GROUP_ROUTE)
+    route["work_group"]["shared_write_policy"] = "manager_controlled"
+    adapter, runtime, broker, _ = make_adapter(runtime=RecordingRuntime(group_route=route))
+    arguments = batch_arguments()
+    for worker in arguments["workers"]:
+        worker["workspace_mode"] = "shared_write"
+
+    result = await adapter.handle_tool_call("patchbay_worker_start_batch", arguments)
+
+    assert result["status"] == "pending"
+    assert len(broker.child_calls) == 2
+    assert all(
+        call["payload"]["arguments"]["allow_concurrent_shared_write"] is True
+        for call in broker.child_calls
+    )
 
 
 def batch_arguments():

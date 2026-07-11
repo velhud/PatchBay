@@ -178,6 +178,36 @@ async def test_integration_refuses_when_base_repo_mutation_lock_is_busy(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_architect_can_start_multiple_manager_controlled_shared_writers(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    first = await runtime.start_worker(
+        name="Shared Writer One",
+        brief="Own the first bounded subsystem.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="shared_write",
+        allow_concurrent_shared_write=True,
+    )
+    second = await runtime.start_worker(
+        name="Shared Writer Two",
+        brief="Own the second bounded subsystem.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="shared_write",
+        allow_concurrent_shared_write=True,
+    )
+    await asyncio.sleep(0)
+
+    assert first["accepted"] is True
+    assert second["accepted"] is True
+    assert first["shared_write_concurrency"] == "manager_controlled"
+    assert second["shared_write_concurrency"] == "manager_controlled"
+    assert len(executor.started) == 2
+
+
+@pytest.mark.asyncio
 async def test_integration_refuses_dirty_base_by_default(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

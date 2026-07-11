@@ -287,6 +287,7 @@ class ToolHandler:
             reasoning_effort=args.get("reasoning_effort"),
             auto_suffix=bool(args.get("auto_suffix", False)),
             include_untracked_from_base=args.get("include_untracked_from_base"),
+            allow_concurrent_shared_write=bool(args.get("allow_concurrent_shared_write", False)),
             request_context=self.current_request_context(),
         )
 

@@ -19,6 +19,7 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "work_run_started_at": {"type": ["number", "null"]},
         "work_run_last_activity_at": {"type": ["number", "null"]},
         "workspace_mode": {"type": "string"},
+        "shared_write_concurrency": {"type": "string"},
         "workspace_available": {"type": "boolean"},
         "workspace_location": {"type": "string"},
         "state": {"type": "string"},
@@ -405,6 +406,15 @@ WORKER_TOOLS = [
                     "type": "string",
                     "enum": ["isolated_write", "read_only", "shared_write"],
                     "description": "Worker workspace mode. Default: isolated_write.",
+                },
+                "allow_concurrent_shared_write": {
+                    "type": "boolean",
+                    "description": (
+                        "Architect override for workspace_mode=shared_write. When true, this worker may run beside other "
+                        "shared-write workers in the same base checkout without PatchBay's repository mutation lock. "
+                        "Use only after deliberately assigning compatible ownership boundaries; PatchBay reports the "
+                        "concurrency but does not prevent file, index, formatter, or generated-output conflicts."
+                    ),
                 },
                 "auto_suffix": {
                     "type": "boolean",

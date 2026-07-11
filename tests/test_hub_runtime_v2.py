@@ -428,6 +428,60 @@ def test_base_mutation_marks_preflight_snapshot_refresh_required_without_blockin
     assert persisted["readiness"]["currentness"] == "refresh_required"
 
 
+def test_group_persists_architect_selected_shared_write_policy(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+
+    created = runtime.create_work_group(
+        title="Concurrent checkout writers",
+        goal="Let the architect coordinate compatible shared writers.",
+        machine_id="machine_alpha",
+        shared_write_policy="manager_controlled",
+        idempotency_key="group-shared-manager-controlled",
+        context=context("owner"),
+    )
+
+    assert created["result"]["work_group"]["shared_write_policy"] == "manager_controlled"
+
+
+def test_completed_base_mutation_reconciles_current_group_snapshot(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    created = create_group(runtime, caller=context("owner"))
+    group = created["result"]["work_group"]
+    runtime.record_preflight_result(
+        work_group_id=group["work_group_id"],
+        operation_id=created["result"]["readiness"]["operation_id"],
+        result={
+            "ok": True,
+            "repo_exists": True,
+            "repo_resolved": group["resolved_repo_path"],
+            "head": "abc123",
+            "disk_free_bytes": 10_000_000_000,
+            "free_worker_slots": 2,
+        },
+    )
+
+    refreshed = runtime.record_group_base_mutation_snapshot(
+        work_group_id=group["work_group_id"],
+        snapshot={
+            "head": "abc123",
+            "changed_files": ["generated.txt"],
+            "dirty": True,
+            "observed_at": 1234.0,
+        },
+        reason="accepted_worker_integration_changed_base_checkout",
+        source_operation_id="op-integrate-refresh",
+    )
+
+    readiness = refreshed["readiness"]
+    assert readiness["status"] == "ready"
+    assert readiness["currentness"] == "current"
+    assert readiness["facts"]["git"]["dirty"] is True
+    assert readiness["facts"]["git"]["status_short"] == ["generated.txt"]
+    assert readiness["mutation_source_operation_id"] == "op-integrate-refresh"
+
+
 def test_participant_current_group_mapping_and_takeover_coordination_survive_restart(tmp_path):
     runtime, store, path = make_runtime(tmp_path)
     enroll_online(runtime, machine_id="machine_alpha")

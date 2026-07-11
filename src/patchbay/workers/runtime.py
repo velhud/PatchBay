@@ -42,6 +42,7 @@ from patchbay.ownership import (
 )
 from patchbay.protocol.context import RequestContext
 from patchbay.repo_locks import (
+    ALLOW_CONCURRENT_SHARED_WRITE_OPTION,
     RepoMutationBusy,
     RepoMutationLockManager,
     job_requires_repo_mutation_lock,
@@ -218,6 +219,7 @@ class WorkerRuntime:
         reasoning_effort: Optional[str] = None,
         auto_suffix: bool = False,
         include_untracked_from_base: Optional[list[str]] = None,
+        allow_concurrent_shared_write: bool = False,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         self._reconcile_active_jobs()
@@ -258,6 +260,7 @@ class WorkerRuntime:
                 workspace=workspace,
                 model=model,
                 reasoning_effort=reasoning_effort,
+                allow_concurrent_shared_write=allow_concurrent_shared_write,
                 request_context=request_context,
             )
             job_id = await self._create_worker_job_with_optional_repo_lock(
@@ -289,6 +292,13 @@ class WorkerRuntime:
         view.update(
             {
                 "accepted": True,
+                "shared_write_concurrency": (
+                    "manager_controlled"
+                    if workspace_mode == "shared_write" and allow_concurrent_shared_write
+                    else "serialized"
+                    if workspace_mode == "shared_write"
+                    else "not_applicable"
+                ),
                 "context_sources": context["sources"],
                 "context_detail": context["detail"],
                 "context_truncated": context["truncated"],
@@ -1063,12 +1073,21 @@ class WorkerRuntime:
                 if token_record is not None:
                     expires_at = float((token_record.get("claims") or {}).get("expires_at") or 0)
                     if expires_at <= time.time():
+                        fresh_preview = self._issue_integration_preview_token(
+                            jobs,
+                            preview=preview,
+                            allow_dirty_base=allow_dirty_base,
+                            accepted_dirty_base=accepted_dirty_base,
+                            request_context=request_context,
+                        )
                         return self._integration_blocked_result(
                             jobs,
                             request_context=request_context,
                             reason="preview_token_expired",
                             note="The integration preview token expired. Request a fresh integration_preview.",
                             preview_token_id=token_id,
+                            fresh_preview=fresh_preview,
+                            recommended_next_action="review_fresh_integration_preview",
                         )
                     current_bindings = self._integration_binding_claims(
                         jobs,
@@ -1084,6 +1103,13 @@ class WorkerRuntime:
                             for key in set(current_bindings) | set(expected_bindings)
                             if current_bindings.get(key) != expected_bindings.get(key)
                         )
+                        fresh_preview = self._issue_integration_preview_token(
+                            jobs,
+                            preview=preview,
+                            allow_dirty_base=allow_dirty_base,
+                            accepted_dirty_base=accepted_dirty_base,
+                            request_context=request_context,
+                        )
                         return self._integration_blocked_result(
                             jobs,
                             request_context=request_context,
@@ -1092,9 +1118,12 @@ class WorkerRuntime:
                             preview_token_id=token_id,
                             stale_bindings=stale_bindings,
                             retryable=True,
-                            recommended_next_action="request_fresh_integration_preview",
-                            next_tool="codex_worker_inspect",
-                            next_arguments={"view": "integration_preview"},
+                            fresh_preview=fresh_preview,
+                            recommended_next_action="review_fresh_integration_preview",
+                            next_tool="codex_worker_integrate",
+                            next_arguments={
+                                "preview_token": fresh_preview.get("preview_token", ""),
+                            },
                         )
                 if not preview.get("can_apply"):
                     preview.update(
@@ -1279,6 +1308,7 @@ class WorkerRuntime:
         workspace: Dict[str, Any],
         model: str = "",
         reasoning_effort: str = "",
+        allow_concurrent_shared_write: bool = False,
         request_context: Optional[RequestContext] = None,
         existing_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -1307,6 +1337,11 @@ class WorkerRuntime:
         if reasoning_effort:
             options.setdefault("config_overrides", []).append(build_reasoning_config_override(reasoning_effort))
             options[WORKER_REASONING_EFFORT_OPTION] = reasoning_effort
+        if workspace_mode == "shared_write" and (
+            allow_concurrent_shared_write
+            or bool((existing_options or {}).get(ALLOW_CONCURRENT_SHARED_WRITE_OPTION))
+        ):
+            options[ALLOW_CONCURRENT_SHARED_WRITE_OPTION] = True
         if self.config.get("workers", {}).get("ignore_user_config"):
             options["ignore_user_config"] = True
         if workspace.get("worktree_path"):
@@ -1970,6 +2005,14 @@ class WorkerRuntime:
             "workspace_instance_id": workspace_instance_id,
             "workspace_name": Path(repo_path).name or "workspace",
             "workspace_mode": workspace["mode"],
+            "shared_write_concurrency": (
+                "manager_controlled"
+                if workspace["mode"] == "shared_write"
+                and bool(options.get(ALLOW_CONCURRENT_SHARED_WRITE_OPTION))
+                else "serialized"
+                if workspace["mode"] == "shared_write"
+                else "not_applicable"
+            ),
             "workspace_location": self._workspace_location_label(workspace),
             "workspace_available": bool(workspace["available"]),
             "workspace_discarded": bool(workspace["discarded"]),
@@ -1998,6 +2041,19 @@ class WorkerRuntime:
             "latest_turn_started_at": float(latest.started_at) if latest.started_at is not None else None,
             "latest_turn_completed_at": float(latest.completed_at) if latest.completed_at is not None else None,
         }
+        if workspace["mode"] == "shared_write" and turn_state in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            worker["base_checkout_snapshot"] = {
+                "head": self._git_head(repo_path),
+                "changed_files": list(change_summary.get("changed_files") or []),
+                "change_count": int(change_summary.get("change_count") or 0),
+                "dirty": bool(change_summary.get("has_changes")),
+                "observed_at": time.time(),
+                "source": "terminal_shared_write_projection",
+            }
         content_sha256 = self._projection_content_sha256(worker)
         worker.update(
             {
@@ -3802,6 +3858,14 @@ class WorkerRuntime:
             "work_group_id": str(options.get(WORKER_WORK_GROUP_ID_OPTION) or ""),
             "lane_id": str(options.get(WORKER_LANE_ID_OPTION) or ""),
             "workspace_mode": workspace["mode"],
+            "shared_write_concurrency": (
+                "manager_controlled"
+                if workspace["mode"] == "shared_write"
+                and bool(options.get(ALLOW_CONCURRENT_SHARED_WRITE_OPTION))
+                else "serialized"
+                if workspace["mode"] == "shared_write"
+                else "not_applicable"
+            ),
             "workspace_available": workspace_available,
             "state": state,
             "report": self._report_for_jobs(jobs),

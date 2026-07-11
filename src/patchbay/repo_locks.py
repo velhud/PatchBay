@@ -19,6 +19,7 @@ from patchbay.connector.profiles import resolve_runtime_path
 
 REPO_LOCK_OPTION = "_repo_mutation_lock"
 REPO_LOCK_OPERATION_OPTION = "_repo_mutation_lock_operation"
+ALLOW_CONCURRENT_SHARED_WRITE_OPTION = "_allow_concurrent_shared_write"
 
 
 class RepoMutationBusy(RuntimeError):
@@ -137,7 +138,9 @@ def job_requires_repo_mutation_lock(
     options = options or {}
     worker_workspace_mode = str(options.get("_worker_workspace_mode") or "").strip().lower()
     if worker_workspace_mode:
-        return worker_workspace_mode == "shared_write"
+        return worker_workspace_mode == "shared_write" and not bool(
+            options.get(ALLOW_CONCURRENT_SHARED_WRITE_OPTION)
+        )
     if options.get("_worker_worktree_path"):
         return False
     if mode == "apply":

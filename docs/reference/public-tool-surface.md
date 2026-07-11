@@ -111,19 +111,24 @@ PatchBay distinguishes authoritative Codex completion from CLI wrapper cleanup. 
 
 Recommended ChatGPT worker-management loop:
 
-Parallel implementation workers belong in `isolated_write` worktrees. A batch
-containing more than one `shared_write` worker is rejected before dispatch,
-because multiple workers cannot safely own the same base-checkout mutation
-lock. Run a genuinely necessary shared-write lane sequentially instead.
+Parallel implementation workers normally belong in `isolated_write` worktrees.
+Work groups default to `shared_write_policy=serialized`, which retains the
+per-repository mutation lock. The architect may create a group with
+`shared_write_policy=manager_controlled` to run deliberate `shared_write`
+workers together in the base checkout. PatchBay then exposes the policy and
+permits the starts; it does not prevent file, Git index, formatter,
+generated-output, or command conflicts. Assign ownership boundaries and
+coordinate reconciliation when choosing that policy.
 
 Integration preview tokens are deliberately bound to the exact worker revision,
 patch, base HEAD, dirty fingerprint, and accepted dirty patterns. A stale token
-returns `recommended_next_action: request_fresh_integration_preview`; request a
-new preview rather than retrying the obsolete token. Successful integrations
-and shared-write starts mark the group's stored preflight snapshot
-`currentness: refresh_required` while leaving ongoing work operational. The
-snapshot's prior facts remain visible as history, not asserted as live git
-state; group resume performs the strict refresh boundary.
+returns a newly calculated `fresh_preview` and replacement token when the
+current patch remains previewable. Review it before retrying integration; never
+retry the obsolete token. Successful integrations reconcile the stored Git
+snapshot directly from the authoritative mutation result. Shared-write starts
+mark the snapshot stale while work is active, and the terminal shared-write
+projection reconciles it. Full Edge preflight still runs at create/resume
+boundaries; historical facts are never asserted as live Git state.
 
 Hub worker list, status, and wait calls require an explicit `work_group_id`.
 This prevents unrelated groups from contaminating an aggregate when several
@@ -187,7 +192,7 @@ Model-selection guidance is not a hard router. It should help ChatGPT manage wor
 
 - GPT-5.6 Luna is the default compact standard worker for bounded implementation, investigation, tests, review helpers, and high-volume team lanes.
 - GPT-5.6 Terra is the default serious worker for normal above-average repository work, multi-step analysis, implementation, debugging, verification, and most investigator/implementer/reviewer lanes.
-- GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and the hardest implementation or review lanes.
+- GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and the hardest implementation or review lanes. Medium is the normal Sol effort. Above-medium Sol is rare and should follow concrete difficulty or consequence: serious bugs, sensitive development, unusually costly mistakes, or evidence that medium is insufficient. Reserve max/ultra for exceptional escalation; ultra may consume roughly 5-10x medium tokens depending on task difficulty.
 - Spark is the preferred first choice over GPT-5.4 Mini for bounded small-worker assignments it can handle because it is dramatically faster and uses a separate research-preview quota. GPT-5.4 Mini is the immediate fallback when Spark is unavailable, depleted, or too context-constrained; continue or retry the same assignment rather than abandoning the lane.
 - GPT-5.4 and GPT-5.5 remain availability, compatibility, or evidence-backed regression fallbacks.
 - Optimize expected subscription use to a verified result, not nominal cost per turn. Codex CLI `0.144.1` exposes `ultra` as a reasoning effort on supported models such as Terra and Sol; it may automatically delegate inside one worker. Prefer explicit named PatchBay workers when visible lanes, reports, worktrees, or integration control matter.
@@ -407,7 +412,7 @@ Shared-server coordination rules:
 - `codex_worker_message`, `codex_worker_integrate`, `codex_worker_stop`, and artifact cleanup refuse cross-owner MCP mutation unless the caller explicitly retries with `takeover: true`;
 - explicit takeover rewrites worker/artifact owner metadata to the current scoped owner model, which is the intended migration path for legacy records after user confirmation;
 - takeover is coordination, not authentication. HTTP auth, local binding, and tunnel token policy remain the actual access boundary;
-- base-checkout mutation paths are serialized per repository. Direct write/edit, command execution, shared-write worker turns, low-level base-writing jobs, and worker integration can return `repo_busy: true` instead of queueing hidden writes;
+- base-checkout mutation paths are serialized per repository by default. Direct write/edit, command execution, low-level base-writing jobs, worker integration, and `shared_write` under serialized policy can return `repo_busy: true`. An explicitly manager-controlled work group may run concurrent shared-write workers; this does not disable locks for unrelated direct/integration operations;
 - when `queue_enabled` is true, global job admission can accept pending Codex turns beyond currently running slots. `codex_self_test` reports both `max_concurrent_jobs` and `queue_enabled`.
 
 ## Hidden And Deprecated Tools

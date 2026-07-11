@@ -484,7 +484,7 @@ async def _enroll_edge(
     )
 
 
-async def _wait_until(predicate: Any, *, timeout_seconds: float = 10.0) -> None:
+async def _wait_until(predicate: Any, *, timeout_seconds: float = 30.0) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         value = predicate()
@@ -904,11 +904,11 @@ async def run_live_hub_v2_eval(
         )
         _check(
             report,
-            "integration_invalidates_preflight_snapshot",
+            "integration_reconciles_current_preflight_snapshot",
             post_integration_group["status"] == "ok"
             and post_integration_group["result"].get("readiness", {}).get("status") == "ready"
             and post_integration_group["result"].get("readiness", {}).get("currentness")
-            == "refresh_required",
+            == "current",
             {
                 "readiness": post_integration_group.get("result", {}).get("readiness", {}),
             },

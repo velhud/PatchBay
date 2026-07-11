@@ -342,6 +342,8 @@ async def test_long_task_keeps_heartbeat_projection_and_lease_renewal_independen
 
     assert len(transport.calls[DEFAULT_ENDPOINTS.heartbeat]) >= 3
     assert len(transport.calls[DEFAULT_ENDPOINTS.renew_lease]) >= 2
+    assert transport.calls[DEFAULT_ENDPOINTS.claim][0]["lease_seconds"] >= 30
+    assert transport.calls[DEFAULT_ENDPOINTS.renew_lease][0]["lease_seconds"] >= 30
     assert handler.effects == 0
     heartbeat = transport.calls[DEFAULT_ENDPOINTS.heartbeat][-1]
     assert heartbeat["contract_hash"] == capabilities["contract_hash"]

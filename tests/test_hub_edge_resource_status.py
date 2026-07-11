@@ -4,6 +4,29 @@ from patchbay.hub import edge
 from patchbay.hub.runtime import HubRuntime
 
 
+def test_preflight_reports_repo_local_test_environment(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+    (repo / ".venv" / "bin" / "pytest").write_text("", encoding="utf-8")
+
+    result = edge.edge_preflight(
+        {"repositories": {"default": str(repo), "allowed": [str(repo)]}},
+        {"repo_path": str(repo)},
+        {"active": 0},
+    )
+
+    assert result["project_environments"] == [
+        {
+            "kind": "python_virtualenv",
+            "root": ".venv",
+            "python": ".venv/bin/python",
+            "pytest": ".venv/bin/pytest",
+        }
+    ]
+    assert "repository-local environment" in result["test_environment_guidance"]
+
+
 def test_full_history_projection_counts_only_active_workers(monkeypatch, tmp_path):
     monkeypatch.setattr(edge, "_disk_telemetry_path", lambda config: tmp_path)
     status = edge.build_resource_status(

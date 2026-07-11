@@ -1096,8 +1096,15 @@ class HubBrokerEdgeDispatchPortV2:
             projected["integration_state"] = "applied_to_checkout"
         work_group_id = str(projected.get("work_group_id") or "")
         if action == "codex_worker_integrate" and domain.get("applied") is True:
-            self.runtime.mark_group_preflight_refresh_required(
+            self.runtime.record_group_base_mutation_snapshot(
                 work_group_id=work_group_id,
+                snapshot={
+                    "head": "",
+                    "changed_files": list(domain.get("main_changed_files") or []),
+                    "dirty": True,
+                    "observed_at": self.runtime._clock(),
+                    "source": "accepted_worker_integration",
+                },
                 reason="accepted_worker_integration_changed_base_checkout",
                 source_operation_id=source_operation_id,
             )

@@ -610,11 +610,25 @@ class HubPullTransportBridgeV2:
         ) == "shared_write" and domain_result.get("accepted") is not False:
             reason = "shared_write_worker_can_change_base_checkout"
         if reason:
-            self.runtime.mark_group_preflight_refresh_required(
-                work_group_id=group_id,
-                reason=reason,
-                source_operation_id=operation_id,
-            )
+            if action == "codex_worker_integrate":
+                self.runtime.record_group_base_mutation_snapshot(
+                    work_group_id=group_id,
+                    snapshot={
+                        "head": "",
+                        "changed_files": list(domain_result.get("main_changed_files") or []),
+                        "dirty": True,
+                        "observed_at": self.runtime._clock(),
+                        "source": "accepted_worker_integration",
+                    },
+                    reason=reason,
+                    source_operation_id=operation_id,
+                )
+            else:
+                self.runtime.mark_group_preflight_refresh_required(
+                    work_group_id=group_id,
+                    reason=reason,
+                    source_operation_id=operation_id,
+                )
 
     def edge_outbox_ack(
         self,
@@ -1355,6 +1369,10 @@ class HubPullTransportBridgeV2:
             ),
             "unintegrated_worker_warnings": list(
                 facts.get("unintegrated_worker_warnings") or []
+            ),
+            "project_environments": list(facts.get("project_environments") or []),
+            "test_environment_guidance": str(
+                facts.get("test_environment_guidance") or ""
             ),
         }
         return normalized

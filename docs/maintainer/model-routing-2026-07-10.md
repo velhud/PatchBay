@@ -10,13 +10,13 @@ PatchBay should optimize expected subscription use to a verified correct result,
 | --- | --- | --- |
 | Compact standard worker | GPT-5.6 Luna | Much stronger than the older small models and close to GPT-5.5 on several coding tasks, with materially higher included capacity than frontier models. |
 | Main serious worker | GPT-5.6 Terra | Broadly matches or exceeds GPT-5.5 while retaining an everyday subscription-usage profile. |
-| Highest-authority worker | GPT-5.6 Sol | Strongest broad model; use for hard synthesis, architecture, unresolved failures, sensitive review, and final judgment. |
+| Highest-authority worker | GPT-5.6 Sol | Strongest broad model; use at medium effort normally for hard synthesis, architecture, unresolved failures, sensitive review, and final judgment. |
 | Preferred small worker | GPT-5.3-Codex-Spark | First choice for bounded small-worker assignments because its separate Pro preview quota and extreme speed materially increase throughput; keep tasks bounded because intelligence and context are lower. |
 | Small-worker fallback | GPT-5.4 Mini | Immediate fallback when Spark is unavailable, preview-quota depleted, or too context-constrained; also use directly when a small task needs Mini's broader context or slightly stronger reliability. |
 | Legacy serious fallback | GPT-5.4 | Use for temporary 5.6 unavailability, compatibility, or a proven regression. |
 | Legacy frontier fallback | GPT-5.5 | Use for temporary 5.6 unavailability or task families where its long-context, multimodal, or tool behavior is measurably better. |
 
-Normal worker teams should therefore use Luna for compact lanes, Terra for primary investigator/implementer/reviewer lanes, and Sol for authority or difficult synthesis. Within the bounded small-worker lane, always try Spark before Mini when the assignment fits, then fall back immediately to Mini if Spark is unavailable, depleted, or context-inadequate. Escalate after evidence of failure or uncertainty; do not assign Sol to every lane.
+Normal worker teams should therefore use Luna for compact lanes, Terra for primary investigator/implementer/reviewer lanes, and Sol at medium effort for authority or difficult synthesis. Within the bounded small-worker lane, always try Spark before Mini when the assignment fits, then fall back immediately to Mini if Spark is unavailable, depleted, or context-inadequate. Escalate Sol above medium only after concrete evidence of unusual difficulty, serious bugs, sensitive development, or high cost of error; do not assign Sol or deep Sol effort to every lane.
 
 ## Intelligence evidence
 
@@ -87,7 +87,7 @@ API prices are a separate axis: Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per mill
 ## Reasoning and orchestration
 
 - PatchBay should accept `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, then let the selected model's live catalog determine which subset is valid.
-- Use low or medium for routine Luna work, medium or high for normal Terra work, and high or xhigh for Sol authority work.
+- Use low or medium for routine Luna work, medium or high for normal Terra work, and medium for normal Sol authority work. Use high/xhigh only for genuinely hard or high-consequence Sol assignments. Reserve max/ultra for rare deliberate escalation; ultra may consume roughly 5-10x medium tokens depending on task difficulty.
 - Use `max` only when the live catalog supports it and the expected quality gain justifies the extra use. Published 5.6 results show large gains on some hard tasks but diminishing or even poor efficiency on others.
 - Codex CLI `0.144.1` exposes `ultra` as a reasoning effort for GPT-5.6 Terra and Sol. It may automatically delegate subtasks inside one Codex worker. PatchBay accepts it, but explicit PatchBay worker teams preserve named ownership, independent reports, separate worktrees, diffs, and integration state and remain the preferred orchestration surface when those controls matter.
 - Continue the same worker before escalating when the issue is missing evidence or an incomplete first report. Escalate the model when the failure reflects judgment, context, or reasoning limits.

@@ -93,13 +93,21 @@ MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
                 "Highest-authority worker for innovation, creative architecture, difficult synthesis, unresolved problems, "
                 "sensitive or final judgment, and the hardest implementation or review lanes."
             ),
-            "reasoning": "Use high/xhigh for serious authority work, max for the hardest single-agent work, and ultra only when the live catalog supports automatic internal delegation and that behavior is appropriate.",
-            "caveats": "Do not use Sol for every lane; delegate ordinary serious work to Terra and compact work to Luna.",
+            "reasoning": (
+                "Use medium as Sol's normal daily-driver effort. Above-medium effort is rarely necessary: use high only "
+                "for materially difficult or high-consequence work, xhigh for genuinely hard problems, serious bug diagnosis, "
+                "or sensitive development where mistakes are unusually costly, and max/ultra only as deliberate exceptional escalations."
+            ),
+            "caveats": (
+                "Do not use Sol or deep Sol effort for every lane. Medium normally captures Sol's value; ultra may consume "
+                "roughly 5-10x the tokens of medium depending on task difficulty. Delegate ordinary serious work to Terra and compact work to Luna."
+            ),
         },
     ],
     "manager_rule": (
         "For worker teams, use GPT-5.6 Luna for compact standard lanes, GPT-5.6 Terra for the main serious lanes, "
-        "and GPT-5.6 Sol for final authority or unusually hard synthesis. For every bounded small-worker assignment "
+        "and GPT-5.6 Sol at medium effort for final authority or unusually hard synthesis. Raise Sol above medium only "
+        "for genuinely hard, serious-bug, sensitive, or otherwise high-consequence work where mistakes cost more. For every bounded small-worker assignment "
         "that either Spark or GPT-5.4 Mini could handle, choose Spark first for its speed and separate preview quota; "
         "fall back immediately to GPT-5.4 Mini when Spark is unavailable, depleted, or too context-constrained. Keep "
         "GPT-5.4/GPT-5.5 as availability or regression fallbacks."
@@ -110,7 +118,8 @@ MODEL_SELECTION_GUIDANCE: Dict[str, Any] = {
     ),
     "ultra_note": (
         "Codex CLI 0.144.1 exposes ultra as a reasoning_effort for supported models such as GPT-5.6 Terra and Sol. "
-        "Ultra can perform automatic internal task delegation inside one Codex worker. PatchBay accepts the value, "
+        "Ultra can perform automatic internal task delegation inside one Codex worker and may consume roughly 5-10x "
+        "the tokens of medium depending on task difficulty. PatchBay accepts the value, "
         "but explicit named PatchBay workers remain preferred when the manager needs visible lanes, independent reports, "
         "separate worktrees, or controlled integration."
     ),

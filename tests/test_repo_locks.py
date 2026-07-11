@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from patchbay.repo_locks import RepoMutationBusy, RepoMutationLockManager, job_requires_repo_mutation_lock
+from patchbay.repo_locks import (
+    ALLOW_CONCURRENT_SHARED_WRITE_OPTION,
+    RepoMutationBusy,
+    RepoMutationLockManager,
+    job_requires_repo_mutation_lock,
+)
 
 
 @pytest.mark.asyncio
@@ -62,6 +67,17 @@ def test_worker_workspace_mode_controls_repo_mutation_lock():
             default_sandbox="read-only",
         )
         is True
+    )
+    assert (
+        job_requires_repo_mutation_lock(
+            "interactive",
+            {
+                "_worker_workspace_mode": "shared_write",
+                ALLOW_CONCURRENT_SHARED_WRITE_OPTION: True,
+            },
+            default_sandbox="danger-full-access",
+        )
+        is False
     )
 
 

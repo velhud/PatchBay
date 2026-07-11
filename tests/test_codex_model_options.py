@@ -74,6 +74,8 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
     assert "Default compact standard worker" in ladder["GPT-5.6 Luna"]["role"]
     assert "Default serious worker" in ladder["GPT-5.6 Terra"]["role"]
     assert "Highest-authority worker" in ladder["GPT-5.6 Sol"]["role"]
+    assert "medium as Sol's normal" in ladder["GPT-5.6 Sol"]["reasoning"]
+    assert "5-10x" in ladder["GPT-5.6 Sol"]["caveats"]
     assert "verified correct result" in guidance["cost_rule"]
     assert "0.144.1 exposes ultra as a reasoning_effort" in guidance["ultra_note"]
     assert "explicit named PatchBay workers remain preferred" in guidance["ultra_note"]

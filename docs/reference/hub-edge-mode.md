@@ -30,6 +30,9 @@ PatchBay use.
   or durable pending operations, not synthetic command-success receipts.
 - Adds durable work groups: one user task becomes one group, lanes are workers
   inside that group, and the group is pinned to one machine.
+- Lets the architect choose each group's shared-checkout policy: serialized by
+  default, or manager-controlled concurrent `shared_write` when explicitly
+  selected and coordinated.
 - Optionally chooses the least-busy eligible online machine when a work group is
   created and no explicit `machine_id` is supplied.
 - Lets the selected Edge claim fenced operations, execute the mature local
@@ -188,6 +191,14 @@ means Hub accepted the durable operation but Edge/Codex has not yet produced a
 semantic result. Continue with `patchbay_operation_status` or the relevant
 worker/group wait tool; do not repeat the mutation with a new key.
 
+Work groups accept `shared_write_policy=serialized|manager_controlled`.
+`serialized` keeps the per-repository mutation lock. `manager_controlled`
+permits multiple workers to write directly in the same base checkout because
+the architect has accepted responsibility for ownership boundaries and
+conflict reconciliation. PatchBay reports the policy and concurrency; it does
+not semantically second-guess the architect. `isolated_write` remains the
+recommended default for independent parallel implementation.
+
 If `hub.routing.enabled` is true, ChatGPT may use
 `patchbay_work_group_create` without `machine_id`. The Hub then chooses one
 eligible machine by compact availability telemetry and pins the group there.
@@ -245,6 +256,10 @@ hub:
 - Hub preflight is required before grouped worker starts: the edge confirms the
   repo/workspace can be resolved, reports compact git/capacity facts, and then
   worker starts are allowed unless an operator recovery override is used.
+- Edge preflight reports bounded repository-local Python environments such as
+  `.venv/bin/python` and `.venv/bin/pytest` when present. This is discovery and
+  guidance, not a restriction: workers may create a repo-local environment and
+  install missing development dependencies when required by the task.
 - Edge machines keep local Codex auth, repositories, worker state, worktrees,
   logs, and credentials.
 - Hub does not receive raw Codex credentials, raw local logs, prompts, file

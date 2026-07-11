@@ -589,6 +589,26 @@ def edge_preflight(config: Mapping[str, Any], arguments: Mapping[str, Any], stat
         disk_free = None
         disk_used_percent = None
     resources = build_resource_status(config, status)
+    project_environments: list[dict[str, Any]] = []
+    if exists:
+        for relative in (".venv", "venv"):
+            environment = repo / relative
+            python_path = environment / "bin" / "python"
+            pytest_path = environment / "bin" / "pytest"
+            if python_path.is_file():
+                project_environments.append(
+                    {
+                        "kind": "python_virtualenv",
+                        "root": relative,
+                        "python": f"{relative}/bin/python",
+                        "pytest": f"{relative}/bin/pytest" if pytest_path.is_file() else "",
+                    }
+                )
+    test_environment_guidance = (
+        "Use the repository-local environment shown in project_environments before concluding that pytest or dependencies are unavailable."
+        if project_environments
+        else "Follow repository test instructions; create a repository-local environment and install missing development dependencies when needed."
+    )
     return {
         "ok": bool(exists),
         "repo_requested": str(arguments.get("repo_path") or ""),
@@ -606,6 +626,8 @@ def edge_preflight(config: Mapping[str, Any], arguments: Mapping[str, Any], stat
         "free_worker_slots": resources.get("free_worker_slots"),
         "queue_enabled": resources.get("queue_enabled"),
         "unintegrated_worker_warnings": [],
+        "project_environments": project_environments,
+        "test_environment_guidance": test_environment_guidance,
         "error": "" if exists else "repo path does not exist",
     }
 

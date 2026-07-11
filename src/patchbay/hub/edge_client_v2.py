@@ -41,6 +41,7 @@ DEFAULT_CLAIM_SECONDS = 0.5
 DEFAULT_RESULT_RETRY_SECONDS = 1.0
 DEFAULT_RECONCILIATION_SECONDS = 5.0
 DEFAULT_LEASE_RENEWAL_SECONDS = 10.0
+DEFAULT_ATTEMPT_LEASE_SECONDS = 30.0
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_CONCURRENT_TASKS = 4
@@ -419,6 +420,7 @@ class EdgeV2Runner:
         result_retry_seconds: float = DEFAULT_RESULT_RETRY_SECONDS,
         reconciliation_interval_seconds: float = DEFAULT_RECONCILIATION_SECONDS,
         lease_renewal_seconds: float = DEFAULT_LEASE_RENEWAL_SECONDS,
+        attempt_lease_seconds: float = DEFAULT_ATTEMPT_LEASE_SECONDS,
         shutdown_timeout_seconds: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
         request_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
         max_concurrent_tasks: int | None = None,
@@ -481,6 +483,10 @@ class EdgeV2Runner:
         )
         self.lease_renewal_seconds = _positive_float(
             lease_renewal_seconds, "lease_renewal_seconds"
+        )
+        self.attempt_lease_seconds = max(
+            _positive_float(attempt_lease_seconds, "attempt_lease_seconds"),
+            self.lease_renewal_seconds * 3.0,
         )
         self.shutdown_timeout_seconds = _non_negative_float(
             shutdown_timeout_seconds, "shutdown_timeout_seconds"
@@ -667,6 +673,7 @@ class EdgeV2Runner:
                 "projection_revision": self.execution.journal.projection_revision,
                 "available_slots": capacity,
                 "max_attempts": capacity,
+                "lease_seconds": self.attempt_lease_seconds,
             },
         )
         self._queue_response_work(response)
@@ -697,7 +704,7 @@ class EdgeV2Runner:
             **self._base_payload(),
             **_attempt_fences(attempt),
             "expected_revision": _attempt_revision(attempt),
-            "lease_seconds": max(self.lease_renewal_seconds * 3.0, 1.0),
+            "lease_seconds": self.attempt_lease_seconds,
         }
         response = await self._request(self.endpoints.renew_lease, payload)
         saved = response.get("attempt")

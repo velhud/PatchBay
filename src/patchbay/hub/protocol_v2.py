@@ -66,7 +66,12 @@ Codex catalog is the availability and effort authority. Use GPT-5.6 Luna for
 compact standard lanes, GPT-5.6 Terra for most serious investigator,
 implementer, debugger, and reviewer lanes, and GPT-5.6 Sol for highest-authority
 architecture, difficult synthesis, unresolved failures, sensitive judgment, or
-final review. For every bounded small-worker assignment that either Spark or
+final review. When Sol is selected, use medium as the normal default. Sol above
+medium is rarely needed: use high/xhigh only for genuinely hard problems,
+serious bug diagnosis, sensitive development, or other high-consequence work
+where mistakes are unusually costly. Reserve max/ultra for deliberate exceptional
+escalation; ultra may consume roughly 5-10x the tokens of medium depending on
+task difficulty. For every bounded small-worker assignment that either Spark or
 GPT-5.4 Mini can handle, choose Spark first because it is dramatically faster
 and uses a separate preview quota. If Spark is unavailable, quota-depleted, or
 too context-constrained, immediately continue or retry the same assignment with
@@ -97,12 +102,24 @@ operation id and use patchbay_operation_status after the recommended wait.
 blocked, failed, partial, and not_found are domain envelopes, not MCP transport
 errors: read their structured reason, warnings, and next_actions instead of
 inventing a queue receipt or treating transport acceptance as completion.
+Waiting for healthy workers is part of executing the task, not a reason to end
+the response. When the assigned outcome still requires worker completion,
+continue using patchbay_worker_wait at the recommended cadence, then proceed
+through follow-up, review, integration, verification, commit/push when requested,
+and closure. A wait timeout means only that no new worker state arrived during
+that wait. Never claim an execution/tool-call limit merely because workers need
+more time; only report such a limit when the platform actually returns one.
 
 Use workspace read/search/change tools only for focused manager orientation,
 briefing, exact verification, or a tiny task. Delegate broad repository work to
 workers. Before integration, inspect the worker's integration_preview, retain
 its preview_token, then call patchbay_worker_integrate explicitly. Integration
 applies without committing and must never be inferred from a completed turn.
+Use isolated_write as the recommended default for parallel implementers. The
+architect may instead create a group with shared_write_policy=manager_controlled
+and deliberately run concurrent shared_write workers in one base checkout.
+PatchBay reports that choice and conflict risk but does not override it; assign
+clear ownership boundaries and reconcile shared changes as the manager.
 Before the final answer, review the group result and close it with an explicit
 outcome and disposition for every worker, or clearly leave active work running.
 

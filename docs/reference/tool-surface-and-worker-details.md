@@ -47,7 +47,7 @@ The model policy is advisory and optimizes expected subscription use to a verifi
 
 - GPT-5.6 Luna is the compact standard default.
 - GPT-5.6 Terra is the main serious worker for normal above-average tasks.
-- GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, unresolved problems, sensitive/final judgment, and unusually hard synthesis.
+- GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, unresolved problems, sensitive/final judgment, and unusually hard synthesis. Use medium normally; above-medium effort is exceptional and justified by genuine difficulty, serious bugs, sensitive development, or unusually costly mistakes. Reserve max/ultra for rare deliberate escalation.
 - Spark is the preferred first choice over GPT-5.4 Mini for every bounded small-worker assignment it can handle because it is dramatically faster and uses a separate preview quota.
 - GPT-5.4 Mini is the immediate fallback when Spark is unavailable, quota-depleted, or too context-constrained; continue or retry the same assignment instead of abandoning the lane.
 - GPT-5.4 and GPT-5.5 are availability, compatibility, or evidence-backed regression fallbacks.
@@ -106,7 +106,7 @@ Public ownership statuses distinguish `current_client`, `legacy_connection`, `ot
 
 When `queue_enabled: true`, Codex turns above `max_concurrent_jobs` remain pending until an execution slot opens. `codex_startup_serialization_enabled: true` adds a narrower gate: only Codex auth/session startup is serialized per effective Codex home, using both an in-process gate and a host file lock, then full worker turns continue concurrently after session creation.
 
-Base-checkout mutation paths, including direct writes, command execution, shared-write workers, and worker integration, still use per-repository mutation locks and return `repo_busy` instead of queueing hidden writes.
+Base-checkout mutation paths use per-repository locks by default and return `repo_busy` instead of hidden queues. Direct writes, command execution, and worker integration remain serialized. A work-group architect may explicitly select `shared_write_policy=manager_controlled`; only those shared-write worker turns bypass the lock and expose their concurrency policy in worker status.
 
 PatchBay does not add a worker database, message bus, transcript copy, role engine, automatic reviewer chain, automatic commits, or automatic merge queue.
 

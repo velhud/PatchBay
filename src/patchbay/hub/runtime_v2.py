@@ -919,6 +919,19 @@ class HubRuntimeV2:
             ):
                 continue
             self._upsert_entity(WORKER_PROJECTION_ENTITY, identity.fleet_worker_ref, worker_projection)
+            if (
+                worker_projection.get("workspace_mode") == "shared_write"
+                and worker_projection.get("turn_state")
+                in {"completed", "failed", "cancelled"}
+                and work_group_id
+                and isinstance(worker_projection.get("base_checkout_snapshot"), Mapping)
+            ):
+                self.record_group_base_mutation_snapshot(
+                    work_group_id=work_group_id,
+                    snapshot=worker_projection["base_checkout_snapshot"],
+                    reason="shared_write_worker_turn_finished",
+                    source_operation_id=f"{identity.fleet_worker_ref}:{projection_revision}",
+                )
 
         tombstones = projection.get("tombstones") or []
         tombstoned_edge_ids = {
@@ -1311,6 +1324,7 @@ class HubRuntimeV2:
         required_tags: Any = None,
         lanes: Any = None,
         visibility: str = "private",
+        shared_write_policy: str = "serialized",
         wait_for_preflight_seconds: int = 0,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
@@ -1321,6 +1335,9 @@ class HubRuntimeV2:
         visibility_value = str(visibility or "private")
         if visibility_value not in {"private", "shared"}:
             raise ValueError("visibility must be private or shared")
+        shared_write_policy_value = str(shared_write_policy or "serialized").strip().lower()
+        if shared_write_policy_value not in {"serialized", "manager_controlled"}:
+            raise ValueError("shared_write_policy must be serialized or manager_controlled")
         identity = self._manager_identity(context)
         target = str(workspace_ref or repo_path or machine_id or "fleet")
         payload = {
@@ -1333,6 +1350,7 @@ class HubRuntimeV2:
             "required_tags": _string_list(required_tags, field="required_tags"),
             "lanes": lanes or [],
             "visibility": visibility_value,
+            "shared_write_policy": shared_write_policy_value,
         }
         operation = self.broker.create_operation(
             tool="patchbay_work_group_create",
@@ -1390,6 +1408,7 @@ class HubRuntimeV2:
             "lifecycle": "open",
             "visibility": visibility_value,
             "routing_policy": "keep_together",
+            "shared_write_policy": shared_write_policy_value,
             "workspace_ref": str(projection.get("workspace_ref") or workspace_ref or ""),
             "workspace_projection_ref": str(projection.get("workspace_projection_ref") or ""),
             "repository_identity": str(projection.get("repository_identity") or ""),
@@ -1556,6 +1575,82 @@ class HubRuntimeV2:
                 "work_group_id": work_group_id,
                 "reason": readiness["stale_reason"],
                 "source_operation_id": readiness["stale_source_operation_id"],
+            },
+            entity_type=WORK_GROUP_ENTITY,
+            entity_id=work_group_id,
+            entity_revision=saved["revision"],
+        )
+        return deepcopy(saved["record"])
+
+    def record_group_base_mutation_snapshot(
+        self,
+        *,
+        work_group_id: str,
+        snapshot: Mapping[str, Any],
+        reason: str,
+        source_operation_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Reconcile current Git facts from an authoritative completed mutation."""
+        if not work_group_id:
+            return None
+        entity = self.store.get_entity(WORK_GROUP_ENTITY, work_group_id)
+        if entity is None:
+            return None
+        group = deepcopy(entity["record"])
+        if group.get("status") != "open":
+            return group
+        readiness = deepcopy(dict(group.get("readiness") or {}))
+        facts = deepcopy(dict(readiness.get("facts") or {}))
+        git = deepcopy(dict(facts.get("git") or {}))
+        changed_files = [str(value) for value in snapshot.get("changed_files") or []]
+        dirty = bool(snapshot.get("dirty", changed_files))
+        head = str(snapshot.get("head") or facts.get("head") or git.get("commit") or "")
+        git.update(
+            {
+                "commit": head,
+                "dirty": dirty,
+                "status_short": changed_files,
+            }
+        )
+        facts.update(
+            {
+                "head": head,
+                "git": git,
+                "dirty_status_summary": (
+                    "clean" if not dirty else f"{len(changed_files)} changed/untracked paths"
+                ),
+            }
+        )
+        now = self._clock()
+        readiness.update(
+            {
+                "status": "ready",
+                "currentness": "current",
+                "facts": facts,
+                "facts_revision": head,
+                "observed_at": float(snapshot.get("observed_at") or now),
+                "mutation_reconciled_reason": str(reason or "base_checkout_changed")[:200],
+                "mutation_source_operation_id": str(source_operation_id or ""),
+                "updated_at": now,
+            }
+        )
+        readiness.pop("stale_reason", None)
+        readiness.pop("stale_since", None)
+        readiness.pop("stale_source_operation_id", None)
+        group["readiness"] = readiness
+        group["updated_at"] = now
+        saved = self.store.put_entity(
+            WORK_GROUP_ENTITY,
+            work_group_id,
+            group,
+            expected_revision=entity["revision"],
+        )
+        self.store.append_event(
+            "work_group.base_mutation_snapshot_reconciled",
+            {
+                "work_group_id": work_group_id,
+                "reason": readiness["mutation_reconciled_reason"],
+                "source_operation_id": readiness["mutation_source_operation_id"],
             },
             entity_type=WORK_GROUP_ENTITY,
             entity_id=work_group_id,
@@ -2180,6 +2275,7 @@ class HubRuntimeV2:
             "status": group.get("status"),
             "lifecycle": group.get("lifecycle"),
             "visibility": group.get("visibility"),
+            "shared_write_policy": group.get("shared_write_policy") or "serialized",
             "workspace_ref": group.get("workspace_ref") or "",
             "workspace_projection_ref": group.get("workspace_projection_ref") or "",
             "requested_repo_path": group.get("requested_repo_path") or "",

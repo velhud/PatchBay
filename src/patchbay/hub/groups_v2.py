@@ -154,6 +154,7 @@ def create_successor_group(
         "status": "active",
         "visibility": str(predecessor.get("visibility") or "private"),
         "routing_policy": str(predecessor.get("routing_policy") or "keep_together"),
+        "shared_write_policy": str(predecessor.get("shared_write_policy") or "serialized"),
         "workspace_ref": str(predecessor.get("workspace_ref") or ""),
         "pinned_machine_id": machine_id,
         "pinned_edge_generation": edge_generation,

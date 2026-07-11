@@ -8,6 +8,14 @@ The current application exposes a local Streamable HTTP MCP bridge that lets Cha
 
 The intended ChatGPT posture is active management, not one-shot delegation and not direct manual repository reading. For non-trivial work, ChatGPT should first decide which worker or worker team to appoint. Named workers are continuing specialists. For important work, ChatGPT should ask workers for durable report files or changed-file evidence, inspect results, then use `codex_worker_message` for follow-up questions when reports are thin, contradictory, missing validation, or need another worker's context. Direct read/search tools remain available for orientation, focused verification, exact line/diff checks, and tiny exceptions, but broad investigation and implementation should flow through workers.
 
+Hub work groups default to serialized base-checkout writes. An architect may
+explicitly choose `shared_write_policy=manager_controlled` to permit concurrent
+shared-write workers in one checkout; PatchBay exposes that policy and leaves
+ownership boundaries and conflict reconciliation to the manager. Stale
+integration attempts return a fresh preview/token for review, completed base
+mutations reconcile current Git facts, and Edge preflight reports detected
+repository-local test environments without requiring one.
+
 ## Read Order
 
 1. [00 Overview](00_ARCHITECTURAL_OVERVIEW.md)
