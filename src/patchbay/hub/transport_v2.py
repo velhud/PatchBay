@@ -665,7 +665,10 @@ class HubPullTransportBridgeV2:
         *,
         token: str,
     ) -> Mapping[str, Any]:
-        machine = self._authenticate(payload, token, require_contract=True)
+        # Reconciliation may refer to a historical attempt contract after an
+        # Edge or Hub upgrade. Machine generation/token authentication plus the
+        # exact durable attempt fences below are the authority here.
+        machine = self._authenticate(payload, token, require_contract=False)
         operation_id = str(payload.get("operation_id") or "")
         self.broker.expire_leases(operation_id=operation_id)
         operation, attempt, contract = self._require_attempt_fences(payload)

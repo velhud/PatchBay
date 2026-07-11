@@ -44,6 +44,10 @@ The evidence separated deliberate safety behavior from defects:
 13. Rolling upgrades allow an older Edge to finish attempts already fenced to
     its advertised contract while preventing new placement on that incompatible
     Edge until it is upgraded.
+14. Historical reconciliation requests authenticate the enrolled machine and
+    generation, then use the durable operation/attempt/contract/fencing tuple;
+    they do not become unrecoverable merely because the Edge later advertises a
+    different contract.
 
 ## Verification Evidence
 

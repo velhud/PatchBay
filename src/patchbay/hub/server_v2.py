@@ -715,7 +715,9 @@ class _RuntimeEdgeController:
         *,
         token: str,
     ) -> Mapping[str, Any]:
-        machine = self._authenticate(payload, token, require_contract=True)
+        # Historical reconciliation is fenced by the stored attempt contract,
+        # so it must survive a later advertised-contract upgrade.
+        machine = self._authenticate(payload, token, require_contract=False)
         self.broker.expire_leases(operation_id=str(payload["operation_id"]))
         operation, attempt, contract = self._require_attempt_fences(payload)
         if attempt["state"] == "lease_expired":
