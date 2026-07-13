@@ -18,6 +18,7 @@ from patchbay.jobs.executor import (
     terminal_cleanup_pending,
 )
 from patchbay.jobs.manager import JobManager, JobState
+from patchbay.jobs.process_supervisor import cleanup_proof_budget_seconds
 from patchbay.jobs.session_terminal import CodexSessionTerminalObserver
 from patchbay.repo_locks import RepoMutationBusy, mark_repo_lock_options
 
@@ -79,6 +80,19 @@ def full_result(summary="COMPLETE"):
         "open_questions": [],
         "next_steps": [],
     }
+
+
+def test_supervisor_cleanup_call_budget_covers_both_discovery_layers(tmp_path):
+    config = make_config(tmp_path)
+    executor = JobExecutor(config, JobManager(config))
+    proof_budget = cleanup_proof_budget_seconds()
+
+    assert executor._post_completion_cleanup_call_timeout_seconds(
+        1.0, supervisor_contract=True
+    ) >= proof_budget * 2.0 + 9.0
+    assert executor._post_completion_cleanup_call_timeout_seconds(
+        0.1, supervisor_contract=True
+    ) == 1.0
 
 
 @pytest.mark.asyncio
@@ -2114,6 +2128,24 @@ time.sleep(30)
     cleanup_started = asyncio.Event()
     allow_cleanup = asyncio.Event()
     original_terminate = executor._terminate_process
+    original_wait_for_exit = executor._wait_for_process_group_exit
+    delayed_once = False
+
+    async def delayed_supervisor_proof(
+        cleanup_job_id, process, pgid, *, timeout
+    ):
+        nonlocal delayed_once
+        if not delayed_once:
+            delayed_once = True
+            proof_delay = min(
+                8.1, cleanup_proof_budget_seconds() - 0.5
+            )
+            assert timeout >= proof_delay
+            await asyncio.sleep(proof_delay)
+            timeout -= proof_delay
+        return await original_wait_for_exit(
+            cleanup_job_id, process, pgid, timeout=timeout
+        )
 
     async def held_terminate(job_id, process, **kwargs):
         cleanup_started.set()
@@ -2121,6 +2153,9 @@ time.sleep(30)
         return await original_terminate(job_id, process, **kwargs)
 
     monkeypatch.setattr(executor, "_terminate_process", held_terminate)
+    monkeypatch.setattr(
+        executor, "_wait_for_process_group_exit", delayed_supervisor_proof
+    )
     execution_task = asyncio.create_task(executor.execute_job(job_id))
 
     await asyncio.wait_for(cleanup_started.wait(), timeout=3)
@@ -2140,7 +2175,11 @@ time.sleep(30)
         await executor.repo_locks.acquire(repo, operation="overlapping_mutation")
 
     allow_cleanup.set()
-    await asyncio.wait_for(execution_task, timeout=4)
+    # The supervisor owns descendant discovery and cleanup proof. Under
+    # concurrent host load it is intentionally allowed to outlive the old
+    # sub-second wrapper deadline rather than being killed before it can prove
+    # the process tree empty.
+    await asyncio.wait_for(execution_task, timeout=12)
     assert manager.get_job(job_id).wrapper_cleanup_outcome == "terminated_after_terminal"
     next_lease = await executor.repo_locks.acquire(repo, operation="next_mutation")
     next_lease.release()

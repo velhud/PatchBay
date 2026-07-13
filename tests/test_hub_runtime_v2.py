@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -13,7 +14,7 @@ from patchbay.hub.runtime_v2 import (
     HubRuntimeV2,
 )
 from patchbay.hub.protocol_v2 import validate_hub_v2_tool_output
-from patchbay.hub.store_v2 import HubStoreV2
+from patchbay.hub.store_v2 import HubStoreV2, HubStoreV2Conflict
 from patchbay.hub.tool_surface import HUB_V2_CONTRACT_HASH
 from patchbay.protocol.context import RequestContext
 
@@ -170,11 +171,12 @@ def test_machine_generation_heartbeat_and_workspace_projection_survive_restart(t
     assert reopened_store.principal_ref == principal_ref
     assert fleet["machines"][0]["edge_generation"] == first["edge_generation"]
     assert fleet["machines"][0]["status"] == "online"
+    assert fleet["machines"][0]["worker_summary"]["projection_revision"] == 1
     assert workspaces[0]["workspace_ref"] == workspace_ref
     assert workspaces[0]["projections"][0]["local_path"] == "/srv/PatchBay"
 
 
-def test_projection_only_update_refreshes_machine_worker_status(tmp_path):
+def test_projection_only_update_refreshes_compact_machine_worker_summary(tmp_path):
     runtime, _, _ = make_runtime(tmp_path)
     enrolled = enroll_online(runtime, machine_id="machine_alpha")
     worker = {
@@ -182,6 +184,7 @@ def test_projection_only_update_refreshes_machine_worker_status(tmp_path):
         "name": "Projection worker",
         "turn_state": "working",
         "liveness": "active",
+        "integration_state": "no_changes",
     }
     heartbeat_workers(runtime, enrolled, 2, [worker])
 
@@ -189,7 +192,391 @@ def test_projection_only_update_refreshes_machine_worker_status(tmp_path):
     heartbeat_workers(runtime, enrolled, 3, [completed])
 
     machine = runtime.fleet_status()["result"]["machines"][0]
-    assert machine["worker_status"]["workers"] == [completed]
+    assert "worker_status" not in machine
+    assert machine["worker_summary"]["projection_revision"] == 3
+    assert machine["worker_summary"]["counts"] == {
+        "total": 1,
+        "active": 0,
+        "quiet": 0,
+        "stale": 0,
+        "lost": 0,
+        "failed": 0,
+        "completed": 1,
+        "unintegrated": 0,
+    }
+
+
+def test_compact_machine_worker_summary_uses_canonical_worker_states():
+    summary = HubRuntimeV2._fleet_worker_summary(
+        {
+            "workers": [
+                {
+                    "turn_state": "completed",
+                    "liveness": "terminal",
+                    "integration_state": "not_integrated",
+                },
+                {
+                    "turn_state": "failed",
+                    "liveness": "terminal",
+                    "integration_state": "uncertain",
+                },
+                {
+                    "turn_state": "working",
+                    "liveness": "quiet",
+                    "integration_state": "not_applicable",
+                },
+                "malformed",
+            ]
+        }
+    )
+
+    assert summary["counts"] == {
+        "total": 3,
+        "active": 1,
+        "quiet": 1,
+        "stale": 0,
+        "lost": 0,
+        "failed": 1,
+        "completed": 1,
+        "unintegrated": 2,
+    }
+
+
+def test_rejected_delta_does_not_replace_authoritative_fleet_projection(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    completed = [
+        {
+            "edge_worker_id": f"wrk_{index}",
+            "turn_state": "completed",
+            "liveness": "terminal",
+            "integration_state": "no_changes",
+        }
+        for index in range(2)
+    ]
+    heartbeat_workers(runtime, enrolled, 2, completed)
+
+    rejected = runtime.heartbeat(
+        machine_id="machine_alpha",
+        token=enrolled["node_token"],
+        edge_generation=enrolled["edge_generation"],
+        projection_revision=4,
+        worker_projection={
+            "snapshot_kind": "delta",
+            "workers": [
+                {
+                    "edge_worker_id": "wrk_rejected",
+                    "turn_state": "failed",
+                    "liveness": "terminal",
+                    "integration_state": "uncertain",
+                }
+            ],
+            "tombstones": [],
+        },
+    )
+
+    assert rejected["projection_accepted"] is False
+    assert rejected["request_full_snapshot"] is True
+    fleet = runtime.fleet_status()["result"]["machines"][0]
+    assert fleet["projection_revision"] == 2
+    assert fleet["worker_summary"]["projection_revision"] == 2
+    assert fleet["worker_summary"]["last_received_projection_revision"] == 4
+    assert fleet["worker_summary"]["resync_required"] is True
+    assert fleet["worker_projection_status"] == "resync_required"
+    assert fleet["worker_summary"]["counts"]["completed"] == 2
+    assert fleet["worker_summary"]["counts"]["failed"] == 0
+
+    accepted = runtime.heartbeat(
+        machine_id="machine_alpha",
+        token=enrolled["node_token"],
+        edge_generation=enrolled["edge_generation"],
+        projection_revision=4,
+        worker_projection={
+            "snapshot_kind": "full",
+            "complete_worker_set": True,
+            "workers": [
+                {
+                    "edge_worker_id": "wrk_replacement",
+                    "turn_state": "failed",
+                    "liveness": "terminal",
+                    "integration_state": "uncertain",
+                }
+            ],
+            "tombstones": [],
+        },
+    )
+    assert accepted["projection_accepted"] is True
+    fleet = runtime.fleet_status()["result"]["machines"][0]
+    assert fleet["projection_revision"] == 4
+    assert fleet["worker_summary"]["projection_revision"] == 4
+    assert fleet["worker_summary"]["resync_required"] is False
+    assert fleet["worker_summary"]["counts"]["failed"] == 1
+    assert fleet["worker_summary"]["counts"]["total"] == 1
+    assert fleet["worker_summary"]["counts"]["completed"] == 0
+    assert fleet["worker_summary"]["counts"]["lost"] == 0
+    assert fleet["worker_summary"]["tombstone_count"] == 2
+
+
+def test_worker_projection_conflict_rolls_back_entire_revision_and_can_retry(
+    tmp_path,
+):
+    runtime, store, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    original_workers = [
+        {
+            "edge_worker_id": worker_id,
+            "lane_id": "main",
+            "turn_state": "completed",
+            "liveness": "terminal",
+            "integration_state": "no_changes",
+        }
+        for worker_id in ("wrk_a", "wrk_b")
+    ]
+    heartbeat_workers(runtime, enrolled, 2, original_workers)
+
+    with pytest.raises(HubStoreV2Conflict, match="immutable_fleet_worker_lane_id"):
+        runtime.heartbeat(
+            machine_id="machine_alpha",
+            token=enrolled["node_token"],
+            edge_generation=enrolled["edge_generation"],
+            projection_revision=3,
+            worker_projection={
+                "snapshot_kind": "full",
+                "complete_worker_set": True,
+                "workers": [
+                    {
+                        "edge_worker_id": "wrk_c",
+                        "lane_id": "main",
+                        "turn_state": "completed",
+                        "liveness": "terminal",
+                        "integration_state": "no_changes",
+                    },
+                    {
+                        **original_workers[1],
+                        "lane_id": "conflicting-lane",
+                    },
+                ],
+                "tombstones": [],
+            },
+        )
+
+    fleet = runtime.fleet_status()["result"]["machines"][0]
+    assert fleet["projection_revision"] == 2
+    assert fleet["worker_summary"]["projection_revision"] == 2
+    assert fleet["worker_summary"]["counts"]["total"] == 2
+    assert all(
+        entity["record"].get("edge_worker_id") != "wrk_c"
+        for entity in store.list_entities(FLEET_WORKER_ENTITY)
+    )
+
+    corrected = runtime.heartbeat(
+        machine_id="machine_alpha",
+        token=enrolled["node_token"],
+        edge_generation=enrolled["edge_generation"],
+        projection_revision=3,
+        worker_projection={
+            "snapshot_kind": "full",
+            "complete_worker_set": True,
+            "workers": [
+                {
+                    "edge_worker_id": "wrk_c",
+                    "lane_id": "main",
+                    "turn_state": "completed",
+                    "liveness": "terminal",
+                    "integration_state": "no_changes",
+                },
+                original_workers[1],
+            ],
+            "tombstones": [],
+        },
+    )
+    assert corrected["projection_accepted"] is True
+    fleet = runtime.fleet_status()["result"]["machines"][0]
+    assert fleet["projection_revision"] == 3
+    assert fleet["worker_summary"]["projection_revision"] == 3
+    assert fleet["worker_summary"]["counts"]["total"] == 2
+    assert fleet["worker_summary"]["tombstone_count"] == 1
+
+
+def test_malformed_projection_is_rejected_before_machine_state_changes(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+
+    with pytest.raises(ValueError, match="tombstones must be a list"):
+        runtime.heartbeat(
+            machine_id="machine_alpha",
+            token=enrolled["node_token"],
+            edge_generation=enrolled["edge_generation"],
+            projection_revision=2,
+            worker_projection={
+                "snapshot_kind": "full",
+                "workers": [],
+                "tombstones": 7,
+            },
+        )
+
+    fleet_envelope = runtime.fleet_status()
+    fleet = fleet_envelope["result"]
+    assert fleet["machines"][0]["projection_revision"] == 1
+    assert fleet["machines"][0]["worker_summary"]["counts"]["total"] == 0
+    validate_hub_v2_tool_output("patchbay_fleet_status", fleet_envelope)
+
+
+def test_malformed_workspace_snapshot_is_rejected_before_revision_advances(
+    tmp_path,
+):
+    runtime, _, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+
+    with pytest.raises(ValueError, match="workspace projection must be an object"):
+        runtime.heartbeat(
+            machine_id="machine_alpha",
+            token=enrolled["node_token"],
+            edge_generation=enrolled["edge_generation"],
+            projection_revision=2,
+            workspaces=["malformed"],
+        )
+
+    fleet = runtime.fleet_status()["result"]
+    assert fleet["machines"][0]["projection_revision"] == 1
+    assert len(runtime.workspace_list()["result"]["workspaces"]) == 1
+
+
+def test_malformed_projection_health_cannot_poison_routing_after_restart(
+    tmp_path,
+):
+    runtime, store, path = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    runtime.heartbeat(
+        machine_id="machine_alpha",
+        token=enrolled["node_token"],
+        edge_generation=enrolled["edge_generation"],
+        projection_revision=1,
+        resource_status={
+            "active_workers": 0,
+            "free_worker_slots": 4,
+            "projection_health": 7,
+            "history": "must-not-persist",
+        },
+    )
+    store.close()
+
+    reopened_store = HubStoreV2(path)
+    restarted = HubRuntimeV2(
+        {
+            "hub": {
+                "heartbeat_stale_seconds": 90,
+                "routing": {"enabled": True, "min_disk_free_bytes": 0},
+            }
+        },
+        reopened_store,
+        clock=lambda: 1_001.0,
+    )
+    routing = restarted.routing_machine_views()
+    fleet = restarted.fleet_status()["result"]
+
+    assert routing[0]["workspaces"][0]["local_path"] == "/srv/PatchBay"
+    assert routing[0]["projection_health"] == {}
+    assert "history" not in routing[0]["resource_status"]
+    assert "history" not in json.dumps(fleet)
+    reopened_store.close()
+
+
+def test_fleet_status_sanitizes_raw_edge_fields_and_bounds_workspaces(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    workspaces = [
+        {
+            "alias": f"Repo-{index}",
+            "path": f"/srv/repos/repo-{index}",
+            "exists": True,
+            "git": {"is_git_repo": True, "branch": "main", "raw_advertised": "secret" * 10_000},
+            "history": "workspace-history" * 10_000,
+        }
+        for index in range(400)
+    ]
+    result = runtime.heartbeat(
+        machine_id="machine_alpha",
+        token=enrolled["node_token"],
+        edge_generation=enrolled["edge_generation"],
+        projection_revision=2,
+        capabilities={
+            "contract_hash": HUB_V2_CONTRACT_HASH,
+            "max_concurrent_jobs": 25,
+            "action_capabilities": {"worker_start": "v1"},
+            "raw_report": "capability-history" * 100_000,
+        },
+        workspaces=workspaces,
+        worker_projection={
+            "snapshot_kind": "full",
+            "complete_worker_set": True,
+            "workers": [],
+            "tombstones": [],
+            "raw_report": "worker-history" * 100_000,
+        },
+        resource_status={
+            "active_workers": 0,
+            "max_concurrent_jobs": 25,
+            "free_worker_slots": 25,
+            "queue_enabled": False,
+            "cpu_percent": 5,
+            "projection_health": {
+                "last_success_at": 999.0,
+                "projection_age_seconds": 1.0,
+                "raw_report": "projection-history" * 100_000,
+            },
+            "history": "resource-history" * 100_000,
+        },
+    )
+    assert result["projection_accepted"] is True
+
+    fleet_envelope = runtime.fleet_status(include_workspaces=True)
+    fleet = fleet_envelope["result"]
+    rendered = json.dumps(fleet, separators=(",", ":"))
+    assert len(rendered) < 50_000
+    assert "raw_report" not in rendered
+    assert "history" not in rendered
+    assert "raw_advertised" not in rendered
+    machine = fleet["machines"][0]
+    assert len(machine["workspaces"]) == 10
+    assert machine["workspace_count"] == 400
+    assert machine["hidden_workspace_count"] == 390
+    assert len(runtime.routing_machine_views()[0]["workspaces"]) == 400
+    assert runtime.routing_machine_views()[0]["workspaces"][0]["local_path"]
+    validate_hub_v2_tool_output("patchbay_fleet_status", fleet_envelope)
+
+
+def test_fleet_status_is_bounded_and_routes_detail_to_dedicated_tools(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    workers = [
+        {
+            "edge_worker_id": f"wrk_{index}",
+            "name": f"Historical worker {index}",
+            "turn_state": "completed",
+            "liveness": "terminal",
+            "report_summary": "large historical report " * 100,
+        }
+        for index in range(250)
+    ]
+    heartbeat_workers(runtime, enrolled, 2, workers)
+    for index in range(15):
+        create_group(runtime, caller=context("owner"), key=f"fleet-group-{index}")
+
+    result = runtime.fleet_status(
+        include_workspaces=True, context=context("owner")
+    )["result"]
+    encoded = json.dumps(result)
+
+    assert len(encoded) < 50_000
+    assert "large historical report" not in encoded
+    assert "Historical worker" not in encoded
+    assert result["machines"][0]["worker_summary"]["counts"]["total"] == 250
+    assert "advertised" not in result["machines"][0]["workspaces"][0]
+    assert len(result["owned_active_groups"]) == 10
+    assert result["owned_active_group_count"] == 15
+    assert result["hidden_owned_active_group_count"] == 5
+    assert all("worker_refs" not in item for item in result["owned_active_groups"])
 
 
 def test_reenrollment_creates_new_generation_and_preserves_old_generation_record(tmp_path):

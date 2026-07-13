@@ -89,10 +89,21 @@ Returns:
 - routing enabled/disabled;
 - online/offline/incompatible machine counts;
 - each visible machine's capacity, resource pressure, worker slots, queue
-  policy, heartbeat freshness, Edge protocol/tool-contract version, and compact
-  workspace summary;
-- current conversation group and owned active-group summary;
+  policy, heartbeat freshness, Edge protocol/tool-contract version, compact
+  worker counts, and optional compact workspace summary;
+- at most twenty machine summaries and, when requested, at most ten workspace
+  projections per machine, with explicit total and hidden counts for both;
+- compact current-conversation and owned-active-group summaries, capped to the
+  ten most recently updated owned groups with explicit total and hidden counts;
 - recovery warnings and next actions.
+
+This response is intentionally bounded. It never embeds historical worker
+records, reports, raw workspace advertisements, group worker lists, or full
+group state. Use the focused group, worker, and workspace tools for those
+details. Internal routing uses the complete authoritative workspace projection
+set rather than the bounded manager response. Worker counts describe the
+current authoritative set; separately reported tombstone counts preserve
+history without treating removed workers as current work.
 
 Replaces old self-test/config checks for ordinary operation. It reports live
 facts rather than a generic readiness label.

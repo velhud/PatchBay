@@ -29,6 +29,12 @@ For every non-trivial Hub task:
 
 1. Call `patchbay_fleet_status`, `patchbay_workspace_list`, and
    `patchbay_work_group_list`.
+   `patchbay_fleet_status` is a compact orientation view, not a worker-history
+   dump: it returns at most 20 machines, 10 workspaces per machine, and 10 owned
+   active groups, with explicit total and hidden counts. Use the focused group,
+   worker, and workspace tools when a capped collection says more records are
+   hidden. The cap does not limit routing; Hub evaluates the complete internal
+   projection set when selecting a machine.
 2. Resume the exact existing task with `patchbay_work_group_resume`, or create
    one durable task group with `patchbay_work_group_create`. One user task is
    one group; parallel specialists are lanes/workers inside it.
@@ -59,6 +65,12 @@ needed. PatchBay performs internal recovery; ChatGPT must never be told to call
 an unexposed internal action such as `complete_reconciliation`. If the same
 idempotency key is retried, the semantic payload must be identical. Generate a
 new stable key for a materially changed request.
+
+Edge fleet projections are revisioned snapshots. Hub accepts a worker,
+workspace, tombstone, and machine-revision update together or rejects the whole
+revision. A rejected or interrupted revision remains safe to retry with the
+same revision number; mixed partial projection state is not an expected
+manager recovery condition.
 
 The complete Hub catalog has exactly 31 tools in six families: fleet/discovery,
 groups, workers/artifacts, exceptional workspace inspection, Pro Requests, and

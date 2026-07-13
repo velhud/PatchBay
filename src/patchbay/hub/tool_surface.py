@@ -663,6 +663,85 @@ def _canonical_properties(source: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _fleet_status_descriptor() -> dict[str, Any]:
+    workspace_summary = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "workspace_projection_ref": {"type": ["string", "null"]},
+            "workspace_ref": {"type": ["string", "null"]},
+            "aliases": {"type": ["array", "null"], "items": {"type": "string"}},
+            "repository_identity": {"type": ["string", "null"]},
+            "local_path": {"type": ["string", "null"]},
+            "exists": {"type": ["boolean", "null"]},
+            "git": {"type": ["object", "boolean", "null"], "additionalProperties": True},
+            "active": {"type": ["boolean", "null"]},
+            "projection_revision": {"type": ["integer", "null"]},
+            "received_at": {"type": ["number", "null"]},
+        },
+    }
+    machine_summary = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "machine_id": {"type": "string"},
+            "display_name": {"type": "string"},
+            "edge_generation": {"type": "string"},
+            "status": {"type": "string"},
+            "compatibility": {"type": "string"},
+            "contract_hash": {"type": "string"},
+            "tags": {"type": "array", "maxItems": 32, "items": {"type": "string"}},
+            "role": {"type": "string"},
+            "last_seen_at": {"type": ["number", "null"]},
+            "last_seen_age_seconds": {"type": ["number", "null"]},
+            "projection_revision": {"type": "integer"},
+            "resource_status": {"type": "object", "additionalProperties": True},
+            "worker_projection_status": {"type": "string"},
+            "projection_health": {"type": "object", "additionalProperties": True},
+            "retired_at": {"type": ["number", "null"]},
+            "capabilities": {"type": "object", "additionalProperties": True},
+            "worker_summary": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "projection_revision": {"type": "integer"},
+                    "last_received_projection_revision": {"type": "integer"},
+                    "resync_required": {"type": "boolean"},
+                    "tombstone_count": {"type": "integer"},
+                    "counts": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            key: {"type": "integer"}
+                            for key in (
+                                "total",
+                                "active",
+                                "quiet",
+                                "stale",
+                                "lost",
+                                "failed",
+                                "completed",
+                                "unintegrated",
+                            )
+                        },
+                    },
+                },
+                "required": [
+                    "projection_revision",
+                    "last_received_projection_revision",
+                    "resync_required",
+                    "tombstone_count",
+                    "counts",
+                ],
+            },
+            "workspaces": {
+                "type": "array",
+                "maxItems": 10,
+                "items": workspace_summary,
+            },
+            "workspace_count": {"type": "integer"},
+            "hidden_workspace_count": {"type": "integer"},
+        },
+    }
     return _descriptor(
         "patchbay_fleet_status",
         "Return one compact Hub V2 operational view of current usable fleet capacity, compatibility, workspace summaries, current-group context, and recovery warnings. Retired machines are audit-only.",
@@ -684,9 +763,17 @@ def _fleet_status_descriptor() -> dict[str, Any]:
                 "schema_hash": {"type": "string"},
                 "routing_enabled": {"type": "boolean"},
                 "counts": {"type": "object", "additionalProperties": True},
-                "machines": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                "machines": {"type": "array", "maxItems": 20, "items": machine_summary},
+                "machine_count": {"type": "integer"},
+                "hidden_machine_count": {"type": "integer"},
                 "current_work_group": {"type": "object", "additionalProperties": True},
-                "owned_active_groups": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                "owned_active_groups": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "owned_active_group_count": {"type": "integer"},
+                "hidden_owned_active_group_count": {"type": "integer"},
             }
         ),
     )

@@ -12,7 +12,7 @@ the generic verification contract and collaborator-safe results.
 | --- | --- |
 | Codex CLI baseline | Current local verification recorded `codex-cli 0.144.1` |
 | Python checks | `compileall` passes |
-| Test suite | Current integrated repair candidate: `955 passed, 4 skipped` on macOS and `958 passed, 1 skipped` in the isolated production Linux image. Both runs cover the same 959-test inventory with platform-specific skips. |
+| Test suite | Current integrated repair candidate: `967 passed, 4 skipped` on macOS and `969 passed, 2 skipped` in the isolated production Linux image. Both runs cover the same 971-test inventory with platform-specific skips. |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Pro Escalation request loop | Unit tests and the live MCP probe cover CLI create, MCP list/read/claim/respond, CLI response readback, and blocked origin-worker dispatch |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |

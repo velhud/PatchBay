@@ -28,6 +28,13 @@ PatchBay use.
   `hub.state_db` when configured.
 - Stores edge profiles privately under `PATCHBAY_HOME/runtime/hub/edge-profile.json`.
 - Lets each edge advertise local capabilities, allowed workspaces, and compact worker status.
+- Keeps routine fleet orientation bounded even after long-running use: machine
+  entries expose worker counts rather than worker history, responses show at
+  most twenty machines and ten workspace projections per machine, owned active
+  groups are capped, and every capped collection includes explicit hidden/total
+  counts. Focused tools expose detailed group, worker, report, and workspace
+  records only when requested; internal routing still uses the complete
+  authoritative projection set.
 - Exposes the exact 31-tool manager surface and returns semantic worker results
   or durable pending operations, not synthetic command-success receipts.
 - Adds durable work groups: one user task becomes one group, lanes are workers
@@ -42,6 +49,10 @@ PatchBay use.
   projections, and durably upload results.
 - Keeps heartbeat, projection, claim, execution, lease renewal, result upload,
   and reconciliation independently scheduled.
+- Commits each accepted Edge projection atomically across worker, tombstone,
+  workspace, machine-revision, and projection records. A late conflict rolls
+  the whole projection back so the same Edge revision can be corrected and
+  retried instead of leaving mixed authoritative state.
 
 V2 uses HTTPS polling. Multiple ChatGPT conversations can already operate
 independent durable groups through one Hub without sharing group-local workers.

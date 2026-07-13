@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from patchbay.jobs.process_supervisor import cleanup_proof_budget_seconds
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - POSIX-only tests below are skipped.
@@ -22,6 +24,50 @@ SUPERVISOR_SCRIPT = (
     / "jobs"
     / "process_supervisor.py"
 )
+
+
+def test_cleanup_proof_budget_covers_bounded_darwin_discovery_path():
+    assert cleanup_proof_budget_seconds("darwin") >= 22.0
+    assert cleanup_proof_budget_seconds("linux") == 6.0
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin ps discovery path")
+def test_darwin_supervisor_publishes_proof_after_slow_discovery(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ps = fake_bin / "ps"
+    fake_ps.write_text("#!/bin/sh\nsleep 1.6\nexit 0\n", encoding="utf-8")
+    fake_ps.chmod(0o755)
+    proof_file = tmp_path / "slow-discovery.proof"
+    read_fd, write_fd = os.pipe()
+    started = time.monotonic()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SUPERVISOR_SCRIPT),
+            "--gate-fd",
+            str(read_fd),
+            "--cleanup-proof-path",
+            str(proof_file),
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ],
+        pass_fds=(read_fd,),
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+    )
+    os.close(read_fd)
+    os.write(write_fd, b"1")
+    os.close(write_fd)
+
+    assert process.wait(timeout=cleanup_proof_budget_seconds("darwin")) == 0
+    elapsed = time.monotonic() - started
+    assert elapsed >= 6.0
+    assert elapsed < cleanup_proof_budget_seconds("darwin")
+    assert proof_file.read_text(encoding="ascii").strip() == (
+        f"patchbay-supervisor-cleanup-v2:{process.pid}"
+    )
 
 
 def _pid_live(pid: int) -> bool:

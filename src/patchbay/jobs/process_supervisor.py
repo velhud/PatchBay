@@ -26,11 +26,36 @@ from typing import Iterable
 _PR_SET_CHILD_SUBREAPER = 36
 _TERM_GRACE_SECONDS = 0.25
 _KILL_GRACE_SECONDS = 1.0
+_DISCOVERY_COMMAND_TIMEOUT_SECONDS = 2.0
+_DARWIN_DISCOVERY_SOURCES = 2
 _KQ_EV_RECEIPT = 0x0040
 _KQ_EV_ERROR = 0x4000
 _JOB_PROCESS_MARKER_ENV = "PATCHBAY_JOB_MARKER"
 _QUIESCENT_SCANS = 3
 _QUIESCENT_SCAN_SECONDS = 0.02
+
+
+def cleanup_proof_budget_seconds(platform_name: str = sys.platform) -> float:
+    """Return the supervisor's bounded proof budget for one host platform."""
+
+    if platform_name != "darwin":
+        return 6.0
+    # Worst case: a TERM scan sees work, the first KILL scan sees it gone,
+    # then all quiescent scans prove continued absence. Each Darwin ownership
+    # scan may use both bounded ``ps`` discovery sources sequentially.
+    ownership_scans = 2 + _QUIESCENT_SCANS
+    discovery_budget = (
+        ownership_scans
+        * _DARWIN_DISCOVERY_SOURCES
+        * _DISCOVERY_COMMAND_TIMEOUT_SECONDS
+    )
+    return (
+        discovery_budget
+        + _TERM_GRACE_SECONDS
+        + _KILL_GRACE_SECONDS
+        + (_QUIESCENT_SCANS * _QUIESCENT_SCAN_SECONDS)
+        + 1.0
+    )
 
 
 class _DarwinBSDInfo(ctypes.Structure):
@@ -155,7 +180,7 @@ def _parent_snapshot() -> dict[int, int] | None:
             ["ps", "-axo", "pid=,ppid=,stat="],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_DISCOVERY_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -457,7 +482,7 @@ def _marker_pids(marker: str) -> set[int] | None:
             ["ps", "eww", "-axo", "pid=,command="],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_DISCOVERY_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):

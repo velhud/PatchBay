@@ -28,6 +28,7 @@ from patchbay.jobs.manager import (
     terminal_cleanup_pending,
     terminal_cleanup_recovery_required,  # noqa: F401 - compatibility re-export
 )
+from patchbay.jobs.process_supervisor import cleanup_proof_budget_seconds
 from patchbay.jobs.session_terminal import CodexSessionTerminalObserver
 from patchbay.connector.profiles import normalize_logging_paths, resolve_runtime_path
 from patchbay.repo_locks import (
@@ -71,6 +72,11 @@ _JOB_DESCENDANT_SCAN_UNCERTAIN_OPTION = "_job_descendant_scan_uncertain_v1"
 _MAX_PERSISTED_JOB_DESCENDANTS = 4096
 _LINUX_PROCESS_IDENTITY_PREFIX = "linux-proc-start-v2:"
 _DISCOVERY_NOT_PROVIDED = object()
+# The supervisor owns descendant cleanup and may need several bounded process
+# discovery passes under host contention before it can publish absence proof.
+# Killing it earlier destroys the strongest proof and leaves the job correctly
+# fail-closed, but unnecessarily recovery-pending.
+_SUPERVISOR_CLEANUP_GRACE_FLOOR_SECONDS = cleanup_proof_budget_seconds()
 
 _CODEX_STARTUP_LOCKS: Dict[tuple[int, str], asyncio.Lock] = {}
 
@@ -2396,6 +2402,24 @@ class JobExecutor:
         except (TypeError, ValueError):
             return 3.0
 
+    @staticmethod
+    def _post_completion_cleanup_call_timeout_seconds(
+        cleanup_timeout: float, *, supervisor_contract: bool
+    ) -> float:
+        cleanup = max(0.1, float(cleanup_timeout))
+        supervisor_grace = (
+            _SUPERVISOR_CLEANUP_GRACE_FLOOR_SECONDS
+            if supervisor_contract and cleanup >= 1.0
+            else 0.0
+        )
+        bounds = [1.0, cleanup * 2.0 + 0.5]
+        if supervisor_grace:
+            # Supervisor proof and executor-side process-tree discovery have
+            # independent bounded scans. Cover both, plus TERM/KILL waits,
+            # without turning this cleanup bound into a worker timeout.
+            bounds.append(supervisor_grace * 2.0 + cleanup * 4.0 + 5.0)
+        return max(bounds)
+
     def _persist_semantic_completion(
         self,
         job_id: str,
@@ -3540,9 +3564,14 @@ class JobExecutor:
                     observed_at = float(state.get("terminal_observed_at") or now)
                     if now - observed_at >= self._post_completion_exit_grace_seconds():
                         cleanup_timeout = self._post_completion_cleanup_timeout_seconds()
-                        cleanup_call_timeout = max(
-                            1.0,
-                            cleanup_timeout * 2.0 + 0.5,
+                        cleanup_job = self.job_manager.get_job(job_id)
+                        cleanup_call_timeout = (
+                            self._post_completion_cleanup_call_timeout_seconds(
+                                cleanup_timeout,
+                                supervisor_contract=self._supervisor_cleanup_contract_installed(
+                                    cleanup_job
+                                ),
+                            )
                         )
                         try:
                             await asyncio.wait_for(
@@ -5019,6 +5048,16 @@ class JobExecutor:
             return False
         group_signalled = False
         signalled = False
+        effective_graceful_timeout = max(0.1, float(graceful_timeout))
+        if self._supervisor_cleanup_contract_installed(job):
+            # Let the job-private supervisor terminate descendants and publish
+            # its durable cleanup proof before escalating against the
+            # supervisor itself. This is especially important when many Darwin
+            # workers complete together and process discovery is contended.
+            effective_graceful_timeout = max(
+                effective_graceful_timeout,
+                _SUPERVISOR_CLEANUP_GRACE_FLOOR_SECONDS,
+            )
         if isinstance(pid, int) and pid > 0 and leader_live:
             if await self._drain_current_job_descendants(
                 job_id,
@@ -5044,7 +5083,7 @@ class JobExecutor:
             job_id,
             process,
             pgid,
-            timeout=max(0.1, float(graceful_timeout)),
+            timeout=effective_graceful_timeout,
         )
         if not exited:
             if self._supervisor_cleanup_uncertain(job_id, process=process):
@@ -5085,6 +5124,20 @@ class JobExecutor:
                 if kill_timeout is None
                 else max(0.1, float(kill_timeout))
             )
+            if process.returncode is None:
+                try:
+                    # The subprocess transport can observe SIGKILL slightly
+                    # after process-group discovery has already gone empty,
+                    # especially on Darwin under concurrent test or worker
+                    # load. Reap the exact leader first, then prove that its
+                    # group, markers, descendants, and supervisor contract are
+                    # all empty below. This never turns leader exit alone into
+                    # permission to release the repository lock.
+                    await asyncio.wait_for(
+                        process.wait(), timeout=min(1.0, final_wait)
+                    )
+                except asyncio.TimeoutError:
+                    pass
             exited = await self._wait_for_process_group_exit(
                 job_id,
                 process,

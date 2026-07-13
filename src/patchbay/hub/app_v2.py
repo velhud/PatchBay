@@ -444,12 +444,10 @@ class HubRuntimeTargetPortV2:
         return workers
 
     def list_machines(self) -> dict[str, Any]:
-        envelope = self.runtime.fleet_status(
-            include_offline=True,
-            include_retired=False,
-            include_workspaces=True,
-        )
-        return {"machines": deepcopy(list(envelope["result"].get("machines") or []))}
+        # Routing needs the complete authorized projection set. The public
+        # fleet-status tool is intentionally bounded and must not become an
+        # accidental internal routing database.
+        return {"machines": self.runtime.routing_machine_views()}
 
     async def discover_workspaces(self, **kwargs: Any) -> dict[str, Any]:
         """Collect one bounded live discovery page from each eligible Edge."""

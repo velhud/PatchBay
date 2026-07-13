@@ -67,6 +67,24 @@ effect journals. Mutating calls require stable idempotency keys. `pending`
 means accepted for durable execution, not completed; managers recover with
 `patchbay_operation_status` or the worker/group wait tools.
 
+`patchbay_fleet_status` is deliberately an orientation view rather than a
+historical aggregate. It exposes compact current counts and safe resource and
+compatibility fields, returns at most 20 machines, at most 10 workspace
+projections per machine, and at most 10 owned active groups, and reports total
+and hidden counts for every capped collection. It never embeds raw worker
+history, worker reports, complete group payloads, raw Edge snapshots, or raw
+workspace advertisements. Managers use focused group, worker, and workspace
+tools for detail. Availability routing is not based on this capped public
+response; it evaluates the complete internal projection set.
+
+An accepted Edge projection revision is one atomic control-plane snapshot.
+Worker identities and projections, tombstones, workspace records and
+projections, the machine's applied revision, and the Edge projection record
+commit together or roll back together. A failed or conflicting revision does
+not advance the machine revision and may be retried with a corrected full
+snapshot at the same revision. Tombstoned worker history remains available to
+focused history views but is excluded from current fleet worker counts.
+
 `patchbay_worker_start_batch` creates one Hub-side aggregate parent plus the
 actual Edge-dispatched child operations. While children run, the parent reports
 `aggregate_running` and `wait_for_child_operations`; it has no Edge claim or

@@ -64,6 +64,9 @@ DEFAULT_RESULT_LIMIT = 100
 MAX_RESULT_LIMIT = 500
 DEFAULT_GROUP_STATUS_DETAIL_LIMIT = 100
 MAX_GROUP_STATUS_DETAIL_LIMIT = 100
+MAX_FLEET_MACHINES = 20
+MAX_FLEET_WORKSPACES_PER_MACHINE = 10
+MAX_FLEET_OWNED_GROUPS = 10
 
 ADAPTER_FAMILIES = frozenset(
     {
@@ -438,6 +441,7 @@ class HubRuntimeV2:
             "updated_at": now,
             "last_seen_at": None,
             "projection_revision": 0,
+            "worker_projection_revision": 0,
             "retired_at": None,
         }
         generation_record = {
@@ -543,6 +547,25 @@ class HubRuntimeV2:
         now = self._clock()
         prior_revision = _as_int(machine_record.get("projection_revision"), 0)
         accepted = revision > prior_revision
+        projection = worker_projection
+        if (
+            projection is None
+            and isinstance(worker_status, Mapping)
+            and isinstance(worker_status.get("workers"), list)
+        ):
+            projection = worker_status
+        projection_kind = str((projection or {}).get("snapshot_kind") or "full")
+        gap = prior_revision > 0 and revision > prior_revision + 1
+        rejected_delta = bool(
+            accepted
+            and projection is not None
+            and gap
+            and projection_kind != "full"
+        )
+        if accepted and projection is not None and not rejected_delta:
+            self._validate_worker_projection(projection)
+        if accepted and not rejected_delta and workspaces is not None:
+            self._validate_workspace_snapshot(workspaces)
 
         machine_record["last_seen_at"] = now
         machine_record["updated_at"] = now
@@ -551,19 +574,15 @@ class HubRuntimeV2:
         # projection revision; otherwise normal projection-first loops leave the
         # availability router permanently blind to CPU, memory, disk, and slots.
         if resource_status is not None:
-            machine_record["resource_status"] = deepcopy(dict(resource_status))
-        if accepted:
-            machine_record["projection_revision"] = revision
+            machine_record["resource_status"] = self._fleet_resource_summary(
+                resource_status
+            )
+        if accepted and not rejected_delta:
             if capabilities is not None:
                 machine_record["capabilities"] = deepcopy(dict(capabilities))
-            if worker_status is not None:
-                machine_record["worker_status"] = deepcopy(dict(worker_status))
-            elif worker_projection is not None:
-                # V2 publishes the authoritative worker snapshot through the
-                # dedicated projection endpoint before the next heartbeat. Keep
-                # the fleet machine summary aligned with the same accepted
-                # revision instead of retaining an older embedded snapshot.
-                machine_record["worker_status"] = deepcopy(dict(worker_projection))
+            # Worker projections are durable typed entities. Do not duplicate
+            # an unbounded raw Edge snapshot in the machine record.
+            machine_record.pop("worker_status", None)
         current = self.store.get_entity(MACHINE_ENTITY, machine_id)
         if current is None:
             raise HubStoreV2Conflict("machine_disappeared")
@@ -579,47 +598,117 @@ class HubRuntimeV2:
                 "machine": self._public_machine(saved_machine["record"], now=now),
             }
 
-        if workspaces is not None:
-            self._persist_workspace_snapshot(
-                machine_record, workspaces, projection_revision=revision, received_at=now
+        if rejected_delta:
+            edge_projection_id = stable_ref(
+                "edgeproj", machine_id, edge_generation, salt=self._identity_salt
             )
-        projection = worker_projection
-        if projection is None and isinstance(worker_status, Mapping) and isinstance(worker_status.get("workers"), list):
-            projection = worker_status
-        projection_kind = str((projection or {}).get("snapshot_kind") or "full")
-        gap = prior_revision > 0 and revision > prior_revision + 1
+            self._upsert_entity(
+                EDGE_PROJECTION_ENTITY,
+                edge_projection_id,
+                {
+                    "machine_id": machine_id,
+                    "edge_generation": edge_generation,
+                    "projection_revision": revision,
+                    "snapshot_kind": projection_kind,
+                    "projection_gap": True,
+                    "worker_projection_applied": False,
+                    "received_at": now,
+                },
+            )
+            return {
+                "accepted": True,
+                "projection_accepted": False,
+                "projection_applied": False,
+                "request_full_snapshot": True,
+                "ignored_revision": revision,
+                "current_projection_revision": prior_revision,
+                "machine": self._public_machine(saved_machine["record"], now=now),
+            }
+
         projection_applied = False
-        if projection is not None and not (gap and projection_kind != "full"):
-            self._persist_worker_snapshot(
+        worker_changes: list[dict[str, Any]] = []
+        base_mutation_snapshots: list[
+            tuple[str, Mapping[str, Any], str]
+        ] = []
+        if projection is not None:
+            worker_changes, base_mutation_snapshots = self._worker_snapshot_changes(
                 machine_record,
                 projection,
                 projection_revision=revision,
                 received_at=now,
             )
-            pro_request_adapter = self._adapters.get("pro_requests")
-            ingest_pro_requests = getattr(pro_request_adapter, "ingest_projection", None)
-            if callable(ingest_pro_requests):
-                ingest_pro_requests(
-                    machine_record,
-                    projection,
-                    projection_revision=revision,
-                    received_at=now,
-                )
             projection_applied = True
-        edge_projection_id = stable_ref("edgeproj", machine_id, edge_generation, salt=self._identity_salt)
-        self._upsert_entity(
-            EDGE_PROJECTION_ENTITY,
-            edge_projection_id,
-            {
-                "machine_id": machine_id,
-                "edge_generation": edge_generation,
-                "projection_revision": revision,
-                "snapshot_kind": projection_kind,
-                "projection_gap": gap,
-                "worker_projection_applied": projection_applied,
-                "received_at": now,
-            },
+        workspace_changes = (
+            self._workspace_snapshot_changes(
+                machine_record,
+                workspaces,
+                projection_revision=revision,
+                received_at=now,
+            )
+            if workspaces is not None
+            else []
         )
+        current_machine = self.store.get_entity(MACHINE_ENTITY, machine_id)
+        if current_machine is None:
+            raise HubStoreV2Conflict("machine_disappeared")
+        applied_machine = deepcopy(current_machine["record"])
+        applied_machine["projection_revision"] = revision
+        if projection_applied:
+            applied_machine["worker_projection_revision"] = revision
+        edge_projection_id = stable_ref("edgeproj", machine_id, edge_generation, salt=self._identity_salt)
+        existing_edge_projection = self.store.get_entity(
+            EDGE_PROJECTION_ENTITY, edge_projection_id
+        )
+        edge_projection_record = {
+            "machine_id": machine_id,
+            "edge_generation": edge_generation,
+            "projection_revision": revision,
+            "snapshot_kind": projection_kind,
+            "projection_gap": gap,
+            "worker_projection_applied": projection_applied,
+            "received_at": now,
+        }
+        projection_changes = [
+            *worker_changes,
+            *workspace_changes,
+            {
+                "entity_type": MACHINE_ENTITY,
+                "entity_id": machine_id,
+                "record": applied_machine,
+                "expected_revision": current_machine["revision"],
+            },
+            {
+                "entity_type": EDGE_PROJECTION_ENTITY,
+                "entity_id": edge_projection_id,
+                "record": edge_projection_record,
+                "expected_revision": (
+                    existing_edge_projection["revision"]
+                    if existing_edge_projection
+                    else 0
+                ),
+            },
+        ]
+        self.store.put_entities_atomic(projection_changes)
+        saved_machine = self.store.get_entity(MACHINE_ENTITY, machine_id)
+        if saved_machine is None:
+            raise HubStoreV2Conflict("machine_disappeared")
+
+        pro_request_adapter = self._adapters.get("pro_requests")
+        ingest_pro_requests = getattr(pro_request_adapter, "ingest_projection", None)
+        if projection is not None and callable(ingest_pro_requests):
+            ingest_pro_requests(
+                machine_record,
+                projection,
+                projection_revision=revision,
+                received_at=now,
+            )
+        for work_group_id, snapshot, source_operation_id in base_mutation_snapshots:
+            self.record_group_base_mutation_snapshot(
+                work_group_id=work_group_id,
+                snapshot=snapshot,
+                reason="shared_write_worker_turn_finished",
+                source_operation_id=source_operation_id,
+            )
         self.store.append_event(
             "machine.heartbeat",
             {
@@ -641,6 +730,16 @@ class HubRuntimeV2:
         }
 
     # -- Workspace projections ------------------------------------------
+
+    def _validate_workspace_snapshot(
+        self, workspaces: list[Mapping[str, Any]]
+    ) -> None:
+        if not isinstance(workspaces, list):
+            raise ValueError("Workspace projection snapshot must be a list")
+        for workspace in workspaces:
+            if not isinstance(workspace, Mapping):
+                raise ValueError("Each workspace projection must be an object")
+            self._workspace_identity(workspace)
 
     def _workspace_identity(self, workspace: Mapping[str, Any]) -> tuple[str, str, list[str]]:
         repository_identity = ""
@@ -671,20 +770,21 @@ class HubRuntimeV2:
         )
         return workspace_ref, repository_identity, aliases
 
-    def _persist_workspace_snapshot(
+    def _workspace_snapshot_changes(
         self,
         machine: Mapping[str, Any],
         workspaces: list[Mapping[str, Any]],
         *,
         projection_revision: int,
         received_at: float,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
+        self._validate_workspace_snapshot(workspaces)
         machine_id = str(machine["machine_id"])
         edge_generation = str(machine["edge_generation"])
         seen: set[str] = set()
+        pending_logical: dict[str, dict[str, Any]] = {}
+        pending_projections: dict[str, dict[str, Any]] = {}
         for advertised in workspaces:
-            if not isinstance(advertised, Mapping):
-                raise ValueError("Each workspace projection must be an object")
             workspace_ref, repository_identity, aliases = self._workspace_identity(advertised)
             local_path = _normalize_path(advertised.get("path") or advertised.get("root"))
             projection_identity = WorkspaceProjectionIdentity.create(
@@ -695,15 +795,23 @@ class HubRuntimeV2:
                 salt=self._identity_salt,
             )
             seen.add(projection_identity.projection_ref)
-            logical = self.store.get_entity(WORKSPACE_ENTITY, workspace_ref)
-            logical_record = deepcopy(logical["record"]) if logical else {
-                "workspace_ref": workspace_ref,
-                "display_name": aliases[0] if aliases else workspace_ref,
-                "repository_identity": repository_identity,
-                "aliases": [],
-                "projection_refs": [],
-                "created_at": received_at,
-            }
+            pending = pending_logical.get(workspace_ref)
+            if pending is None:
+                logical = self.store.get_entity(WORKSPACE_ENTITY, workspace_ref)
+                logical_record = deepcopy(logical["record"]) if logical else {
+                    "workspace_ref": workspace_ref,
+                    "display_name": aliases[0] if aliases else workspace_ref,
+                    "repository_identity": repository_identity,
+                    "aliases": [],
+                    "projection_refs": [],
+                    "created_at": received_at,
+                }
+                pending = {
+                    "record": logical_record,
+                    "expected_revision": logical["revision"] if logical else 0,
+                }
+                pending_logical[workspace_ref] = pending
+            logical_record = pending["record"]
             if repository_identity and logical_record.get("repository_identity") not in {"", repository_identity}:
                 raise HubStoreV2Conflict("workspace_repository_identity_conflict")
             logical_record["repository_identity"] = repository_identity or logical_record.get("repository_identity", "")
@@ -713,12 +821,6 @@ class HubRuntimeV2:
                 projection_refs.append(projection_identity.projection_ref)
             logical_record["projection_refs"] = projection_refs
             logical_record["updated_at"] = received_at
-            self.store.put_entity(
-                WORKSPACE_ENTITY,
-                workspace_ref,
-                logical_record,
-                expected_revision=logical["revision"] if logical else 0,
-            )
             projection_record = {
                 "workspace_projection_ref": projection_identity.projection_ref,
                 "workspace_ref": workspace_ref,
@@ -734,11 +836,18 @@ class HubRuntimeV2:
                 "projection_revision": projection_revision,
                 "received_at": received_at,
             }
-            self._upsert_entity(
+            existing_projection = self.store.get_entity(
                 WORKSPACE_PROJECTION_ENTITY,
                 projection_identity.projection_ref,
-                projection_record,
             )
+            pending_projections[projection_identity.projection_ref] = {
+                "record": projection_record,
+                "expected_revision": (
+                    existing_projection["revision"]
+                    if existing_projection
+                    else 0
+                ),
+            }
         for entity in self.store.list_entities(WORKSPACE_PROJECTION_ENTITY):
             record = entity["record"]
             if (
@@ -749,12 +858,44 @@ class HubRuntimeV2:
             ):
                 replacement = deepcopy(record)
                 replacement.update({"active": False, "omitted_at": received_at, "projection_revision": projection_revision})
-                self.store.put_entity(
-                    WORKSPACE_PROJECTION_ENTITY,
-                    entity["entity_id"],
-                    replacement,
-                    expected_revision=entity["revision"],
-                )
+                pending_projections[entity["entity_id"]] = {
+                    "record": replacement,
+                    "expected_revision": entity["revision"],
+                }
+        changes = [
+            {
+                "entity_type": WORKSPACE_ENTITY,
+                "entity_id": workspace_ref,
+                **change,
+            }
+            for workspace_ref, change in pending_logical.items()
+        ]
+        changes.extend(
+            {
+                "entity_type": WORKSPACE_PROJECTION_ENTITY,
+                "entity_id": projection_ref,
+                **change,
+            }
+            for projection_ref, change in pending_projections.items()
+        )
+        return changes
+
+    def _persist_workspace_snapshot(
+        self,
+        machine: Mapping[str, Any],
+        workspaces: list[Mapping[str, Any]],
+        *,
+        projection_revision: int,
+        received_at: float,
+    ) -> None:
+        changes = self._workspace_snapshot_changes(
+            machine,
+            workspaces,
+            projection_revision=projection_revision,
+            received_at=received_at,
+        )
+        if changes:
+            self.store.put_entities_atomic(changes)
 
     def _matching_workspace_projections(
         self,
@@ -911,26 +1052,58 @@ class HubRuntimeV2:
 
     # -- Worker projections ---------------------------------------------
 
-    def _persist_worker_snapshot(
+    @staticmethod
+    def _validate_worker_projection(projection: Mapping[str, Any]) -> None:
+        workers = projection.get("workers") or []
+        if not isinstance(workers, list):
+            raise ValueError("Worker projection workers must be a list")
+        worker_ids: set[str] = set()
+        for value in workers:
+            if not isinstance(value, Mapping):
+                raise ValueError("Each worker projection must be an object")
+            worker_id = str(
+                value.get("edge_worker_id") or value.get("worker_id") or ""
+            ).strip()
+            if not worker_id:
+                raise ValueError("Worker projection requires edge_worker_id")
+            if worker_id in worker_ids:
+                raise ValueError("Worker projection edge_worker_id values must be unique")
+            worker_ids.add(worker_id)
+        tombstones = projection.get("tombstones") or []
+        if not isinstance(tombstones, list):
+            raise ValueError("Worker projection tombstones must be a list")
+        if any(not isinstance(value, Mapping) for value in tombstones):
+            raise ValueError("Each worker projection tombstone must be an object")
+        tombstone_ids = [
+            str(value.get("edge_worker_id") or "").strip()
+            for value in tombstones
+            if value.get("edge_worker_id")
+        ]
+        if len(tombstone_ids) != len(set(tombstone_ids)):
+            raise ValueError("Worker projection tombstone ids must be unique")
+        if worker_ids.intersection(tombstone_ids):
+            raise ValueError("A worker cannot be current and tombstoned together")
+
+    def _worker_snapshot_changes(
         self,
         machine: Mapping[str, Any],
         projection: Mapping[str, Any],
         *,
         projection_revision: int,
         received_at: float,
-    ) -> None:
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[tuple[str, Mapping[str, Any], str]],
+    ]:
+        self._validate_worker_projection(projection)
         workers = projection.get("workers") or []
-        if not isinstance(workers, list):
-            raise ValueError("Worker projection workers must be a list")
         machine_id = str(machine["machine_id"])
         edge_generation = str(machine["edge_generation"])
         seen_edge_ids: set[str] = set()
+        changes: list[dict[str, Any]] = []
+        base_mutation_snapshots: list[tuple[str, Mapping[str, Any], str]] = []
         for value in workers:
-            if not isinstance(value, Mapping):
-                raise ValueError("Each worker projection must be an object")
             edge_worker_id = str(value.get("edge_worker_id") or value.get("worker_id") or "").strip()
-            if not edge_worker_id:
-                raise ValueError("Worker projection requires edge_worker_id")
             seen_edge_ids.add(edge_worker_id)
             identity = FleetWorkerIdentity.create(
                 machine_id=machine_id,
@@ -962,11 +1135,13 @@ class HubRuntimeV2:
                         raise HubStoreV2Conflict(f"immutable_fleet_worker_{field}_conflict")
                 immutable = {**deepcopy(old), **{key: value for key, value in immutable.items() if value}}
                 immutable["created_at"] = old.get("created_at", received_at)
-            self.store.put_entity(
-                FLEET_WORKER_ENTITY,
-                identity.fleet_worker_ref,
-                immutable,
-                expected_revision=existing["revision"] if existing else 0,
+            changes.append(
+                {
+                    "entity_type": FLEET_WORKER_ENTITY,
+                    "entity_id": identity.fleet_worker_ref,
+                    "record": immutable,
+                    "expected_revision": existing["revision"] if existing else 0,
+                }
             )
             worker_projection = deepcopy(dict(value))
             worker_projection.update(
@@ -993,7 +1168,18 @@ class HubRuntimeV2:
                 == value.get("content_sha256")
             ):
                 continue
-            self._upsert_entity(WORKER_PROJECTION_ENTITY, identity.fleet_worker_ref, worker_projection)
+            changes.append(
+                {
+                    "entity_type": WORKER_PROJECTION_ENTITY,
+                    "entity_id": identity.fleet_worker_ref,
+                    "record": worker_projection,
+                    "expected_revision": (
+                        existing_projection["revision"]
+                        if existing_projection
+                        else 0
+                    ),
+                }
+            )
             if (
                 worker_projection.get("workspace_mode") == "shared_write"
                 and worker_projection.get("turn_state")
@@ -1001,11 +1187,12 @@ class HubRuntimeV2:
                 and work_group_id
                 and isinstance(worker_projection.get("base_checkout_snapshot"), Mapping)
             ):
-                self.record_group_base_mutation_snapshot(
-                    work_group_id=work_group_id,
-                    snapshot=worker_projection["base_checkout_snapshot"],
-                    reason="shared_write_worker_turn_finished",
-                    source_operation_id=f"{identity.fleet_worker_ref}:{projection_revision}",
+                base_mutation_snapshots.append(
+                    (
+                        work_group_id,
+                        worker_projection["base_checkout_snapshot"],
+                        f"{identity.fleet_worker_ref}:{projection_revision}",
+                    )
                 )
 
         tombstones = projection.get("tombstones") or []
@@ -1039,11 +1226,38 @@ class HubRuntimeV2:
                     "received_at": received_at,
                 }
             )
-            self.store.put_entity(
-                WORKER_PROJECTION_ENTITY,
-                projection_entity["entity_id"],
-                replacement,
-                expected_revision=projection_entity["revision"],
+            changes.append(
+                {
+                    "entity_type": WORKER_PROJECTION_ENTITY,
+                    "entity_id": projection_entity["entity_id"],
+                    "record": replacement,
+                    "expected_revision": projection_entity["revision"],
+                }
+            )
+        return changes, base_mutation_snapshots
+
+    def _persist_worker_snapshot(
+        self,
+        machine: Mapping[str, Any],
+        projection: Mapping[str, Any],
+        *,
+        projection_revision: int,
+        received_at: float,
+    ) -> None:
+        changes, base_mutation_snapshots = self._worker_snapshot_changes(
+            machine,
+            projection,
+            projection_revision=projection_revision,
+            received_at=received_at,
+        )
+        if changes:
+            self.store.put_entities_atomic(changes)
+        for work_group_id, snapshot, source_operation_id in base_mutation_snapshots:
+            self.record_group_base_mutation_snapshot(
+                work_group_id=work_group_id,
+                snapshot=snapshot,
+                reason="shared_write_worker_turn_finished",
+                source_operation_id=source_operation_id,
             )
 
     def _workers_for_group(self, work_group_id: str) -> list[dict[str, Any]]:
@@ -1076,7 +1290,12 @@ class HubRuntimeV2:
         contract_hash = str(capabilities.get("contract_hash") or "")
         compatibility = "compatible" if contract_hash == HUB_V2_CONTRACT_HASH else "incompatible"
         resources = deepcopy(dict(record.get("resource_status") or {}))
-        projection_health = deepcopy(dict(resources.get("projection_health") or {}))
+        raw_projection_health = resources.get("projection_health")
+        projection_health = deepcopy(
+            dict(raw_projection_health)
+            if isinstance(raw_projection_health, Mapping)
+            else {}
+        )
         projection_age = projection_health.get("projection_age_seconds")
         projection_status = "unknown"
         if projection_health.get("last_success_at"):
@@ -1105,6 +1324,422 @@ class HubRuntimeV2:
             "worker_projection_status": projection_status,
             "projection_health": projection_health,
             "retired_at": record.get("retired_at"),
+        }
+
+    @staticmethod
+    def _fleet_worker_summary(worker_status: Mapping[str, Any]) -> dict[str, Any]:
+        """Return bounded fleet-level worker facts without embedding history."""
+
+        workers = worker_status.get("workers")
+        items = workers if isinstance(workers, list) else []
+        current_items = [
+            item
+            for item in items
+            if isinstance(item, Mapping) and not item.get("tombstoned")
+        ]
+        counts = {
+            "total": len(current_items),
+            "active": 0,
+            "quiet": 0,
+            "stale": 0,
+            "lost": 0,
+            "failed": 0,
+            "completed": 0,
+            "unintegrated": 0,
+        }
+        for worker in current_items:
+            turn_state = str(worker.get("turn_state") or "").casefold()
+            liveness = str(worker.get("liveness") or "").casefold()
+            integration_state = str(worker.get("integration_state") or "").casefold()
+            if turn_state in ACTIVE_TURN_STATES:
+                counts["active"] += 1
+            if liveness == "quiet":
+                counts["quiet"] += 1
+            if liveness == "stale":
+                counts["stale"] += 1
+            if liveness == "lost":
+                counts["lost"] += 1
+            if turn_state == "failed":
+                counts["failed"] += 1
+            if turn_state == "completed":
+                counts["completed"] += 1
+            if integration_state in {"not_integrated", "uncertain"}:
+                counts["unintegrated"] += 1
+        return {
+            "projection_revision": _as_int(
+                worker_status.get("projection_revision"), 0
+            ),
+            "tombstone_count": sum(
+                bool(item.get("tombstoned"))
+                for item in items
+                if isinstance(item, Mapping)
+            ),
+            "counts": counts,
+        }
+
+    def _authoritative_machine_worker_summary(
+        self, machine_id: str, edge_generation: str
+    ) -> dict[str, Any]:
+        workers: list[dict[str, Any]] = []
+        machine_entity = self.store.get_entity(MACHINE_ENTITY, machine_id)
+        machine_record = machine_entity["record"] if machine_entity else {}
+        revision = _as_int(machine_record.get("worker_projection_revision"), 0)
+        for entity in self.store.list_entities(WORKER_PROJECTION_ENTITY):
+            record = entity["record"]
+            if (
+                str(record.get("machine_id") or "") != machine_id
+                or str(record.get("edge_generation") or "") != edge_generation
+            ):
+                continue
+            record_revision = _as_int(record.get("edge_projection_revision"), 0)
+            workers.append(record)
+            revision = max(revision, record_revision)
+        summary = self._fleet_worker_summary(
+            {"workers": workers, "projection_revision": revision}
+        )
+        latest_edge_projection: Mapping[str, Any] = {}
+        for entity in self.store.list_entities(EDGE_PROJECTION_ENTITY):
+            record = entity["record"]
+            if (
+                str(record.get("machine_id") or "") == machine_id
+                and str(record.get("edge_generation") or "") == edge_generation
+                and _as_int(record.get("projection_revision"), 0)
+                >= _as_int(latest_edge_projection.get("projection_revision"), 0)
+            ):
+                latest_edge_projection = record
+        received_revision = _as_int(
+            latest_edge_projection.get("projection_revision"), revision
+        )
+        if latest_edge_projection.get("worker_projection_applied"):
+            summary["projection_revision"] = max(
+                summary["projection_revision"], received_revision
+            )
+        summary["last_received_projection_revision"] = received_revision
+        summary["resync_required"] = bool(
+            latest_edge_projection
+            and latest_edge_projection.get("projection_gap")
+            and not latest_edge_projection.get("worker_projection_applied")
+        )
+        return summary
+
+    @staticmethod
+    def _fleet_projection_health(resources: Mapping[str, Any]) -> dict[str, Any]:
+        raw = resources.get("projection_health")
+        health = raw if isinstance(raw, Mapping) else {}
+        result: dict[str, Any] = {}
+        for key in (
+            "last_attempt_at",
+            "last_success_at",
+            "last_success_revision",
+            "consecutive_failures",
+            "restart_count",
+            "updated_at",
+            "projection_age_seconds",
+        ):
+            value = health.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[key] = value
+        category = _optional_text(health.get("last_error_category"), 120)
+        if category:
+            result["last_error_category"] = category
+        return result
+
+    @staticmethod
+    def _fleet_resource_summary(resources: Mapping[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        numeric_fields = (
+            "active_workers",
+            "max_concurrent_jobs",
+            "free_worker_slots",
+            "cpu_percent",
+            "memory_used_percent",
+            "memory_available_bytes",
+            "memory_total_bytes",
+            "disk_free_bytes",
+            "disk_total_bytes",
+            "disk_used_percent",
+            "disk_filesystem_free_bytes",
+            "disk_filesystem_total_bytes",
+            "disk_filesystem_used_percent",
+            "disk_host_free_bytes",
+            "disk_host_total_bytes",
+            "disk_host_used_percent",
+        )
+        for key in numeric_fields:
+            value = resources.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[key] = value
+        if isinstance(resources.get("queue_enabled"), bool):
+            result["queue_enabled"] = resources["queue_enabled"]
+        for key in (
+            "cpu_telemetry_source",
+            "cpu_telemetry_confidence",
+            "memory_telemetry_source",
+            "memory_telemetry_confidence",
+            "disk_telemetry_source",
+            "disk_telemetry_confidence",
+            "disk_host_source",
+            "disk_telemetry_warning",
+        ):
+            value = _optional_text(resources.get(key), 500)
+            if value:
+                result[key] = value
+        health = HubRuntimeV2._fleet_projection_health(resources)
+        if health:
+            result["projection_health"] = health
+        return result
+
+    def _fleet_machine_summary(
+        self,
+        record: Mapping[str, Any],
+        *,
+        now: float,
+        worker_summary: Mapping[str, Any],
+        include_workspaces: bool = False,
+    ) -> dict[str, Any]:
+        """Project one machine for routine manager use without raw snapshots."""
+
+        last_seen = _as_float(record.get("last_seen_at"), 0)
+        retired = bool(record.get("retired_at"))
+        status = (
+            "retired"
+            if retired
+            else (
+                "online"
+                if last_seen and now - last_seen <= self.stale_seconds
+                else "offline"
+            )
+        )
+        capabilities = record.get("capabilities")
+        capability_map = capabilities if isinstance(capabilities, Mapping) else {}
+        compact_capabilities: dict[str, Any] = {}
+        for key in (
+            "protocol_version",
+            "contract_version",
+            "contract_hash",
+            "manifest_hash",
+            "schema_hash",
+            "action_capability_version",
+            "default_sandbox",
+            "bash_mode",
+        ):
+            value = _optional_text(capability_map.get(key), 256)
+            if value:
+                compact_capabilities[key] = value
+        for key in (
+            "codex_worker_tools",
+            "queue_enabled",
+            "direct_write",
+        ):
+            if isinstance(capability_map.get(key), bool):
+                compact_capabilities[key] = capability_map[key]
+        if isinstance(capability_map.get("max_concurrent_jobs"), int):
+            compact_capabilities["max_concurrent_jobs"] = max(
+                0, int(capability_map["max_concurrent_jobs"])
+            )
+        action_capabilities = capability_map.get("action_capabilities")
+        if isinstance(action_capabilities, Mapping):
+            compact_capabilities["action_capability_count"] = len(
+                action_capabilities
+            )
+        resources = record.get("resource_status")
+        resource_map = resources if isinstance(resources, Mapping) else {}
+        resource_summary = self._fleet_resource_summary(resource_map)
+        projection_health = resource_summary.get("projection_health")
+        health_map = (
+            projection_health if isinstance(projection_health, Mapping) else {}
+        )
+        projection_age = health_map.get("projection_age_seconds")
+        projection_status = "unknown"
+        if health_map.get("last_success_at"):
+            projection_status = (
+                "stale"
+                if projection_age is not None
+                and float(projection_age) > self.stale_seconds
+                else "current"
+            )
+        elif health_map.get("consecutive_failures"):
+            projection_status = "failed"
+        if worker_summary.get("resync_required"):
+            projection_status = "resync_required"
+        contract_hash = _optional_text(capability_map.get("contract_hash"), 256)
+        summary = {
+            "machine_id": str(record.get("machine_id") or ""),
+            "display_name": _optional_text(record.get("display_name"), 120),
+            "edge_generation": str(record.get("edge_generation") or ""),
+            "status": status,
+            "compatibility": (
+                "compatible"
+                if contract_hash == HUB_V2_CONTRACT_HASH
+                else "incompatible"
+            ),
+            "contract_hash": contract_hash,
+            "tags": [
+                text
+                for text in (
+                    _optional_text(item, 80)
+                    for item in (
+                        list(record.get("tags") or [])[:32]
+                        if isinstance(record.get("tags"), (list, tuple, set))
+                        else []
+                    )
+                )
+                if text
+            ],
+            "role": _optional_text(record.get("role"), 80),
+            "last_seen_at": record.get("last_seen_at"),
+            "last_seen_age_seconds": (
+                round(now - last_seen, 3) if last_seen else None
+            ),
+            "projection_revision": _as_int(record.get("projection_revision"), 0),
+            "resource_status": resource_summary,
+            "worker_projection_status": projection_status,
+            "projection_health": deepcopy(dict(health_map)),
+            "retired_at": record.get("retired_at"),
+        }
+        summary["capabilities"] = compact_capabilities
+        summary["worker_summary"] = deepcopy(dict(worker_summary))
+        if include_workspaces:
+            workspaces = [
+                self._fleet_workspace_summary(projection["record"])
+                for projection in self.store.list_entities(WORKSPACE_PROJECTION_ENTITY)
+                if projection["record"].get("machine_id") == summary["machine_id"]
+                and projection["record"].get("edge_generation")
+                == summary["edge_generation"]
+                and projection["record"].get("active")
+            ]
+            workspaces.sort(
+                key=lambda item: (
+                    str(item.get("workspace_ref") or ""),
+                    str(item.get("workspace_projection_ref") or ""),
+                )
+            )
+            total = len(workspaces)
+            summary["workspaces"] = workspaces[
+                :MAX_FLEET_WORKSPACES_PER_MACHINE
+            ]
+            summary["workspace_count"] = total
+            summary["hidden_workspace_count"] = max(
+                0, total - len(summary["workspaces"])
+            )
+        return summary
+
+    @staticmethod
+    def _fleet_workspace_summary(record: Mapping[str, Any]) -> dict[str, Any]:
+        raw_aliases = record.get("aliases")
+        aliases = (
+            list(raw_aliases)[:16]
+            if isinstance(raw_aliases, (list, tuple, set))
+            else [raw_aliases]
+            if isinstance(raw_aliases, str)
+            else []
+        )
+        git_raw = record.get("git")
+        if isinstance(git_raw, Mapping):
+            git_value: Any = {
+                key: value
+                for key, value in (
+                    (
+                        "is_git_repo",
+                        bool(
+                            git_raw.get("is_git_repo")
+                            or git_raw.get("git_repo")
+                        ),
+                    ),
+                    ("branch", _optional_text(git_raw.get("branch"), 200)),
+                    ("head", _optional_text(git_raw.get("head"), 200)),
+                )
+                if value not in {"", None}
+            }
+        else:
+            git_value = bool(git_raw)
+        return {
+            "workspace_projection_ref": _optional_text(
+                record.get("workspace_projection_ref"), 256
+            ),
+            "workspace_ref": _optional_text(record.get("workspace_ref"), 256),
+            "aliases": [
+                text
+                for text in (_optional_text(item, 120) for item in aliases)
+                if text
+            ],
+            "repository_identity": _optional_text(
+                record.get("repository_identity"), 500
+            ),
+            "local_path": str(record.get("local_path") or "")[:4096],
+            "exists": bool(record.get("exists")),
+            "git": git_value,
+            "active": bool(record.get("active")),
+            "projection_revision": _as_int(
+                record.get("projection_revision"), 0
+            ),
+            "received_at": _as_float(record.get("received_at"), 0),
+        }
+
+    def routing_machine_views(self) -> list[dict[str, Any]]:
+        """Return complete internal machine projections for trusted adapters."""
+
+        now = self._clock()
+        machines: list[dict[str, Any]] = []
+        for entity in self.store.list_entities(MACHINE_ENTITY):
+            machine = self._public_machine(entity["record"], now=now)
+            if machine["status"] == "retired":
+                continue
+            machine["workspaces"] = [
+                deepcopy(projection["record"])
+                for projection in self.store.list_entities(
+                    WORKSPACE_PROJECTION_ENTITY
+                )
+                if projection["record"].get("machine_id")
+                == machine["machine_id"]
+                and projection["record"].get("edge_generation")
+                == machine["edge_generation"]
+                and projection["record"].get("active")
+            ]
+            machines.append(machine)
+        machines.sort(
+            key=lambda item: (
+                item["status"] != "online",
+                str(item["display_name"]).casefold(),
+            )
+        )
+        return machines
+
+    @staticmethod
+    def _fleet_group_summary(group: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep fleet orientation useful while routing detail to group status."""
+
+        completion = group.get("completion_contract")
+        completion_map = completion if isinstance(completion, Mapping) else {}
+        readiness = group.get("readiness")
+        readiness_map = readiness if isinstance(readiness, Mapping) else {}
+        return {
+            "work_group_id": group.get("work_group_id"),
+            "title": group.get("title"),
+            "status": group.get("status"),
+            "execution_mode": group.get("execution_mode"),
+            "workspace_ref": group.get("workspace_ref"),
+            "pinned_machine_id": group.get("pinned_machine_id"),
+            "activity": group.get("activity"),
+            "activity_counts": deepcopy(dict(group.get("activity_counts") or {})),
+            "readiness": {
+                key: deepcopy(readiness_map.get(key))
+                for key in ("status", "currentness", "operation_id")
+                if key in readiness_map
+            },
+            "completion_contract": {
+                key: deepcopy(completion_map.get(key))
+                for key in (
+                    "work_remaining",
+                    "manager_must_continue",
+                    "final_response_allowed",
+                    "reason",
+                    "recommended_next_action",
+                )
+                if key in completion_map
+            },
+            "created_at": group.get("created_at"),
+            "updated_at": group.get("updated_at"),
         }
 
     def _projection_availability(
@@ -2590,7 +3225,18 @@ class HubRuntimeV2:
         machines: list[dict[str, Any]] = []
         hidden_retired = 0
         for entity in self.store.list_entities(MACHINE_ENTITY):
-            machine = self._public_machine(entity["record"], now=self._clock())
+            machine_id = str(entity["record"].get("machine_id") or "")
+            edge_generation = str(
+                entity["record"].get("edge_generation") or ""
+            )
+            machine = self._fleet_machine_summary(
+                entity["record"],
+                now=self._clock(),
+                worker_summary=self._authoritative_machine_worker_summary(
+                    machine_id, edge_generation
+                ),
+                include_workspaces=include_workspaces,
+            )
             if machine["status"] == "retired" and not include_retired:
                 hidden_retired += 1
                 continue
@@ -2603,29 +3249,51 @@ class HubRuntimeV2:
             ).casefold()
             if query_text and query_text not in haystack:
                 continue
-            if include_workspaces:
-                machine["workspaces"] = [
-                    deepcopy(projection["record"])
-                    for projection in self.store.list_entities(WORKSPACE_PROJECTION_ENTITY)
-                    if projection["record"].get("machine_id") == machine["machine_id"]
-                    and projection["record"].get("edge_generation") == machine["edge_generation"]
-                    and projection["record"].get("active")
-                ]
             machines.append(machine)
-        machines.sort(key=lambda item: (item["status"] != "online", str(item["display_name"]).casefold()))
+        machines.sort(
+            key=lambda item: (
+                item["status"] != "online",
+                str(item["display_name"]).casefold(),
+            )
+        )
+        machine_total = len(machines)
+        all_visible_machines = machines
+        machines = machines[:MAX_FLEET_MACHINES]
         current_id = self._current_group_id(identity)
         current = self.store.get_entity(WORK_GROUP_ENTITY, current_id) if current_id else None
         owned = [
-            self._public_group(entity["record"], workers=self._workers_for_group(entity["entity_id"]))
+            self._fleet_group_summary(
+                self._public_group(
+                    entity["record"],
+                    workers=self._workers_for_group(entity["entity_id"]),
+                )
+            )
             for entity in self.store.list_entities(WORK_GROUP_ENTITY)
             if entity["record"].get("principal_ref") == identity.principal_ref
             and entity["record"].get("status") == "open"
         ]
+        owned.sort(
+            key=lambda item: (
+                -_as_float(item.get("updated_at"), 0),
+                str(item.get("work_group_id") or ""),
+            )
+        )
+        owned_total = len(owned)
+        owned = owned[:MAX_FLEET_OWNED_GROUPS]
         counts = {
-            "online": sum(item["status"] == "online" for item in machines),
-            "offline": sum(item["status"] == "offline" for item in machines),
-            "retired": sum(item["status"] == "retired" for item in machines),
-            "incompatible": sum(item["compatibility"] != "compatible" for item in machines),
+            "online": sum(
+                item["status"] == "online" for item in all_visible_machines
+            ),
+            "offline": sum(
+                item["status"] == "offline" for item in all_visible_machines
+            ),
+            "retired": sum(
+                item["status"] == "retired" for item in all_visible_machines
+            ),
+            "incompatible": sum(
+                item["compatibility"] != "compatible"
+                for item in all_visible_machines
+            ),
             "hidden_retired": hidden_retired,
         }
         return public_envelope(
@@ -2638,8 +3306,18 @@ class HubRuntimeV2:
                 "routing_enabled": self.routing_enabled,
                 "counts": counts,
                 "machines": machines,
-                "current_work_group": self._public_group(current["record"], workers=self._workers_for_group(current_id)) if current else {},
+                "machine_count": machine_total,
+                "hidden_machine_count": max(0, machine_total - len(machines)),
+                "current_work_group": self._fleet_group_summary(
+                    self._public_group(
+                        current["record"], workers=self._workers_for_group(current_id)
+                    )
+                )
+                if current
+                else {},
                 "owned_active_groups": owned,
+                "owned_active_group_count": owned_total,
+                "hidden_owned_active_group_count": max(0, owned_total - len(owned)),
             },
         )
 

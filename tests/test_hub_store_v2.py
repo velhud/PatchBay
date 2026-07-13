@@ -816,3 +816,32 @@ def test_close_is_idempotent_and_rejects_later_use(tmp_path):
     assert store.closed is True
     with pytest.raises(HubStoreV2Error, match="closed"):
         store.get_entity("machine", "edge-a")
+
+
+def test_atomic_entity_batch_rolls_back_earlier_writes_on_late_conflict(tmp_path):
+    store = HubStoreV2(tmp_path / "hub-v2.sqlite3")
+    first = store.put_entity("test.entity", "first", {"value": 1})
+    store.put_entity("test.entity", "second", {"value": 2})
+
+    with pytest.raises(HubStoreV2Conflict, match="second"):
+        store.put_entities_atomic(
+            [
+                {
+                    "entity_type": "test.entity",
+                    "entity_id": "first",
+                    "record": {"value": 10},
+                    "expected_revision": first["revision"],
+                },
+                {
+                    "entity_type": "test.entity",
+                    "entity_id": "second",
+                    "record": {"value": 20},
+                    "expected_revision": 99,
+                },
+            ]
+        )
+
+    assert store.get_entity("test.entity", "first")["record"] == {"value": 1}
+    assert store.get_entity("test.entity", "first")["revision"] == 1
+    assert store.get_entity("test.entity", "second")["record"] == {"value": 2}
+    store.close()

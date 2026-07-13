@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Bounded `patchbay_fleet_status` to operational orientation data instead of
+  embedding every machine's worker history and every owned group's full
+  payload. Fleet status now returns compact worker counts, compact workspace
+  projections, at most ten recent owned groups, and explicit hidden/total
+  counts; focused group and worker tools remain the authority for details.
+- Made accepted Edge projections atomic across worker identities, worker
+  states, tombstones, workspace projections, machine applied revisions, and
+  Hub projection records. Conflicting snapshots roll back completely and can
+  be retried at the same revision; tombstoned history no longer inflates
+  current fleet worker counts.
+- Gave the private worker supervisor a bounded cleanup-proof window under host
+  contention before escalation. Semantic completion and the worker report stay
+  durable immediately, while repository locks remain held until the supervisor
+  proves the complete owned process tree absent.
 - Rebuilt Hub/Edge reconciliation around immutable attempt contracts, fenced
   expired-lease recovery, bounded fair receipt/recovery queues, indexed
   dispatch and receipt lookup, atomic batch creation, and manager-level

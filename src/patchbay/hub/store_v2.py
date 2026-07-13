@@ -1545,6 +1545,48 @@ class HubStoreV2:
                 )
             return result
 
+    def put_entities_atomic(
+        self, changes: list[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Apply one bounded entity batch or roll the complete batch back."""
+
+        if not isinstance(changes, list) or not changes:
+            raise ValueError("changes must be a non-empty list")
+        saved_entities: list[dict[str, Any]] = []
+        with self.immediate_transaction() as connection:
+            for change in changes:
+                entity_type = _clean_key(
+                    str(change.get("entity_type") or ""), "entity_type"
+                )
+                entity_id = _clean_key(
+                    str(change.get("entity_id") or ""), "entity_id"
+                )
+                record = change.get("record")
+                if not isinstance(record, Mapping):
+                    raise ValueError("Each entity batch change requires a record")
+                expected_revision = change.get("expected_revision")
+                if expected_revision is not None:
+                    expected_revision = int(expected_revision)
+                saved = self._put_entity_in_transaction(
+                    connection,
+                    entity_type,
+                    entity_id,
+                    record,
+                    expected_revision=expected_revision,
+                    legacy_classification=None,
+                )
+                if saved is None:
+                    actual = self._entity_revision(
+                        connection, entity_type, entity_id
+                    )
+                    raise HubStoreV2Conflict(
+                        "Entity revision conflict for "
+                        f"{entity_type}/{entity_id}: expected "
+                        f"{expected_revision}, actual {actual}"
+                    )
+                saved_entities.append(saved)
+        return saved_entities
+
     def cas_entity(
         self,
         entity_type: str,
