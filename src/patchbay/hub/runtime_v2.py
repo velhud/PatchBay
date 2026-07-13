@@ -4,7 +4,6 @@ The production Hub still uses :mod:`patchbay.hub.runtime`.  This module composes
 the V2 identity, SQLite store, operation broker, and group projection contracts
 without wiring any public server route or reimplementing Edge-owned handlers.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -80,7 +79,9 @@ _LOCAL_TOOL_FAMILIES = frozenset(
     {"fleet_and_discovery", "work_groups", "exceptional_operation_recovery"}
 )
 _TOOL_FAMILY = {
-    name: family for family, names in HUB_V2_TOOL_FAMILIES.items() for name in names
+    name: family
+    for family, names in HUB_V2_TOOL_FAMILIES.items()
+    for name in names
 }
 
 
@@ -184,37 +185,18 @@ class HubRuntimeV2:
 
     @property
     def stale_seconds(self) -> int:
-        hub = (
-            self.config.get("hub")
-            if isinstance(self.config.get("hub"), Mapping)
-            else {}
-        )
-        return max(
-            1,
-            _as_int(
-                hub.get("heartbeat_stale_seconds"), DEFAULT_HEARTBEAT_STALE_SECONDS
-            ),
-        )
+        hub = self.config.get("hub") if isinstance(self.config.get("hub"), Mapping) else {}
+        return max(1, _as_int(hub.get("heartbeat_stale_seconds"), DEFAULT_HEARTBEAT_STALE_SECONDS))
 
     @property
     def min_disk_free_bytes(self) -> int:
-        hub = (
-            self.config.get("hub")
-            if isinstance(self.config.get("hub"), Mapping)
-            else {}
-        )
+        hub = self.config.get("hub") if isinstance(self.config.get("hub"), Mapping) else {}
         routing = hub.get("routing") if isinstance(hub.get("routing"), Mapping) else {}
-        return max(
-            0, _as_int(routing.get("min_disk_free_bytes"), DEFAULT_MIN_DISK_FREE_BYTES)
-        )
+        return max(0, _as_int(routing.get("min_disk_free_bytes"), DEFAULT_MIN_DISK_FREE_BYTES))
 
     @property
     def routing_enabled(self) -> bool:
-        hub = (
-            self.config.get("hub")
-            if isinstance(self.config.get("hub"), Mapping)
-            else {}
-        )
+        hub = self.config.get("hub") if isinstance(self.config.get("hub"), Mapping) else {}
         routing = hub.get("routing") if isinstance(hub.get("routing"), Mapping) else {}
         value = routing.get("enabled", True)
         if isinstance(value, bool):
@@ -233,22 +215,16 @@ class HubRuntimeV2:
 
     # -- Adapter boundary -------------------------------------------------
 
-    def register_adapter(
-        self, family: str, adapter: Any, *, replace: bool = False
-    ) -> None:
+    def register_adapter(self, family: str, adapter: Any, *, replace: bool = False) -> None:
         family_value = str(family or "").strip()
         if family_value not in ADAPTER_FAMILIES:
             if family_value in _LOCAL_TOOL_FAMILIES:
                 raise ValueError(f"{family_value} is implemented by HubRuntimeV2")
             raise ValueError(f"Unknown Hub V2 adapter family: {family_value}")
-        if (
-            not callable(adapter)
-            and not callable(getattr(adapter, "handle_tool_call", None))
-            and not callable(getattr(adapter, "dispatch", None))
+        if not callable(adapter) and not callable(getattr(adapter, "handle_tool_call", None)) and not callable(
+            getattr(adapter, "dispatch", None)
         ):
-            raise TypeError(
-                "Adapter must be callable or define handle_tool_call/dispatch"
-            )
+            raise TypeError("Adapter must be callable or define handle_tool_call/dispatch")
         if family_value in self._adapters and not replace:
             raise ValueError(f"Adapter already registered for {family_value}")
         self._adapters[family_value] = adapter
@@ -275,20 +251,10 @@ class HubRuntimeV2:
         if adapter is None:
             return public_envelope(
                 "blocked",
-                result={
-                    "reason": "tool_family_adapter_not_registered",
-                    "family": family_value,
-                    "tool": name,
-                },
-                next_actions=[
-                    "Complete the owning Hub V2 handler WorkPacket before public wiring."
-                ],
+                result={"reason": "tool_family_adapter_not_registered", "family": family_value, "tool": name},
+                next_actions=["Complete the owning Hub V2 handler WorkPacket before public wiring."],
             )
-        handler = (
-            getattr(adapter, "handle_tool_call", None)
-            or getattr(adapter, "dispatch", None)
-            or adapter
-        )
+        handler = getattr(adapter, "handle_tool_call", None) or getattr(adapter, "dispatch", None) or adapter
         try:
             result = handler(name, dict(arguments), context=context)
         except TypeError as error:
@@ -329,10 +295,7 @@ class HubRuntimeV2:
             if name == "patchbay_work_group_status":
                 return await self._wait_for_work_group_status(args, context=context)
             if name in local:
-                if (
-                    name.startswith("patchbay_work_group_")
-                    or name == "patchbay_fleet_status"
-                ):
+                if name.startswith("patchbay_work_group_") or name == "patchbay_fleet_status":
                     args["context"] = context
                 result = local[name](**args)
                 if inspect.isawaitable(result):
@@ -355,9 +318,7 @@ class HubRuntimeV2:
             return public_envelope(
                 "blocked",
                 result={"reason": reason, "retry_safe": False},
-                warnings=[
-                    "The request conflicted with durable Hub state; no second mutation was applied."
-                ],
+                warnings=["The request conflicted with durable Hub state; no second mutation was applied."],
                 next_actions=[next_action],
             )
 
@@ -368,16 +329,12 @@ class HubRuntimeV2:
         context: RequestContext | None,
     ) -> dict[str, Any]:
         args = dict(arguments)
-        requested_wait = max(
-            0, min(_as_int(args.pop("wait_for_change_seconds", 0), 0), 30)
-        )
+        requested_wait = max(0, min(_as_int(args.pop("wait_for_change_seconds", 0), 0), 30))
         supplied_revision = args.pop("since_revision", None)
         current = self.work_group_status(context=context, **args)
         if current.get("status") != "ok" or requested_wait <= 0:
             return current
-        result = (
-            current.get("result") if isinstance(current.get("result"), Mapping) else {}
-        )
+        result = current.get("result") if isinstance(current.get("result"), Mapping) else {}
         baseline = (
             max(0, _as_int(supplied_revision, 0))
             if supplied_revision is not None
@@ -463,32 +420,23 @@ class HubRuntimeV2:
             raise ValueError("Enrollment code expired")
 
         machine = validate_ref(machine_id, field="machine_id")
-        generation = (
-            validate_ref(edge_generation, field="edge_generation")
-            if edge_generation
-            else new_ref("edgegen")
-        )
+        generation = validate_ref(edge_generation, field="edge_generation") if edge_generation else new_ref("edgegen")
         existing = self.store.get_entity(MACHINE_ENTITY, machine)
         if existing and existing["record"].get("edge_generation") == generation:
             raise HubStoreV2Conflict("edge_generation_reuse")
         token = "node_" + secrets.token_urlsafe(32)
-        name_value = _optional_text(display_name, 120) or str(
-            code_record.get("display_name") or machine
-        )
+        name_value = _optional_text(display_name, 120) or str(code_record.get("display_name") or machine)
         machine_record = {
             "machine_id": machine,
             "display_name": name_value,
             "edge_generation": generation,
             "token_hash": _token_hash(token),
-            "tags": _string_list(tags, field="tags")
-            or list(code_record.get("tags") or []),
+            "tags": _string_list(tags, field="tags") or list(code_record.get("tags") or []),
             "role": _optional_text(role, 80),
             "capabilities": deepcopy(dict(capabilities or {})),
             "resource_status": {},
             "worker_status": {},
-            "created_at": existing["record"].get("created_at", now)
-            if existing
-            else now,
+            "created_at": existing["record"].get("created_at", now) if existing else now,
             "generation_created_at": now,
             "updated_at": now,
             "last_seen_at": None,
@@ -505,11 +453,7 @@ class HubRuntimeV2:
         }
         if existing:
             old_generation = str(existing["record"].get("edge_generation") or "")
-            old = (
-                self.store.get_entity(MACHINE_GENERATION_ENTITY, old_generation)
-                if old_generation
-                else None
-            )
+            old = self.store.get_entity(MACHINE_GENERATION_ENTITY, old_generation) if old_generation else None
             if old:
                 old_record = deepcopy(old["record"])
                 old_record.update({"superseded_at": now, "superseded_by": generation})
@@ -527,15 +471,8 @@ class HubRuntimeV2:
             expected_revision=existing["revision"] if existing else 0,
         )
         used = deepcopy(code_record)
-        used.update(
-            {"used_at": now, "machine_id": machine, "edge_generation": generation}
-        )
-        self.store.put_entity(
-            ENROLLMENT_ENTITY,
-            code_value,
-            used,
-            expected_revision=enrollment["revision"],
-        )
+        used.update({"used_at": now, "machine_id": machine, "edge_generation": generation})
+        self.store.put_entity(ENROLLMENT_ENTITY, code_value, used, expected_revision=enrollment["revision"])
         self.store.append_event(
             "machine.enrolled",
             {"machine_id": machine, "edge_generation": generation},
@@ -543,9 +480,7 @@ class HubRuntimeV2:
             entity_id=machine,
         )
         if workspaces:
-            self._persist_workspace_snapshot(
-                machine_record, workspaces, projection_revision=0, received_at=now
-            )
+            self._persist_workspace_snapshot(machine_record, workspaces, projection_revision=0, received_at=now)
         return {
             "machine": self._public_machine(machine_record, now=now),
             "edge_generation": generation,
@@ -569,9 +504,7 @@ class HubRuntimeV2:
         return deepcopy(record)
 
     def retire_machine(self, *, machine_id: str, reason: str = "") -> dict[str, Any]:
-        entity = self.store.get_entity(
-            MACHINE_ENTITY, validate_ref(machine_id, field="machine_id")
-        )
+        entity = self.store.get_entity(MACHINE_ENTITY, validate_ref(machine_id, field="machine_id"))
         if entity is None:
             raise ValueError(f"Unknown machine_id: {machine_id}")
         record = deepcopy(entity["record"])
@@ -582,24 +515,16 @@ class HubRuntimeV2:
                 "updated_at": self._clock(),
             }
         )
-        saved = self.store.put_entity(
-            MACHINE_ENTITY, machine_id, record, expected_revision=entity["revision"]
-        )
+        saved = self.store.put_entity(MACHINE_ENTITY, machine_id, record, expected_revision=entity["revision"])
         return self._public_machine(saved["record"], now=self._clock())
 
     def restore_machine(self, *, machine_id: str) -> dict[str, Any]:
-        entity = self.store.get_entity(
-            MACHINE_ENTITY, validate_ref(machine_id, field="machine_id")
-        )
+        entity = self.store.get_entity(MACHINE_ENTITY, validate_ref(machine_id, field="machine_id"))
         if entity is None:
             raise ValueError(f"Unknown machine_id: {machine_id}")
         record = deepcopy(entity["record"])
-        record.update(
-            {"retired_at": None, "retired_reason": "", "updated_at": self._clock()}
-        )
-        saved = self.store.put_entity(
-            MACHINE_ENTITY, machine_id, record, expected_revision=entity["revision"]
-        )
+        record.update({"retired_at": None, "retired_reason": "", "updated_at": self._clock()})
+        saved = self.store.put_entity(MACHINE_ENTITY, machine_id, record, expected_revision=entity["revision"])
         return self._public_machine(saved["record"], now=self._clock())
 
     def heartbeat(
@@ -615,9 +540,7 @@ class HubRuntimeV2:
         worker_projection: Mapping[str, Any] | None = None,
         resource_status: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        machine_record = self.authenticate_machine(
-            machine_id, token, edge_generation=edge_generation
-        )
+        machine_record = self.authenticate_machine(machine_id, token, edge_generation=edge_generation)
         revision = _as_int(projection_revision, -1)
         if revision < 0:
             raise ValueError("projection_revision must be non-negative")
@@ -634,7 +557,10 @@ class HubRuntimeV2:
         projection_kind = str((projection or {}).get("snapshot_kind") or "full")
         gap = prior_revision > 0 and revision > prior_revision + 1
         rejected_delta = bool(
-            accepted and projection is not None and gap and projection_kind != "full"
+            accepted
+            and projection is not None
+            and gap
+            and projection_kind != "full"
         )
         if accepted and projection is not None and not rejected_delta:
             self._validate_worker_projection(projection)
@@ -661,10 +587,7 @@ class HubRuntimeV2:
         if current is None:
             raise HubStoreV2Conflict("machine_disappeared")
         saved_machine = self.store.put_entity(
-            MACHINE_ENTITY,
-            machine_id,
-            machine_record,
-            expected_revision=current["revision"],
+            MACHINE_ENTITY, machine_id, machine_record, expected_revision=current["revision"]
         )
         if not accepted:
             return {
@@ -704,7 +627,9 @@ class HubRuntimeV2:
 
         projection_applied = False
         worker_changes: list[dict[str, Any]] = []
-        base_mutation_snapshots: list[tuple[str, Mapping[str, Any], str]] = []
+        base_mutation_snapshots: list[
+            tuple[str, Mapping[str, Any], str]
+        ] = []
         if projection is not None:
             worker_changes, base_mutation_snapshots = self._worker_snapshot_changes(
                 machine_record,
@@ -730,9 +655,7 @@ class HubRuntimeV2:
         applied_machine["projection_revision"] = revision
         if projection_applied:
             applied_machine["worker_projection_revision"] = revision
-        edge_projection_id = stable_ref(
-            "edgeproj", machine_id, edge_generation, salt=self._identity_salt
-        )
+        edge_projection_id = stable_ref("edgeproj", machine_id, edge_generation, salt=self._identity_salt)
         existing_edge_projection = self.store.get_entity(
             EDGE_PROJECTION_ENTITY, edge_projection_id
         )
@@ -808,7 +731,9 @@ class HubRuntimeV2:
 
     # -- Workspace projections ------------------------------------------
 
-    def _validate_workspace_snapshot(self, workspaces: list[Mapping[str, Any]]) -> None:
+    def _validate_workspace_snapshot(
+        self, workspaces: list[Mapping[str, Any]]
+    ) -> None:
         if not isinstance(workspaces, list):
             raise ValueError("Workspace projection snapshot must be a list")
         for workspace in workspaces:
@@ -816,17 +741,9 @@ class HubRuntimeV2:
                 raise ValueError("Each workspace projection must be an object")
             self._workspace_identity(workspace)
 
-    def _workspace_identity(
-        self, workspace: Mapping[str, Any]
-    ) -> tuple[str, str, list[str]]:
+    def _workspace_identity(self, workspace: Mapping[str, Any]) -> tuple[str, str, list[str]]:
         repository_identity = ""
-        for field in (
-            "repository_identity",
-            "repo_identity",
-            "remote_url",
-            "git_remote",
-            "remote",
-        ):
+        for field in ("repository_identity", "repo_identity", "remote_url", "git_remote", "remote"):
             value = workspace.get(field)
             if value:
                 repository_identity = str(value).strip()
@@ -842,15 +759,9 @@ class HubRuntimeV2:
             text = str(value or "").strip()
             if text and text not in aliases:
                 aliases.append(text)
-        logical_key = (
-            repository_identity.casefold()
-            if repository_identity
-            else (aliases[0].casefold() if aliases else local_path.casefold())
-        )
+        logical_key = repository_identity.casefold() if repository_identity else (aliases[0].casefold() if aliases else local_path.casefold())
         if not logical_key:
-            raise ValueError(
-                "Workspace projection requires repository identity, alias, or path"
-            )
+            raise ValueError("Workspace projection requires repository identity, alias, or path")
         requested_ref = str(workspace.get("workspace_ref") or "").strip()
         workspace_ref = (
             validate_ref(requested_ref, field="workspace_ref")
@@ -874,12 +785,8 @@ class HubRuntimeV2:
         pending_logical: dict[str, dict[str, Any]] = {}
         pending_projections: dict[str, dict[str, Any]] = {}
         for advertised in workspaces:
-            workspace_ref, repository_identity, aliases = self._workspace_identity(
-                advertised
-            )
-            local_path = _normalize_path(
-                advertised.get("path") or advertised.get("root")
-            )
+            workspace_ref, repository_identity, aliases = self._workspace_identity(advertised)
+            local_path = _normalize_path(advertised.get("path") or advertised.get("root"))
             projection_identity = WorkspaceProjectionIdentity.create(
                 workspace_ref=workspace_ref,
                 machine_id=machine_id,
@@ -891,35 +798,24 @@ class HubRuntimeV2:
             pending = pending_logical.get(workspace_ref)
             if pending is None:
                 logical = self.store.get_entity(WORKSPACE_ENTITY, workspace_ref)
-                logical_record = (
-                    deepcopy(logical["record"])
-                    if logical
-                    else {
-                        "workspace_ref": workspace_ref,
-                        "display_name": aliases[0] if aliases else workspace_ref,
-                        "repository_identity": repository_identity,
-                        "aliases": [],
-                        "projection_refs": [],
-                        "created_at": received_at,
-                    }
-                )
+                logical_record = deepcopy(logical["record"]) if logical else {
+                    "workspace_ref": workspace_ref,
+                    "display_name": aliases[0] if aliases else workspace_ref,
+                    "repository_identity": repository_identity,
+                    "aliases": [],
+                    "projection_refs": [],
+                    "created_at": received_at,
+                }
                 pending = {
                     "record": logical_record,
                     "expected_revision": logical["revision"] if logical else 0,
                 }
                 pending_logical[workspace_ref] = pending
             logical_record = pending["record"]
-            if repository_identity and logical_record.get(
-                "repository_identity"
-            ) not in {"", repository_identity}:
+            if repository_identity and logical_record.get("repository_identity") not in {"", repository_identity}:
                 raise HubStoreV2Conflict("workspace_repository_identity_conflict")
-            logical_record["repository_identity"] = (
-                repository_identity or logical_record.get("repository_identity", "")
-            )
-            logical_record["aliases"] = sorted(
-                set(logical_record.get("aliases") or []).union(aliases),
-                key=str.casefold,
-            )
+            logical_record["repository_identity"] = repository_identity or logical_record.get("repository_identity", "")
+            logical_record["aliases"] = sorted(set(logical_record.get("aliases") or []).union(aliases), key=str.casefold)
             projection_refs = list(logical_record.get("projection_refs") or [])
             if projection_identity.projection_ref not in projection_refs:
                 projection_refs.append(projection_identity.projection_ref)
@@ -947,7 +843,9 @@ class HubRuntimeV2:
             pending_projections[projection_identity.projection_ref] = {
                 "record": projection_record,
                 "expected_revision": (
-                    existing_projection["revision"] if existing_projection else 0
+                    existing_projection["revision"]
+                    if existing_projection
+                    else 0
                 ),
             }
         for entity in self.store.list_entities(WORKSPACE_PROJECTION_ENTITY):
@@ -959,13 +857,7 @@ class HubRuntimeV2:
                 and record.get("active")
             ):
                 replacement = deepcopy(record)
-                replacement.update(
-                    {
-                        "active": False,
-                        "omitted_at": received_at,
-                        "projection_revision": projection_revision,
-                    }
-                )
+                replacement.update({"active": False, "omitted_at": received_at, "projection_revision": projection_revision})
                 pending_projections[entity["entity_id"]] = {
                     "record": replacement,
                     "expected_revision": entity["revision"],
@@ -1017,9 +909,7 @@ class HubRuntimeV2:
         requested_path = _normalize_path(repo_path)
         allowed = set(_string_list(machine_ids, field="machine_ids"))
         machines = {
-            entity["entity_id"]: self._public_machine(
-                entity["record"], now=self._clock()
-            )
+            entity["entity_id"]: self._public_machine(entity["record"], now=self._clock())
             for entity in self.store.list_entities(MACHINE_ENTITY)
         }
         ranked: list[tuple[int, str, dict[str, Any]]] = []
@@ -1045,22 +935,12 @@ class HubRuntimeV2:
             if requested_path and requested_ref:
                 folded = requested_path.casefold()
                 root = local_path.casefold() if local_path else ""
-                if local_path and (
-                    folded == root or folded.startswith(root.rstrip("/") + "/")
-                ):
+                if local_path and (folded == root or folded.startswith(root.rstrip("/") + "/")):
                     match_kind = "workspace_ref_and_path"
                     resolved_path = requested_path
-                elif (
-                    local_path
-                    and not projection.get("git")
-                    and _safe_relative_path(requested_path)
-                ):
-                    candidate = posixpath.normpath(
-                        posixpath.join(local_path, requested_path)
-                    )
-                    if candidate != local_path and candidate.startswith(
-                        local_path.rstrip("/") + "/"
-                    ):
+                elif local_path and not projection.get("git") and _safe_relative_path(requested_path):
+                    candidate = posixpath.normpath(posixpath.join(local_path, requested_path))
+                    if candidate != local_path and candidate.startswith(local_path.rstrip("/") + "/"):
                         match_kind = "workspace_ref_and_relative_path"
                         resolved_path = candidate
                     else:
@@ -1069,33 +949,14 @@ class HubRuntimeV2:
                     continue
             elif requested_path and not requested_ref:
                 folded = requested_path.casefold()
-                if local_path and (
-                    folded == local_path.casefold()
-                    or folded.startswith(local_path.casefold() + "/")
-                ):
-                    priority, match_kind, resolved_path = (
-                        1,
-                        "workspace_path",
-                        requested_path,
-                    )
+                if local_path and (folded == local_path.casefold() or folded.startswith(local_path.casefold() + "/")):
+                    priority, match_kind, resolved_path = 1, "workspace_path", requested_path
                 elif folded in aliases:
                     priority, match_kind = 2, "workspace_alias"
-                elif (
-                    local_path
-                    and not projection.get("git")
-                    and _safe_relative_path(requested_path)
-                ):
-                    candidate = posixpath.normpath(
-                        posixpath.join(local_path, requested_path)
-                    )
-                    if candidate != local_path and candidate.startswith(
-                        local_path.rstrip("/") + "/"
-                    ):
-                        priority, match_kind, resolved_path = (
-                            3,
-                            "relative_under_workspace_root",
-                            candidate,
-                        )
+                elif local_path and not projection.get("git") and _safe_relative_path(requested_path):
+                    candidate = posixpath.normpath(posixpath.join(local_path, requested_path))
+                    if candidate != local_path and candidate.startswith(local_path.rstrip("/") + "/"):
+                        priority, match_kind, resolved_path = 3, "relative_under_workspace_root", candidate
                     else:
                         continue
                 else:
@@ -1109,13 +970,7 @@ class HubRuntimeV2:
                 }
             )
             ranked.append((priority, machine_id, projection))
-        ranked.sort(
-            key=lambda item: (
-                item[0],
-                item[1],
-                str(item[2].get("workspace_projection_ref") or ""),
-            )
-        )
+        ranked.sort(key=lambda item: (item[0], item[1], str(item[2].get("workspace_projection_ref") or "")))
         if requested_path and ranked:
             best_priority = ranked[0][0]
             ranked = [item for item in ranked if item[0] == best_priority]
@@ -1137,9 +992,7 @@ class HubRuntimeV2:
         allowed = set(_string_list(machine_ids, field="machine_ids"))
         wanted_tags = set(_string_list(required_tags, field="required_tags"))
         machine_views = {
-            entity["entity_id"]: self._public_machine(
-                entity["record"], now=self._clock()
-            )
+            entity["entity_id"]: self._public_machine(entity["record"], now=self._clock())
             for entity in self.store.list_entities(MACHINE_ENTITY)
         }
         workspaces: list[dict[str, Any]] = []
@@ -1147,30 +1000,20 @@ class HubRuntimeV2:
             logical = deepcopy(entity["record"])
             projections: list[dict[str, Any]] = []
             for projection_ref in logical.get("projection_refs") or []:
-                projection_entity = self.store.get_entity(
-                    WORKSPACE_PROJECTION_ENTITY, projection_ref
-                )
-                if projection_entity is None or not projection_entity["record"].get(
-                    "active"
-                ):
+                projection_entity = self.store.get_entity(WORKSPACE_PROJECTION_ENTITY, projection_ref)
+                if projection_entity is None or not projection_entity["record"].get("active"):
                     continue
                 projection = deepcopy(projection_entity["record"])
                 machine = machine_views.get(str(projection.get("machine_id") or ""))
-                if machine is None or (
-                    allowed and machine["machine_id"] not in allowed
-                ):
+                if machine is None or (allowed and machine["machine_id"] not in allowed):
                     continue
-                if wanted_tags and not wanted_tags.issubset(
-                    set(machine.get("tags") or [])
-                ):
+                if wanted_tags and not wanted_tags.issubset(set(machine.get("tags") or [])):
                     continue
                 if not include_offline and machine["status"] != "online":
                     continue
                 projection["machine_status"] = machine["status"]
                 projection["compatibility"] = machine["compatibility"]
-                projection["availability"] = self._projection_availability(
-                    machine, projection
-                )
+                projection["availability"] = self._projection_availability(machine, projection)
                 projections.append(projection)
             haystack = " ".join(
                 [
@@ -1185,19 +1028,10 @@ class HubRuntimeV2:
                 continue
             if projections or (not allowed and not wanted_tags and include_offline):
                 logical["projections"] = projections
-                logical["availability"] = self._logical_workspace_availability(
-                    projections
-                )
+                logical["availability"] = self._logical_workspace_availability(projections)
                 workspaces.append(logical)
-        workspaces.sort(
-            key=lambda item: (
-                str(item.get("display_name") or "").casefold(),
-                item["workspace_ref"],
-            )
-        )
-        limit = max(
-            1, min(_as_int(max_results, DEFAULT_RESULT_LIMIT), MAX_RESULT_LIMIT)
-        )
+        workspaces.sort(key=lambda item: (str(item.get("display_name") or "").casefold(), item["workspace_ref"]))
+        limit = max(1, min(_as_int(max_results, DEFAULT_RESULT_LIMIT), MAX_RESULT_LIMIT))
         truncated = len(workspaces) > limit
         result = {
             "workspaces": workspaces[:limit],
@@ -1233,9 +1067,7 @@ class HubRuntimeV2:
             if not worker_id:
                 raise ValueError("Worker projection requires edge_worker_id")
             if worker_id in worker_ids:
-                raise ValueError(
-                    "Worker projection edge_worker_id values must be unique"
-                )
+                raise ValueError("Worker projection edge_worker_id values must be unique")
             worker_ids.add(worker_id)
         tombstones = projection.get("tombstones") or []
         if not isinstance(tombstones, list):
@@ -1271,9 +1103,7 @@ class HubRuntimeV2:
         changes: list[dict[str, Any]] = []
         base_mutation_snapshots: list[tuple[str, Mapping[str, Any], str]] = []
         for value in workers:
-            edge_worker_id = str(
-                value.get("edge_worker_id") or value.get("worker_id") or ""
-            ).strip()
+            edge_worker_id = str(value.get("edge_worker_id") or value.get("worker_id") or "").strip()
             seen_edge_ids.add(edge_worker_id)
             identity = FleetWorkerIdentity.create(
                 machine_id=machine_id,
@@ -1281,15 +1111,9 @@ class HubRuntimeV2:
                 edge_worker_id=edge_worker_id,
                 salt=self._identity_salt,
             )
-            existing = self.store.get_entity(
-                FLEET_WORKER_ENTITY, identity.fleet_worker_ref
-            )
+            existing = self.store.get_entity(FLEET_WORKER_ENTITY, identity.fleet_worker_ref)
             work_group_id = str(value.get("work_group_id") or "")
-            group_entity = (
-                self.store.get_entity(WORK_GROUP_ENTITY, work_group_id)
-                if work_group_id
-                else None
-            )
+            group_entity = self.store.get_entity(WORK_GROUP_ENTITY, work_group_id) if work_group_id else None
             workspace_ref = str(value.get("workspace_ref") or "")
             if not workspace_ref and group_entity:
                 workspace_ref = str(group_entity["record"].get("workspace_ref") or "")
@@ -1301,33 +1125,15 @@ class HubRuntimeV2:
                 "work_group_id": work_group_id,
                 "lane_id": str(value.get("lane_id") or value.get("lane") or "main"),
                 "workspace_ref": workspace_ref,
-                "name": str(
-                    value.get("name") or value.get("worker_name") or edge_worker_id
-                ),
+                "name": str(value.get("name") or value.get("worker_name") or edge_worker_id),
                 "created_at": received_at,
             }
             if existing:
                 old = existing["record"]
-                for field in (
-                    "machine_id",
-                    "edge_generation",
-                    "edge_worker_id",
-                    "work_group_id",
-                    "lane_id",
-                    "workspace_ref",
-                ):
-                    if (
-                        old.get(field)
-                        and immutable.get(field)
-                        and old[field] != immutable[field]
-                    ):
-                        raise HubStoreV2Conflict(
-                            f"immutable_fleet_worker_{field}_conflict"
-                        )
-                immutable = {
-                    **deepcopy(old),
-                    **{key: value for key, value in immutable.items() if value},
-                }
+                for field in ("machine_id", "edge_generation", "edge_worker_id", "work_group_id", "lane_id", "workspace_ref"):
+                    if old.get(field) and immutable.get(field) and old[field] != immutable[field]:
+                        raise HubStoreV2Conflict(f"immutable_fleet_worker_{field}_conflict")
+                immutable = {**deepcopy(old), **{key: value for key, value in immutable.items() if value}}
                 immutable["created_at"] = old.get("created_at", received_at)
             changes.append(
                 {
@@ -1344,12 +1150,8 @@ class HubRuntimeV2:
                     "worker_state": str(value.get("worker_state") or "available"),
                     "turn_state": str(value.get("turn_state") or "none"),
                     "liveness": str(value.get("liveness") or "terminal"),
-                    "integration_state": str(
-                        value.get("integration_state") or "not_applicable"
-                    ),
-                    "review_disposition": str(
-                        value.get("review_disposition") or "unreviewed"
-                    ),
+                    "integration_state": str(value.get("integration_state") or "not_applicable"),
+                    "review_disposition": str(value.get("review_disposition") or "unreviewed"),
                     "edge_projection_revision": projection_revision,
                     "received_at": received_at,
                     "tombstoned": False,
@@ -1372,7 +1174,9 @@ class HubRuntimeV2:
                     "entity_id": identity.fleet_worker_ref,
                     "record": worker_projection,
                     "expected_revision": (
-                        existing_projection["revision"] if existing_projection else 0
+                        existing_projection["revision"]
+                        if existing_projection
+                        else 0
                     ),
                 }
             )
@@ -1404,19 +1208,12 @@ class HubRuntimeV2:
         )
         for worker_entity in self.store.list_entities(FLEET_WORKER_ENTITY):
             worker = worker_entity["record"]
-            if (
-                worker.get("machine_id") != machine_id
-                or worker.get("edge_generation") != edge_generation
-            ):
+            if worker.get("machine_id") != machine_id or worker.get("edge_generation") != edge_generation:
                 continue
             edge_worker_id = str(worker.get("edge_worker_id") or "")
-            if edge_worker_id not in tombstoned_edge_ids and not (
-                complete and edge_worker_id not in seen_edge_ids
-            ):
+            if edge_worker_id not in tombstoned_edge_ids and not (complete and edge_worker_id not in seen_edge_ids):
                 continue
-            projection_entity = self.store.get_entity(
-                WORKER_PROJECTION_ENTITY, worker_entity["entity_id"]
-            )
+            projection_entity = self.store.get_entity(WORKER_PROJECTION_ENTITY, worker_entity["entity_id"])
             if projection_entity is None:
                 continue
             replacement = deepcopy(projection_entity["record"])
@@ -1469,9 +1266,7 @@ class HubRuntimeV2:
             entity = self.store.get_entity(FLEET_WORKER_ENTITY, worker_ref)
             if entity is None:
                 continue
-            projection = self.store.get_entity(
-                WORKER_PROJECTION_ENTITY, entity["entity_id"]
-            )
+            projection = self.store.get_entity(WORKER_PROJECTION_ENTITY, entity["entity_id"])
             value = deepcopy(projection["record"] if projection else entity["record"])
             value.setdefault("worker_state", "available")
             value.setdefault("turn_state", "none")
@@ -1479,40 +1274,21 @@ class HubRuntimeV2:
             value.setdefault("integration_state", "uncertain")
             value.setdefault("review_disposition", "unreviewed")
             workers.append(value)
-        workers.sort(
-            key=lambda item: (
-                str(item.get("lane_id") or ""),
-                str(item.get("name") or "").casefold(),
-            )
-        )
+        workers.sort(key=lambda item: (str(item.get("lane_id") or ""), str(item.get("name") or "").casefold()))
         return workers
 
     # -- Placement and group lifecycle ----------------------------------
 
     def _manager_identity(self, context: RequestContext | None) -> ManagerIdentity:
-        return ManagerIdentity.from_request(
-            context, principal_ref=self.store.principal_ref
-        )
+        return ManagerIdentity.from_request(context, principal_ref=self.store.principal_ref)
 
-    def _public_machine(
-        self, record: Mapping[str, Any], *, now: float
-    ) -> dict[str, Any]:
+    def _public_machine(self, record: Mapping[str, Any], *, now: float) -> dict[str, Any]:
         last_seen = _as_float(record.get("last_seen_at"), 0)
         retired = bool(record.get("retired_at"))
-        status = (
-            "retired"
-            if retired
-            else (
-                "online"
-                if last_seen and now - last_seen <= self.stale_seconds
-                else "offline"
-            )
-        )
+        status = "retired" if retired else ("online" if last_seen and now - last_seen <= self.stale_seconds else "offline")
         capabilities = deepcopy(dict(record.get("capabilities") or {}))
         contract_hash = str(capabilities.get("contract_hash") or "")
-        compatibility = (
-            "compatible" if contract_hash == HUB_V2_CONTRACT_HASH else "incompatible"
-        )
+        compatibility = "compatible" if contract_hash == HUB_V2_CONTRACT_HASH else "incompatible"
         resources = deepcopy(dict(record.get("resource_status") or {}))
         raw_projection_health = resources.get("projection_health")
         projection_health = deepcopy(
@@ -1525,8 +1301,7 @@ class HubRuntimeV2:
         if projection_health.get("last_success_at"):
             projection_status = (
                 "stale"
-                if projection_age is not None
-                and float(projection_age) > self.stale_seconds
+                if projection_age is not None and float(projection_age) > self.stale_seconds
                 else "current"
             )
         elif projection_health.get("consecutive_failures"):
@@ -1591,7 +1366,9 @@ class HubRuntimeV2:
             if integration_state in {"not_integrated", "uncertain"}:
                 counts["unintegrated"] += 1
         return {
-            "projection_revision": _as_int(worker_status.get("projection_revision"), 0),
+            "projection_revision": _as_int(
+                worker_status.get("projection_revision"), 0
+            ),
             "tombstone_count": sum(
                 bool(item.get("tombstoned"))
                 for item in items
@@ -1762,12 +1539,16 @@ class HubRuntimeV2:
             )
         action_capabilities = capability_map.get("action_capabilities")
         if isinstance(action_capabilities, Mapping):
-            compact_capabilities["action_capability_count"] = len(action_capabilities)
+            compact_capabilities["action_capability_count"] = len(
+                action_capabilities
+            )
         resources = record.get("resource_status")
         resource_map = resources if isinstance(resources, Mapping) else {}
         resource_summary = self._fleet_resource_summary(resource_map)
         projection_health = resource_summary.get("projection_health")
-        health_map = projection_health if isinstance(projection_health, Mapping) else {}
+        health_map = (
+            projection_health if isinstance(projection_health, Mapping) else {}
+        )
         projection_age = health_map.get("projection_age_seconds")
         projection_status = "unknown"
         if health_map.get("last_success_at"):
@@ -1807,7 +1588,9 @@ class HubRuntimeV2:
             ],
             "role": _optional_text(record.get("role"), 80),
             "last_seen_at": record.get("last_seen_at"),
-            "last_seen_age_seconds": (round(now - last_seen, 3) if last_seen else None),
+            "last_seen_age_seconds": (
+                round(now - last_seen, 3) if last_seen else None
+            ),
             "projection_revision": _as_int(record.get("projection_revision"), 0),
             "resource_status": resource_summary,
             "worker_projection_status": projection_status,
@@ -1832,7 +1615,9 @@ class HubRuntimeV2:
                 )
             )
             total = len(workspaces)
-            summary["workspaces"] = workspaces[:MAX_FLEET_WORKSPACES_PER_MACHINE]
+            summary["workspaces"] = workspaces[
+                :MAX_FLEET_WORKSPACES_PER_MACHINE
+            ]
             summary["workspace_count"] = total
             summary["hidden_workspace_count"] = max(
                 0, total - len(summary["workspaces"])
@@ -1856,7 +1641,10 @@ class HubRuntimeV2:
                 for key, value in (
                     (
                         "is_git_repo",
-                        bool(git_raw.get("is_git_repo") or git_raw.get("git_repo")),
+                        bool(
+                            git_raw.get("is_git_repo")
+                            or git_raw.get("git_repo")
+                        ),
                     ),
                     ("branch", _optional_text(git_raw.get("branch"), 200)),
                     ("head", _optional_text(git_raw.get("head"), 200)),
@@ -1871,7 +1659,9 @@ class HubRuntimeV2:
             ),
             "workspace_ref": _optional_text(record.get("workspace_ref"), 256),
             "aliases": [
-                text for text in (_optional_text(item, 120) for item in aliases) if text
+                text
+                for text in (_optional_text(item, 120) for item in aliases)
+                if text
             ],
             "repository_identity": _optional_text(
                 record.get("repository_identity"), 500
@@ -1880,7 +1670,9 @@ class HubRuntimeV2:
             "exists": bool(record.get("exists")),
             "git": git_value,
             "active": bool(record.get("active")),
-            "projection_revision": _as_int(record.get("projection_revision"), 0),
+            "projection_revision": _as_int(
+                record.get("projection_revision"), 0
+            ),
             "received_at": _as_float(record.get("received_at"), 0),
         }
 
@@ -1895,8 +1687,11 @@ class HubRuntimeV2:
                 continue
             machine["workspaces"] = [
                 deepcopy(projection["record"])
-                for projection in self.store.list_entities(WORKSPACE_PROJECTION_ENTITY)
-                if projection["record"].get("machine_id") == machine["machine_id"]
+                for projection in self.store.list_entities(
+                    WORKSPACE_PROJECTION_ENTITY
+                )
+                if projection["record"].get("machine_id")
+                == machine["machine_id"]
                 and projection["record"].get("edge_generation")
                 == machine["edge_generation"]
                 and projection["record"].get("active")
@@ -1961,55 +1756,26 @@ class HubRuntimeV2:
     @staticmethod
     def _logical_workspace_availability(projections: list[Mapping[str, Any]]) -> str:
         values = {str(item.get("availability") or "") for item in projections}
-        for status in (
-            "ready",
-            "preflight_required",
-            "incompatible_edge",
-            "offline",
-            "workspace_missing",
-        ):
+        for status in ("ready", "preflight_required", "incompatible_edge", "offline", "workspace_missing"):
             if status in values:
                 return status
         return "unavailable"
 
     def _capacity(self, machine: Mapping[str, Any]) -> dict[str, Any]:
-        resources = (
-            machine.get("resource_status")
-            if isinstance(machine.get("resource_status"), Mapping)
-            else {}
-        )
-        capabilities = (
-            machine.get("capabilities")
-            if isinstance(machine.get("capabilities"), Mapping)
-            else {}
-        )
+        resources = machine.get("resource_status") if isinstance(machine.get("resource_status"), Mapping) else {}
+        capabilities = machine.get("capabilities") if isinstance(machine.get("capabilities"), Mapping) else {}
         active = max(0, _as_int(resources.get("active_workers"), 0))
-        maximum = max(
-            0,
-            _as_int(
-                resources.get("max_concurrent_jobs"),
-                _as_int(capabilities.get("max_concurrent_jobs"), 0),
-            ),
-        )
-        free = _as_int(
-            resources.get("free_worker_slots"), maximum - active if maximum else 1
-        )
-        queue_enabled = bool(
-            resources.get("queue_enabled", capabilities.get("queue_enabled", False))
-        )
+        maximum = max(0, _as_int(resources.get("max_concurrent_jobs"), _as_int(capabilities.get("max_concurrent_jobs"), 0)))
+        free = _as_int(resources.get("free_worker_slots"), maximum - active if maximum else 1)
+        queue_enabled = bool(resources.get("queue_enabled", capabilities.get("queue_enabled", False)))
         return {
             "active_workers": active,
             "max_concurrent_jobs": maximum,
             "free_worker_slots": max(0, free),
             "queue_enabled": queue_enabled,
             "worker_ratio": active / maximum if maximum else 0.0,
-            "memory_ratio": max(
-                0.0,
-                min(_as_float(resources.get("memory_used_percent"), 0.0) / 100.0, 1.0),
-            ),
-            "cpu_ratio": max(
-                0.0, min(_as_float(resources.get("cpu_percent"), 0.0) / 100.0, 1.0)
-            ),
+            "memory_ratio": max(0.0, min(_as_float(resources.get("memory_used_percent"), 0.0) / 100.0, 1.0)),
+            "cpu_ratio": max(0.0, min(_as_float(resources.get("cpu_percent"), 0.0) / 100.0, 1.0)),
             "disk_free_bytes": _as_int(resources.get("disk_free_bytes"), -1),
         }
 
@@ -2078,11 +1844,8 @@ class HubRuntimeV2:
                 "machine_id": machine["machine_id"],
                 "edge_generation": machine["edge_generation"],
                 "workspace_ref": projection.get("workspace_ref") or "",
-                "workspace_projection_ref": projection.get("workspace_projection_ref")
-                or "",
-                "resolved_path": projection.get("resolved_path")
-                or projection.get("local_path")
-                or "",
+                "workspace_projection_ref": projection.get("workspace_projection_ref") or "",
+                "resolved_path": projection.get("resolved_path") or projection.get("local_path") or "",
                 "capacity": capacity,
                 "reasons": reasons,
             }
@@ -2124,26 +1887,15 @@ class HubRuntimeV2:
                 raise ValueError("Each lane requires a lane value")
             if lane in result:
                 raise ValueError(f"Duplicate lane: {lane}")
-            result[lane] = {
-                "lane_id": lane,
-                "lane": lane,
-                "title": title or lane,
-                "role": role,
-            }
+            result[lane] = {"lane_id": lane, "lane": lane, "title": title or lane, "role": role}
         return result
 
     def _persist_participation(
         self, identity: ManagerIdentity, work_group_id: str, *, takeover: bool = False
     ) -> None:
         now = self._clock()
-        participant = self.store.get_entity(
-            PARTICIPANT_ENTITY, identity.participant_ref
-        )
-        record = (
-            deepcopy(participant["record"])
-            if participant
-            else identity.public_metadata()
-        )
+        participant = self.store.get_entity(PARTICIPANT_ENTITY, identity.participant_ref)
+        record = deepcopy(participant["record"]) if participant else identity.public_metadata()
         groups = list(record.get("work_group_ids") or [])
         if work_group_id not in groups:
             groups.append(work_group_id)
@@ -2178,10 +1930,7 @@ class HubRuntimeV2:
 
     def _current_group_id(self, identity: ManagerIdentity) -> str:
         pointer = self.store.get_entity(CURRENT_GROUP_ENTITY, identity.participant_ref)
-        if (
-            pointer is None
-            or pointer["record"].get("principal_ref") != identity.principal_ref
-        ):
+        if pointer is None or pointer["record"].get("principal_ref") != identity.principal_ref:
             return ""
         group_id = str(pointer["record"].get("work_group_id") or "")
         group = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
@@ -2214,9 +1963,7 @@ class HubRuntimeV2:
         while current["state"] in next_preparation_state:
             state = next_preparation_state[current["state"]]
             current = self.broker.transition_operation(
-                current["operation_id"],
-                expected_revision=current["revision"],
-                state=state,
+                current["operation_id"], expected_revision=current["revision"], state=state
             ) or self.store.get_operation(current["operation_id"])
         if current["state"] in TERMINAL_OPERATION_STATES:
             return current
@@ -2228,14 +1975,9 @@ class HubRuntimeV2:
             "failed": "failed",
             "pending": "outcome_unknown",
         }[str(envelope["status"])]
-        if (
-            current["state"] == "outcome_unknown"
-            and target in TERMINAL_OPERATION_STATES
-        ):
+        if current["state"] == "outcome_unknown" and target in TERMINAL_OPERATION_STATES:
             current = self.broker.transition_operation(
-                current["operation_id"],
-                expected_revision=current["revision"],
-                state="reconciling",
+                current["operation_id"], expected_revision=current["revision"], state="reconciling"
             ) or self.store.get_operation(current["operation_id"])
         return self.broker.transition_operation(
             current["operation_id"],
@@ -2266,27 +2008,17 @@ class HubRuntimeV2:
             payload=payload,
         )
         if operation["state"] == "created":
-            operation = (
-                self.broker.prepare_operation(
-                    operation["operation_id"], expected_revision=operation["revision"]
-                )
-                or operation
-            )
+            operation = self.broker.prepare_operation(
+                operation["operation_id"], expected_revision=operation["revision"]
+            ) or operation
         if operation["state"] == "payload_ready":
-            operation = (
-                self.broker.make_dispatchable(
-                    operation["operation_id"], expected_revision=operation["revision"]
-                )
-                or operation
-            )
+            operation = self.broker.make_dispatchable(
+                operation["operation_id"], expected_revision=operation["revision"]
+            ) or operation
         self._upsert_entity(
             OPERATION_GROUP_ENTITY,
             operation["operation_id"],
-            {
-                "operation_id": operation["operation_id"],
-                "work_group_id": group["work_group_id"],
-                "kind": "preflight",
-            },
+            {"operation_id": operation["operation_id"], "work_group_id": group["work_group_id"], "kind": "preflight"},
         )
         return operation
 
@@ -2314,11 +2046,7 @@ class HubRuntimeV2:
             idempotency_key=f"{idempotency_key}:preflight",
             reason="group_create",
         )
-        readiness = (
-            group.get("readiness")
-            if isinstance(group.get("readiness"), Mapping)
-            else {}
-        )
+        readiness = group.get("readiness") if isinstance(group.get("readiness"), Mapping) else {}
         if str(readiness.get("operation_id") or "") != str(preflight["operation_id"]):
             group["readiness"] = {
                 **deepcopy(dict(readiness)),
@@ -2341,9 +2069,7 @@ class HubRuntimeV2:
                 "kind": "group_create",
             },
         )
-        current = self.store.get_operation(str(operation["operation_id"])) or dict(
-            operation
-        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
         event_needed = str(current.get("state") or "") not in TERMINAL_OPERATION_STATES
         terminal = (
             self._complete_hub_operation(
@@ -2454,9 +2180,7 @@ class HubRuntimeV2:
                 "kind": "group_reassign",
             },
         )
-        current = self.store.get_operation(str(operation["operation_id"])) or dict(
-            operation
-        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
         terminal = (
             self._complete_hub_operation(
                 current,
@@ -2550,9 +2274,7 @@ class HubRuntimeV2:
                 "kind": "group_close",
             },
         )
-        current = self.store.get_operation(str(operation["operation_id"])) or dict(
-            operation
-        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
         terminal = (
             self._complete_hub_operation(
                 current,
@@ -2630,9 +2352,7 @@ class HubRuntimeV2:
                 "kind": "group_resume",
             },
         )
-        current = self.store.get_operation(str(operation["operation_id"])) or dict(
-            operation
-        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
         terminal = self._complete_hub_operation(
             current, public_envelope("ok", result={"work_group_id": group_id})
         )
@@ -2657,30 +2377,20 @@ class HubRuntimeV2:
         wait_for_preflight_seconds: int = 0,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
-        del (
-            wait_for_preflight_seconds
-        )  # Network waiting belongs to the broker/transport boundary.
+        del wait_for_preflight_seconds  # Network waiting belongs to the broker/transport boundary.
         title_value = _clean_text(title, field="title", maximum=160)
         goal_value = _clean_text(goal, field="goal", maximum=8_000)
         key = _clean_text(idempotency_key, field="idempotency_key", maximum=256)
         visibility_value = str(visibility or "private")
         if visibility_value not in {"private", "shared"}:
             raise ValueError("visibility must be private or shared")
-        shared_write_policy_value = (
-            str(shared_write_policy or "serialized").strip().lower()
-        )
+        shared_write_policy_value = str(shared_write_policy or "serialized").strip().lower()
         if shared_write_policy_value not in {"serialized", "manager_controlled"}:
-            raise ValueError(
-                "shared_write_policy must be serialized or manager_controlled"
-            )
+            raise ValueError("shared_write_policy must be serialized or manager_controlled")
         execution_mode_value = str(execution_mode or "end_to_end").strip().lower()
         if execution_mode_value not in {"end_to_end", "asynchronous_handoff"}:
-            raise ValueError(
-                "execution_mode must be end_to_end or asynchronous_handoff"
-            )
-        definition_of_done_value = (
-            _optional_text(definition_of_done, 8_000) or goal_value
-        )
+            raise ValueError("execution_mode must be end_to_end or asynchronous_handoff")
+        definition_of_done_value = _optional_text(definition_of_done, 8_000) or goal_value
         identity = self._manager_identity(context)
         target = str(workspace_ref or repo_path or machine_id or "fleet")
         payload = {
@@ -2689,9 +2399,7 @@ class HubRuntimeV2:
             "workspace_ref": workspace_ref,
             "repo_path": repo_path,
             "machine_id": machine_id,
-            "allowed_machine_ids": _string_list(
-                allowed_machine_ids, field="allowed_machine_ids"
-            ),
+            "allowed_machine_ids": _string_list(allowed_machine_ids, field="allowed_machine_ids"),
             "required_tags": _string_list(required_tags, field="required_tags"),
             "lanes": lanes or [],
             "visibility": visibility_value,
@@ -2709,9 +2417,7 @@ class HubRuntimeV2:
         group_id = stable_ref(
             "group", str(operation["operation_id"]), salt=self._identity_salt
         )
-        association = self.store.get_entity(
-            OPERATION_GROUP_ENTITY, operation["operation_id"]
-        )
+        association = self.store.get_entity(OPERATION_GROUP_ENTITY, operation["operation_id"])
         if operation.get("idempotent_replay") and association:
             group_id = str(association["record"].get("work_group_id") or "")
             group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
@@ -2737,10 +2443,7 @@ class HubRuntimeV2:
                 )
             if str(operation.get("state") or "") in TERMINAL_OPERATION_STATES:
                 saved = operation.get("result")
-                if (
-                    isinstance(saved, Mapping)
-                    and str(saved.get("status") or "") != "ok"
-                ):
+                if isinstance(saved, Mapping) and str(saved.get("status") or "") != "ok":
                     replay = deepcopy(dict(saved))
                     replay["operation"] = self._operation_summary(operation)
                     return replay
@@ -2776,11 +2479,7 @@ class HubRuntimeV2:
         if selected is None:
             blocked = public_envelope(
                 "blocked",
-                result={
-                    "reason": "no_eligible_machine",
-                    "candidate_summary": [],
-                    "rejection_summary": rejections,
-                },
+                result={"reason": "no_eligible_machine", "candidate_summary": [], "rejection_summary": rejections},
             )
             terminal = self._complete_hub_operation(operation, blocked)
             blocked["operation"] = self._operation_summary(terminal)
@@ -2801,20 +2500,11 @@ class HubRuntimeV2:
             "shared_write_policy": shared_write_policy_value,
             "execution_mode": execution_mode_value,
             "definition_of_done": definition_of_done_value,
-            "workspace_ref": str(
-                projection.get("workspace_ref") or workspace_ref or ""
-            ),
-            "workspace_projection_ref": str(
-                projection.get("workspace_projection_ref") or ""
-            ),
+            "workspace_ref": str(projection.get("workspace_ref") or workspace_ref or ""),
+            "workspace_projection_ref": str(projection.get("workspace_projection_ref") or ""),
             "repository_identity": str(projection.get("repository_identity") or ""),
             "requested_repo_path": str(repo_path or ""),
-            "resolved_repo_path": str(
-                projection.get("resolved_path")
-                or projection.get("local_path")
-                or repo_path
-                or ""
-            ),
+            "resolved_repo_path": str(projection.get("resolved_path") or projection.get("local_path") or repo_path or ""),
             "pinned_machine_id": selected["machine_id"],
             "pinned_edge_generation": selected["edge_generation"],
             "allowed_machine_ids": payload["allowed_machine_ids"],
@@ -2868,21 +2558,13 @@ class HubRuntimeV2:
         if expected_path and resolved_path != expected_path:
             blockers.append("workspace_path_mismatch")
         expected_identity = str(group.get("repository_identity") or "")
-        actual_identity = str(
-            facts.get("repository_identity") or facts.get("repo_identity") or ""
-        )
-        if (
-            expected_identity
-            and actual_identity
-            and expected_identity != actual_identity
-        ):
+        actual_identity = str(facts.get("repository_identity") or facts.get("repo_identity") or "")
+        if expected_identity and actual_identity and expected_identity != actual_identity:
             blockers.append("repository_identity_mismatch")
         disk_free = _as_int(facts.get("disk_free_bytes"), -1)
         if 0 <= disk_free < self.min_disk_free_bytes:
             blockers.append("disk_feasibility_blocked")
-        if _as_int(facts.get("free_worker_slots"), 1) <= 0 and not facts.get(
-            "queue_enabled"
-        ):
+        if _as_int(facts.get("free_worker_slots"), 1) <= 0 and not facts.get("queue_enabled"):
             blockers.append("capacity_blocked")
         status = "failed" if blockers else "ready"
         observed_at = self._clock()
@@ -2904,17 +2586,12 @@ class HubRuntimeV2:
             "updated_at": observed_at,
         }
         saved = self.store.put_entity(
-            WORK_GROUP_ENTITY,
-            work_group_id,
-            group,
-            expected_revision=group_entity["revision"],
+            WORK_GROUP_ENTITY, work_group_id, group, expected_revision=group_entity["revision"]
         )
         terminal_status = "blocked" if blockers else "ok"
         terminal = self._complete_hub_operation(
             operation,
-            public_envelope(
-                terminal_status, result={"preflight": facts, "blockers": blockers}
-            ),
+            public_envelope(terminal_status, result={"preflight": facts, "blockers": blockers}),
         )
         return self._group_envelope(saved["record"], operation=terminal)
 
@@ -3001,9 +2678,7 @@ class HubRuntimeV2:
                 "head": head,
                 "git": git,
                 "dirty_status_summary": (
-                    "clean"
-                    if not dirty
-                    else f"{len(changed_files)} changed/untracked paths"
+                    "clean" if not dirty else f"{len(changed_files)} changed/untracked paths"
                 ),
             }
         )
@@ -3015,9 +2690,7 @@ class HubRuntimeV2:
                 "facts": facts,
                 "facts_revision": head,
                 "observed_at": float(snapshot.get("observed_at") or now),
-                "mutation_reconciled_reason": str(reason or "base_checkout_changed")[
-                    :200
-                ],
+                "mutation_reconciled_reason": str(reason or "base_checkout_changed")[:200],
                 "mutation_source_operation_id": str(source_operation_id or ""),
                 "updated_at": now,
             }
@@ -3075,9 +2748,7 @@ class HubRuntimeV2:
                 continue
             if scope == "current" and group.get("work_group_id") != current_id:
                 continue
-            if scope == "recent" and identity.participant_ref not in set(
-                group.get("participants") or []
-            ):
+            if scope == "recent" and identity.participant_ref not in set(group.get("participants") or []):
                 continue
             if workspace_ref and group.get("workspace_ref") != workspace_ref:
                 continue
@@ -3104,13 +2775,7 @@ class HubRuntimeV2:
                 continue
             haystack = " ".join(
                 str(group.get(field) or "")
-                for field in (
-                    "title",
-                    "goal",
-                    "workspace_ref",
-                    "resolved_repo_path",
-                    "pinned_machine_id",
-                )
+                for field in ("title", "goal", "workspace_ref", "resolved_repo_path", "pinned_machine_id")
             ).casefold()
             if query_text and query_text not in haystack:
                 continue
@@ -3160,17 +2825,10 @@ class HubRuntimeV2:
         identity = self._manager_identity(context)
         group_id = str(work_group_id or self._current_group_id(identity) or "")
         if not group_id:
-            return public_envelope(
-                "not_found", result={"reason": "no_current_work_group"}
-            )
+            return public_envelope("not_found", result={"reason": "no_current_work_group"})
         entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
-        if (
-            entity is None
-            or entity["record"].get("principal_ref") != identity.principal_ref
-        ):
-            return public_envelope(
-                "not_found", result={"reason": "work_group_not_found"}
-            )
+        if entity is None or entity["record"].get("principal_ref") != identity.principal_ref:
+            return public_envelope("not_found", result={"reason": "work_group_not_found"})
         return self._group_envelope(
             entity["record"],
             include_workers=include_workers,
@@ -3215,46 +2873,25 @@ class HubRuntimeV2:
         del wait_for_preflight_seconds
         identity = self._manager_identity(context)
         group_entity = self.store.get_entity(WORK_GROUP_ENTITY, work_group_id)
-        if (
-            group_entity is None
-            or group_entity["record"].get("principal_ref") != identity.principal_ref
-        ):
-            return public_envelope(
-                "not_found", result={"reason": "work_group_not_found"}
-            )
+        if group_entity is None or group_entity["record"].get("principal_ref") != identity.principal_ref:
+            return public_envelope("not_found", result={"reason": "work_group_not_found"})
         group = deepcopy(group_entity["record"])
         if group.get("status") != "open":
-            return public_envelope(
-                "blocked", result={"reason": "closed_group_cannot_resume"}
-            )
+            return public_envelope("blocked", result={"reason": "closed_group_cannot_resume"})
         active = str(group.get("active_participant_ref") or "")
         if active and active != identity.participant_ref and not takeover:
             return public_envelope(
                 "blocked",
-                result={
-                    "reason": "active_participant_requires_takeover",
-                    "active_participant_ref": active,
-                },
+                result={"reason": "active_participant_requires_takeover", "active_participant_ref": active},
             )
-        if (
-            takeover
-            and active
-            and active != identity.participant_ref
-            and not str(takeover_reason or "").strip()
-        ):
-            raise ValueError(
-                "takeover_reason is required when taking over another active participant"
-            )
+        if takeover and active and active != identity.participant_ref and not str(takeover_reason or "").strip():
+            raise ValueError("takeover_reason is required when taking over another active participant")
         key = _clean_text(idempotency_key, field="idempotency_key", maximum=256)
         operation = self.broker.create_operation(
             tool="patchbay_work_group_resume",
             logical_target=work_group_id,
             idempotency_key=key,
-            payload={
-                "work_group_id": work_group_id,
-                "takeover": takeover,
-                "takeover_reason": takeover_reason,
-            },
+            payload={"work_group_id": work_group_id, "takeover": takeover, "takeover_reason": takeover_reason},
             principal_ref=identity.principal_ref,
         )
         return self._finish_group_resume(
@@ -3279,19 +2916,11 @@ class HubRuntimeV2:
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         if carry_context not in {"reports", "reports_and_changes", "none"}:
-            raise ValueError(
-                "carry_context must be reports, reports_and_changes, or none"
-            )
+            raise ValueError("carry_context must be reports, reports_and_changes, or none")
         identity = self._manager_identity(context)
         predecessor_entity = self.store.get_entity(WORK_GROUP_ENTITY, work_group_id)
-        if (
-            predecessor_entity is None
-            or predecessor_entity["record"].get("principal_ref")
-            != identity.principal_ref
-        ):
-            return public_envelope(
-                "not_found", result={"reason": "work_group_not_found"}
-            )
+        if predecessor_entity is None or predecessor_entity["record"].get("principal_ref") != identity.principal_ref:
+            return public_envelope("not_found", result={"reason": "work_group_not_found"})
         predecessor = deepcopy(predecessor_entity["record"])
         key = _clean_text(idempotency_key, field="idempotency_key", maximum=256)
         operation = self.broker.create_operation(
@@ -3335,7 +2964,9 @@ class HubRuntimeV2:
             salt=self._identity_salt,
         )
         if operation.get("idempotent_replay"):
-            recovered_successor = self.store.get_entity(WORK_GROUP_ENTITY, successor_id)
+            recovered_successor = self.store.get_entity(
+                WORK_GROUP_ENTITY, successor_id
+            )
             if recovered_successor is not None:
                 return self._finish_group_reassignment(
                     predecessor_id=work_group_id,
@@ -3373,9 +3004,7 @@ class HubRuntimeV2:
             workspace_ref=str(predecessor.get("workspace_ref") or ""),
             repo_path=str(predecessor.get("requested_repo_path") or ""),
             machine_id=machine_id,
-            allowed_machine_ids=allowed_machine_ids
-            or predecessor.get("allowed_machine_ids")
-            or [],
+            allowed_machine_ids=allowed_machine_ids or predecessor.get("allowed_machine_ids") or [],
             required_tags=required_tags or predecessor.get("required_tags") or [],
             exclude_pin=(
                 str(predecessor.get("pinned_machine_id") or ""),
@@ -3385,10 +3014,7 @@ class HubRuntimeV2:
         if selected is None:
             blocked = public_envelope(
                 "blocked",
-                result={
-                    "reason": "no_eligible_successor",
-                    "rejection_summary": rejections,
-                },
+                result={"reason": "no_eligible_successor", "rejection_summary": rejections},
             )
             terminal = self._complete_hub_operation(operation, blocked)
             blocked["operation"] = self._operation_summary(terminal)
@@ -3408,26 +3034,17 @@ class HubRuntimeV2:
                 "status": "open",
                 "lifecycle": "open",
                 "workspace_projection_ref": selected["workspace_projection_ref"],
-                "repository_identity": str(
-                    selected["projection"].get("repository_identity") or ""
-                ),
-                "requested_repo_path": str(
-                    predecessor.get("requested_repo_path") or ""
-                ),
+                "repository_identity": str(selected["projection"].get("repository_identity") or ""),
+                "requested_repo_path": str(predecessor.get("requested_repo_path") or ""),
                 "resolved_repo_path": selected["resolved_path"],
-                "allowed_machine_ids": _string_list(
-                    allowed_machine_ids, field="allowed_machine_ids"
-                )
+                "allowed_machine_ids": _string_list(allowed_machine_ids, field="allowed_machine_ids")
                 or list(predecessor.get("allowed_machine_ids") or []),
                 "required_tags": _string_list(required_tags, field="required_tags")
                 or list(predecessor.get("required_tags") or []),
                 "participants": [identity.participant_ref],
                 "active_participant_ref": identity.participant_ref,
                 "carry_context": carry_context,
-                "readiness": {
-                    "status": "pending",
-                    "reason": "strict_preflight_required",
-                },
+                "readiness": {"status": "pending", "reason": "strict_preflight_required"},
                 "routing": {
                     "mode": "explicit_machine" if machine_id else "availability_only",
                     "selected_machine_id": selected["machine_id"],
@@ -3435,9 +3052,7 @@ class HubRuntimeV2:
                 },
             }
         )
-        self.store.put_entity(
-            WORK_GROUP_ENTITY, successor_id, successor, expected_revision=0
-        )
+        self.store.put_entity(WORK_GROUP_ENTITY, successor_id, successor, expected_revision=0)
         return self._finish_group_reassignment(
             predecessor_id=work_group_id,
             successor_id=successor_id,
@@ -3464,35 +3079,22 @@ class HubRuntimeV2:
         if outcome not in {"complete", "partial", "abandoned", "failed"}:
             raise ValueError("outcome must be complete, partial, abandoned, or failed")
         if active_work_disposition not in {"refuse", "stop", "leave_running"}:
-            raise ValueError(
-                "active_work_disposition must be refuse, stop, or leave_running"
-            )
+            raise ValueError("active_work_disposition must be refuse, stop, or leave_running")
         identity = self._manager_identity(context)
         group_entity = self.store.get_entity(WORK_GROUP_ENTITY, work_group_id)
-        if (
-            group_entity is None
-            or group_entity["record"].get("principal_ref") != identity.principal_ref
-        ):
-            return public_envelope(
-                "not_found", result={"reason": "work_group_not_found"}
-            )
+        if group_entity is None or group_entity["record"].get("principal_ref") != identity.principal_ref:
+            return public_envelope("not_found", result={"reason": "work_group_not_found"})
         group = deepcopy(group_entity["record"])
         if group.get("status") == "open":
             coordination = self._coordination_blocker(group, identity)
             if coordination:
                 return public_envelope("blocked", result={"reason": coordination})
         workers = self._workers_for_group(work_group_id)
-        dispositions, disposition_errors = self._normalize_dispositions(
-            worker_dispositions, workers
-        )
+        dispositions, disposition_errors = self._normalize_dispositions(worker_dispositions, workers)
         validation = validate_close_dispositions(workers, dispositions, outcome=outcome)
         blockers = list(validation["blockers"])
         blockers.extend(disposition_errors)
-        active_workers = [
-            worker
-            for worker in workers
-            if worker.get("turn_state") in ACTIVE_TURN_STATES
-        ]
+        active_workers = [worker for worker in workers if worker.get("turn_state") in ACTIVE_TURN_STATES]
         if active_workers and active_work_disposition == "refuse":
             blockers.append({"reason": "active_work_disposition_refuse"})
         if active_workers and active_work_disposition == "stop":
@@ -3531,7 +3133,9 @@ class HubRuntimeV2:
             idempotency_key=key,
             principal_ref=identity.principal_ref,
         )
-        existing_close_id = str((existing_close or {}).get("operation_id") or "")
+        existing_close_id = str(
+            (existing_close or {}).get("operation_id") or ""
+        )
         operations = self._operations_for_group(work_group_id)
         unsafe_operations = [
             item
@@ -3581,9 +3185,12 @@ class HubRuntimeV2:
             return blocked
 
         for pending in operations:
-            if str(pending.get("operation_id") or "") != str(
-                operation["operation_id"]
-            ) and pending.get("state") in {"created", "payload_ready", "dispatchable"}:
+            if (
+                str(pending.get("operation_id") or "")
+                != str(operation["operation_id"])
+                and pending.get("state")
+                in {"created", "payload_ready", "dispatchable"}
+            ):
                 self.broker.cancel_operation(
                     pending["operation_id"],
                     expected_revision=pending["revision"],
@@ -3619,7 +3226,9 @@ class HubRuntimeV2:
         hidden_retired = 0
         for entity in self.store.list_entities(MACHINE_ENTITY):
             machine_id = str(entity["record"].get("machine_id") or "")
-            edge_generation = str(entity["record"].get("edge_generation") or "")
+            edge_generation = str(
+                entity["record"].get("edge_generation") or ""
+            )
             machine = self._fleet_machine_summary(
                 entity["record"],
                 now=self._clock(),
@@ -3636,11 +3245,7 @@ class HubRuntimeV2:
             if wanted_tags and not wanted_tags.issubset(set(machine.get("tags") or [])):
                 continue
             haystack = " ".join(
-                [
-                    str(machine.get("machine_id") or ""),
-                    str(machine.get("display_name") or ""),
-                    *machine.get("tags", []),
-                ]
+                [str(machine.get("machine_id") or ""), str(machine.get("display_name") or ""), *machine.get("tags", [])]
             ).casefold()
             if query_text and query_text not in haystack:
                 continue
@@ -3655,9 +3260,7 @@ class HubRuntimeV2:
         all_visible_machines = machines
         machines = machines[:MAX_FLEET_MACHINES]
         current_id = self._current_group_id(identity)
-        current = (
-            self.store.get_entity(WORK_GROUP_ENTITY, current_id) if current_id else None
-        )
+        current = self.store.get_entity(WORK_GROUP_ENTITY, current_id) if current_id else None
         owned = [
             self._fleet_group_summary(
                 self._public_group(
@@ -3678,7 +3281,9 @@ class HubRuntimeV2:
         owned_total = len(owned)
         owned = owned[:MAX_FLEET_OWNED_GROUPS]
         counts = {
-            "online": sum(item["status"] == "online" for item in all_visible_machines),
+            "online": sum(
+                item["status"] == "online" for item in all_visible_machines
+            ),
             "offline": sum(
                 item["status"] == "offline" for item in all_visible_machines
             ),
@@ -3686,17 +3291,15 @@ class HubRuntimeV2:
                 item["status"] == "retired" for item in all_visible_machines
             ),
             "incompatible": sum(
-                item["compatibility"] != "compatible" for item in all_visible_machines
+                item["compatibility"] != "compatible"
+                for item in all_visible_machines
             ),
             "hidden_retired": hidden_retired,
         }
         return public_envelope(
             "ok",
             result={
-                "hub": {
-                    "principal_ref": identity.principal_ref,
-                    **self.store.schema_info(),
-                },
+                "hub": {"principal_ref": identity.principal_ref, **self.store.schema_info()},
                 "contract_version": HUB_V2_CONTRACT_VERSION,
                 "manifest_hash": HUB_V2_MANIFEST_HASH,
                 "schema_hash": HUB_V2_SCHEMA_HASH,
@@ -3736,10 +3339,7 @@ class HubRuntimeV2:
             since_revision=since_revision,
         )
         operation = self.store.get_operation(operation_id)
-        if (
-            operation is not None
-            and operation.get("principal_ref") == identity.principal_ref
-        ):
+        if operation is not None and operation.get("principal_ref") == identity.principal_ref:
             envelope["operation"] = self._operation_summary(operation)
         revision = int(
             ((envelope.get("result") or {}).get("dispatch") or {}).get("event_revision")
@@ -3757,11 +3357,7 @@ class HubRuntimeV2:
         }
         normalized_actions: list[Any] = []
         for item in envelope.get("next_actions") or []:
-            if (
-                not isinstance(item, Mapping)
-                or item.get("tool")
-                or not item.get("action")
-            ):
+            if not isinstance(item, Mapping) or item.get("tool") or not item.get("action"):
                 normalized_actions.append(item)
                 continue
             if operation_state in internal_wait_states:
@@ -3815,12 +3411,7 @@ class HubRuntimeV2:
     ) -> list[str]:
         excluded = exclude_operation_ids or set()
         operations = self._operations_for_group(work_group_id)
-        operations.sort(
-            key=lambda item: (
-                not bool(item.get("parent_operation_id")),
-                item["created_at"],
-            )
-        )
+        operations.sort(key=lambda item: (not bool(item.get("parent_operation_id")), item["created_at"]))
         cancelled: list[str] = []
         for operation in operations:
             operation_id = str(operation["operation_id"])
@@ -3904,7 +3495,9 @@ class HubRuntimeV2:
                         else ("stale" if counts["stale"] else "terminal")
                     ),
                     "integration_state": (
-                        "not_integrated" if counts["unintegrated"] else "integrated"
+                        "not_integrated"
+                        if counts["unintegrated"]
+                        else "integrated"
                     ),
                 }
             )
@@ -3931,11 +3524,7 @@ class HubRuntimeV2:
         operation_summary: Mapping[str, Any] | None = None,
         lane_summaries: list[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        if (
-            worker_summary is None
-            or operation_summary is None
-            or lane_summaries is None
-        ):
+        if worker_summary is None or operation_summary is None or lane_summaries is None:
             snapshot = self.store.work_group_status_projection(
                 str(group["work_group_id"]),
                 operation_limit=0,
@@ -3951,30 +3540,15 @@ class HubRuntimeV2:
             operation_summary=operation_summary,
         )
         lanes: list[dict[str, Any]] = []
-        lane_records = (
-            group.get("lanes") if isinstance(group.get("lanes"), Mapping) else {}
-        )
+        lane_records = group.get("lanes") if isinstance(group.get("lanes"), Mapping) else {}
         lane_summary_by_id = {
-            str(item.get("lane_id") or "main"): dict(item) for item in lane_summaries
+            str(item.get("lane_id") or "main"): dict(item)
+            for item in lane_summaries
         }
         lane_ids = set(lane_records).union(lane_summary_by_id)
         for lane_id in sorted(lane_ids):
-            lane_workers = [
-                worker
-                for worker in workers
-                if str(worker.get("lane_id") or "main") == lane_id
-            ]
-            lane = deepcopy(
-                dict(
-                    lane_records.get(lane_id)
-                    or {
-                        "lane_id": lane_id,
-                        "lane": lane_id,
-                        "title": lane_id,
-                        "role": "",
-                    }
-                )
-            )
+            lane_workers = [worker for worker in workers if str(worker.get("lane_id") or "main") == lane_id]
+            lane = deepcopy(dict(lane_records.get(lane_id) or {"lane_id": lane_id, "lane": lane_id, "title": lane_id, "role": ""}))
             lane_summary = lane_summary_by_id.get(lane_id, {})
             lane_activity_counts = {
                 "workers": _as_int(lane_summary.get("worker_count"), len(lane_workers)),
@@ -3998,13 +3572,9 @@ class HubRuntimeV2:
             else:
                 lane_activity = "planned"
             lane.update({"activity": lane_activity, "counts": lane_activity_counts})
-            lane["worker_refs"] = [
-                str(worker.get("fleet_worker_ref") or "") for worker in lane_workers
-            ]
+            lane["worker_refs"] = [str(worker.get("fleet_worker_ref") or "") for worker in lane_workers]
             lane["worker_count"] = lane_activity_counts["workers"]
-            lane["worker_refs_truncated"] = (
-                len(lane["worker_refs"]) < lane["worker_count"]
-            )
+            lane["worker_refs_truncated"] = len(lane["worker_refs"]) < lane["worker_count"]
             lanes.append(lane)
         worker_refs = [str(worker.get("fleet_worker_ref") or "") for worker in workers]
         worker_total = _as_int(worker_summary.get("total"), len(worker_refs))
@@ -4038,9 +3608,7 @@ class HubRuntimeV2:
             "worker_refs_truncated": len(worker_refs) < worker_total,
             "supersedes": group.get("supersedes") or "",
             "superseded_by": group.get("superseded_by") or "",
-            "closure_dispositions": deepcopy(
-                dict(group.get("closure_dispositions") or {})
-            ),
+            "closure_dispositions": deepcopy(dict(group.get("closure_dispositions") or {})),
             "created_at": group.get("created_at"),
             "updated_at": group.get("updated_at"),
             "closed_at": group.get("closed_at"),
@@ -4065,37 +3633,16 @@ class HubRuntimeV2:
                 }
         machine_id = str(group.get("pinned_machine_id") or "")
         generation = str(group.get("pinned_edge_generation") or "")
-        machine_entity = (
-            self.store.get_entity(MACHINE_ENTITY, machine_id) if machine_id else None
-        )
-        if (
-            machine_entity is None
-            or machine_entity["record"].get("edge_generation") != generation
-        ):
-            return {
-                **readiness,
-                "status": "machine_unavailable",
-                "reason": "pinned_generation_unavailable",
-            }
+        machine_entity = self.store.get_entity(MACHINE_ENTITY, machine_id) if machine_id else None
+        if machine_entity is None or machine_entity["record"].get("edge_generation") != generation:
+            return {**readiness, "status": "machine_unavailable", "reason": "pinned_generation_unavailable"}
         machine = self._public_machine(machine_entity["record"], now=self._clock())
         if machine["status"] != "online":
-            return {
-                **readiness,
-                "status": "machine_unavailable",
-                "reason": "pinned_machine_offline",
-            }
+            return {**readiness, "status": "machine_unavailable", "reason": "pinned_machine_offline"}
         if machine["compatibility"] != "compatible":
-            return {
-                **readiness,
-                "status": "incompatible_edge",
-                "reason": "pinned_edge_contract_mismatch",
-            }
+            return {**readiness, "status": "incompatible_edge", "reason": "pinned_edge_contract_mismatch"}
         projection_ref = str(group.get("workspace_projection_ref") or "")
-        projection = (
-            self.store.get_entity(WORKSPACE_PROJECTION_ENTITY, projection_ref)
-            if projection_ref
-            else None
-        )
+        projection = self.store.get_entity(WORKSPACE_PROJECTION_ENTITY, projection_ref) if projection_ref else None
         if projection_ref and (
             projection is None
             or not projection["record"].get("active")
@@ -4157,9 +3704,7 @@ class HubRuntimeV2:
                 "cursor": str(offset),
                 "limit": limit,
                 "returned": returned,
-                "next_cursor": str(next_offset)
-                if included and next_offset < total
-                else "",
+                "next_cursor": str(next_offset) if included and next_offset < total else "",
                 "truncated": included and next_offset < total,
             }
 
@@ -4199,7 +3744,9 @@ class HubRuntimeV2:
                 self._operation_summary(item) for item in projection["operations"]
             ]
         if include_integrations:
-            result["integration_summary"] = deepcopy(projection["integration_summary"])
+            result["integration_summary"] = deepcopy(
+                projection["integration_summary"]
+            )
             result["integrations"] = deepcopy(projection["integrations"])
             result["integration_page"] = page_metadata(
                 total=integration_total,
@@ -4257,23 +3804,13 @@ class HubRuntimeV2:
             if not worker_ref:
                 matches = by_name.get(str(item.get("worker") or "").casefold(), [])
                 if len(matches) != 1:
-                    errors.append(
-                        {
-                            "worker": str(item.get("worker") or ""),
-                            "reason": "ambiguous_or_unknown_worker",
-                        }
-                    )
+                    errors.append({"worker": str(item.get("worker") or ""), "reason": "ambiguous_or_unknown_worker"})
                     continue
                 worker_ref = matches[0]
             disposition = str(item.get("disposition") or "")
             if disposition == "discarded":
                 if item.get("discard_unintegrated_changes") is not True:
-                    errors.append(
-                        {
-                            "worker": worker_ref,
-                            "reason": "discard_requires_explicit_consent",
-                        }
-                    )
+                    errors.append({"worker": worker_ref, "reason": "discard_requires_explicit_consent"})
                     continue
                 disposition = "discarded_explicitly"
             normalized[worker_ref] = disposition

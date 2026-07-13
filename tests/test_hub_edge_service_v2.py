@@ -57,7 +57,6 @@ class FakeWorkerRuntime:
             "content_sha256": "fake-projection",
         }
 
-
 class FakeToolHandler:
     def __init__(
         self,
@@ -222,9 +221,7 @@ async def test_intent_precedes_effect_context_is_reconstructed_and_duplicate_rep
 
 
 @pytest.mark.asyncio
-async def test_crash_before_effect_leaves_replayable_intent(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_crash_before_effect_leaves_replayable_intent(tmp_path: Path, monkeypatch) -> None:
     handler = FakeToolHandler()
     journal, execution = service(tmp_path / "edge.sqlite3", handler)
     attempt = operation_attempt()
@@ -249,9 +246,7 @@ async def test_crash_before_effect_leaves_replayable_intent(
 
 
 @pytest.mark.asyncio
-async def test_crash_after_effect_is_not_blindly_reexecuted_after_restart(
-    tmp_path: Path,
-) -> None:
+async def test_crash_after_effect_is_not_blindly_reexecuted_after_restart(tmp_path: Path) -> None:
     path = tmp_path / "edge.sqlite3"
     handler = FakeToolHandler(crash_after_effect=True)
     journal, execution = service(path, handler)
@@ -271,19 +266,14 @@ async def test_crash_after_effect_is_not_blindly_reexecuted_after_restart(
     assert recovery["found"] is True
     assert recovery["recovery_action"] == RECOVERY_RECONCILE_EFFECT
     assert recovery["needs_reconciliation"] is True
-    assert (
-        restarted.reconciliation_lookup(attempt_id=attempt["attempt_id"])[
-            "recovery_action"
-        ]
-        == RECOVERY_RECONCILE_EFFECT
-    )
+    assert restarted.reconciliation_lookup(attempt_id=attempt["attempt_id"])[
+        "recovery_action"
+    ] == RECOVERY_RECONCILE_EFFECT
     restarted_journal.close()
 
 
 @pytest.mark.asyncio
-async def test_result_outbox_replays_across_acknowledgement_and_pruning(
-    tmp_path: Path,
-) -> None:
+async def test_result_outbox_replays_across_acknowledgement_and_pruning(tmp_path: Path) -> None:
     path = tmp_path / "edge.sqlite3"
     handler = FakeToolHandler()
     journal, execution = service(path, handler)
@@ -315,9 +305,7 @@ async def test_result_outbox_replays_across_acknowledgement_and_pruning(
 
 
 @pytest.mark.asyncio
-async def test_blocked_domain_result_is_a_durable_semantic_receipt(
-    tmp_path: Path,
-) -> None:
+async def test_blocked_domain_result_is_a_durable_semantic_receipt(tmp_path: Path) -> None:
     handler = FakeToolHandler(
         result={
             "accepted": False,
@@ -376,9 +364,7 @@ async def test_read_only_handler_error_is_known_blocked_outcome(
     journal = EdgeJournal(tmp_path / "edge.sqlite3", edge_generation=EDGE_GENERATION)
     read_capabilities = capabilities()
     read_capabilities["action_capabilities"]["codex_open_workspace"] = ACTION_VERSION
-    read_capabilities["action_capability_versions"]["codex_open_workspace"] = (
-        ACTION_VERSION
-    )
+    read_capabilities["action_capability_versions"]["codex_open_workspace"] = ACTION_VERSION
     execution = EdgeExecutionService(
         handler,
         journal,

@@ -4,7 +4,6 @@ The outbound runner passes claimed operation attempts here, uploads the returned
 outbox records, and feed Hub receipt acknowledgements back without weakening
 the journal ordering enforced below.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -131,9 +130,7 @@ class EdgeExecutionService:
         handler_config = getattr(handler, "config", {})
         capability_config = config if config is not None else handler_config
         self.config = dict(capability_config or {})
-        self.capabilities = dict(
-            capabilities or build_capabilities(capability_config or {})
-        )
+        self.capabilities = dict(capabilities or build_capabilities(capability_config or {}))
         self._target_locks: dict[str, asyncio.Lock] = {}
         self._target_lock_users: dict[str, int] = {}
         self._last_projection_worker_ids: list[str] = []
@@ -155,9 +152,7 @@ class EdgeExecutionService:
 
         operation_id = _consistent_text(sources, ("operation_id",), "operation_id")
         attempt_id = _consistent_text(sources, ("attempt_id",), "attempt_id")
-        fencing_token = _consistent_positive_int(
-            sources, ("fencing_token",), "fencing_token"
-        )
+        fencing_token = _consistent_positive_int(sources, ("fencing_token",), "fencing_token")
 
         payload = _first_object(sources, ("payload", "operation_payload"))
         arguments = _first_object(sources, ("arguments",))
@@ -340,9 +335,7 @@ class EdgeExecutionService:
             context=context,
         )
         request = current.get("request") if isinstance(current, Mapping) else None
-        actual = (
-            int(request.get("revision") or 0) if isinstance(request, Mapping) else 0
-        )
+        actual = int(request.get("revision") or 0) if isinstance(request, Mapping) else 0
         if int(expected) == actual:
             return None
         return {
@@ -448,9 +441,7 @@ class EdgeExecutionService:
         else:
             sync_builder = getattr(runtime, "projection_snapshot", None)
             if not callable(sync_builder):
-                raise EdgeExecutionError(
-                    "ToolHandler has no WorkerRuntime projection API"
-                )
+                raise EdgeExecutionError("ToolHandler has no WorkerRuntime projection API")
             raw = await asyncio.to_thread(
                 sync_builder,
                 previous_edge_worker_ids=previous,
@@ -471,9 +462,7 @@ class EdgeExecutionService:
         """Validate and envelope one already-built runtime projection."""
 
         if not isinstance(raw, Mapping):
-            raise EdgeExecutionError(
-                "WorkerRuntime projection snapshot must be an object"
-            )
+            raise EdgeExecutionError("WorkerRuntime projection snapshot must be an object")
         snapshot = deepcopy(dict(raw))
         workers = snapshot.get("workers")
         if not isinstance(workers, list):
@@ -493,8 +482,7 @@ class EdgeExecutionService:
         pro_request_tombstones = [
             {"request_id": request_id}
             for request_id in sorted(
-                set(self._last_projection_pro_request_ids)
-                - set(present_pro_request_ids)
+                set(self._last_projection_pro_request_ids) - set(present_pro_request_ids)
             )
         ]
         self._last_projection_pro_request_ids = present_pro_request_ids
@@ -532,9 +520,7 @@ class EdgeExecutionService:
 
         result = list_requests(include_closed=True, limit=100, request_context=None)
         if not isinstance(result, Mapping):
-            raise EdgeExecutionError(
-                "ProRequestStore list_requests must return an object"
-            )
+            raise EdgeExecutionError("ProRequestStore list_requests must return an object")
         workspace_refs = self._workspace_refs_by_repo_name()
         projected: list[dict[str, Any]] = []
         for value in result.get("requests") or []:
@@ -544,14 +530,8 @@ class EdgeExecutionService:
             if not request_id:
                 continue
             repo_name = str(value.get("repo_name") or "").strip()
-            response = (
-                value.get("response")
-                if isinstance(value.get("response"), Mapping)
-                else {}
-            )
-            origin = (
-                value.get("origin") if isinstance(value.get("origin"), Mapping) else {}
-            )
+            response = value.get("response") if isinstance(value.get("response"), Mapping) else {}
+            origin = value.get("origin") if isinstance(value.get("origin"), Mapping) else {}
             projected.append(
                 {
                     "request_id": request_id,
@@ -668,9 +648,7 @@ class EdgeExecutionService:
                 view = str(arguments.get("view") or "").strip()
                 mapped_action = str(HUB_V2_WORKSPACE_CHANGES_ACTION_MAP.get(view) or "")
                 if not mapped_action:
-                    raise EdgeAttemptFenceError(
-                        "unsupported_workspace_changes_view", view
-                    )
+                    raise EdgeAttemptFenceError("unsupported_workspace_changes_view", view)
         if explicit_action and mapped_action and explicit_action != mapped_action:
             raise EdgeAttemptFenceError(
                 "edge_action_conflict",
@@ -688,21 +666,13 @@ class EdgeExecutionService:
         sources: Sequence[Mapping[str, Any]],
         requirement_maps: Sequence[Mapping[str, Any]],
     ) -> None:
-        values = _all_text(
-            sources,
-            ("edge_generation", "required_edge_generation", "required_generation"),
-        )
+        values = _all_text(sources, ("edge_generation", "required_edge_generation", "required_generation"))
         values.extend(
-            _all_text(
-                requirement_maps,
-                ("edge_generation", "required_edge_generation", "generation"),
-            )
+            _all_text(requirement_maps, ("edge_generation", "required_edge_generation", "generation"))
         )
         if not values:
             raise EdgeAttemptFenceError("missing_edge_generation_fence")
-        mismatch = next(
-            (value for value in values if value != self.edge_generation), ""
-        )
+        mismatch = next((value for value in values if value != self.edge_generation), "")
         if mismatch:
             raise EdgeAttemptFenceError(
                 "edge_generation_mismatch",
@@ -731,9 +701,7 @@ class EdgeExecutionService:
         if not contract_hashes:
             raise EdgeAttemptFenceError("missing_contract_hash_fence")
         actual_contract_hash = str(self.capabilities.get("contract_hash") or "")
-        mismatch = next(
-            (value for value in contract_hashes if value != actual_contract_hash), ""
-        )
+        mismatch = next((value for value in contract_hashes if value != actual_contract_hash), "")
         if mismatch or not actual_contract_hash:
             raise EdgeAttemptFenceError(
                 "edge_contract_mismatch",
@@ -741,10 +709,7 @@ class EdgeExecutionService:
             )
 
         optional_fences = (
-            (
-                ("required_protocol_version", "protocol_version", "required_protocol"),
-                "protocol_version",
-            ),
+            (("required_protocol_version", "protocol_version", "required_protocol"), "protocol_version"),
             (("required_contract_version", "contract_version"), "contract_version"),
             (("required_manifest_hash", "manifest_hash"), "manifest_hash"),
             (("required_schema_hash", "schema_hash"), "schema_hash"),
@@ -772,23 +737,14 @@ class EdgeExecutionService:
             ("required_action_capability_version", "action_capability_version"),
         )
         for source in all_sources:
-            for key in (
-                "required_action_capabilities",
-                "action_capabilities",
-                "action_capability_versions",
-            ):
+            for key in ("required_action_capabilities", "action_capabilities", "action_capability_versions"):
                 versions = source.get(key)
-                if isinstance(versions, Mapping) and versions.get(action) not in (
-                    None,
-                    "",
-                ):
+                if isinstance(versions, Mapping) and versions.get(action) not in (None, ""):
                     expected.append(str(versions[action]).strip())
         if not expected:
             raise EdgeAttemptFenceError("missing_action_capability_fence", action)
         advertised = self.capabilities.get("action_capabilities")
-        actual = (
-            str(advertised.get(action) or "") if isinstance(advertised, Mapping) else ""
-        )
+        actual = str(advertised.get(action) or "") if isinstance(advertised, Mapping) else ""
         mismatch = next((value for value in expected if value != actual), "")
         if mismatch or not actual:
             raise EdgeAttemptFenceError(
@@ -829,9 +785,7 @@ class EdgeExecutionService:
         explicit = _first_text(sources, ("target_key",))
         if explicit:
             return explicit
-        direct = _first_text(
-            sources, ("target_ref", "operation_target", "fleet_worker_ref")
-        )
+        direct = _first_text(sources, ("target_ref", "operation_target", "fleet_worker_ref"))
         if direct:
             return f"target:{direct}"
         for source in sources:
@@ -862,14 +816,7 @@ class EdgeExecutionService:
         if action == "codex_worker_start" and arguments.get("name"):
             repo = arguments.get("repo_path") or arguments.get("repo") or ""
             return f"worker_name:{repo}:{arguments['name']}"
-        for key in (
-            "request_id",
-            "artifact_id",
-            "workspace_projection_ref",
-            "workspace_ref",
-            "repo_path",
-            "repo",
-        ):
+        for key in ("request_id", "artifact_id", "workspace_projection_ref", "workspace_ref", "repo_path", "repo"):
             if arguments.get(key):
                 return f"{key}:{arguments[key]}"
         return f"operation:{operation_id}"
@@ -881,9 +828,7 @@ class EdgeExecutionService:
                 attempt_id=str(attempt["attempt_id"]),
                 fencing_token=int(attempt["fencing_token"]),
                 outcome=str(attempt.get("outcome") or "outcome_unknown"),
-                result=attempt.get("result")
-                if isinstance(attempt.get("result"), Mapping)
-                else {},
+                result=attempt.get("result") if isinstance(attempt.get("result"), Mapping) else {},
                 error=str(attempt.get("error") or ""),
                 uncertain=bool(attempt.get("uncertain")),
                 receipt_id=str(attempt.get("receipt_id") or ""),
@@ -970,11 +915,7 @@ class EdgeExecutionService:
             "message": message,
         }
         if action == "codex_open_workspace":
-            arguments = (
-                plan.get("arguments")
-                if isinstance(plan.get("arguments"), Mapping)
-                else {}
-            )
+            arguments = plan.get("arguments") if isinstance(plan.get("arguments"), Mapping) else {}
             requested = str(arguments.get("repo") or arguments.get("repo_path") or "")
             result.update(
                 {
@@ -1041,9 +982,7 @@ class EdgeExecutionService:
     @asynccontextmanager
     async def _target_lock(self, target_key: str) -> AsyncIterator[None]:
         lock = self._target_locks.setdefault(target_key, asyncio.Lock())
-        self._target_lock_users[target_key] = (
-            self._target_lock_users.get(target_key, 0) + 1
-        )
+        self._target_lock_users[target_key] = self._target_lock_users.get(target_key, 0) + 1
         try:
             async with lock:
                 yield

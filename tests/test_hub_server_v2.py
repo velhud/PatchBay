@@ -318,9 +318,7 @@ def _online_runtime_edge(
     contract_hash: str = HUB_V2_CONTRACT_HASH,
     action_version: str = "2",
 ) -> tuple[dict[str, Any], dict[str, Any], HubPullTransportBridgeV2]:
-    code = app.runtime.create_enrollment_code(name="Runtime Edge", tags=["codex"])[
-        "code"
-    ]
+    code = app.runtime.create_enrollment_code(name="Runtime Edge", tags=["codex"])["code"]
     enrolled = app.runtime.enroll_machine(
         code=code,
         machine_id="runtime-machine",
@@ -403,9 +401,7 @@ def _server(
     max_request_bytes: int = 4096,
     inject_factory: bool = False,
 ):
-    dependency = (
-        {"hub_app_factory": lambda: app} if inject_factory else {"hub_app": app}
-    )
+    dependency = {"hub_app_factory": lambda: app} if inject_factory else {"hub_app": app}
     return create_hub_v2_server(
         {
             "server": {"host": "0.0.0.0", "max_request_bytes": max_request_bytes},
@@ -491,16 +487,8 @@ def test_operator_auth_request_limit_and_exact_31_tool_surface() -> None:
     client = TestClient(_server(app, max_request_bytes=768, inject_factory=True))
 
     assert client.get("/status").status_code == 401
-    assert (
-        client.get("/status", headers=_operator_headers()).json()["principal_ref"]
-        == app.principal_ref
-    )
-    assert (
-        client.post(
-            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        ).status_code
-        == 401
-    )
+    assert client.get("/status", headers=_operator_headers()).json()["principal_ref"] == app.principal_ref
+    assert client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).status_code == 401
 
     listed = client.post(
         "/mcp",
@@ -527,9 +515,7 @@ def test_operator_auth_request_limit_and_exact_31_tool_surface() -> None:
     assert edge_too_large.status_code == 413
 
 
-def test_mcp_sessions_expire_by_monotonic_ttl_and_reinitialize_without_identity_reuse() -> (
-    None
-):
+def test_mcp_sessions_expire_by_monotonic_ttl_and_reinitialize_without_identity_reuse() -> None:
     clock = FakeMonotonicClock(100.0)
     app = StatefulHubV2App()
     server = create_hub_v2_server(
@@ -607,9 +593,7 @@ def test_mcp_session_lru_bounds_three_thousand_abandoned_clients() -> None:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": "initialize",
-                "params": {
-                    "clientInfo": {"name": f"client-{request_id}", "version": "1"}
-                },
+                "params": {"clientInfo": {"name": f"client-{request_id}", "version": "1"}},
             },
         )
         assert response.status_code == 200
@@ -618,25 +602,17 @@ def test_mcp_session_lru_bounds_three_thousand_abandoned_clients() -> None:
     assert len(server.state.hub_v2_sessions) == DEFAULT_MAX_MCP_SESSIONS
     assert session_ids[0] not in server.state.hub_v2_sessions
     assert session_ids[-1] in server.state.hub_v2_sessions
-    assert (
-        client.get("/status").json()["active_mcp_sessions"] == DEFAULT_MAX_MCP_SESSIONS
-    )
-    assert (
-        client.post(
-            "/mcp",
-            headers={"Mcp-Session-Id": session_ids[0]},
-            json={"jsonrpc": "2.0", "id": 3_001, "method": "tools/list", "params": {}},
-        ).status_code
-        == 404
-    )
-    assert (
-        client.post(
-            "/mcp",
-            headers={"Mcp-Session-Id": session_ids[-1]},
-            json={"jsonrpc": "2.0", "id": 3_002, "method": "tools/list", "params": {}},
-        ).status_code
-        == 200
-    )
+    assert client.get("/status").json()["active_mcp_sessions"] == DEFAULT_MAX_MCP_SESSIONS
+    assert client.post(
+        "/mcp",
+        headers={"Mcp-Session-Id": session_ids[0]},
+        json={"jsonrpc": "2.0", "id": 3_001, "method": "tools/list", "params": {}},
+    ).status_code == 404
+    assert client.post(
+        "/mcp",
+        headers={"Mcp-Session-Id": session_ids[-1]},
+        json={"jsonrpc": "2.0", "id": 3_002, "method": "tools/list", "params": {}},
+    ).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -702,13 +678,11 @@ async def test_mcp_session_capacity_never_evicts_an_in_flight_identity() -> None
         assert second_session in server.state.hub_v2_sessions
         assert first_session not in server.state.hub_v2_sessions
         assert not server.state.hub_v2_in_flight_sessions
-        assert (
-            await client.post(
-                "/mcp",
-                headers={"Mcp-Session-Id": second_session},
-                json={"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}},
-            )
-        ).status_code == 200
+        assert (await client.post(
+            "/mcp",
+            headers={"Mcp-Session-Id": second_session},
+            json={"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}},
+        )).status_code == 200
 
 
 def test_enrollment_rotates_generation_and_old_node_credentials_stop_working() -> None:
@@ -723,12 +697,9 @@ def test_enrollment_rotates_generation_and_old_node_credentials_stop_working() -
         "edge_generation": first_generation,
         "projection_revision": 1,
     }
-    assert (
-        client.post(
-            "/edge/v2/heartbeat", headers=_edge_headers(first_token), json=heartbeat
-        ).status_code
-        == 200
-    )
+    assert client.post(
+        "/edge/v2/heartbeat", headers=_edge_headers(first_token), json=heartbeat
+    ).status_code == 200
 
     second = _enroll(client, "PB-TWO")
     assert second["edge_generation"] != first_generation
@@ -808,11 +779,7 @@ def test_claim_lease_result_outbox_ack_and_stale_attempt_fence() -> None:
     assert acknowledged.status_code == 200
     assert acknowledged.json()["acknowledged_receipts"] == ["receipt_test_1"]
 
-    stale_receipt = {
-        **receipt,
-        "attempt_id": "attempt_stale",
-        "result": {"status": "failed"},
-    }
+    stale_receipt = {**receipt, "attempt_id": "attempt_stale", "result": {"status": "failed"}}
     stale = client.post(
         "/edge/v2/result",
         headers=headers,
@@ -855,10 +822,7 @@ def test_projection_revision_reconciliation_and_request_context_are_preserved() 
         json={
             **edge_identity,
             "projection_revision": 1,
-            "projection": {
-                "snapshot_kind": "delta",
-                "workers": [{"worker_id": "wrong"}],
-            },
+            "projection": {"snapshot_kind": "delta", "workers": [{"worker_id": "wrong"}]},
         },
     )
     assert duplicate.json()["projection_accepted"] is False
@@ -918,9 +882,7 @@ def test_projection_revision_reconciliation_and_request_context_are_preserved() 
     assert context.transport_session_id not in called.text
 
 
-def test_runtime_backed_edge_claim_result_and_stale_attempt_are_fenced(
-    tmp_path: Path,
-) -> None:
+def test_runtime_backed_edge_claim_result_and_stale_attempt_are_fenced(tmp_path: Path) -> None:
     state_path = tmp_path / "hub-v2.sqlite3"
     app = RuntimeBackedHubV2App(state_path)
     principal_ref = app.store.principal_ref
@@ -1053,10 +1015,7 @@ def test_runtime_backed_edge_claim_result_and_stale_attempt_are_fenced(
     assert finished.status_code == 200
     assert finished.json()["operation"]["state"] == "succeeded"
     assert finished.json()["attempt"]["state"] == "acknowledged"
-    assert (
-        finished.json()["receipt_acknowledgements"][0]["receipt_id"]
-        == "receipt_runtime_1"
-    )
+    assert finished.json()["receipt_acknowledgements"][0]["receipt_id"] == "receipt_runtime_1"
 
     confirmed = client.post(
         "/edge/v2/outbox/ack",
@@ -1136,9 +1095,7 @@ def test_uncertain_receipt_becomes_terminal_manual_recovery_blocker(
 
     saved_operation = app.store.get_operation(operation["operation_id"])
     saved_attempt = app.store.get_attempt(executing["attempt_id"])
-    saved_dispatch = app.store.get_entity(
-        "hub.edge_dispatch", operation["operation_id"]
-    )
+    saved_dispatch = app.store.get_entity("hub.edge_dispatch", operation["operation_id"])
     assert result["operation"]["state"] == "blocked"
     assert repeated["operation"]["state"] == "blocked"
     assert saved_operation["state"] == "blocked"
@@ -1148,12 +1105,9 @@ def test_uncertain_receipt_becomes_terminal_manual_recovery_blocker(
         "edge_outcome_unknown_requires_manual_recovery"
     )
     assert result["receipt_acknowledgements"][0]["receipt_id"] == receipt["receipt_id"]
-    assert (
-        edge_reconciliation_requests(
-            app.store, "runtime-machine", int(saved_attempt["edge_generation"])
-        )
-        == []
-    )
+    assert edge_reconciliation_requests(
+        app.store, "runtime-machine", int(saved_attempt["edge_generation"])
+    ) == []
     app.close()
 
 
@@ -1228,12 +1182,9 @@ def test_exact_late_result_repairs_manual_recovery_without_weakening_fences(
     assert repaired["operation"]["state"] == "succeeded"
     assert repaired["attempt"]["state"] == "acknowledged"
     assert replayed["operation"]["state"] == "succeeded"
-    assert (
-        app.store.get_entity("hub.edge_dispatch", operation["operation_id"])["record"][
-            "status"
-        ]
-        == "complete"
-    )
+    assert app.store.get_entity("hub.edge_dispatch", operation["operation_id"])[
+        "record"
+    ]["status"] == "complete"
     with pytest.raises(HubStoreV2Conflict, match="attempt_fencing_token_mismatch"):
         transport.edge_result(
             {
@@ -1471,22 +1422,17 @@ def test_legacy_acknowledged_unknown_operation_is_recovered_as_terminal_blocker(
     assert saved_operation["result"]["result"]["reason"] == (
         "edge_attempt_history_unavailable"
     )
-    assert (
-        edge_reconciliation_requests(app.store, "runtime-machine", internal_generation)
-        == []
-    )
+    assert edge_reconciliation_requests(
+        app.store, "runtime-machine", internal_generation
+    ) == []
     app.close()
 
 
-def test_runtime_backed_server_retries_a_pre_effect_expired_lease(
-    tmp_path: Path,
-) -> None:
+def test_runtime_backed_server_retries_a_pre_effect_expired_lease(tmp_path: Path) -> None:
     app = RuntimeBackedHubV2App(tmp_path / "runtime-reconcile.sqlite3")
     old_contract = HUB_V2_CONTRACT_HASH
     current_contract = "runtime-current-contract"
-    code = app.runtime.create_enrollment_code(name="runtime-edge", tags=["codex"])[
-        "code"
-    ]
+    code = app.runtime.create_enrollment_code(name="runtime-edge", tags=["codex"])["code"]
     enrolled = app.runtime.enroll_machine(
         code=code,
         machine_id="runtime-machine",
@@ -1688,16 +1634,13 @@ def test_runtime_controller_hydrates_and_acknowledges_transient_payload(
 
     assert result.status_code == 200
     assert executing["state"] == "executing"
-    assert (
-        app.store.get_payload_metadata(transient["payload_id"])["status"]
-        == "acknowledged"
-    )
+    assert app.store.get_payload_metadata(transient["payload_id"])["status"] == "acknowledged"
     assert download_url not in str(
         app.store.get_entity("hub.edge_dispatch", operation["operation_id"])["record"]
     )
-    saved_receipt = app.store.get_entity("hub.edge_receipt", receipt["receipt_id"])[
-        "record"
-    ]
+    saved_receipt = app.store.get_entity(
+        "hub.edge_receipt", receipt["receipt_id"]
+    )["record"]
     assert {
         key: saved_receipt[key]
         for key in (
@@ -2017,9 +1960,7 @@ def test_transport_rotates_successor_contract_and_action_version_before_executio
         "SELECT state FROM attempts WHERE operation_id = ? ORDER BY fencing_token",
         (operation["operation_id"],),
     ).fetchall()
-    saved_dispatch = app.store.get_entity(
-        "hub.edge_dispatch", operation["operation_id"]
-    )
+    saved_dispatch = app.store.get_entity("hub.edge_dispatch", operation["operation_id"])
     assert [str(row["state"]) for row in attempts] == ["retryable", "acknowledged"]
     assert app.store.get_operation(operation["operation_id"])["state"] == "succeeded"
     assert saved_dispatch["record"]["required_action_capability_version"] == "3"
@@ -2065,15 +2006,10 @@ def test_contract_rotation_without_action_support_becomes_terminal_blocker(
     assert claim["attempt"] is None
     assert saved["state"] == "blocked"
     assert saved["result"]["result"]["reason"] == "edge_action_capability_mismatch"
-    assert (
-        "start a new manager operation" in saved["result"]["result"]["manager_guidance"]
-    )
-    assert (
-        app.store.get_entity("hub.edge_dispatch", operation["operation_id"])["record"][
-            "status"
-        ]
-        == "blocked"
-    )
+    assert "start a new manager operation" in saved["result"]["result"]["manager_guidance"]
+    assert app.store.get_entity("hub.edge_dispatch", operation["operation_id"])[
+        "record"
+    ]["status"] == "blocked"
     app.close()
 
 
@@ -2082,7 +2018,9 @@ def test_missing_edge_journal_history_terminally_blocks_reconciliation(
 ) -> None:
     app = RuntimeBackedHubV2App(tmp_path / "missing-history.sqlite3")
     enrolled, _, transport = _online_runtime_edge(app)
-    operation, _, _ = _runtime_dispatch(app, transport, operation_key="missing-history")
+    operation, _, _ = _runtime_dispatch(
+        app, transport, operation_key="missing-history"
+    )
     identity = {
         "machine_id": "runtime-machine",
         "edge_generation": "runtime-generation",
@@ -2111,13 +2049,10 @@ def test_missing_edge_journal_history_terminally_blocks_reconciliation(
     assert reconciled["found"] is False
     assert saved["state"] == "blocked"
     assert saved["result"]["result"]["reason"] == "edge_attempt_history_unavailable"
-    assert (
-        "start a new manager operation" in saved["result"]["result"]["manager_guidance"]
-    )
-    assert (
-        transport._reconciliation_requests("runtime-machine", "runtime-generation")
-        == []
-    )
+    assert "start a new manager operation" in saved["result"]["result"]["manager_guidance"]
+    assert transport._reconciliation_requests(
+        "runtime-machine", "runtime-generation"
+    ) == []
     app.close()
 
 
@@ -2170,10 +2105,7 @@ def test_runtime_controller_heartbeat_drives_receipt_and_reconciliation_flow(
         )
         assert finished.status_code == 200
         assert first_execution["state"] == "executing"
-        assert (
-            app.store.get_operation(first_operation["operation_id"])["state"]
-            == "succeeded"
-        )
+        assert app.store.get_operation(first_operation["operation_id"])["state"] == "succeeded"
 
         second_operation, _, _ = _runtime_dispatch(
             app,
@@ -2206,14 +2138,8 @@ def test_runtime_controller_heartbeat_drives_receipt_and_reconciliation_flow(
                 "resource_status": {"active_workers": 0, "free_worker_slots": 2},
             },
         ).json()
-        assert (
-            heartbeat["receipt_acknowledgements"][0]["receipt_id"]
-            == receipt["receipt_id"]
-        )
-        assert (
-            heartbeat["reconciliation_requests"][0]["attempt_id"]
-            == second_claim["attempt_id"]
-        )
+        assert heartbeat["receipt_acknowledgements"][0]["receipt_id"] == receipt["receipt_id"]
+        assert heartbeat["reconciliation_requests"][0]["attempt_id"] == second_claim["attempt_id"]
 
         acknowledged = client.post(
             "/edge/v2/outbox/ack",
@@ -2233,10 +2159,7 @@ def test_runtime_controller_heartbeat_drives_receipt_and_reconciliation_flow(
             },
         )
         assert reconciled.status_code == 200
-        assert (
-            app.store.get_operation(second_operation["operation_id"])["state"]
-            == "blocked"
-        )
+        assert app.store.get_operation(second_operation["operation_id"])["state"] == "blocked"
 
         settled = client.post(
             "/edge/v2/heartbeat",
