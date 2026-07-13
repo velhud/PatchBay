@@ -362,7 +362,7 @@ async def test_manifestless_legacy_parent_becomes_terminal_when_children_finish(
 
 
 def test_group_status_retires_only_its_manifestless_parent_with_terminal_children(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
     store = HubStoreV2(tmp_path / "legacy-startup-reconciliation.sqlite3")
     broker = OperationBroker(store)
@@ -427,6 +427,13 @@ def test_group_status_retires_only_its_manifestless_parent_with_terminal_childre
     )
 
     runtime = HubRuntimeV2(store, broker=broker)
+    monkeypatch.setattr(
+        runtime,
+        "_operations_for_group",
+        lambda _work_group_id: (_ for _ in ()).throw(
+            AssertionError("group status must not materialize full operation history")
+        ),
+    )
     status = runtime.work_group_status(work_group_id="group-terminal")
 
     assert (
@@ -455,6 +462,51 @@ def test_group_status_retires_only_its_manifestless_parent_with_terminal_childre
         "repaired": [],
         "repaired_count": 0,
     }
+
+
+def test_active_group_operation_lookup_preserves_index_authority_and_legacy_fallback(
+    tmp_path,
+):
+    store = HubStoreV2(tmp_path / "active-group-operations.sqlite3")
+    broker = OperationBroker(store)
+
+    def create(tool: str, target: str, key: str) -> dict:
+        return broker.create_operation(
+            tool=tool,
+            logical_target=target,
+            idempotency_key=key,
+            payload={"test": key},
+        )
+
+    indexed = create("patchbay_worker_start_batch", "different-target", "indexed")
+    legacy = create("patchbay_worker_start_batch", "group-selected", "legacy")
+    wrong_group = create("patchbay_worker_start_batch", "group-selected", "wrong-group")
+    other_tool = create("patchbay_worker_status", "group-selected", "other-tool")
+    terminal = create("patchbay_worker_start_batch", "group-selected", "terminal")
+    with store.immediate_transaction() as connection:
+        connection.executemany(
+            """
+            INSERT INTO operation_group_index(operation_id, work_group_id, kind)
+            VALUES (?, ?, 'batch')
+            """,
+            [
+                (indexed["operation_id"], "group-selected"),
+                (wrong_group["operation_id"], "group-other"),
+            ],
+        )
+        connection.execute(
+            "UPDATE operations SET state = 'succeeded' WHERE operation_id = ?",
+            (terminal["operation_id"],),
+        )
+
+    selected = store.active_operation_ids_for_work_group(
+        "group-selected",
+        tool="patchbay_worker_start_batch",
+    )
+    assert set(selected) == {indexed["operation_id"], legacy["operation_id"]}
+    assert wrong_group["operation_id"] not in selected
+    assert other_tool["operation_id"] not in selected
+    assert terminal["operation_id"] not in selected
 
 
 def test_batch_manifest_is_immutable_and_rejects_undeclared_children(tmp_path):

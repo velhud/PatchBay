@@ -3411,12 +3411,10 @@ class HubRuntimeV2:
     def _reconcile_group_manifestless_batches(
         self, work_group_id: str
     ) -> dict[str, Any]:
-        operation_ids = [
-            str(operation["operation_id"])
-            for operation in self._operations_for_group(work_group_id)
-            if operation.get("tool") == "patchbay_worker_start_batch"
-            and operation.get("state") not in TERMINAL_OPERATION_STATES
-        ]
+        operation_ids = self.store.active_operation_ids_for_work_group(
+            work_group_id,
+            tool="patchbay_worker_start_batch",
+        )
         return self.broker.reconcile_manifestless_terminal_batch_parents(
             operation_ids=operation_ids
         )

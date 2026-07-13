@@ -1072,6 +1072,66 @@ class HubStoreV2:
         ).fetchall()
         return [str(row["operation_id"]) for row in rows]
 
+    def active_operation_ids_for_work_group(
+        self,
+        work_group_id: str,
+        *,
+        tool: str,
+    ) -> list[str]:
+        """Return active operations of one tool without walking group history.
+
+        Explicit V3 associations are authoritative. The logical-target branch
+        exists only for pre-index operations that also lack the historical
+        association entity. Starting from the active-state index keeps this
+        compatibility lookup bounded by live control-plane work rather than by
+        the group's retained operation count.
+        """
+
+        self._require_open()
+        group_id = _clean_key(work_group_id, "work_group_id")
+        tool_name = _clean_key(tool, "tool")
+        active_states = sorted(OPERATION_STATES - TERMINAL_OPERATION_STATES)
+        placeholders = ",".join("?" for _ in active_states)
+        rows = self._connection.execute(
+            f"""
+            SELECT operation.operation_id
+            FROM operations AS operation INDEXED BY operations_state_created_idx
+            WHERE operation.state IN ({placeholders})
+              AND operation.tool = ?
+              AND (
+                  EXISTS (
+                      SELECT 1
+                      FROM operation_group_index AS indexed_association
+                      WHERE indexed_association.operation_id = operation.operation_id
+                        AND indexed_association.work_group_id = ?
+                  )
+                  OR (
+                      operation.logical_target = ?
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM operation_group_index AS any_indexed_association
+                          WHERE any_indexed_association.operation_id = operation.operation_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM entity_records AS legacy_association
+                          WHERE legacy_association.entity_type = ?
+                            AND legacy_association.entity_id = operation.operation_id
+                      )
+                  )
+              )
+            ORDER BY operation.created_at, operation.operation_id
+            """,
+            [
+                *active_states,
+                tool_name,
+                group_id,
+                group_id,
+                OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE,
+            ],
+        ).fetchall()
+        return [str(row["operation_id"]) for row in rows]
+
     def worker_refs_for_work_group(self, work_group_id: str) -> list[str]:
         """Filter durable worker identities before decoding their records."""
 

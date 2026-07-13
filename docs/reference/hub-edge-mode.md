@@ -278,6 +278,13 @@ recovery tool: inspect the returned recovery details, preserve the old
 operation ID for evidence, and submit deliberate replacement work only when
 the manager-level guidance says replacement is safe.
 
+Compatibility reconciliation is bounded by active control-plane work, not by
+retained group history. Hub starts from the active-operation index, applies the
+explicit operation-to-group association when present, and uses the legacy
+logical target only for pre-index records that have no association authority.
+Consequently, ordinary group status does not decode or scan every historical
+operation merely to discover an obsolete batch parent.
+
 Transport reconciliation is automatic. ChatGPT does not receive and must not
 need a lease-transition or `complete_reconciliation` tool. For nonterminal
 operations, `patchbay_operation_status` returns a callable bounded status wait
