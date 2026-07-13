@@ -91,9 +91,16 @@ def test_start_script_supervises_fake_cloudflare_tunnel(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     fake_cloudflared = tmp_path / "fake-cloudflared"
+    tunnel_stopped = tmp_path / "fake-cloudflared.stopped"
     fake_cloudflared.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys, time\n"
+        "import signal, sys, time\n"
+        "from pathlib import Path\n"
+        f"stopped = Path({str(tunnel_stopped)!r})\n"
+        "def stop(*_args):\n"
+        "    stopped.write_text('stopped', encoding='utf-8')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
         "if '--version' in sys.argv:\n"
         "    print('cloudflared fixture 0.0.0')\n"
         "    raise SystemExit(0)\n"
@@ -186,3 +193,13 @@ def test_start_script_supervises_fake_cloudflare_tunnel(tmp_path):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", port)) != 0 and tunnel_stopped.exists():
+                break
+        time.sleep(0.05)
+    with socket.socket() as probe:
+        assert probe.connect_ex(("127.0.0.1", port)) != 0
+    assert tunnel_stopped.read_text(encoding="utf-8") == "stopped"

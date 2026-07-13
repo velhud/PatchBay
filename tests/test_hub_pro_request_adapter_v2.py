@@ -617,7 +617,9 @@ async def _wait_for_terminal_operation(app: Any, operation_id: str) -> None:
                 "cancelled",
             }:
                 return
-            await asyncio.sleep(0.005)
+            # Do not turn the integration test into a SQLite busy-loop on the
+            # same small Linux VM that is also running the in-process Edge.
+            await asyncio.sleep(0.05)
 
     # The production-shaped Edge loop may share a small CI/VM CPU. Keep this
     # bounded, but do not turn scheduler contention into a false failure.
@@ -727,11 +729,11 @@ async def test_production_hub_routes_remote_edge_pro_requests_end_to_end(tmp_pat
             edge_generation=generation,
         ),
         transport=_InProcessHubTransport(bridge),
-        heartbeat_interval_seconds=0.01,
-        claim_interval_seconds=0.005,
-        result_retry_seconds=0.005,
-        reconciliation_interval_seconds=0.02,
-        lease_renewal_seconds=0.01,
+        heartbeat_interval_seconds=0.1,
+        claim_interval_seconds=0.05,
+        result_retry_seconds=0.05,
+        reconciliation_interval_seconds=0.1,
+        lease_renewal_seconds=0.5,
         shutdown_timeout_seconds=1,
     )
     context = _context("fleet-owner", group="", lane="")
@@ -784,6 +786,11 @@ async def test_production_hub_routes_remote_edge_pro_requests_end_to_end(tmp_pat
             "patchbay_pro_request_read", read_args, context=context
         )
         if read["status"] == "pending":
+            delayed_operation = app.store.get_operation(
+                read["operation"]["operation_id"]
+            )
+            assert delayed_operation is not None
+            assert delayed_operation["logical_target"] == f"pro-request:{request_ref}"
             await asyncio.sleep(0)
             assert not run_task.done(), repr(run_task.exception())
             await _wait_for_terminal_operation(app, read["operation"]["operation_id"])

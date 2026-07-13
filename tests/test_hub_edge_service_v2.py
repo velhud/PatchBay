@@ -57,7 +57,6 @@ class FakeWorkerRuntime:
             "content_sha256": "fake-projection",
         }
 
-
 class FakeToolHandler:
     def __init__(
         self,
@@ -290,6 +289,7 @@ async def test_result_outbox_replays_across_acknowledgement_and_pruning(tmp_path
     assert acknowledged["acknowledged_at"] is not None
     assert execution.pending_results() == []
     assert execution.acknowledge_receipts({"receipt_ids": []}) == []
+    assert journal.confirm_outbox_deliveries([receipt["receipt_id"]]) == 1
     assert journal.prune_acknowledged() == 1
     journal.close()
 

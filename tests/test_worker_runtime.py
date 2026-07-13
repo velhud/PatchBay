@@ -21,6 +21,10 @@ from patchbay.ownership import (
 )
 from patchbay.protocol.context import RequestContext
 from patchbay.workers.runtime import (
+    DEFAULT_STATUS_CACHE_TTL_SECONDS,
+    MAX_STATUS_CACHE_IDENTITIES,
+    MAX_STATUS_CACHE_RESPONSES,
+    MAX_STATUS_SIGNATURES_PER_IDENTITY,
     WORKER_BASE_REPO_OPTION,
     WORKER_CHATGPT_SESSION_REF_OPTION,
     WORKER_ID_OPTION,
@@ -121,6 +125,37 @@ class DelayedPartialCancelExecutor(RecordingExecutor):
 
         asyncio.create_task(attach_partial_result())
         return {"cancelled": True, "job_id": job_id, "state": "cancelled"}
+
+
+class BlockingReconcileExecutor(RecordingExecutor):
+    def reconcile_stale_running_jobs(self):
+        time.sleep(0.2)
+        return {"checked": 0, "reconciled": 0}
+
+
+class UnresolvedCleanupExecutor(RecordingExecutor):
+    def __init__(self, manager):
+        super().__init__(manager)
+        self.unresolved_job_ids = set()
+
+    def runtime_liveness_snapshot(self, job_id):
+        unresolved = job_id in self.unresolved_job_ids
+        return {
+            "executor_task_alive": unresolved,
+            "process_alive": unresolved,
+            "runtime_alive": unresolved,
+        }
+
+
+class FakeMonotonicClock:
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
 
 
 class FailingCreateJobManager(JobManager):
@@ -867,7 +902,7 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     executor = RecordingExecutor(manager)
     runtime = WorkerRuntime(config, manager, executor)
 
-    started = await runtime.start_worker(
+    await runtime.start_worker(
         name="Delta Worker",
         brief="Investigate with visible status.",
         repo_path=config["repositories"]["default"],
@@ -900,9 +935,9 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert first["workers"][0]["current_command"]["running"] is True
     assert first["workers"][0]["current_command"]["kind"] == "shell_command"
     assert "preview" not in first["workers"][0]["current_command"]
-    assert first["minimum_next_poll_seconds"] == 10
-    assert first["recommended_next_poll_seconds"] == 20
-    assert "10-20 seconds" in first["poll_guidance"]
+    assert first["minimum_next_poll_seconds"] == 20
+    assert first["recommended_next_poll_seconds"] == 30
+    assert "20-30 seconds" in first["poll_guidance"]
 
     manager.update_job_state(
         job.job_id,
@@ -935,7 +970,7 @@ async def test_worker_status_reports_compact_team_deltas(tmp_path):
     assert second["workers"][0]["latest_partial_note"]["available"] is True
     assert "partial note" in second["worker_lines"][0]
     listed = await runtime.list_workers(repo_path=config["repositories"]["default"], include_stopped=True)
-    assert listed["team_status"]["recommended_next_poll_seconds"] == 20
+    assert listed["team_status"]["recommended_next_poll_seconds"] == 30
     assert "Do not poll every few seconds" in listed["team_report"]
 
 
@@ -1432,6 +1467,26 @@ async def test_list_workers_reconciles_stale_running_worker(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_async_worker_reconciliation_does_not_block_event_loop(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    runtime = WorkerRuntime(config, manager, BlockingReconcileExecutor(manager))
+    loop_advanced = asyncio.Event()
+
+    async def heartbeat():
+        await asyncio.sleep(0.02)
+        loop_advanced.set()
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    list_task = asyncio.create_task(runtime.list_workers(scope="history"))
+
+    await asyncio.wait_for(loop_advanced.wait(), timeout=0.1)
+    assert list_task.done() is False
+    await list_task
+    await heartbeat_task
+
+
+@pytest.mark.asyncio
 async def test_worker_list_filters_active_stopped_owner_and_created_after(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -1776,6 +1831,139 @@ async def test_worker_monitoring_cache_is_cleared_by_new_worker(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_worker_monitoring_ttl_resets_cache_baseline_without_hiding_current_run(tmp_path):
+    config = make_config(tmp_path)
+    config["workers"]["status_minimum_poll_seconds"] = 20
+    clock = FakeMonotonicClock(100.0)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor, monotonic_clock=clock)
+    context = chatgpt_context("run-cache-ttl")
+    started = await runtime.start_worker(
+        name="TTL Worker",
+        brief="Preserve current-run visibility across cache expiry.",
+        repo_path=config["repositories"]["default"],
+        workspace_mode="read_only",
+        request_context=context,
+    )
+    manager.update_job_state(
+        executor.started[-1],
+        JobState.COMPLETED,
+        result={"summary": "done"},
+        session_id="session-cache-ttl",
+    )
+
+    first = await runtime.worker_status(scope="current", request_context=context)
+    cached = await runtime.worker_status(scope="current", request_context=context)
+    assert first["workers"][0]["worker_id"] == started["worker_id"]
+    assert first["since_last_check"]["first_check"] is True
+    assert cached["poll_too_early"] is True
+    assert cached["poll_tool"] == "codex_worker_status"
+
+    clock.advance(DEFAULT_STATUS_CACHE_TTL_SECONDS)
+    refreshed = await runtime.worker_status(scope="current", request_context=context)
+    assert refreshed["poll_too_early"] is False
+    assert refreshed["status_current"] is True
+    assert refreshed["workers"][0]["worker_id"] == started["worker_id"]
+    assert refreshed["since_last_check"]["first_check"] is True
+    assert len(runtime._status_poll_responses) == 1
+    assert len(runtime._status_poll_snapshots) == 1
+
+
+def test_worker_monitoring_lru_bounds_three_thousand_polling_identities(tmp_path):
+    config = make_config(tmp_path)
+    clock = FakeMonotonicClock(500.0)
+    manager = JobManager(config)
+    runtime = WorkerRuntime(
+        config,
+        manager,
+        RecordingExecutor(manager),
+        monotonic_clock=clock,
+    )
+    first_poll_key = ""
+    last_poll_key = ""
+    for index in range(3_000):
+        key_kind = index % 3
+        if key_kind == 0:
+            context = RequestContext(work_run_ref=f"run-{index}")
+        elif key_kind == 1:
+            context = RequestContext(chatgpt_session_ref=f"chat-{index}")
+        else:
+            context = RequestContext(owner_ref=f"owner-{index}")
+        poll_key = runtime._status_poll_key(context)
+        first_poll_key = first_poll_key or poll_key
+        last_poll_key = poll_key
+        runtime._annotate_worker_deltas(
+            [
+                {
+                    "worker_id": f"worker-{index}",
+                    "name": f"Worker {index}",
+                    "state": "completed",
+                    "liveness": {"status": "completed"},
+                    "latest_turn": {},
+                }
+            ],
+            request_context=context,
+        )
+        runtime._store_monitoring_response(
+            f"response|{poll_key}",
+            {"identity": index, "workers": [f"worker-{index}"]},
+        )
+
+    assert len(runtime._status_poll_snapshots) == MAX_STATUS_CACHE_IDENTITIES
+    assert len(runtime._status_poll_responses) == MAX_STATUS_CACHE_RESPONSES
+    assert first_poll_key not in runtime._status_poll_snapshots
+    assert last_poll_key in runtime._status_poll_snapshots
+    current = runtime._cached_monitoring_response(
+        f"response|{last_poll_key}",
+        tool_name="codex_worker_status",
+    )
+    assert current is not None
+    assert current["identity"] == 2_999
+    assert runtime._cached_monitoring_response(
+        f"response|{first_poll_key}",
+        tool_name="codex_worker_status",
+    ) is None
+
+    clock.advance(DEFAULT_STATUS_CACHE_TTL_SECONDS)
+    runtime._prune_monitoring_caches()
+    assert not runtime._status_poll_snapshots
+    assert not runtime._status_poll_responses
+
+
+def test_worker_signature_bound_preserves_full_output_and_recent_delta_continuity(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    runtime = WorkerRuntime(config, manager, RecordingExecutor(manager))
+    context = owner_context("owner-signature-stress", "signature-client")
+
+    def view(index: int) -> dict:
+        return {
+            "worker_id": f"worker-{index}",
+            "name": f"Worker {index}",
+            "state": "completed",
+            "liveness": {"status": "completed"},
+            "latest_turn": {"event_count": index},
+        }
+
+    views = [view(index) for index in range(3_000)]
+    team = runtime._annotate_worker_deltas(views, request_context=context)
+    snapshot = runtime._status_poll_snapshots[runtime._status_poll_key(context)]
+    assert team["counts"]["total"] == 3_000
+    assert len(views) == 3_000
+    assert len(snapshot["signatures"]) == MAX_STATUS_SIGNATURES_PER_IDENTITY
+    assert views[0]["activity_since_last_check"]["first_check"] is True
+    assert views[-1]["activity_since_last_check"]["first_check"] is True
+
+    retained = view(2_999)
+    runtime._annotate_worker_deltas([retained], request_context=context)
+    assert retained["activity_since_last_check"]["first_check"] is False
+    evicted = view(0)
+    runtime._annotate_worker_deltas([evicted], request_context=context)
+    assert evicted["activity_since_last_check"]["first_check"] is True
+
+
+@pytest.mark.asyncio
 async def test_worker_inspect_status_uses_soft_monitoring_cooldown(tmp_path):
     config = make_config(tmp_path)
     config["workers"]["status_minimum_poll_seconds"] = 20
@@ -1930,7 +2118,7 @@ async def test_isolated_worker_continues_in_same_worktree_and_reports_changes(tm
     runtime = WorkerRuntime(config, manager, executor)
     client_a = request_context("client_a", "Chat A")
 
-    started = await runtime.start_worker(
+    await runtime.start_worker(
         name="Implementer",
         brief="Create a file.",
         repo_path=config["repositories"]["default"],
@@ -2011,3 +2199,110 @@ async def test_cleanup_workspace_discards_isolated_worktree_without_deleting_wor
     rejected = await runtime.message_worker(worker=started["worker_id"], message="Continue.")
     assert rejected["accepted"] is False
     assert "will not fall back" in rejected["note"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_workspace_preserves_worktree_while_terminal_cleanup_pending(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Cleanup Pending Implementer",
+        brief="Create a report that must survive cleanup.",
+        repo_path=config["repositories"]["default"],
+    )
+    job = manager.get_job(executor.started[0])
+    worktree_path = Path(job.worktree_path)
+    (worktree_path / "worker-report.md").write_text(
+        "durable worker report\n", encoding="utf-8"
+    )
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Durable cleanup report is ready."},
+        session_id="session-cleanup-pending",
+        wrapper_cleanup_outcome="cleanup_pending",
+    )
+
+    result = await runtime.stop_worker(
+        worker=started["worker_id"],
+        cleanup_workspace=True,
+        discard_unintegrated_changes=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "terminal_cleanup_pending"
+    assert result["retryable"] is True
+    assert result["workspace_cleaned"] is False
+    assert result["workspace_cleanup_blocked"] is True
+    assert result["cleanup_pending"] is True
+    assert result["recommended_next_action"] == "retry_codex_worker_stop"
+    assert "Durable cleanup report" in result["report"]
+    assert worktree_path.exists()
+    assert (worktree_path / "worker-report.md").exists()
+    assert not (manager.get_job(job.job_id).options or {}).get(
+        "_worker_workspace_discarded"
+    )
+
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        wrapper_cleanup_outcome="terminated_after_terminal_async",
+    )
+    retried = await runtime.stop_worker(
+        worker=started["worker_id"],
+        cleanup_workspace=True,
+        discard_unintegrated_changes=True,
+    )
+
+    assert retried["workspace_cleaned"] is True
+    assert not worktree_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_workspace_preserves_worktree_while_codex_runtime_is_unresolved(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = UnresolvedCleanupExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Descendant Cleanup Implementer",
+        brief="Finish while a descendant remains live.",
+        repo_path=config["repositories"]["default"],
+    )
+    job = manager.get_job(executor.started[0])
+    worktree_path = Path(job.worktree_path)
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Report is durable before descendant cleanup."},
+        session_id="session-descendant-cleanup",
+        wrapper_cleanup_outcome="process_exited",
+    )
+    executor.unresolved_job_ids.add(job.job_id)
+
+    result = await runtime.stop_worker(
+        worker=started["worker_id"],
+        cleanup_workspace=True,
+        discard_unintegrated_changes=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "codex_runtime_cleanup_unresolved"
+    assert result["cleanup_pending"] is False
+    assert result["cleanup_unresolved"] is True
+    assert result["workspace_cleaned"] is False
+    assert worktree_path.exists()
+
+    executor.unresolved_job_ids.remove(job.job_id)
+    retried = await runtime.stop_worker(
+        worker=started["worker_id"],
+        cleanup_workspace=True,
+        discard_unintegrated_changes=True,
+    )
+
+    assert retried["workspace_cleaned"] is True
+    assert not worktree_path.exists()

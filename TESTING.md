@@ -296,17 +296,36 @@ evaluators:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python scripts/live_hub_edge_eval.py --json
 PYTHONDONTWRITEBYTECODE=1 python scripts/live_hub_v2_eval.py --json
+PYTHONDONTWRITEBYTECODE=1 python scripts/production_entrypoint_restart_eval.py --json --rehearse-old-schema
 ```
 
-The V2 evaluator uses two production-shaped Edge runners and the HTTP/MCP pull
-transport. It proves the exact 31-tool catalog, workspace projection, group
-preflight and machine pinning, parallel batch start, same-worker follow-up,
-inspection, signed integration without commit, durable result recovery, group
-closure, and Hub/Edge restart persistence. It must also prove the manager
+The V2 evaluator crosses a real loopback TCP boundary for both MCP manager
+clients and two production-shaped Edge runners. It proves the exact 31-tool
+catalog, identifier-rich startup fallbacks, independent manager groups,
+workspace projection, group preflight and machine pinning, truthful aggregate
+batch status, parallel child starts, same-worker follow-up, inspection, stale
+integration-preview replacement, signed integration without commit, durable
+result recovery, group closure, and Hub/Edge restart persistence. It must also prove the manager
 completion contract outside-in: an `end_to_end` group reports
 `final_response_allowed=false` while preflight, worker work, integration, or
 closure remains, and reports `final_response_allowed=true` only after terminal
 closure.
+
+`production_entrypoint_restart_eval.py` uses the installed production command
+paths (`patchbay hub start`, Hub enrollment, Edge enrollment, and the real
+long-running `patchbay edge start`) rather than constructing internal adapters
+by hand. It persists a real group, preflight, completed worker session,
+receipts, Hub identity, Edge generation, and projections; stops and restarts
+both services with the same absolute configuration and state paths; then sends
+a natural-language follow-up to the same worker session. It also enables the
+production continuity guards and proves missing Hub or Edge state fails closed.
+With `--rehearse-old-schema`, it builds separate real schema-2 Hub and Edge
+fixtures, proves both unmarked production startups fail closed, prepares the
+exact sources with `patchbay hub backup create --prepare-migration` and
+`patchbay edge backup create --prepare-migration`, migrates and restarts both
+through production CLIs, proves durable identities/data survive with monotonic
+runtime revisions, and restores both immutable bundles to fresh paths. The
+upgrade proof does not construct internal runtime adapters.
 
 The final Hub release gate is the outside-in public connector scenario in
 [`docs/testing/public-hub-acceptance.md`](docs/testing/public-hub-acceptance.md).
@@ -336,6 +355,32 @@ or Pro Request behavior. Regression coverage must prove that:
 - explicit isolated-worktree discard consent reaches worker cleanup;
 - more than 100 historical dispatches or result receipts cannot starve new
   work or acknowledgement delivery;
+- terminal dispatch history is not rewritten by ordinary status/dispatch
+  passes, and one poisoned receipt or reconciliation record cannot starve later
+  records;
+- the production-shaped Hub evaluator uses a real loopback TCP MCP connection,
+  exposes exactly 31 manager tools, and proves that a poisoned older receipt
+  cannot block newer grouped-worker results;
+- a result created under an older immutable attempt contract completes after a
+  rolling Edge contract upgrade while the outer request authenticates with the
+  current contract;
+- an expired initial lease with explicit `effect_started=false` creates or
+  reuses exactly one successor attempt instead of entering permanent
+  reconciliation;
+- every nonterminal public operation recovery action names the callable
+  `patchbay_operation_status` tool rather than an internal transition;
+- exact-session semantic completion is durable before wrapper cleanup returns,
+  the complete process group is reaped, all post-completion process/pipe waits
+  are bounded, same-worker message and integration are refused while cleanup is
+  pending, and executor-task liveness is not mislabeled as a live Codex process;
+- terminal worker projections remain current when workspace files change after
+  an earlier snapshot, and one malformed worker projection cannot suppress
+  valid workers from the same fleet snapshot;
+- missing worker projections retain group-scoped inspect/message routing through
+  the durable fleet identity without cross-group or cross-generation leakage;
+- serialized shared-write policy refuses competing base writers, while an
+  architect-selected `manager_controlled` group accepts deliberate concurrent
+  shared writers and exposes that policy;
 - temporary artifact URLs are carried through transient dispatch state rather
   than retained as durable operation payloads;
 - group close and reassignment account for every associated worker operation;

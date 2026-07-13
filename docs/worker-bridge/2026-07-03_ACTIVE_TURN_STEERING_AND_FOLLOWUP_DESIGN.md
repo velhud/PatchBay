@@ -579,7 +579,7 @@ This section answers the concrete questions that triggered this note. It is base
 - `config.yaml`
 - `tests/test_job_executor_cancellation.py`
 - `tests/test_worker_runtime.py`
-- copied VM evidence under `.local/investigations/patchbay-vm-worker-failure-20260703-1705utc`
+- ignored private runtime evidence outside the tracked documentation tree
 
 ### 1. Does PatchBay already have Codex active-turn steering?
 
@@ -655,8 +655,8 @@ This is too weak. It tells ChatGPT that something happened, but not whether the 
 
 The VM logs show why this matters. Two cancelled workers had useful intermediate `agent_message` events:
 
-- `RM Data Lifecycle Trace` emitted three agent messages before cancellation.
-- `RM Final Gap Synthesis` emitted three agent messages before cancellation.
+- one data-lifecycle worker emitted three agent messages before cancellation;
+- one final-gap synthesis worker emitted three agent messages before cancellation.
 
 But public worker report did not expose those as partial reports, because `_report_for_job` returns a fixed stopped/running sentence for `RUNNING` and `CANCELLED` jobs.
 

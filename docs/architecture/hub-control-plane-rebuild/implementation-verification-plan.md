@@ -159,7 +159,8 @@ Parity requirements:
 - grouped target preferred and machine inferred;
 - ungrouped exceptional route explicit;
 - context from workers/artifacts works on same Edge;
-- active follow-up/steering semantics preserved;
+- follow-up is next-turn continuation; an active turn returns
+  `active_turn_in_progress` rather than accepting steering;
 - inspect pagination preserved;
 - integration preview token required in Hub mode;
 - stop/cleanup cannot discard unintegrated changes silently.

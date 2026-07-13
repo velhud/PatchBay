@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from patchbay.hub.runtime_v2 import (
     FLEET_WORKER_ENTITY,
     MACHINE_GENERATION_ENTITY,
+    OPERATION_GROUP_ENTITY,
     WORK_GROUP_ENTITY,
     WORKER_PROJECTION_ENTITY,
     HubRuntimeV2,
@@ -307,6 +310,17 @@ def test_availability_routing_pins_lower_pressure_machine_and_preflight_operatio
     assert status["status"] == "pending"
     assert status["result"]["dispatch"]["state"] == "offered"
     assert status["operation"]["parent_operation_id"] == ""
+    assert status["next_actions"] == [
+        {
+            "tool": "patchbay_operation_status",
+            "arguments": {
+                "operation_id": preflight_id,
+                "wait_seconds": 20,
+                "since_revision": status["result"]["dispatch"]["event_revision"],
+            },
+            "reason": "wait_for_edge_claim",
+        }
+    ]
     validate_hub_v2_tool_output("patchbay_operation_status", status)
 
     runtime._clock = lambda: 1_200.0
@@ -315,6 +329,178 @@ def test_availability_routing_pins_lower_pressure_machine_and_preflight_operatio
     )
     assert degraded["result"]["readiness"]["status"] == "machine_unavailable"
     assert degraded["result"]["work_group"]["pinned_machine_id"] == "machine_free"
+
+
+def test_group_create_retry_recovers_crash_between_group_and_parent_association(
+    tmp_path, monkeypatch
+):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_group_crash")
+    caller = context("group_crash")
+    arguments = {
+        "title": "Crash-safe group",
+        "goal": "Create exactly one durable task object across a retry.",
+        "workspace_ref": runtime.workspace_list()["result"]["workspaces"][0][
+            "workspace_ref"
+        ],
+        "machine_id": "machine_group_crash",
+        "lanes": [{"lane": "main", "title": "Main", "role": "Build"}],
+        "idempotency_key": "group-crash-retry",
+        "context": caller,
+    }
+    original_upsert = runtime._upsert_entity
+    crash_once = True
+
+    def crash_before_parent_association(entity_type, entity_id, record):
+        nonlocal crash_once
+        if crash_once and record.get("kind") == "group_create":
+            crash_once = False
+            raise RuntimeError("injected post-group crash")
+        return original_upsert(entity_type, entity_id, record)
+
+    monkeypatch.setattr(runtime, "_upsert_entity", crash_before_parent_association)
+    with pytest.raises(RuntimeError, match="injected post-group crash"):
+        runtime.create_work_group(**arguments)
+
+    groups_after_crash = store.list_entities(WORK_GROUP_ENTITY)
+    assert len(groups_after_crash) == 1
+    durable_group_id = groups_after_crash[0]["entity_id"]
+
+    replayed = runtime.create_work_group(**arguments)
+
+    assert replayed["status"] == "ok"
+    assert replayed["result"]["work_group"]["work_group_id"] == durable_group_id
+    assert len(store.list_entities(WORK_GROUP_ENTITY)) == 1
+    operation_rows = store.connection.execute(
+        "SELECT tool, COUNT(*) AS count FROM operations GROUP BY tool"
+    ).fetchall()
+    counts = {str(row["tool"]): int(row["count"]) for row in operation_rows}
+    assert counts["patchbay_work_group_create"] == 1
+    assert counts["patchbay_edge_preflight"] == 1
+    parent_operation_id = replayed["operation"]["operation_id"]
+    association = store.get_entity(OPERATION_GROUP_ENTITY, parent_operation_id)
+    assert association is not None
+    assert association["record"]["work_group_id"] == durable_group_id
+
+
+def test_terminal_group_create_replay_does_not_replace_newer_current_group(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    caller = context("owner")
+
+    first = create_group(runtime, caller=caller, key="group-first")
+    second = create_group(runtime, caller=caller, key="group-second")
+    replayed = create_group(runtime, caller=caller, key="group-first")
+
+    assert replayed["result"]["work_group"]["work_group_id"] == first["result"]["work_group"]["work_group_id"]
+    current = runtime.list_work_groups(scope="current", context=caller)
+    assert current["result"]["work_groups"][0]["work_group_id"] == second["result"]["work_group"]["work_group_id"]
+    preflights = store.connection.execute(
+        "SELECT COUNT(*) AS count FROM operations WHERE tool = 'patchbay_edge_preflight'"
+    ).fetchone()
+    assert int(preflights["count"]) == 2
+
+
+def test_group_reassign_retry_recovers_crash_after_predecessor_supersession(
+    tmp_path, monkeypatch
+):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_reassign_old")
+    enroll_online(runtime, machine_id="machine_reassign_new")
+    caller = context("reassign_crash")
+    created = create_group(
+        runtime,
+        caller=caller,
+        machine_id="machine_reassign_old",
+        key="reassign-crash-source",
+    )
+    predecessor_id = created["result"]["work_group"]["work_group_id"]
+    arguments = {
+        "work_group_id": predecessor_id,
+        "reason": "Move successor work to the other available Edge.",
+        "machine_id": "machine_reassign_new",
+        "idempotency_key": "reassign-crash-retry",
+        "context": caller,
+    }
+    original_upsert = runtime._upsert_entity
+    crash_once = True
+
+    def crash_before_reassign_association(entity_type, entity_id, record):
+        nonlocal crash_once
+        if crash_once and record.get("kind") == "group_reassign":
+            crash_once = False
+            raise RuntimeError("injected post-supersession crash")
+        return original_upsert(entity_type, entity_id, record)
+
+    monkeypatch.setattr(
+        runtime, "_upsert_entity", crash_before_reassign_association
+    )
+    with pytest.raises(RuntimeError, match="injected post-supersession crash"):
+        runtime.reassign_work_group(**arguments)
+
+    groups_after_crash = store.list_entities(WORK_GROUP_ENTITY)
+    assert len(groups_after_crash) == 2
+    predecessor_after_crash = store.get_entity(WORK_GROUP_ENTITY, predecessor_id)
+    assert predecessor_after_crash["record"]["status"] == "superseded"
+    durable_successor_id = predecessor_after_crash["record"]["superseded_by"]
+
+    replayed = runtime.reassign_work_group(**arguments)
+
+    assert replayed["status"] == "ok"
+    assert replayed["result"]["work_group"]["work_group_id"] == durable_successor_id
+    assert len(store.list_entities(WORK_GROUP_ENTITY)) == 2
+    operation_rows = store.connection.execute(
+        "SELECT tool, COUNT(*) AS count FROM operations GROUP BY tool"
+    ).fetchall()
+    counts = {str(row["tool"]): int(row["count"]) for row in operation_rows}
+    assert counts["patchbay_work_group_reassign"] == 1
+    assert counts["patchbay_edge_preflight"] == 2
+    reassign_operation = store.connection.execute(
+        "SELECT operation_id FROM operations WHERE tool = 'patchbay_work_group_reassign'"
+    ).fetchone()
+    association = store.get_entity(
+        OPERATION_GROUP_ENTITY, str(reassign_operation["operation_id"])
+    )
+    assert association is not None
+    assert association["record"]["work_group_id"] == durable_successor_id
+
+
+def test_reconciling_operation_recommends_only_the_public_status_tool(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_reconcile")
+    created = create_group(runtime, caller=context("owner"))
+    operation_id = created["result"]["readiness"]["operation_id"]
+    operation = store.get_operation(operation_id)
+    operation = runtime.broker.transition_operation(
+        operation_id,
+        expected_revision=int(operation["revision"]),
+        state="running",
+        principal_ref=str(operation["principal_ref"]),
+    )
+    operation = runtime.broker.transition_operation(
+        operation_id,
+        expected_revision=int(operation["revision"]),
+        state="outcome_unknown",
+        principal_ref=str(operation["principal_ref"]),
+    )
+    runtime.broker.transition_operation(
+        operation_id,
+        expected_revision=int(operation["revision"]),
+        state="reconciling",
+        principal_ref=str(operation["principal_ref"]),
+    )
+
+    status = asyncio.run(
+        runtime.operation_status(operation_id=operation_id, context=context("owner"))
+    )
+
+    assert status["result"]["safe_next_action"] == "wait_for_edge_reconciliation"
+    assert status["next_actions"][0]["tool"] == "patchbay_operation_status"
+    assert status["next_actions"][0]["reason"] == "wait_for_edge_reconciliation"
+    assert all(
+        item.get("tool") != "complete_reconciliation"
+        for item in status["next_actions"]
+    )
 
 
 def test_routing_disabled_blocks_implicit_placement_and_is_reported(tmp_path):
@@ -358,8 +544,8 @@ def test_work_group_defaults_to_end_to_end_completion_contract(tmp_path):
     assert group["definition_of_done"] == "Coordinate the bounded implementation."
     assert contract["manager_must_continue"] is True
     assert contract["final_response_allowed"] is False
-    assert contract["reason"] == "workers_or_operations_active"
-    assert contract["recommended_next_action"]["tool"] == "patchbay_worker_wait"
+    assert contract["reason"] == "operations_active"
+    assert contract["recommended_next_action"]["tool"] == "patchbay_work_group_status"
     assert persisted["execution_mode"] == "end_to_end"
     assert persisted["definition_of_done"] == group["definition_of_done"]
 
@@ -386,7 +572,7 @@ def test_async_handoff_is_explicit_and_allows_a_progress_response(tmp_path):
     assert contract["final_response_allowed"] is True
 
 
-def test_work_group_status_waits_for_a_real_revision_change(tmp_path):
+def test_work_group_status_waits_for_a_real_revision_change(tmp_path, monkeypatch):
     runtime, store, _ = make_runtime(tmp_path)
     enroll_online(runtime, machine_id="machine_alpha")
     created = create_group(runtime, caller=context("owner"))
@@ -395,6 +581,23 @@ def test_work_group_status_waits_for_a_real_revision_change(tmp_path):
         work_group_id=group_id,
         context=context("owner"),
     )["result"]["status_revision"]
+    full_projection_calls = 0
+    revision_probe_calls = 0
+    original_status = runtime.work_group_status
+    original_revision = store.work_group_status_revision
+
+    def counted_status(**kwargs):
+        nonlocal full_projection_calls
+        full_projection_calls += 1
+        return original_status(**kwargs)
+
+    def counted_revision(work_group_id):
+        nonlocal revision_probe_calls
+        revision_probe_calls += 1
+        return original_revision(work_group_id)
+
+    monkeypatch.setattr(runtime, "work_group_status", counted_status)
+    monkeypatch.setattr(store, "work_group_status_revision", counted_revision)
 
     async def exercise_wait():
         async def mutate_group():
@@ -428,6 +631,78 @@ def test_work_group_status_waits_for_a_real_revision_change(tmp_path):
     assert waited["result"]["waited_seconds"] > 0
     assert waited["result"]["status_revision"] > baseline
     assert waited["result"]["completion_contract"]["final_response_allowed"] is False
+    assert revision_probe_calls >= 1
+    assert full_projection_calls == 2
+
+
+def test_work_group_status_truthfully_pages_integration_dispositions(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    caller = context("owner")
+    created = create_group(runtime, caller=caller)
+    group_id = created["result"]["work_group"]["work_group_id"]
+    workers = [
+        {
+            "edge_worker_id": "worker-implementer",
+            "name": "Implementer",
+            "work_group_id": group_id,
+            "lane_id": "implementation",
+            "turn_state": "completed",
+            "liveness": "terminal",
+            "integration_state": "not_integrated",
+            "review_disposition": "accepted",
+        },
+        {
+            "edge_worker_id": "worker-reviewer",
+            "name": "Reviewer",
+            "work_group_id": group_id,
+            "lane_id": "verification",
+            "turn_state": "completed",
+            "liveness": "terminal",
+            "integration_state": "no_changes",
+            "review_disposition": "approved",
+        },
+    ]
+    heartbeat_workers(runtime, enrolled, 2, workers)
+
+    first = runtime.work_group_status(
+        work_group_id=group_id,
+        worker_limit=1,
+        integration_limit=1,
+        context=caller,
+    )
+
+    assert first["result"]["worker_summary"]["total"] == 2
+    assert first["result"]["worker_summary"]["unintegrated"] == 1
+    assert first["result"]["worker_page"]["next_cursor"] == "1"
+    assert first["result"]["integration_summary"] == {
+        "total": 2,
+        "state_counts": {"no_changes": 1, "not_integrated": 1},
+        "review_disposition_counts": {"accepted": 1, "approved": 1},
+    }
+    assert len(first["result"]["integrations"]) == 1
+    assert first["result"]["integration_page"]["next_cursor"] == "1"
+    assert first["result"]["work_group"]["worker_count"] == 2
+    assert first["result"]["work_group"]["worker_refs_truncated"] is True
+
+    second = runtime.work_group_status(
+        work_group_id=group_id,
+        integration_cursor="1",
+        integration_limit=1,
+        context=caller,
+    )
+    assert second["result"]["integration_page"]["cursor"] == "1"
+    assert second["result"]["integration_page"]["next_cursor"] == ""
+    assert second["result"]["integrations"] != first["result"]["integrations"]
+
+    hidden = runtime.work_group_status(
+        work_group_id=group_id,
+        include_integrations=False,
+        context=caller,
+    )
+    assert "integrations" not in hidden["result"]
+    assert "integration_summary" not in hidden["result"]
+    assert "integration_page" not in hidden["result"]
 
 
 def test_preflight_result_is_strict_and_does_not_change_group_pin(tmp_path):
@@ -605,6 +880,43 @@ def test_participant_current_group_mapping_and_takeover_coordination_survive_res
     ] == group_id
 
 
+def test_terminal_group_resume_replay_preserves_completed_preflight(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    caller = context("owner")
+    created = create_group(runtime, caller=caller)
+    group_id = created["result"]["work_group"]["work_group_id"]
+    arguments = {
+        "work_group_id": group_id,
+        "idempotency_key": "resume-ready-replay",
+        "context": caller,
+    }
+
+    resumed = runtime.resume_work_group(**arguments)
+    preflight_id = resumed["result"]["readiness"]["operation_id"]
+    runtime.record_preflight_result(
+        work_group_id=group_id,
+        operation_id=preflight_id,
+        result={
+            "ok": True,
+            "repo_exists": True,
+            "repo_resolved": resumed["result"]["work_group"]["resolved_repo_path"],
+            "head": "resume-ready-head",
+            "disk_free_bytes": 10_000_000_000,
+            "free_worker_slots": 4,
+        },
+    )
+    replayed = runtime.resume_work_group(**arguments)
+
+    assert replayed["status"] == "ok"
+    assert replayed["result"]["readiness"]["status"] == "ready"
+    assert replayed["result"]["readiness"]["operation_id"] == preflight_id
+    preflights = store.connection.execute(
+        "SELECT COUNT(*) AS count FROM operations WHERE tool = 'patchbay_edge_preflight'"
+    ).fetchone()
+    assert int(preflights["count"]) == 2
+
+
 def test_handle_tool_call_returns_structured_idempotency_conflict(tmp_path):
     runtime, store, _ = make_runtime(tmp_path)
     enroll_online(runtime, machine_id="machine_alpha")
@@ -661,6 +973,7 @@ def test_close_refuses_active_worker_then_closes_from_authoritative_projection(t
     }
     heartbeat_workers(runtime, enrolled, 2, [active])
     worker_ref = store.list_entities(FLEET_WORKER_ENTITY)[0]["entity_id"]
+    operations_before_refusal = store.operation_ids_for_work_group(group_id)
 
     refused = runtime.close_work_group(
         work_group_id=group_id,
@@ -671,6 +984,10 @@ def test_close_refuses_active_worker_then_closes_from_authoritative_projection(t
         idempotency_key="close-refused",
         context=caller,
     )
+    assert refused["status"] == "blocked"
+    assert refused["result"]["reason"] == "close_disposition_refused"
+    assert store.operation_ids_for_work_group(group_id) == operations_before_refusal
+
     completed = {**active, "turn_state": "completed", "liveness": "terminal"}
     heartbeat_workers(runtime, enrolled, 3, [completed])
     closed = runtime.close_work_group(
@@ -683,11 +1000,120 @@ def test_close_refuses_active_worker_then_closes_from_authoritative_projection(t
         context=caller,
     )
 
-    assert refused["status"] == "blocked"
-    assert refused["result"]["reason"] == "close_disposition_refused"
     assert closed["status"] == "ok"
     assert closed["result"]["work_group"]["status"] == "closed"
     assert runtime.list_work_groups(scope="current", context=caller)["result"]["work_groups"] == []
+
+
+def test_group_close_retry_recovers_crash_after_group_is_persisted(tmp_path, monkeypatch):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    caller = context("owner")
+    created = create_group(runtime, caller=caller)
+    group_id = created["result"]["work_group"]["work_group_id"]
+    original_complete = runtime._complete_hub_operation
+
+    def fail_after_close_state(*args, **kwargs):
+        raise RuntimeError("injected close completion crash")
+
+    monkeypatch.setattr(runtime, "_complete_hub_operation", fail_after_close_state)
+    with pytest.raises(RuntimeError, match="injected close completion crash"):
+        runtime.close_work_group(
+            work_group_id=group_id,
+            outcome="complete",
+            summary="All work is complete.",
+            worker_dispositions={},
+            idempotency_key="close-crash-recovery",
+            context=caller,
+        )
+
+    persisted = store.get_entity(WORK_GROUP_ENTITY, group_id)
+    assert persisted is not None
+    assert persisted["record"]["status"] == "closed"
+    close_associations = [
+        item
+        for item in store.list_entities(OPERATION_GROUP_ENTITY)
+        if item["record"].get("kind") == "group_close"
+        and item["record"].get("work_group_id") == group_id
+    ]
+    assert len(close_associations) == 1
+    operation_id = close_associations[0]["record"]["operation_id"]
+    assert store.get_operation(operation_id)["state"] not in {"succeeded", "blocked"}
+
+    monkeypatch.setattr(runtime, "_complete_hub_operation", original_complete)
+    recovered = runtime.close_work_group(
+        work_group_id=group_id,
+        outcome="complete",
+        summary="All work is complete.",
+        worker_dispositions={},
+        idempotency_key="close-crash-recovery",
+        context=caller,
+    )
+
+    assert recovered["status"] == "ok"
+    assert recovered["operation"]["operation_id"] == operation_id
+    assert store.get_operation(operation_id)["state"] == "succeeded"
+    assert len(store.list_entities(WORK_GROUP_ENTITY)) == 1
+    assert runtime.list_work_groups(scope="current", context=caller)["result"]["work_groups"] == []
+
+
+def test_group_close_retry_excludes_only_its_own_running_hub_operation(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enroll_online(runtime, machine_id="machine_alpha")
+    caller = context("owner")
+    principal_ref = runtime._manager_identity(caller).principal_ref
+    created = create_group(runtime, caller=caller)
+    group_id = created["result"]["work_group"]["work_group_id"]
+    operation = runtime.broker.create_operation(
+        tool="patchbay_work_group_close",
+        logical_target=group_id,
+        idempotency_key="close-running-recovery",
+        payload={
+            "work_group_id": group_id,
+            "outcome": "complete",
+            "summary": "Recover the accepted close.",
+            "worker_dispositions": {},
+            "active_work_disposition": "refuse",
+        },
+        principal_ref=principal_ref,
+    )
+    runtime.broker.associate_operation(
+        operation["operation_id"],
+        work_group_id=group_id,
+        principal_ref=principal_ref,
+        kind="group_close",
+    )
+    for state in ("payload_ready", "dispatchable", "running"):
+        operation = runtime.broker.transition_operation(
+            operation["operation_id"],
+            expected_revision=operation["revision"],
+            state=state,
+        )
+    operation_ids = store.operation_ids_for_work_group(group_id)
+
+    unrelated_retry = runtime.close_work_group(
+        work_group_id=group_id,
+        outcome="complete",
+        summary="A different close request.",
+        worker_dispositions={},
+        idempotency_key="close-different-key",
+        context=caller,
+    )
+    assert unrelated_retry["status"] == "blocked"
+    assert store.operation_ids_for_work_group(group_id) == operation_ids
+
+    recovered = runtime.close_work_group(
+        work_group_id=group_id,
+        outcome="complete",
+        summary="Recover the accepted close.",
+        worker_dispositions={},
+        idempotency_key="close-running-recovery",
+        context=caller,
+    )
+    assert recovered["status"] == "ok"
+    assert recovered["operation"]["operation_id"] == operation["operation_id"]
+    assert store.get_operation(operation["operation_id"])["state"] == "succeeded"
+    assert recovered["result"]["work_group"]["status"] == "closed"
 
 
 def test_close_requires_explicit_discard_consent_for_unintegrated_changes(tmp_path):
@@ -737,6 +1163,41 @@ def test_close_requires_explicit_discard_consent_for_unintegrated_changes(tmp_pa
     assert accepted["status"] == "ok"
     assert accepted["result"]["work_group"]["closure_dispositions"] == {
         worker_ref: "discarded_explicitly"
+    }
+
+
+def test_close_records_manager_review_of_failed_worker_without_private_edge_flag(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    enrolled = enroll_online(runtime, machine_id="machine_alpha")
+    caller = context("owner")
+    created = create_group(runtime, caller=caller)
+    group_id = created["result"]["work_group"]["work_group_id"]
+    failed = {
+        "edge_worker_id": "worker-failed",
+        "name": "Failed Investigator",
+        "work_group_id": group_id,
+        "lane_id": "investigation",
+        "worker_state": "available",
+        "turn_state": "failed",
+        "liveness": "terminal",
+        "integration_state": "no_changes",
+        "review_disposition": "unreviewed",
+    }
+    heartbeat_workers(runtime, enrolled, 2, [failed])
+    worker_ref = store.list_entities(FLEET_WORKER_ENTITY)[0]["entity_id"]
+
+    closed = runtime.close_work_group(
+        work_group_id=group_id,
+        outcome="complete",
+        summary="The manager reviewed the failed advisory lane and accepted its absence.",
+        worker_dispositions={worker_ref: "reviewed_failure"},
+        idempotency_key="close-reviewed-failure",
+        context=caller,
+    )
+
+    assert closed["status"] == "ok"
+    assert closed["result"]["work_group"]["closure_dispositions"] == {
+        worker_ref: "reviewed_failure"
     }
 
 
@@ -888,3 +1349,44 @@ def test_adapter_registration_dispatches_only_unimplemented_tool_families(tmp_pa
             context("owner"),
         )
     ]
+
+
+def test_explicit_operation_group_association_overrides_logical_target(tmp_path):
+    runtime, store, _ = make_runtime(tmp_path)
+    fallback = runtime.broker.create_operation(
+        tool="patchbay_worker_status",
+        logical_target="group-predecessor",
+        idempotency_key="fallback-operation",
+        payload={"work_group_id": "group-predecessor"},
+    )
+    reassignment = runtime.broker.create_operation(
+        tool="patchbay_work_group_reassign",
+        logical_target="group-predecessor",
+        idempotency_key="reassignment-operation",
+        payload={"work_group_id": "group-predecessor"},
+    )
+    store.put_entity(
+        OPERATION_GROUP_ENTITY,
+        reassignment["operation_id"],
+        {
+            "operation_id": reassignment["operation_id"],
+            "work_group_id": "group-successor",
+            "kind": "group_reassign",
+        },
+        expected_revision=0,
+    )
+
+    predecessor_ids = {
+        operation["operation_id"]
+        for operation in runtime._operations_for_group("group-predecessor")
+    }
+    successor_ids = {
+        operation["operation_id"]
+        for operation in runtime._operations_for_group("group-successor")
+    }
+
+    assert fallback["operation_id"] in predecessor_ids
+    assert reassignment["operation_id"] not in predecessor_ids
+    assert reassignment["operation_id"] in successor_ids
+    assert fallback["operation_id"] not in successor_ids
+    store.close()

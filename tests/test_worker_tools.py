@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,34 @@ async def test_tool_handler_exposes_worker_option_menu(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_tool_handler_reconciliation_does_not_delay_event_loop(monkeypatch, tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    handler = ToolHandler(config, manager, executor)
+
+    def slow_process_scan(*args, **kwargs):
+        time.sleep(0.2)
+        return {"checked": 0, "reconciled": 0}
+
+    monkeypatch.setattr(executor, "reconcile_stale_running_jobs", slow_process_scan)
+    loop = asyncio.get_running_loop()
+    pulse = loop.create_future()
+    started_at = loop.time()
+    loop.call_later(0.02, lambda: pulse.set_result(loop.time()))
+
+    tool_call = asyncio.create_task(
+        handler.handle_tool_call("codex_get_status", {"job_id": "missing"})
+    )
+    pulse_at = await pulse
+
+    assert pulse_at - started_at < 0.15
+    assert tool_call.done() is False
+    assert await tool_call == {"error": "Reference not found: missing"}
+    assert loop.time() - started_at >= 0.18
+
+
+@pytest.mark.asyncio
 async def test_tool_handler_forwards_worker_integrate_tokens(monkeypatch, tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -158,7 +187,7 @@ async def test_tool_handler_exposes_natural_worker_flow(tmp_path):
     executor = RecordingExecutor(config, manager)
     handler = ToolHandler(config, manager, executor)
 
-    started = await handler.handle_tool_call(
+    await handler.handle_tool_call(
         "codex_worker_start",
         {
             "name": "Architecture Reader",

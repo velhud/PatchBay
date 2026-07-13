@@ -15,6 +15,9 @@ codex --version
 PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests
 PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q
 PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json
+PYTHONDONTWRITEBYTECODE=1 python scripts/live_mcp_eval.py --json --exercise-terminal-reconciliation
+PYTHONDONTWRITEBYTECODE=1 python scripts/live_hub_edge_eval.py --json
+PYTHONDONTWRITEBYTECODE=1 python scripts/live_hub_v2_eval.py --json
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase1_eval.py --timeout 600
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase2_eval.py --timeout 900
 PYTHONDONTWRITEBYTECODE=1 python scripts/worker_phase3_eval.py --timeout 900
@@ -47,8 +50,11 @@ These confirm the source material remains buildable if more behavior is ported.
 Verification performed for the current hybrid implementation:
 
 - PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src scripts tests`: passed.
-- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed, 356 tests in the 2026-07-06 worker-stop/status verification pass.
+- PatchBay `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q`: passed for the integrated Hub/Edge reconciliation repair candidate with `955 passed, 4 skipped` on macOS and `958 passed, 1 skipped` in the production Linux environment. Both runs cover the same 959-test inventory with platform-specific skips. The final Linux pass includes marker-stripped detached-descendant cleanup and restart cleanup from persisted exact descendant identity.
 - PatchBay `python scripts/live_mcp_eval.py --json`: passed against a disposable local repo with no ChatGPT and no public tunnel.
+- PatchBay `python scripts/live_mcp_eval.py --json --exercise-terminal-reconciliation`: passed through a real loopback MCP server. The final structured report was visible while wrapper cleanup remained pending; integration stayed blocked; the parent and descendant process were alive during the protected interval and both were proven reaped before completion.
+- PatchBay `python scripts/live_hub_edge_eval.py --json`: passed for the compatibility Hub/Edge routing surface.
+- PatchBay `python scripts/live_hub_v2_eval.py --json`: passed three consecutive final-candidate runs through real loopback TCP for both MCP managers and two Edge runners, with the exact 31-tool manager catalog, identifier-rich startup fallbacks, two isolated manager groups, a pinned five-worker team, truthful aggregate batch state, same-worker follow-up, stale-preview replacement, explicit integration, isolated poisoned-receipt fairness, lost-result restart recovery, persistent history, and authoritative group closure.
 - Codex CLI: current local validation recorded `0.144.1`.
 - Real read-only worker continuity eval `scripts/worker_phase1_eval.py --timeout 600`: passed.
 - Real isolated writing worker continuity eval `scripts/worker_phase2_eval.py --timeout 900`: passed.
@@ -62,6 +68,7 @@ Verification performed for the current hybrid implementation:
 - Real worker validation configs run Codex worker subprocesses with `--ignore-user-config`, preserving `CODEX_HOME` auth while suppressing unrelated user-level MCP connector config in trial workers.
 - External ChatGPT-style direct MCP validation `scripts/external_chatgpt_style_validation.py --skip-baseline --skip-public-tunnel --json`: passed for setup/token behavior, worker-mode and full-power tool surfaces, artifact import/zip/rejection, artifact-to-worker use, handoff, session discovery, repo mutation locking, single-worker integrate, restart continuation with explicit takeover, multi-worker collaboration, low-level plan/apply job, and resume/interactive continuation.
 - External validation baseline `scripts/external_chatgpt_style_validation.py --skip-heavy-codex --skip-public-tunnel --json`: passed for Codex CLI `0.144.1`, compileall, full pytest, live MCP eval, connector setup, descriptors, artifacts, handoff, session discovery, and repo locks.
+- Hub transport regression coverage includes rolling-upgrade result delivery with separate session/attempt contracts, expired-result recovery, idempotent successor attempts after a pre-effect lease failure, fair outbox/reconciliation traversal, unchanged terminal dispatch history, real TCP MCP response envelopes, and immediate semantic worker completion before bounded wrapper cleanup.
 - External validation public-tunnel gate `scripts/external_chatgpt_style_validation.py --skip-baseline --skip-heavy-codex --json`: blocked because `ngrok config check` passed but no `PATCHBAY_VALIDATION_NGROK_HOSTNAME` or `--ngrok-hostname` was provided. This is an external tunnel setup blocker, not a PatchBay MCP failure.
 - Current onboarding/transport closeout run on 2026-06-27: `PYTHONDONTWRITEBYTECODE=1 /opt/homebrew/bin/python3.12 scripts/external_chatgpt_style_validation.py --skip-baseline --skip-heavy-codex --json` returned `passed_with_blockers` under `.local/validation/external_chatgpt_style/20260627T191503Z`; light direct-MCP setup/tool/artifact/session/handoff/lock/runtime descriptor scenarios passed, heavy Codex scenarios were intentionally skipped, public ngrok simulation was blocked only by missing validation hostname, and real ChatGPT Developer Mode remained a manual UI gate.
 - Earlier tokenized public-tunnel MCP simulator coverage through ngrok covered health, initialize, worker-mode `tools/list`, Apps-style file-parameter metadata, artifact inbox import/list/inspect, repeated import, `file://` rejection, isolated worker artifact attachment/read, artifact-context integration exclusion, clean base preservation, and cleanup. Re-run with a configured hostname before using that as current release evidence. Real ChatGPT Developer Mode UI/tool-selection remains blocked in this session.
@@ -380,6 +387,20 @@ Before release, run scripted and manual disposable-repo evals:
 The eval should produce a short report suitable for release notes.
 
 Current implementation provides this as `scripts/live_mcp_eval.py`. It starts the real launcher/server in a temporary workspace, probes MCP initialize/tools/resources/context/skills, verifies `.env` and symlink read behavior, verifies the worker-first tool surface by default, and emits a compact JSON report. Run with `--tool-mode full` for the compatibility pass that confirms aliases, direct write, and command execution.
+
+For Hub/Edge release candidates, also run
+`scripts/production_entrypoint_restart_eval.py --json --rehearse-old-schema`.
+Unlike an in-process runtime fixture, it starts the production Hub CLI, creates
+enrollment through
+the production command, runs the long-lived production Edge service, persists
+one group and a completed worker session, restarts both sides on the same files,
+continues the same worker, and rejects new identities or revision regression.
+Its separate schema-upgrade fixture uses real older Hub and Edge SQLite schemas
+and production backup/runtime CLIs to prove missing-marker refusal, preserved
+durable state, a second clean restart, immutable backup bytes, and fresh-path
+restore for both databases without internal runtime adapters.
+The final repair candidate also passed six consecutive Linux upgrade rehearsals,
+including two evaluator processes running concurrently.
 
 `scripts/live_mcp_eval.py` is necessary but not sufficient for public release because it intentionally does not attach to ChatGPT and does not open a real public tunnel.
 

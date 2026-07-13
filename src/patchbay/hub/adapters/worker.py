@@ -4,6 +4,7 @@ The adapter owns public-worker-to-Edge argument translation and semantic Hub
 results. Fleet/group resolution, operation persistence, and authoritative
 worker projections remain injected ports so this module has no server wiring.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -12,7 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Mapping, Protocol
 
 from patchbay.hub.broker import OperationBrokerConflict
-from patchbay.hub.operations import PUBLIC_STATUSES, normalize_domain_result, public_envelope
+from patchbay.hub.operations import (
+    PUBLIC_STATUSES,
+    normalize_domain_result,
+    public_envelope,
+)
 from patchbay.hub.tool_surface import HUB_V2_ACTION_MAP
 from patchbay.protocol.context import RequestContext
 
@@ -133,16 +138,14 @@ class WorkerAdapterRuntimePort(Protocol):
         tool_name: str,
         arguments: Mapping[str, Any],
         context: RequestContext | None = None,
-    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
-        ...
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
 
     def execute_read(
         self,
         *,
         payload: Mapping[str, Any],
         context: RequestContext | None = None,
-    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
-        ...
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
 
 
 class WorkerAdapterProjectionPort(Protocol):
@@ -155,8 +158,7 @@ class WorkerAdapterProjectionPort(Protocol):
         filters: Mapping[str, Any],
         route: Mapping[str, Any],
         context: RequestContext | None = None,
-    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
-        ...
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
 
     def wait(
         self,
@@ -166,48 +168,50 @@ class WorkerAdapterProjectionPort(Protocol):
         since_revision: int,
         timeout_seconds: float,
         context: RequestContext | None = None,
-    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
-        ...
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
 
     def get_worker(
         self,
         *,
         route: Mapping[str, Any],
         context: RequestContext | None = None,
-    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]:
-        ...
+    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]: ...
 
 
 class WorkerAdapterBrokerPort(Protocol):
     """Minimal operation-broker surface used by worker mutations."""
 
-    def create_operation(self, **kwargs: Any) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
-        ...
+    def create_operation(
+        self, **kwargs: Any
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
+
+    def create_batch_operation(
+        self, **kwargs: Any
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
 
     def create_child_operation(
         self, parent_operation_id: str, **kwargs: Any
-    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
-        ...
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
+
+    def declare_child_manifest(
+        self, parent_operation_id: str, **kwargs: Any
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
 
     def prepare_operation(
         self, operation_id: str, **kwargs: Any
-    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]:
-        ...
+    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]: ...
 
     def make_dispatchable(
         self, operation_id: str, **kwargs: Any
-    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]:
-        ...
+    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]: ...
 
     def aggregate_parent(
         self, parent_operation_id: str, **kwargs: Any
-    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]:
-        ...
+    ) -> Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None]: ...
 
     def associate_operation(
         self, operation_id: str, **kwargs: Any
-    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
-        ...
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]: ...
 
 
 @dataclass(frozen=True)
@@ -235,15 +239,21 @@ class WorkerRoute:
         cls, value: Mapping[str, Any], *, arguments: Mapping[str, Any]
     ) -> "WorkerRoute":
         source = deepcopy(dict(value))
-        target = source.get("target") if isinstance(source.get("target"), Mapping) else {}
+        target = (
+            source.get("target") if isinstance(source.get("target"), Mapping) else {}
+        )
         group = _mapping(source.get("work_group") or source.get("group"))
         lane = _mapping(source.get("lane"))
         worker = _mapping(source.get("worker"))
         machine = _mapping(source.get("machine"))
-        workspace = _mapping(source.get("workspace") or source.get("workspace_projection"))
+        workspace = _mapping(
+            source.get("workspace") or source.get("workspace_projection")
+        )
 
         def pick(*values: Any) -> Any:
-            return next((candidate for candidate in values if candidate not in (None, "")), "")
+            return next(
+                (candidate for candidate in values if candidate not in (None, "")), ""
+            )
 
         work_group_id = str(
             pick(
@@ -322,10 +332,14 @@ class WorkerRoute:
                 target.get("edge_worker_id"),
                 worker.get("edge_worker_id"),
                 worker.get("worker_id"),
-                arguments.get("worker") if not arguments.get("fleet_worker_ref") else "",
+                arguments.get("worker")
+                if not arguments.get("fleet_worker_ref")
+                else "",
             )
         )
-        principal_ref = str(pick(source.get("principal_ref"), target.get("principal_ref")))
+        principal_ref = str(
+            pick(source.get("principal_ref"), target.get("principal_ref"))
+        )
 
         if not group and work_group_id:
             group = {"work_group_id": work_group_id}
@@ -439,8 +453,11 @@ class HubWorkerAdapterV2:
         if _is_public_envelope(route_result):
             return _complete_envelope(route_result)
         route = WorkerRoute.from_mapping(route_result, arguments=args)
+        self._validate_group_repo_binding(args, route)
         if name == "patchbay_worker_start_batch":
             self._validate_shared_write_policy(args, route)
+        elif name == "patchbay_worker_start":
+            self._validate_single_start_policy(args, route)
 
         if name in PROJECTION_TOOLS:
             return await self._projection_read(
@@ -470,7 +487,9 @@ class HubWorkerAdapterV2:
                                     if route.work_group_id
                                     else {}
                                 ),
-                                "since_revision": int(active.get("projection_revision") or 0),
+                                "since_revision": int(
+                                    active.get("projection_revision") or 0
+                                ),
                             },
                         }
                     ],
@@ -487,7 +506,9 @@ class HubWorkerAdapterV2:
                 )
             except OperationBrokerConflict as error:
                 return self._broker_conflict_result(error, route=route)
-        return await self._routed_read(name=name, args=args, route=route, context=context)
+        return await self._routed_read(
+            name=name, args=args, route=route, context=context
+        )
 
     def build_edge_action_payload(
         self,
@@ -512,15 +533,26 @@ class HubWorkerAdapterV2:
             for key in EDGE_ARGUMENT_FIELDS[action]
             if key in arguments
         }
-        if normalized.repo_path and not edge_arguments.get("repo_path"):
+        if normalized.work_group_id and normalized.repo_path:
+            # A grouped operation is inseparable from the repository that its
+            # durable preflight resolved. Caller compatibility fields may not
+            # retarget one lane to another allowed repository.
+            edge_arguments["repo_path"] = normalized.repo_path
+        elif normalized.repo_path and not edge_arguments.get("repo_path"):
             edge_arguments["repo_path"] = normalized.repo_path
         if (
             action == "codex_worker_start"
-            and str(edge_arguments.get("workspace_mode") or "isolated_write") == "shared_write"
-            and str(normalized.work_group.get("shared_write_policy") or "serialized")
-            == "manager_controlled"
+            and str(edge_arguments.get("workspace_mode") or "isolated_write")
+            == "shared_write"
+            and normalized.work_group_id
         ):
-            edge_arguments["allow_concurrent_shared_write"] = True
+            edge_arguments["allow_concurrent_shared_write"] = (
+                str(
+                    normalized.work_group.get("shared_write_policy")
+                    or "serialized"
+                )
+                == "manager_controlled"
+            )
         if "worker" in EDGE_ARGUMENT_FIELDS[action] and normalized.edge_worker_id:
             edge_arguments["worker"] = normalized.edge_worker_id
 
@@ -643,8 +675,14 @@ class HubWorkerAdapterV2:
     @staticmethod
     def _with_manager_continuation(envelope: Mapping[str, Any]) -> dict[str, Any]:
         normalized = deepcopy(dict(envelope))
-        result = normalized.get("result") if isinstance(normalized.get("result"), Mapping) else {}
-        contract = result.get("completion_contract") if isinstance(result, Mapping) else {}
+        result = (
+            normalized.get("result")
+            if isinstance(normalized.get("result"), Mapping)
+            else {}
+        )
+        contract = (
+            result.get("completion_contract") if isinstance(result, Mapping) else {}
+        )
         if isinstance(contract, Mapping) and contract.get("manager_must_continue"):
             action = contract.get("recommended_next_action")
             if isinstance(action, Mapping) and action:
@@ -660,7 +698,9 @@ class HubWorkerAdapterV2:
         candidate = dict(route.worker)
         if str(candidate.get("turn_state") or "") not in ACTIVE_TURN_STATES:
             raw = await _maybe_await(
-                self.projection.get_worker(route=route.as_port_mapping(), context=context)
+                self.projection.get_worker(
+                    route=route.as_port_mapping(), context=context
+                )
             )
             if isinstance(raw, Mapping):
                 if _is_public_envelope(raw):
@@ -669,7 +709,11 @@ class HubWorkerAdapterV2:
                         raw = result.get("worker") or result
                 if isinstance(raw, Mapping):
                     candidate = deepcopy(dict(raw))
-        return candidate if str(candidate.get("turn_state") or "") in ACTIVE_TURN_STATES else None
+        return (
+            candidate
+            if str(candidate.get("turn_state") or "") in ACTIVE_TURN_STATES
+            else None
+        )
 
     async def _create_single_operation(
         self,
@@ -680,16 +724,40 @@ class HubWorkerAdapterV2:
         context: RequestContext | None,
     ) -> dict[str, Any]:
         payload = self.build_edge_action_payload(name, args, route, context=context)
-        operation = await _maybe_await(
-            self.broker.create_operation(
-                tool=name,
-                logical_target=self._logical_target(name, args, route),
-                idempotency_key=str(args.get("idempotency_key") or ""),
-                payload=deepcopy(payload),
-                principal_ref=route.principal_ref,
-            )
+        logical_target = self._logical_target(name, args, route)
+        idempotency_key = str(args.get("idempotency_key") or "")
+        association_scope = self._operation_group_association_scope(
+            name=name,
+            logical_target=logical_target,
+            idempotency_key=idempotency_key,
+            route=route,
         )
-        await self._associate_operation(operation, route=route)
+        if association_scope is None:
+            operation = await _maybe_await(
+                self.broker.create_operation(
+                    tool=name,
+                    logical_target=logical_target,
+                    idempotency_key=idempotency_key,
+                    payload=deepcopy(payload),
+                    principal_ref=route.principal_ref,
+                )
+            )
+            await self._associate_operation(operation, route=route)
+        else:
+            with association_scope:
+                operation = await _maybe_await(
+                    self.broker.create_operation(
+                        tool=name,
+                        logical_target=logical_target,
+                        idempotency_key=idempotency_key,
+                        payload=deepcopy(payload),
+                        principal_ref=route.principal_ref,
+                    )
+                )
+            await self._assert_operation_group_association(
+                operation=operation,
+                route=route,
+            )
         operation = await self._ensure_dispatchable(operation, route=route)
         return self._operation_result(operation, route=route)
 
@@ -711,39 +779,73 @@ class HubWorkerAdapterV2:
             "shared_brief": args["shared_brief"],
             "items": [deepcopy(spec) for spec in child_specs],
         }
-        parent = await _maybe_await(
-            self.broker.create_operation(
-                tool="patchbay_worker_start_batch",
-                logical_target=self._logical_target(
-                    "patchbay_worker_start_batch", args, route
-                ),
-                idempotency_key=str(args.get("idempotency_key") or ""),
-                payload=parent_payload,
-                principal_ref=route.principal_ref,
+        atomic_specs = []
+        for spec in child_specs:
+            item_id = str(spec["item_id"])
+            atomic_specs.append(
+                {
+                    "item_id": item_id,
+                    "tool": "patchbay_worker_start",
+                    "logical_target": str(spec["logical_target"]),
+                    "payload": {
+                        "item_id": item_id,
+                        "item_idempotency_key": spec["item_idempotency_key"],
+                        **deepcopy(dict(spec["edge_payload"])),
+                    },
+                }
             )
+        batch_target = self._logical_target("patchbay_worker_start_batch", args, route)
+        association_scope = self._batch_operation_group_association_scope(
+            logical_target=batch_target,
+            idempotency_key=str(args.get("idempotency_key") or ""),
+            route=route,
+            child_specs=child_specs,
         )
-        await self._associate_operation(parent, route=route)
+        if association_scope is None:
+            batch = await _maybe_await(
+                self.broker.create_batch_operation(
+                    logical_target=batch_target,
+                    idempotency_key=str(args.get("idempotency_key") or ""),
+                    payload=parent_payload,
+                    child_specs=atomic_specs,
+                    principal_ref=route.principal_ref,
+                )
+            )
+        else:
+            with association_scope:
+                batch = await _maybe_await(
+                    self.broker.create_batch_operation(
+                        logical_target=batch_target,
+                        idempotency_key=str(args.get("idempotency_key") or ""),
+                        payload=parent_payload,
+                        child_specs=atomic_specs,
+                        principal_ref=route.principal_ref,
+                    )
+                )
+        parent = deepcopy(dict(batch["parent"]))
+        children_by_item_id = {
+            str(child["item_id"]): deepcopy(dict(child)) for child in batch["children"]
+        }
+        if association_scope is not None:
+            await self._assert_batch_operation_group_associations(
+                parent=parent,
+                children=list(children_by_item_id.values()),
+                route=route,
+            )
+        else:
+            await self._associate_operation(parent, route=route)
         if str(parent.get("state") or "") in TERMINAL_OPERATION_STATES:
             return self._operation_result(parent, route=route)
+        # The parent is a Hub-side aggregate, not an Edge command. Move it to
+        # the accepted pending state immediately so an active batch never
+        # appears as an unprocessed `created` operation while its children run.
+        parent = await self._ensure_dispatchable(parent, route=route)
 
         child_operations: list[dict[str, Any]] = []
         for spec in child_specs:
             item_id = str(spec["item_id"])
             edge_payload = deepcopy(dict(spec["edge_payload"]))
-            child = await _maybe_await(
-                self.broker.create_child_operation(
-                    str(parent["operation_id"]),
-                    item_id=item_id,
-                    tool="patchbay_worker_start",
-                    logical_target=str(spec["logical_target"]),
-                    payload={
-                        "item_id": item_id,
-                        "item_idempotency_key": spec["item_idempotency_key"],
-                        **edge_payload,
-                    },
-                    principal_ref=route.principal_ref,
-                )
-            )
+            child = children_by_item_id[item_id]
             child_route = WorkerRoute.from_mapping(
                 {
                     **route.as_port_mapping(),
@@ -752,7 +854,8 @@ class HubWorkerAdapterV2:
                 },
                 arguments=edge_payload["arguments"],
             )
-            await self._associate_operation(child, route=child_route)
+            if association_scope is None:
+                await self._associate_operation(child, route=child_route)
             child = await self._ensure_dispatchable(child, route=child_route)
             child_operations.append(
                 {
@@ -783,7 +886,11 @@ class HubWorkerAdapterV2:
             "failed": sum(item["status"] == "failed" for item in child_operations),
         }
         known_statuses = {item["status"] for item in child_operations}
-        status = "partial" if "pending" not in known_statuses and len(known_statuses) > 1 else "pending"
+        status = (
+            "partial"
+            if "pending" not in known_statuses and len(known_statuses) > 1
+            else "pending"
+        )
         return public_envelope(
             status,
             result=self._enrich_result(
@@ -819,7 +926,9 @@ class HubWorkerAdapterV2:
             ):
                 if key in item:
                     child_args[key] = deepcopy(item[key])
-            worker_context = _stable_union(shared_workers, item.get("context_from_workers") or [])
+            worker_context = _stable_union(
+                shared_workers, item.get("context_from_workers") or []
+            )
             artifact_context = _stable_union(
                 shared_artifacts, item.get("context_from_artifacts") or []
             )
@@ -854,6 +963,92 @@ class HubWorkerAdapterV2:
                 }
             )
         return specs
+
+    def _operation_group_association_scope(
+        self,
+        *,
+        name: str,
+        logical_target: str,
+        idempotency_key: str,
+        route: WorkerRoute,
+    ) -> Any | None:
+        if not route.work_group_id:
+            return None
+        store = getattr(self.broker, "store", None)
+        if store is None:
+            return None
+        scope = getattr(store, "operation_group_association_scope", None)
+        verifier = getattr(store, "assert_operation_group_association", None)
+        if not callable(scope) and not callable(verifier):
+            return None
+        if not callable(scope) or not callable(verifier):
+            raise RuntimeError("atomic operation association contract is incomplete")
+        return scope(
+            tool=name,
+            logical_target=logical_target,
+            idempotency_key=idempotency_key,
+            principal_ref=route.principal_ref,
+            work_group_id=route.work_group_id,
+        )
+
+    async def _assert_operation_group_association(
+        self,
+        *,
+        operation: Mapping[str, Any],
+        route: WorkerRoute,
+    ) -> None:
+        store = getattr(self.broker, "store", None)
+        verifier = getattr(store, "assert_operation_group_association", None)
+        if not callable(verifier):
+            raise RuntimeError("atomic operation association verifier disappeared")
+        await _maybe_await(
+            verifier(
+                operation_id=str(operation["operation_id"]),
+                work_group_id=route.work_group_id,
+            )
+        )
+
+    def _batch_operation_group_association_scope(
+        self,
+        *,
+        logical_target: str,
+        idempotency_key: str,
+        route: WorkerRoute,
+        child_specs: list[Mapping[str, Any]],
+    ) -> Any | None:
+        if not route.work_group_id:
+            return None
+        store = getattr(self.broker, "store", None)
+        scope = getattr(store, "batch_operation_group_association_scope", None)
+        verifier = getattr(store, "assert_batch_operation_group_associations", None)
+        if not callable(scope) or not callable(verifier):
+            return None
+        return scope(
+            logical_target=logical_target,
+            idempotency_key=idempotency_key,
+            principal_ref=route.principal_ref,
+            work_group_id=route.work_group_id,
+            child_item_ids=[str(spec["item_id"]) for spec in child_specs],
+        )
+
+    async def _assert_batch_operation_group_associations(
+        self,
+        *,
+        parent: Mapping[str, Any],
+        children: list[Mapping[str, Any]],
+        route: WorkerRoute,
+    ) -> None:
+        store = getattr(self.broker, "store", None)
+        verifier = getattr(store, "assert_batch_operation_group_associations", None)
+        if not callable(verifier):
+            raise RuntimeError("atomic batch association verifier disappeared")
+        await _maybe_await(
+            verifier(
+                parent_operation_id=str(parent["operation_id"]),
+                child_operation_ids=[str(child["operation_id"]) for child in children],
+                work_group_id=route.work_group_id,
+            )
+        )
 
     async def _associate_operation(
         self, operation: Mapping[str, Any], *, route: WorkerRoute
@@ -900,7 +1095,10 @@ class HubWorkerAdapterV2:
     ) -> dict[str, Any]:
         normalized = operation.get("result")
         public_operation = self._public_operation(operation, route=route)
-        if isinstance(normalized, Mapping) and str(normalized.get("status") or "") in PUBLIC_STATUSES:
+        if (
+            isinstance(normalized, Mapping)
+            and str(normalized.get("status") or "") in PUBLIC_STATUSES
+        ):
             envelope = _complete_envelope(normalized)
             envelope["result"] = self._enrich_result(envelope["result"], route)
             envelope["operation"] = public_operation
@@ -919,9 +1117,19 @@ class HubWorkerAdapterV2:
             envelope = _complete_envelope(raw)
         else:
             payload = deepcopy(dict(raw))
-            queue_state = str(payload.get("state") or payload.get("status") or "").lower()
-            if payload.get("command_id") or queue_state in {"queued", "running", "accepted"}:
-                operation = payload.get("operation") if isinstance(payload.get("operation"), Mapping) else {}
+            queue_state = str(
+                payload.get("state") or payload.get("status") or ""
+            ).lower()
+            if payload.get("command_id") or queue_state in {
+                "queued",
+                "running",
+                "accepted",
+            }:
+                operation = (
+                    payload.get("operation")
+                    if isinstance(payload.get("operation"), Mapping)
+                    else {}
+                )
                 envelope = public_envelope("pending", operation=operation)
             elif payload.get("error") and not payload.get("accepted"):
                 envelope = public_envelope("failed", result=payload)
@@ -936,9 +1144,7 @@ class HubWorkerAdapterV2:
         reason = str(error) or "operation_conflict"
         return public_envelope(
             "blocked",
-            result=self._enrich_result(
-                {"reason": reason, "retryable": False}, route
-            ),
+            result=self._enrich_result({"reason": reason, "retryable": False}, route),
         )
 
     def _enrich_result(
@@ -1015,7 +1221,9 @@ class HubWorkerAdapterV2:
     @staticmethod
     def _is_mutation(name: str, args: Mapping[str, Any]) -> bool:
         if name == "patchbay_worker_inbox":
-            return str(args.get("action") or "").strip().lower() in MUTATING_INBOX_ACTIONS
+            return (
+                str(args.get("action") or "").strip().lower() in MUTATING_INBOX_ACTIONS
+            )
         return name in {
             "patchbay_worker_start",
             "patchbay_worker_message",
@@ -1025,23 +1233,28 @@ class HubWorkerAdapterV2:
 
     @staticmethod
     def _validate_action_gate(name: str, args: Mapping[str, Any]) -> None:
-        if name == "patchbay_worker_integrate" and not str(
-            args.get("preview_token") or ""
-        ).strip():
+        if (
+            name == "patchbay_worker_integrate"
+            and not str(args.get("preview_token") or "").strip()
+        ):
             raise ValueError("patchbay_worker_integrate requires preview_token")
         if name == "patchbay_worker_stop" and bool(args.get("cleanup_workspace")):
             if args.get("discard_unintegrated_changes") is not True:
                 raise ValueError(
                     "cleanup_workspace=true requires discard_unintegrated_changes=true"
                 )
-        if name in {
-            "patchbay_worker_inbox",
-            "patchbay_worker_start",
-            "patchbay_worker_start_batch",
-            "patchbay_worker_message",
-            "patchbay_worker_integrate",
-            "patchbay_worker_stop",
-        } and not str(args.get("idempotency_key") or "").strip():
+        if (
+            name
+            in {
+                "patchbay_worker_inbox",
+                "patchbay_worker_start",
+                "patchbay_worker_start_batch",
+                "patchbay_worker_message",
+                "patchbay_worker_integrate",
+                "patchbay_worker_stop",
+            }
+            and not str(args.get("idempotency_key") or "").strip()
+        ):
             raise ValueError(f"{name} requires idempotency_key")
 
     @staticmethod
@@ -1073,13 +1286,17 @@ class HubWorkerAdapterV2:
             item_keys.add(item_key)
             names.setdefault(str(item["name"]).strip().casefold(), []).append(item)
         for duplicate_name, matching in names.items():
-            if len(matching) > 1 and not all(bool(item.get("auto_suffix")) for item in matching):
+            if len(matching) > 1 and not all(
+                bool(item.get("auto_suffix")) for item in matching
+            ):
                 raise ValueError(
                     f"duplicate batch worker name requires auto_suffix=true for every item: {duplicate_name}"
                 )
 
     @staticmethod
-    def _validate_shared_write_policy(args: Mapping[str, Any], route: WorkerRoute) -> None:
+    def _validate_shared_write_policy(
+        args: Mapping[str, Any], route: WorkerRoute
+    ) -> None:
         shared = [
             str(item.get("name") or "")
             for item in (args.get("workers") or [])
@@ -1096,16 +1313,54 @@ class HubWorkerAdapterV2:
             )
 
     @staticmethod
-    def _logical_target(
-        name: str, args: Mapping[str, Any], route: WorkerRoute
-    ) -> str:
+    def _validate_group_repo_binding(
+        args: Mapping[str, Any], route: WorkerRoute
+    ) -> None:
+        requested = str(args.get("repo_path") or "").rstrip("/")
+        authoritative = str(route.repo_path or "").rstrip("/")
+        if (
+            route.work_group_id
+            and requested
+            and authoritative
+            and requested != authoritative
+        ):
+            raise ValueError(
+                "Grouped worker calls must use the repository resolved by the work-group preflight. "
+                "Omit repo_path or pass the exact resolved group path."
+            )
+
+    @staticmethod
+    def _validate_single_start_policy(
+        args: Mapping[str, Any], route: WorkerRoute
+    ) -> None:
+        if (
+            route.work_group_id
+            and str(args.get("workspace_mode") or "isolated_write")
+            == "shared_write"
+            and bool(args.get("allow_concurrent_shared_write"))
+            and str(route.work_group.get("shared_write_policy") or "serialized")
+            != "manager_controlled"
+        ):
+            raise ValueError(
+                "This work group uses shared_write_policy=serialized. Concurrent shared writers require "
+                "an architect-created group with shared_write_policy=manager_controlled."
+            )
+
+    @staticmethod
+    def _logical_target(name: str, args: Mapping[str, Any], route: WorkerRoute) -> str:
         if name == "patchbay_worker_start_batch":
-            return route.work_group_id or route.workspace_projection_ref or route.machine_id
+            return (
+                route.work_group_id
+                or route.workspace_projection_ref
+                or route.machine_id
+            )
         if name == "patchbay_worker_start":
             return ":".join(
                 part
                 for part in (
-                    route.work_group_id or route.workspace_projection_ref or route.machine_id,
+                    route.work_group_id
+                    or route.workspace_projection_ref
+                    or route.machine_id,
                     route.lane_id,
                     str(args.get("name") or ""),
                 )
@@ -1200,7 +1455,9 @@ def _complete_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
         str(value.get("status") or "failed"),
         result=value.get("result") if isinstance(value.get("result"), Mapping) else {},
         operation=(
-            value.get("operation") if isinstance(value.get("operation"), Mapping) else {}
+            value.get("operation")
+            if isinstance(value.get("operation"), Mapping)
+            else {}
         ),
         warnings=list(value.get("warnings") or []),
         next_actions=list(value.get("next_actions") or []),
@@ -1209,7 +1466,10 @@ def _complete_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _public_status_for_operation(operation: Mapping[str, Any]) -> str:
     normalized = operation.get("result")
-    if isinstance(normalized, Mapping) and str(normalized.get("status") or "") in PUBLIC_STATUSES:
+    if (
+        isinstance(normalized, Mapping)
+        and str(normalized.get("status") or "") in PUBLIC_STATUSES
+    ):
         return str(normalized["status"])
     return {
         "succeeded": "ok",
@@ -1221,7 +1481,9 @@ def _public_status_for_operation(operation: Mapping[str, Any]) -> str:
 
 def _operation_domain_result(operation: Mapping[str, Any]) -> dict[str, Any]:
     normalized = operation.get("result")
-    if isinstance(normalized, Mapping) and isinstance(normalized.get("result"), Mapping):
+    if isinstance(normalized, Mapping) and isinstance(
+        normalized.get("result"), Mapping
+    ):
         return deepcopy(dict(normalized["result"]))
     return {}
 

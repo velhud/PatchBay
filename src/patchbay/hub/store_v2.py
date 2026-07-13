@@ -7,20 +7,110 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from copy import deepcopy
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 from patchbay.connector.profiles import resolve_runtime_path
+from patchbay.hub.sqlite_schema_contract import (
+    schema_contract_difference,
+    schema_contract_snapshot,
+)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
+
+_SCHEMA_OBJECTS_BY_VERSION: dict[int, frozenset[tuple[str, str]]] = {
+    1: frozenset(
+        {
+            ("table", "schema_metadata"),
+            ("table", "principals"),
+            ("table", "hub_identity"),
+            ("table", "legacy_imports"),
+            ("table", "entity_records"),
+            ("table", "operations"),
+            ("table", "attempts"),
+            ("table", "events"),
+            ("table", "payload_metadata"),
+            ("index", "one_operator_principal"),
+            ("index", "entity_records_import_idx"),
+            ("index", "operations_parent_idx"),
+            ("index", "attempts_operation_idx"),
+            ("index", "events_operation_idx"),
+            ("index", "events_entity_idx"),
+            ("index", "payload_metadata_operation_idx"),
+        }
+    ),
+    2: frozenset(
+        {
+            ("table", "entity_control_index"),
+            ("index", "entity_control_route_status_idx"),
+            ("index", "entity_control_type_order_idx"),
+            ("index", "operations_state_created_idx"),
+        }
+    ),
+    3: frozenset(
+        {
+            ("table", "operation_group_index"),
+            ("index", "operation_group_index_group_operation_idx"),
+        }
+    ),
+}
+
+OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE = "hub.operation_group"
+FLEET_WORKER_ENTITY_TYPE = "hub.fleet_worker"
+WORKER_PROJECTION_ENTITY_TYPE = "hub.worker_projection"
+WORK_GROUP_ENTITY_TYPE = "hub.work_group"
+
+CONTROL_INDEX_ENTITY_TYPES = frozenset(
+    {
+        "hub.edge_dispatch",
+        "hub.edge_receipt",
+    }
+)
+
+
+@dataclass
+class _BatchOperationGroupAssociationIntent:
+    """One adapter-declared relation set to persist during a broker batch write."""
+
+    logical_target: str
+    idempotency_key: str
+    principal_ref: str
+    work_group_id: str
+    child_item_ids: frozenset[str]
+    parent_operation_id: str = ""
+    associated_operation_ids: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _OperationGroupAssociationIntent:
+    """One adapter-declared relation to persist with one operation insert."""
+
+    tool: str
+    logical_target: str
+    idempotency_key: str
+    principal_ref: str
+    work_group_id: str
+    associated_operation_id: str = ""
+
+
+_OPERATION_GROUP_ASSOCIATION_INTENTS: ContextVar[
+    tuple[_OperationGroupAssociationIntent, ...]
+] = ContextVar("hub_v2_operation_group_association_intents", default=())
+
+_BATCH_OPERATION_GROUP_ASSOCIATION_INTENTS: ContextVar[
+    tuple[_BatchOperationGroupAssociationIntent, ...]
+] = ContextVar("hub_v2_batch_operation_group_association_intents", default=())
 
 OPERATION_STATES = frozenset(
     {
@@ -118,6 +208,50 @@ def hub_state_v2_path(config: Mapping[str, Any], environ: Mapping[str, str] | No
     return resolve_runtime_path(None, "hub", "hub-state-v2.sqlite3", environ=environ)
 
 
+def assert_v2_activation_safe(
+    config: Mapping[str, Any], environ: Mapping[str, str] | None = None
+) -> None:
+    """Refuse V2 activation when current V1 state lacks migration proof."""
+
+    from patchbay.hub.store import hub_state_path
+
+    legacy_path = hub_state_path(config, environ=environ)
+    if not legacy_path.is_file():
+        return
+    database_path = hub_state_v2_path(config, environ=environ)
+    if not database_path.is_file():
+        raise HubStoreV2Conflict(
+            "Existing Hub V1 state has not been imported into V2. Run the "
+            "V1-to-V2 migration before selecting hub.control_plane: v2."
+        )
+    try:
+        checksum = hashlib.sha256(legacy_path.read_bytes()).hexdigest()
+        uri = f"{database_path.resolve(strict=False).as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, isolation_level=None)
+        try:
+            matched = connection.execute(
+                """
+                SELECT 1
+                FROM legacy_imports
+                WHERE source_checksum = ? AND status = 'complete'
+                LIMIT 1
+                """,
+                (checksum,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error) as error:
+        raise HubStoreV2Conflict(
+            "Existing Hub V1 state cannot be matched to a completed V2 import. "
+            "Keep V1 active until migration verification succeeds."
+        ) from error
+    if matched is None:
+        raise HubStoreV2Conflict(
+            "Existing Hub V1 state differs from every completed V2 import. "
+            "Keep V1 active and migrate the current source before starting V2."
+        )
+
+
 def semantic_payload_hash(payload: Mapping[str, Any]) -> str:
     """Return the canonical semantic hash used by idempotent operations."""
 
@@ -134,27 +268,62 @@ class HubStoreV2:
         *,
         environ: Mapping[str, str] | None = None,
         busy_timeout_ms: int | None = None,
+        pre_migration_backup_marker: str | Path | None = None,
     ):
         if isinstance(path_or_config, Mapping):
             self.config = dict(path_or_config)
+            assert_v2_activation_safe(path_or_config, environ=environ)
             self.path = hub_state_v2_path(path_or_config, environ=environ)
             hub_config = path_or_config.get("hub") if isinstance(path_or_config.get("hub"), Mapping) else {}
             configured_timeout = hub_config.get("sqlite_busy_timeout_ms", hub_config.get("busy_timeout_ms"))
+            configured_migration_marker = hub_config.get(
+                "pre_migration_backup_marker"
+            )
+            require_existing_state = bool(hub_config.get("require_existing_state", False))
+            expected_hub_id = str(hub_config.get("expected_hub_id") or "").strip()
         else:
             self.config = {}
             self.path = Path(path_or_config).expanduser()
             configured_timeout = None
+            configured_migration_marker = None
+            require_existing_state = False
+            expected_hub_id = ""
 
         requested_timeout = busy_timeout_ms if busy_timeout_ms is not None else configured_timeout
         try:
             self.busy_timeout_ms = max(1, int(requested_timeout or DEFAULT_BUSY_TIMEOUT_MS))
         except (TypeError, ValueError) as exc:
             raise ValueError("busy_timeout_ms must be an integer") from exc
+        marker_value = (
+            pre_migration_backup_marker
+            if pre_migration_backup_marker is not None
+            else configured_migration_marker
+        )
+        self.pre_migration_backup_marker = (
+            Path(marker_value).expanduser().resolve(strict=False)
+            if marker_value
+            else None
+        )
+        self.pre_migration_backup_report: dict[str, Any] = {
+            "status": "not_checked",
+            "required": False,
+            "valid": True,
+        }
+        self._preopen_schema_version: int | None = None
+        self.require_existing_state = require_existing_state
+        self.expected_hub_id = expected_hub_id
+
+        if (self.require_existing_state or self.expected_hub_id) and not self.path.is_file():
+            raise HubStoreV2Conflict(
+                f"Configured Hub V2 state database is missing: {self.path}"
+            )
 
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
         self._lock = threading.RLock()
         self._closed = False
         try:
+            self._validate_pre_migration_backup_gate()
             self._connection = sqlite3.connect(
                 self.path,
                 timeout=self.busy_timeout_ms / 1_000,
@@ -164,7 +333,8 @@ class HubStoreV2:
             self._connection.row_factory = sqlite3.Row
             self._configure_connection()
             self._migrate()
-            self._ensure_identity()
+            self._validate_expected_identity()
+            self._harden_permissions()
         except sqlite3.DatabaseError as exc:
             connection = getattr(self, "_connection", None)
             if connection is not None:
@@ -207,12 +377,34 @@ class HubStoreV2:
         if int(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise HubStoreV2Error("Hub V2 requires SQLite foreign keys")
 
+    def _harden_permissions(self) -> None:
+        """Keep the private database and live WAL sidecars owner-only."""
+
+        os.chmod(self.path.parent, 0o700)
+        for path in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            try:
+                os.chmod(path, 0o600)
+            except FileNotFoundError:
+                continue
+
+    def _validate_expected_identity(self) -> None:
+        if not self.expected_hub_id:
+            return
+        row = self._connection.execute(
+            "SELECT hub_id FROM hub_identity WHERE singleton = 1"
+        ).fetchone()
+        if row is None or str(row["hub_id"]) != self.expected_hub_id:
+            raise HubStoreV2Conflict(
+                "Configured Hub V2 identity does not match the opened database"
+            )
+
     def _migrate(self) -> None:
         migration_owner = f"migration_{secrets.token_hex(16)}"
         now = time.time()
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                allow_identity_bootstrap = self._database_is_provably_new()
                 self._connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -245,6 +437,14 @@ class HubStoreV2:
                     raise HubStoreV2Corrupt(
                         f"Hub V2 schema version {current_version} is newer than supported version {SCHEMA_VERSION}"
                     )
+                if (
+                    current_version < SCHEMA_VERSION
+                    and self._preopen_schema_version is not None
+                    and not allow_identity_bootstrap
+                ):
+                    # Revalidate under the SQLite write reservation so another
+                    # process cannot change the approved source before migration.
+                    self._validate_pre_migration_backup_gate(force=True)
                 self._connection.execute(
                     """
                     UPDATE schema_metadata
@@ -256,7 +456,15 @@ class HubStoreV2:
                 if current_version < 1:
                     self._apply_schema_v1()
                     current_version = 1
+                if current_version < 2:
+                    self._apply_schema_v2()
+                    current_version = 2
+                if current_version < 3:
+                    self._apply_schema_v3()
+                    current_version = 3
                 self._connection.execute(f"PRAGMA user_version={current_version}")
+                self._assert_schema_contract(self._connection, current_version)
+                self._ensure_identity(allow_bootstrap=allow_identity_bootstrap)
                 self._connection.execute(
                     """
                     UPDATE schema_metadata
@@ -269,6 +477,146 @@ class HubStoreV2:
             except Exception:
                 self._connection.rollback()
                 raise
+
+    def _validate_pre_migration_backup_gate(self, *, force: bool = False) -> None:
+        """Require an exact validated backup before mutating an older store."""
+
+        if not force and self._database_needs_no_migration_gate():
+            self.pre_migration_backup_report = {
+                "status": "not_required",
+                "required": False,
+                "valid": True,
+            }
+            return
+        from patchbay.hub.backup_v2 import (
+            BackupV2ValidationError,
+            require_pre_migration_validated_backup,
+        )
+
+        try:
+            report = require_pre_migration_validated_backup(
+                self.path,
+                database_kind="hub_v2",
+                target_schema_version=SCHEMA_VERSION,
+                marker_path=self.pre_migration_backup_marker,
+                busy_timeout_ms=self.busy_timeout_ms,
+            )
+        except BackupV2ValidationError as exc:
+            self.pre_migration_backup_report = dict(exc.report)
+            raise HubStoreV2Conflict(
+                "Hub V2 migration is blocked until a validated pre-migration "
+                "backup marker proves the exact current database state"
+            ) from exc
+        self.pre_migration_backup_report = dict(report)
+
+    def _database_needs_no_migration_gate(self) -> bool:
+        """Inspect existing schema without creating or mutating SQLite state."""
+
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            self._preopen_schema_version = None
+            return True
+        uri = f"file:{self.path.resolve(strict=False).as_posix()}?mode=ro"
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(uri, uri=True, isolation_level=None)
+            table = connection.execute(
+                """
+                SELECT 1
+                FROM sqlite_schema
+                WHERE type = 'table' AND name = 'schema_metadata'
+                """
+            ).fetchone()
+            if table is None:
+                self._preopen_schema_version = None
+                # This is not a supported older Hub schema. Let the normal
+                # bootstrap/identity checks reject persisted or malformed state;
+                # a backup marker cannot make an unknown schema migratable.
+                return True
+            row = connection.execute(
+                "SELECT schema_version, migration_lock FROM schema_metadata WHERE singleton = 1"
+            ).fetchone()
+            if row is None:
+                self._preopen_schema_version = None
+                return True
+            if row[1]:
+                raise HubStoreV2Conflict(
+                    "Another or incomplete Hub V2 migration owns the migration lock"
+                )
+            self._preopen_schema_version = int(row[0])
+            user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if user_version != self._preopen_schema_version:
+                raise HubStoreV2Corrupt(
+                    "Hub V2 schema_metadata and PRAGMA user_version disagree"
+                )
+            self._assert_schema_contract(connection, self._preopen_schema_version)
+            identity = connection.execute(
+                "SELECT hub_id, principal_ref FROM hub_identity WHERE singleton = 1"
+            ).fetchone()
+            if identity is None:
+                raise HubStoreV2Corrupt("Hub V2 identity record is missing")
+            if self.expected_hub_id and str(identity[0]) != self.expected_hub_id:
+                raise HubStoreV2Conflict(
+                    "Configured Hub V2 identity does not match the opened database"
+                )
+            return self._preopen_schema_version >= SCHEMA_VERSION
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            return False
+        finally:
+            if connection is not None:
+                connection.close()
+
+    @classmethod
+    def _assert_schema_contract(
+        cls, connection: sqlite3.Connection, schema_version: int
+    ) -> None:
+        if schema_version not in _SCHEMA_OBJECTS_BY_VERSION:
+            raise HubStoreV2Corrupt(
+                f"Unsupported Hub V2 schema contract: {schema_version}"
+            )
+        expected_connection = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            expected_connection.execute("PRAGMA foreign_keys=ON")
+            expected_connection.execute(
+                """
+                CREATE TABLE schema_metadata (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    schema_version INTEGER NOT NULL CHECK (schema_version >= 0),
+                    migration_lock TEXT,
+                    migration_started_at REAL,
+                    updated_at REAL NOT NULL,
+                    v2_mutation_count INTEGER NOT NULL DEFAULT 0 CHECK (v2_mutation_count >= 0)
+                )
+                """
+            )
+            fixture = object.__new__(cls)
+            fixture._connection = expected_connection
+            fixture._apply_schema_v1()
+            if schema_version >= 2:
+                fixture._apply_schema_v2()
+            if schema_version >= 3:
+                fixture._apply_schema_v3()
+            expected = schema_contract_snapshot(expected_connection)
+        finally:
+            expected_connection.close()
+        actual = schema_contract_snapshot(connection)
+        if actual["sha256"] != expected["sha256"]:
+            difference = schema_contract_difference(actual, expected)
+            raise HubStoreV2Corrupt(
+                f"Hub V2 schema {schema_version} definition mismatch: {difference!r}"
+            )
+
+    def _database_is_provably_new(self) -> bool:
+        """Return true only when SQLite contains no evidence of prior state."""
+
+        schema_object = self._connection.execute(
+            "SELECT 1 FROM sqlite_schema LIMIT 1"
+        ).fetchone()
+        persisted_markers = (
+            int(self._connection.execute("PRAGMA schema_version").fetchone()[0]),
+            int(self._connection.execute("PRAGMA user_version").fetchone()[0]),
+            int(self._connection.execute("PRAGMA application_id").fetchone()[0]),
+        )
+        return schema_object is None and persisted_markers == (0, 0, 0)
 
     def _apply_schema_v1(self) -> None:
         statements = (
@@ -399,31 +747,132 @@ class HubStoreV2:
         for statement in statements:
             self._connection.execute(statement)
 
-    def _ensure_identity(self) -> None:
-        with self.immediate_transaction(mark_mutation=False) as connection:
-            row = connection.execute("SELECT principal_ref FROM hub_identity WHERE singleton = 1").fetchone()
-            if row is not None:
-                return
-            now = time.time()
-            principal_ref = f"principal_{secrets.token_hex(16)}"
-            hub_id = f"hub-{secrets.token_hex(10)}"
-            connection.execute(
-                """
-                INSERT INTO principals
-                    (principal_ref, principal_kind, revision, record_json, created_at, updated_at)
-                VALUES (?, 'operator', 1, ?, ?, ?)
-                """,
-                (
-                    principal_ref,
-                    _encode_json_object({"trust_domain": "single_operator"}, field="principal"),
-                    now,
-                    now,
-                ),
+    def _apply_schema_v2(self) -> None:
+        """Add bounded relational lookup projections for Edge control history."""
+
+        self._connection.execute(
+            """
+            CREATE TABLE entity_control_index (
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                machine_id TEXT NOT NULL DEFAULT '',
+                edge_generation TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                sort_created_at REAL NOT NULL,
+                PRIMARY KEY (entity_type, entity_id),
+                FOREIGN KEY (entity_type, entity_id)
+                    REFERENCES entity_records(entity_type, entity_id) ON DELETE CASCADE
             )
-            connection.execute(
-                "INSERT INTO hub_identity(singleton, hub_id, principal_ref, created_at) VALUES (1, ?, ?, ?)",
-                (hub_id, principal_ref, now),
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE INDEX entity_control_route_status_idx
+            ON entity_control_index(
+                entity_type, machine_id, edge_generation, status,
+                sort_created_at, entity_id
             )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE INDEX entity_control_type_order_idx
+            ON entity_control_index(entity_type, sort_created_at, entity_id)
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE INDEX operations_state_created_idx
+            ON operations(state, created_at, operation_id)
+            """
+        )
+        self._connection.execute(
+            """
+            INSERT INTO entity_control_index
+                (entity_type, entity_id, machine_id, edge_generation, status,
+                 sort_created_at)
+            SELECT entity_type,
+                   entity_id,
+                   COALESCE(json_extract(record_json, '$.machine_id'), ''),
+                   COALESCE(json_extract(record_json, '$.edge_generation'), ''),
+                   CASE
+                       WHEN entity_type = 'hub.edge_receipt'
+                           THEN COALESCE(json_extract(record_json, '$.status'), 'pending')
+                       ELSE COALESCE(json_extract(record_json, '$.status'), '')
+                   END,
+                   COALESCE(
+                       CAST(json_extract(record_json, '$.created_at') AS REAL),
+                       created_at
+                   )
+            FROM entity_records
+            WHERE entity_type IN ('hub.edge_dispatch', 'hub.edge_receipt')
+            """
+        )
+
+    def _apply_schema_v3(self) -> None:
+        """Index explicit operation-to-group authority without decoding all history."""
+
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS operation_group_index (
+                operation_id TEXT PRIMARY KEY
+                    REFERENCES operations(operation_id) ON DELETE CASCADE,
+                work_group_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS operation_group_index_group_operation_idx
+            ON operation_group_index(work_group_id, operation_id)
+            """
+        )
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO operation_group_index(operation_id, work_group_id, kind)
+            SELECT association.entity_id,
+                   COALESCE(json_extract(association.record_json, '$.work_group_id'), ''),
+                   COALESCE(json_extract(association.record_json, '$.kind'), '')
+            FROM entity_records AS association
+            JOIN operations AS operation
+              ON operation.operation_id = association.entity_id
+            WHERE association.entity_type = 'hub.operation_group'
+              AND COALESCE(json_extract(association.record_json, '$.work_group_id'), '') != ''
+            """
+        )
+
+    def _ensure_identity(self, *, allow_bootstrap: bool) -> None:
+        row = self._connection.execute(
+            "SELECT principal_ref FROM hub_identity WHERE singleton = 1"
+        ).fetchone()
+        if row is not None:
+            return
+        if not allow_bootstrap:
+            raise HubStoreV2Corrupt(
+                "Hub V2 identity record is missing from an existing database; "
+                "automatic identity regeneration is refused"
+            )
+        now = time.time()
+        principal_ref = f"principal_{secrets.token_hex(16)}"
+        hub_id = f"hub-{secrets.token_hex(10)}"
+        self._connection.execute(
+            """
+            INSERT INTO principals
+                (principal_ref, principal_kind, revision, record_json, created_at, updated_at)
+            VALUES (?, 'operator', 1, ?, ?, ?)
+            """,
+            (
+                principal_ref,
+                _encode_json_object({"trust_domain": "single_operator"}, field="principal"),
+                now,
+                now,
+            ),
+        )
+        self._connection.execute(
+            "INSERT INTO hub_identity(singleton, hub_id, principal_ref, created_at) VALUES (1, ?, ?, ?)",
+            (hub_id, principal_ref, now),
+        )
 
     def schema_info(self) -> dict[str, Any]:
         self._require_open()
@@ -483,6 +932,591 @@ class HubStoreV2:
                 raise
 
     transaction = immediate_transaction
+
+    @contextmanager
+    def operation_group_association_scope(
+        self,
+        *,
+        tool: str,
+        logical_target: str,
+        idempotency_key: str,
+        principal_ref: str,
+        work_group_id: str,
+    ) -> Iterator[None]:
+        """Bind one operation's group relation to its create transaction."""
+
+        self._require_open()
+        intent = _OperationGroupAssociationIntent(
+            tool=_clean_key(tool, "tool"),
+            logical_target=_clean_key(logical_target, "logical_target"),
+            idempotency_key=_clean_key(idempotency_key, "idempotency_key"),
+            principal_ref=_clean_key(
+                principal_ref or self.principal_ref, "principal_ref"
+            ),
+            work_group_id=_clean_key(work_group_id, "work_group_id"),
+        )
+        token = _OPERATION_GROUP_ASSOCIATION_INTENTS.set(
+            _OPERATION_GROUP_ASSOCIATION_INTENTS.get() + (intent,)
+        )
+        try:
+            yield
+        finally:
+            _OPERATION_GROUP_ASSOCIATION_INTENTS.reset(token)
+
+    def assert_operation_group_association(
+        self,
+        *,
+        operation_id: str,
+        work_group_id: str,
+    ) -> None:
+        """Fail closed before dispatch when one grouped operation lacks authority."""
+
+        operation_value = _clean_key(operation_id, "operation_id")
+        group_value = _clean_key(work_group_id, "work_group_id")
+        row = self._connection.execute(
+            """
+            SELECT work_group_id
+            FROM operation_group_index
+            WHERE operation_id = ?
+            """,
+            (operation_value,),
+        ).fetchone()
+        if row is None or str(row["work_group_id"]) != group_value:
+            raise HubStoreV2Conflict("operation_group_association_recovery_required")
+
+    @contextmanager
+    def batch_operation_group_association_scope(
+        self,
+        *,
+        logical_target: str,
+        idempotency_key: str,
+        principal_ref: str,
+        work_group_id: str,
+        child_item_ids: list[str] | tuple[str, ...],
+    ) -> Iterator[None]:
+        """Bind one batch's explicit associations to its broker transaction.
+
+        ``OperationBroker.create_batch_operation`` owns the ``BEGIN IMMEDIATE``
+        boundary. The worker adapter opens this scope before calling it; the
+        store observes each newly inserted batch operation and writes its
+        association through the same SQLite connection before that transaction
+        can commit.
+        """
+
+        self._require_open()
+        normalized_items = frozenset(
+            _clean_key(str(item_id), "child item_id") for item_id in child_item_ids
+        )
+        if not normalized_items:
+            raise ValueError("child_item_ids must not be empty")
+        intent = _BatchOperationGroupAssociationIntent(
+            logical_target=_clean_key(logical_target, "logical_target"),
+            idempotency_key=_clean_key(idempotency_key, "idempotency_key"),
+            principal_ref=_clean_key(
+                principal_ref or self.principal_ref, "principal_ref"
+            ),
+            work_group_id=_clean_key(work_group_id, "work_group_id"),
+            child_item_ids=normalized_items,
+        )
+        token = _BATCH_OPERATION_GROUP_ASSOCIATION_INTENTS.set(
+            _BATCH_OPERATION_GROUP_ASSOCIATION_INTENTS.get() + (intent,)
+        )
+        try:
+            yield
+        finally:
+            _BATCH_OPERATION_GROUP_ASSOCIATION_INTENTS.reset(token)
+
+    def assert_batch_operation_group_associations(
+        self,
+        *,
+        parent_operation_id: str,
+        child_operation_ids: list[str] | tuple[str, ...],
+        work_group_id: str,
+    ) -> None:
+        """Fail closed before dispatch if a historical batch lacks authority."""
+
+        self._require_open()
+        operation_ids = [_clean_key(parent_operation_id, "parent_operation_id")]
+        operation_ids.extend(
+            _clean_key(str(operation_id), "child_operation_id")
+            for operation_id in child_operation_ids
+        )
+        if len(operation_ids) != len(set(operation_ids)):
+            raise HubStoreV2Conflict("batch_operation_group_association_recovery_required")
+        placeholders = ",".join("?" for _ in operation_ids)
+        rows = self._connection.execute(
+            f"""
+            SELECT operation_id
+            FROM operation_group_index
+            WHERE work_group_id = ?
+              AND operation_id IN ({placeholders})
+            """,
+            [_clean_key(work_group_id, "work_group_id"), *operation_ids],
+        ).fetchall()
+        indexed_ids = {str(row["operation_id"]) for row in rows}
+        if indexed_ids != set(operation_ids):
+            raise HubStoreV2Conflict("batch_operation_group_association_recovery_required")
+
+    def operation_ids_for_work_group(self, work_group_id: str) -> list[str]:
+        """Return explicitly associated operation ids without decoding JSON records."""
+
+        self._require_open()
+        rows = self._connection.execute(
+            """
+            SELECT operation_id
+            FROM operation_group_index
+            WHERE work_group_id = ?
+            ORDER BY operation_id
+            """,
+            (_clean_key(work_group_id, "work_group_id"),),
+        ).fetchall()
+        return [str(row["operation_id"]) for row in rows]
+
+    def worker_refs_for_work_group(self, work_group_id: str) -> list[str]:
+        """Filter durable worker identities before decoding their records."""
+
+        self._require_open()
+        rows = self._connection.execute(
+            """
+            SELECT entity_id
+            FROM entity_records
+            WHERE entity_type = ?
+              AND COALESCE(json_extract(record_json, '$.work_group_id'), '') = ?
+            ORDER BY COALESCE(json_extract(record_json, '$.lane_id'), 'main'),
+                     LOWER(COALESCE(json_extract(record_json, '$.name'), entity_id)),
+                     entity_id
+            """,
+            (
+                FLEET_WORKER_ENTITY_TYPE,
+                _clean_key(work_group_id, "work_group_id"),
+            ),
+        ).fetchall()
+        return [str(row["entity_id"]) for row in rows]
+
+    def work_group_status_revision(self, work_group_id: str) -> int:
+        """Return the compact status token without materializing detail records."""
+
+        self._require_open()
+        group_id = _clean_key(work_group_id, "work_group_id")
+        row = self._connection.execute(
+            """
+            WITH group_operations AS (
+                SELECT operation.revision
+                FROM operation_group_index AS association
+                JOIN operations AS operation
+                  ON operation.operation_id = association.operation_id
+                WHERE association.work_group_id = ?
+                UNION ALL
+                SELECT operation.revision
+                FROM operations AS operation
+                WHERE operation.logical_target = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM operation_group_index AS indexed_association
+                      WHERE indexed_association.operation_id = operation.operation_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM entity_records AS association
+                      WHERE association.entity_type = ?
+                        AND association.entity_id = operation.operation_id
+                  )
+            ),
+            group_workers AS (
+                SELECT COALESCE(projection.revision, identity.revision) AS revision
+                FROM entity_records AS identity
+                LEFT JOIN entity_records AS projection
+                  ON projection.entity_type = ?
+                 AND projection.entity_id = identity.entity_id
+                WHERE identity.entity_type = ?
+                  AND COALESCE(
+                      json_extract(identity.record_json, '$.work_group_id'), ''
+                  ) = ?
+            )
+            SELECT
+                COALESCE((
+                    SELECT revision
+                    FROM entity_records
+                    WHERE entity_type = ? AND entity_id = ?
+                ), 0)
+                + COALESCE((SELECT SUM(revision) FROM group_operations), 0)
+                + COALESCE((SELECT SUM(revision) FROM group_workers), 0)
+                AS status_revision
+            """,
+            (
+                group_id,
+                group_id,
+                OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE,
+                WORKER_PROJECTION_ENTITY_TYPE,
+                FLEET_WORKER_ENTITY_TYPE,
+                group_id,
+                WORK_GROUP_ENTITY_TYPE,
+                group_id,
+            ),
+        ).fetchone()
+        return int(row["status_revision"] if row is not None else 0)
+
+    def work_group_status_projection(
+        self,
+        work_group_id: str,
+        *,
+        operation_offset: int = 0,
+        operation_limit: int = 100,
+        worker_offset: int = 0,
+        worker_limit: int = 100,
+        integration_offset: int = 0,
+        integration_limit: int = 100,
+    ) -> dict[str, Any]:
+        """Build one bounded, snapshot-consistent group status projection.
+
+        Aggregate counts and the status token stay exact for the whole group.
+        Only explicitly requested operation, worker, and integration pages are
+        decoded into Python objects.
+        """
+
+        self._require_open()
+        group_id = _clean_key(work_group_id, "work_group_id")
+        operation_offset = max(0, int(operation_offset))
+        worker_offset = max(0, int(worker_offset))
+        integration_offset = max(0, int(integration_offset))
+        operation_limit = max(0, min(int(operation_limit), 500))
+        worker_limit = max(0, min(int(worker_limit), 500))
+        integration_limit = max(0, min(int(integration_limit), 500))
+
+        operation_cte = """
+            WITH group_operations AS (
+                SELECT operation.operation_id,
+                       operation.parent_operation_id,
+                       operation.tool,
+                       operation.state,
+                       operation.idempotency_key,
+                       operation.semantic_payload_hash,
+                       operation.revision,
+                       operation.created_at,
+                       operation.updated_at,
+                       association.kind,
+                       'indexed' AS association_source
+                FROM operation_group_index AS association
+                JOIN operations AS operation
+                  ON operation.operation_id = association.operation_id
+                WHERE association.work_group_id = ?
+                UNION ALL
+                SELECT operation.operation_id,
+                       operation.parent_operation_id,
+                       operation.tool,
+                       operation.state,
+                       operation.idempotency_key,
+                       operation.semantic_payload_hash,
+                       operation.revision,
+                       operation.created_at,
+                       operation.updated_at,
+                       '',
+                       'legacy_logical_target'
+                FROM operations AS operation
+                WHERE operation.logical_target = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM operation_group_index AS indexed_association
+                      WHERE indexed_association.operation_id = operation.operation_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM entity_records AS association
+                      WHERE association.entity_type = ?
+                        AND association.entity_id = operation.operation_id
+                  )
+            )
+        """
+        operation_parameters = (
+            group_id,
+            group_id,
+            OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE,
+        )
+        worker_cte = """
+            WITH worker_records AS (
+                SELECT identity.entity_id AS fleet_worker_ref,
+                       COALESCE(
+                           json_extract(identity.record_json, '$.lane_id'), 'main'
+                       ) AS lane_id,
+                       LOWER(COALESCE(
+                           json_extract(identity.record_json, '$.name'),
+                           identity.entity_id
+                       )) AS sort_name,
+                       COALESCE(projection.record_json, identity.record_json) AS record_json,
+                       COALESCE(projection.revision, identity.revision) AS revision
+                FROM entity_records AS identity
+                LEFT JOIN entity_records AS projection
+                  ON projection.entity_type = ?
+                 AND projection.entity_id = identity.entity_id
+                WHERE identity.entity_type = ?
+                  AND COALESCE(
+                      json_extract(identity.record_json, '$.work_group_id'), ''
+                  ) = ?
+            ),
+            group_workers AS (
+                SELECT fleet_worker_ref,
+                       lane_id,
+                       sort_name,
+                       record_json,
+                       revision,
+                       COALESCE(json_extract(record_json, '$.turn_state'), 'none') AS turn_state,
+                       COALESCE(json_extract(record_json, '$.liveness'), 'lost') AS liveness,
+                       COALESCE(json_extract(record_json, '$.integration_state'), 'uncertain') AS integration_state,
+                       COALESCE(json_extract(record_json, '$.review_disposition'), 'unreviewed') AS review_disposition
+                FROM worker_records
+            )
+        """
+        worker_parameters = (
+            WORKER_PROJECTION_ENTITY_TYPE,
+            FLEET_WORKER_ENTITY_TYPE,
+            group_id,
+        )
+
+        with self._lock:
+            owns_transaction = not self._connection.in_transaction
+            if owns_transaction:
+                self._connection.execute("BEGIN")
+            try:
+                operation_row = self._connection.execute(
+                    operation_cte
+                    + """
+                    SELECT COUNT(*) AS total,
+                           COALESCE(SUM(revision), 0) AS revision_sum,
+                           COALESCE(MAX(updated_at), 0) AS latest_updated_at,
+                           SUM(state = 'created') AS created_count,
+                           SUM(state = 'payload_ready') AS payload_ready_count,
+                           SUM(state = 'dispatchable') AS dispatchable_count,
+                           SUM(state = 'running') AS running_count,
+                           SUM(state = 'reconciling') AS reconciling_count,
+                           SUM(state = 'outcome_unknown') AS outcome_unknown_count,
+                           SUM(state = 'succeeded') AS succeeded_count,
+                           SUM(state = 'blocked') AS blocked_count,
+                           SUM(state = 'failed') AS failed_count,
+                           SUM(state = 'cancelled') AS cancelled_count,
+                           SUM(tool = 'patchbay_worker_integrate') AS integration_operation_count,
+                           SUM(association_source = 'legacy_logical_target') AS legacy_count
+                    FROM group_operations
+                    """,
+                    operation_parameters,
+                ).fetchone()
+                operation_rows = []
+                if operation_limit:
+                    operation_rows = self._connection.execute(
+                        operation_cte
+                        + """
+                        SELECT *
+                        FROM group_operations
+                        ORDER BY created_at DESC, operation_id DESC
+                        LIMIT ? OFFSET ?
+                        """,
+                        (*operation_parameters, operation_limit, operation_offset),
+                    ).fetchall()
+
+                worker_row = self._connection.execute(
+                    worker_cte
+                    + """
+                    SELECT COUNT(*) AS total,
+                           COALESCE(SUM(revision), 0) AS revision_sum,
+                           SUM(turn_state IN ('queued', 'starting', 'working')) AS active_count,
+                           SUM(liveness = 'quiet') AS quiet_count,
+                           SUM(liveness = 'stale') AS stale_count,
+                           SUM(liveness = 'lost') AS lost_count,
+                           SUM(turn_state = 'failed') AS failed_count,
+                           SUM(integration_state IN ('not_integrated', 'uncertain')) AS unintegrated_count
+                    FROM group_workers
+                    """,
+                    worker_parameters,
+                ).fetchone()
+                worker_rows = []
+                if worker_limit:
+                    worker_rows = self._connection.execute(
+                        worker_cte
+                        + """
+                        SELECT fleet_worker_ref, lane_id, record_json, revision
+                        FROM group_workers
+                        ORDER BY lane_id, sort_name, fleet_worker_ref
+                        LIMIT ? OFFSET ?
+                        """,
+                        (*worker_parameters, worker_limit, worker_offset),
+                    ).fetchall()
+                lane_rows = self._connection.execute(
+                    worker_cte
+                    + """
+                    SELECT lane_id,
+                           COUNT(*) AS worker_count,
+                           SUM(turn_state IN ('queued', 'starting', 'working')) AS active_count,
+                           SUM(liveness = 'quiet') AS quiet_count,
+                           SUM(liveness = 'stale') AS stale_count,
+                           SUM(liveness = 'lost') AS lost_count,
+                           SUM(turn_state = 'failed') AS failed_count,
+                           SUM(integration_state IN ('not_integrated', 'uncertain')) AS unintegrated_count
+                    FROM group_workers
+                    GROUP BY lane_id
+                    ORDER BY lane_id
+                    """,
+                    worker_parameters,
+                ).fetchall()
+                integration_state_rows = self._connection.execute(
+                    worker_cte
+                    + """
+                    SELECT integration_state AS value, COUNT(*) AS count
+                    FROM group_workers
+                    GROUP BY integration_state
+                    ORDER BY integration_state
+                    """,
+                    worker_parameters,
+                ).fetchall()
+                review_state_rows = self._connection.execute(
+                    worker_cte
+                    + """
+                    SELECT review_disposition AS value, COUNT(*) AS count
+                    FROM group_workers
+                    GROUP BY review_disposition
+                    ORDER BY review_disposition
+                    """,
+                    worker_parameters,
+                ).fetchall()
+                integration_rows = []
+                if integration_limit:
+                    integration_rows = self._connection.execute(
+                        worker_cte
+                        + """
+                        SELECT fleet_worker_ref,
+                               lane_id,
+                               integration_state,
+                               review_disposition,
+                               turn_state,
+                               liveness
+                        FROM group_workers
+                        ORDER BY lane_id, sort_name, fleet_worker_ref
+                        LIMIT ? OFFSET ?
+                        """,
+                        (*worker_parameters, integration_limit, integration_offset),
+                    ).fetchall()
+                group_row = self._connection.execute(
+                    """
+                    SELECT revision
+                    FROM entity_records
+                    WHERE entity_type = ? AND entity_id = ?
+                    """,
+                    (WORK_GROUP_ENTITY_TYPE, group_id),
+                ).fetchone()
+                if owns_transaction:
+                    self._connection.commit()
+            except Exception:
+                if owns_transaction:
+                    self._connection.rollback()
+                raise
+
+        operation_states = {
+            state: int(operation_row[f"{state}_count"] or 0)
+            for state in OPERATION_STATES
+        }
+        operation_summary = {
+            "total": int(operation_row["total"] or 0),
+            "revision_sum": int(operation_row["revision_sum"] or 0),
+            "latest_updated_at": float(operation_row["latest_updated_at"] or 0),
+            "state_counts": operation_states,
+            "active": sum(
+                operation_states[state]
+                for state in OPERATION_STATES
+                if state not in TERMINAL_OPERATION_STATES
+                and state not in {"outcome_unknown", "reconciling"}
+            ),
+            "uncertain": operation_states["outcome_unknown"]
+            + operation_states["reconciling"],
+            "terminal": sum(
+                operation_states[state] for state in TERMINAL_OPERATION_STATES
+            ),
+            "integration_operations": int(
+                operation_row["integration_operation_count"] or 0
+            ),
+            "legacy_logical_target": int(operation_row["legacy_count"] or 0),
+        }
+        worker_summary = {
+            "total": int(worker_row["total"] or 0),
+            "revision_sum": int(worker_row["revision_sum"] or 0),
+            "active": int(worker_row["active_count"] or 0),
+            "quiet": int(worker_row["quiet_count"] or 0),
+            "stale": int(worker_row["stale_count"] or 0),
+            "lost": int(worker_row["lost_count"] or 0),
+            "failed": int(worker_row["failed_count"] or 0),
+            "unintegrated": int(worker_row["unintegrated_count"] or 0),
+        }
+        workers = []
+        for row in worker_rows:
+            record = _decode_json_object(
+                row["record_json"],
+                context=f"worker projection {row['fleet_worker_ref']}",
+            )
+            record.setdefault("fleet_worker_ref", str(row["fleet_worker_ref"]))
+            record.setdefault("lane_id", str(row["lane_id"] or "main"))
+            record.setdefault("projection_revision", int(row["revision"]))
+            record["store_revision"] = int(row["revision"])
+            workers.append(record)
+        operations = [
+            {
+                "operation_id": str(row["operation_id"]),
+                "parent_operation_id": str(row["parent_operation_id"] or ""),
+                "tool": str(row["tool"]),
+                "state": str(row["state"]),
+                "idempotency_key": str(row["idempotency_key"]),
+                "semantic_payload_hash": str(row["semantic_payload_hash"]),
+                "revision": int(row["revision"]),
+                "created_at": float(row["created_at"]),
+                "updated_at": float(row["updated_at"]),
+                "association_kind": str(row["kind"] or ""),
+                "association_source": str(row["association_source"]),
+            }
+            for row in operation_rows
+        ]
+        lanes = [
+            {
+                "lane_id": str(row["lane_id"] or "main"),
+                "worker_count": int(row["worker_count"] or 0),
+                "active": int(row["active_count"] or 0),
+                "quiet": int(row["quiet_count"] or 0),
+                "stale": int(row["stale_count"] or 0),
+                "lost": int(row["lost_count"] or 0),
+                "failed": int(row["failed_count"] or 0),
+                "unintegrated": int(row["unintegrated_count"] or 0),
+            }
+            for row in lane_rows
+        ]
+        integrations = [
+            {
+                "fleet_worker_ref": str(row["fleet_worker_ref"]),
+                "lane_id": str(row["lane_id"] or "main"),
+                "integration_state": str(row["integration_state"]),
+                "review_disposition": str(row["review_disposition"]),
+                "turn_state": str(row["turn_state"]),
+                "liveness": str(row["liveness"]),
+            }
+            for row in integration_rows
+        ]
+        group_revision = int(group_row["revision"] if group_row is not None else 0)
+        return {
+            "status_revision": group_revision
+            + operation_summary["revision_sum"]
+            + worker_summary["revision_sum"],
+            "operation_summary": operation_summary,
+            "operations": operations,
+            "worker_summary": worker_summary,
+            "workers": workers,
+            "lane_summaries": lanes,
+            "integration_summary": {
+                "total": worker_summary["total"],
+                "state_counts": {
+                    str(row["value"]): int(row["count"])
+                    for row in integration_state_rows
+                },
+                "review_disposition_counts": {
+                    str(row["value"]): int(row["count"])
+                    for row in review_state_rows
+                },
+            },
+            "integrations": integrations,
+        }
 
     def put_entity(
         self,
@@ -627,7 +1661,87 @@ class HubStoreV2:
         ).fetchone()
         if saved is None:
             raise HubStoreV2Corrupt(f"Entity write disappeared: {type_value}/{id_value}")
+        self._sync_control_index(
+            connection,
+            entity_type=type_value,
+            entity_id=id_value,
+            record=record,
+            created_at=float(saved["created_at"]),
+        )
+        self._sync_operation_group_index(
+            connection,
+            entity_type=type_value,
+            entity_id=id_value,
+            record=record,
+        )
         return self._entity_from_row(saved)
+
+    @staticmethod
+    def _sync_control_index(
+        connection: sqlite3.Connection,
+        *,
+        entity_type: str,
+        entity_id: str,
+        record: Mapping[str, Any],
+        created_at: float,
+    ) -> None:
+        if entity_type not in CONTROL_INDEX_ENTITY_TYPES:
+            return
+        status_default = "pending" if entity_type == "hub.edge_receipt" else ""
+        try:
+            sort_created_at = float(record.get("created_at") or created_at)
+        except (TypeError, ValueError):
+            sort_created_at = float(created_at)
+        connection.execute(
+            """
+            INSERT INTO entity_control_index
+                (entity_type, entity_id, machine_id, edge_generation, status,
+                 sort_created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+                machine_id = excluded.machine_id,
+                edge_generation = excluded.edge_generation,
+                status = excluded.status,
+                sort_created_at = excluded.sort_created_at
+            """,
+            (
+                entity_type,
+                entity_id,
+                str(record.get("machine_id") or ""),
+                str(record.get("edge_generation") or ""),
+                str(record.get("status") or status_default),
+                sort_created_at,
+            ),
+        )
+
+    @staticmethod
+    def _sync_operation_group_index(
+        connection: sqlite3.Connection,
+        *,
+        entity_type: str,
+        entity_id: str,
+        record: Mapping[str, Any],
+    ) -> None:
+        if entity_type != OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE:
+            return
+        work_group_id = str(record.get("work_group_id") or "")
+        if not work_group_id or connection.execute(
+            "SELECT 1 FROM operations WHERE operation_id = ?", (entity_id,)
+        ).fetchone() is None:
+            connection.execute(
+                "DELETE FROM operation_group_index WHERE operation_id = ?", (entity_id,)
+            )
+            return
+        connection.execute(
+            """
+            INSERT INTO operation_group_index(operation_id, work_group_id, kind)
+            VALUES (?, ?, ?)
+            ON CONFLICT(operation_id) DO UPDATE SET
+                work_group_id = excluded.work_group_id,
+                kind = excluded.kind
+            """,
+            (entity_id, work_group_id, str(record.get("kind") or "")),
+        )
 
     def get_entity(self, entity_type: str, entity_id: str) -> dict[str, Any] | None:
         self._require_open()
@@ -646,6 +1760,91 @@ class HubStoreV2:
             parameters.append(legacy_classification)
         sql += " ORDER BY entity_id"
         return [self._entity_from_row(row) for row in self._connection.execute(sql, parameters).fetchall()]
+
+    def query_control_entities(
+        self,
+        entity_type: str,
+        *,
+        machine_id: str | None = None,
+        edge_generation: str | None = None,
+        statuses: tuple[str, ...] = (),
+        operation_states: tuple[str, ...] = (),
+        latest_attempt_states: tuple[str, ...] = (),
+        attempt_machine_id: str | None = None,
+        attempt_edge_generation: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Filter and limit control entities relationally before JSON decoding."""
+
+        self._require_open()
+        type_value = _clean_key(entity_type, "entity_type")
+        if type_value not in CONTROL_INDEX_ENTITY_TYPES:
+            raise ValueError(f"Entity type is not control-indexed: {type_value}")
+        bounded_limit = max(1, min(int(limit), 10_000))
+        joins = [
+            """
+            JOIN entity_records AS records
+              ON records.entity_type = control.entity_type
+             AND records.entity_id = control.entity_id
+            """
+        ]
+        where = ["control.entity_type = ?"]
+        parameters: list[Any] = [type_value]
+        if operation_states:
+            joins.append(
+                "JOIN operations AS operation ON operation.operation_id = control.entity_id"
+            )
+            where.append(
+                f"operation.state IN ({','.join('?' for _ in operation_states)})"
+            )
+            parameters.extend(operation_states)
+        if latest_attempt_states:
+            if not operation_states:
+                raise ValueError("latest_attempt_states requires operation_states")
+            joins.append(
+                """
+                JOIN attempts AS attempt ON attempt.operation_id = operation.operation_id
+                """
+            )
+            where.extend(
+                (
+                    f"attempt.state IN ({','.join('?' for _ in latest_attempt_states)})",
+                    """
+                    NOT EXISTS (
+                        SELECT 1 FROM attempts AS newer
+                        WHERE newer.operation_id = attempt.operation_id
+                          AND newer.fencing_token > attempt.fencing_token
+                    )
+                    """,
+                )
+            )
+            parameters.extend(latest_attempt_states)
+            if attempt_machine_id is not None:
+                where.append("attempt.machine_id = ?")
+                parameters.append(str(attempt_machine_id))
+            if attempt_edge_generation is not None:
+                where.append("attempt.edge_generation = ?")
+                parameters.append(int(attempt_edge_generation))
+        if machine_id is not None:
+            where.append("control.machine_id = ?")
+            parameters.append(str(machine_id))
+        if edge_generation is not None:
+            where.append("control.edge_generation = ?")
+            parameters.append(str(edge_generation))
+        if statuses:
+            where.append(f"control.status IN ({','.join('?' for _ in statuses)})")
+            parameters.extend(statuses)
+        sql = f"""
+            SELECT records.*
+            FROM entity_control_index AS control
+            {' '.join(joins)}
+            WHERE {' AND '.join(where)}
+            ORDER BY control.sort_created_at, control.entity_id
+            LIMIT ?
+        """
+        parameters.append(bounded_limit)
+        rows = self._connection.execute(sql, parameters).fetchall()
+        return [self._entity_from_row(row) for row in rows]
 
     def _entity_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -744,6 +1943,32 @@ class HubStoreV2:
         self._require_open()
         row = self._connection.execute(
             "SELECT * FROM operations WHERE operation_id = ?", (_clean_key(operation_id, "operation_id"),)
+        ).fetchone()
+        return self._operation_from_row(row) if row is not None else None
+
+    def get_operation_by_idempotency(
+        self,
+        *,
+        tool: str,
+        logical_target: str,
+        idempotency_key: str,
+        principal_ref: str = "",
+    ) -> dict[str, Any] | None:
+        """Look up an idempotency-scoped operation without creating one."""
+
+        self._require_open()
+        row = self._connection.execute(
+            """
+            SELECT * FROM operations
+            WHERE principal_ref = ? AND tool = ?
+              AND logical_target = ? AND idempotency_key = ?
+            """,
+            (
+                principal_ref or self.principal_ref,
+                _clean_key(tool, "tool"),
+                _clean_key(logical_target, "logical_target"),
+                _clean_key(idempotency_key, "idempotency_key"),
+            ),
         ).fetchone()
         return self._operation_from_row(row) if row is not None else None
 
@@ -1025,7 +2250,144 @@ class HubStoreV2:
         row = connection.execute(
             "SELECT * FROM events WHERE event_revision = ?", (int(cursor.lastrowid),)
         ).fetchone()
-        return self._event_from_row(row)
+        event = self._event_from_row(row)
+        self._materialize_scoped_operation_group_association(
+            connection, event_type=str(event_type), operation_id=operation_id
+        )
+        self._materialize_scoped_batch_operation_group_association(
+            connection, event_type=str(event_type), operation_id=operation_id
+        )
+        return event
+
+    def _materialize_scoped_operation_group_association(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        event_type: str,
+        operation_id: str | None,
+    ) -> None:
+        if event_type != "operation.created" or not operation_id:
+            return
+        intents = _OPERATION_GROUP_ASSOCIATION_INTENTS.get()
+        if not intents:
+            return
+        operation = connection.execute(
+            """
+            SELECT operation_id, principal_ref, tool, logical_target,
+                   idempotency_key, parent_operation_id
+            FROM operations
+            WHERE operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+        if operation is None:
+            raise HubStoreV2Corrupt(
+                f"Operation disappeared while materializing group association: {operation_id}"
+            )
+        for intent in reversed(intents):
+            matches = (
+                operation["parent_operation_id"] is None
+                and str(operation["tool"]) == intent.tool
+                and str(operation["logical_target"]) == intent.logical_target
+                and str(operation["idempotency_key"]) == intent.idempotency_key
+                and str(operation["principal_ref"]) == intent.principal_ref
+            )
+            if not matches:
+                continue
+            operation_value = str(operation["operation_id"])
+            self._put_scoped_operation_group_association_in_transaction(
+                connection,
+                operation_id=operation_value,
+                work_group_id=intent.work_group_id,
+            )
+            intent.associated_operation_id = operation_value
+            return
+
+    def _materialize_scoped_batch_operation_group_association(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        event_type: str,
+        operation_id: str | None,
+    ) -> None:
+        if event_type != "operation.created" or not operation_id:
+            return
+        intents = _BATCH_OPERATION_GROUP_ASSOCIATION_INTENTS.get()
+        if not intents:
+            return
+        operation = connection.execute(
+            """
+            SELECT operation_id, principal_ref, tool, logical_target,
+                   idempotency_key, parent_operation_id, item_id
+            FROM operations
+            WHERE operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+        if operation is None:
+            raise HubStoreV2Corrupt(
+                f"Operation disappeared while materializing batch association: {operation_id}"
+            )
+        for intent in reversed(intents):
+            is_parent = (
+                operation["parent_operation_id"] is None
+                and str(operation["tool"]) == "patchbay_worker_start_batch"
+                and str(operation["logical_target"]) == intent.logical_target
+                and str(operation["idempotency_key"]) == intent.idempotency_key
+                and str(operation["principal_ref"]) == intent.principal_ref
+            )
+            is_child = (
+                bool(intent.parent_operation_id)
+                and str(operation["parent_operation_id"] or "")
+                == intent.parent_operation_id
+                and str(operation["item_id"]) in intent.child_item_ids
+            )
+            if not is_parent and not is_child:
+                continue
+            operation_value = str(operation["operation_id"])
+            if is_parent:
+                intent.parent_operation_id = operation_value
+            self._put_scoped_operation_group_association_in_transaction(
+                connection,
+                operation_id=operation_value,
+                work_group_id=intent.work_group_id,
+            )
+            intent.associated_operation_ids.add(operation_value)
+            return
+
+    def _put_scoped_operation_group_association_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        operation_id: str,
+        work_group_id: str,
+    ) -> None:
+        existing = connection.execute(
+            """
+            SELECT * FROM entity_records
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            (OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE, operation_id),
+        ).fetchone()
+        if existing is not None:
+            record = self._entity_from_row(existing)["record"]
+            if str(record.get("work_group_id") or "") != work_group_id:
+                raise HubStoreV2Conflict("operation_work_group_conflict")
+            return
+        saved = self._put_entity_in_transaction(
+            connection,
+            OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE,
+            operation_id,
+            {
+                "operation_id": operation_id,
+                "work_group_id": work_group_id,
+                "kind": "worker",
+            },
+            expected_revision=0,
+            legacy_classification="",
+        )
+        if saved is None:
+            raise HubStoreV2Conflict("operation_work_group_conflict")
 
     def list_events(self, *, after_revision: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         self._require_open()

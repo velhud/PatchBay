@@ -103,6 +103,234 @@ async def test_integration_preview_and_apply_worker_result_to_base_checkout(tmp_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "terminal_state",
+    [JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED],
+)
+async def test_integration_waits_for_internal_terminal_wrapper_cleanup(tmp_path, terminal_state):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Cleanup Pending Implementer",
+        brief="Create the note file.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+    job = next(
+        job
+        for job in manager.jobs.values()
+        if (job.options or {}).get("_worker_id") == started["worker_id"]
+    )
+    (Path(job.worktree_path) / "worker-note.txt").write_text(
+        "from worker\n", encoding="utf-8"
+    )
+    manager.update_job_state(
+        job.job_id,
+        terminal_state,
+        result={"summary": "Created worker-note.txt"} if terminal_state == JobState.COMPLETED else None,
+        error="Worker turn failed." if terminal_state == JobState.FAILED else None,
+        session_id="session-cleanup-pending",
+        wrapper_cleanup_outcome="cleanup_pending",
+    )
+    executor.processes[job.job_id] = type(
+        "UnverifiedLiveProcess", (), {"returncode": None}
+    )()
+
+    preview = await runtime.inspect_worker(
+        worker="Cleanup Pending Implementer", view="integration_preview"
+    )
+    applied = await runtime.integrate_worker(worker="Cleanup Pending Implementer")
+
+    assert preview["can_apply"] is False
+    assert preview["cleanup_pending"] is True
+    assert applied["applied"] is False
+    assert applied["cleanup_pending"] is True
+    assert not (Path(config["repositories"]["default"]) / "worker-note.txt").exists()
+    executor.processes.pop(job.job_id, None)
+
+
+@pytest.mark.asyncio
+async def test_integration_and_followup_refuse_independent_live_runtime_evidence(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Live Runtime Guard",
+        brief="Create the note file.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+    job = next(
+        item
+        for item in manager.jobs.values()
+        if (item.options or {}).get("_worker_id") == started["worker_id"]
+    )
+    (Path(job.worktree_path) / "worker-note.txt").write_text(
+        "from live runtime\n", encoding="utf-8"
+    )
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Report is durable."},
+        session_id="session-live-runtime-guard",
+        wrapper_cleanup_outcome="process_exited",
+    )
+    monkeypatch.setattr(
+        executor,
+        "runtime_liveness_snapshot",
+        lambda _job_id: {
+            "executor_task_alive": True,
+            "process_alive": True,
+            "runtime_alive": True,
+        },
+    )
+
+    preview = await runtime.inspect_worker(
+        worker="Live Runtime Guard", view="integration_preview"
+    )
+    applied = await runtime.integrate_worker(worker="Live Runtime Guard")
+    followup = await runtime.message_worker(
+        worker="Live Runtime Guard", message="Continue with another turn."
+    )
+
+    assert preview["can_apply"] is False
+    assert preview["cleanup_unresolved"] is True
+    assert applied["applied"] is False
+    assert applied["cleanup_unresolved"] is True
+    assert followup["accepted"] is False
+    assert followup["cleanup_unresolved"] is True
+    assert not (
+        Path(config["repositories"]["default"]) / "worker-note.txt"
+    ).exists()
+
+
+@pytest.mark.asyncio
+async def test_worker_followup_waits_for_terminal_cleanup_then_allows_one_resume(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Cleanup Pending Messenger",
+        brief="Complete the first turn.",
+        repo_path=config["repositories"]["default"],
+    )
+    await asyncio.sleep(0)
+    first_job = next(
+        job
+        for job in manager.jobs.values()
+        if (job.options or {}).get("_worker_id") == started["worker_id"]
+    )
+    manager.update_job_state(
+        first_job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "First turn complete."},
+        session_id="session-cleanup-message",
+        wrapper_cleanup_outcome="cleanup_pending",
+    )
+    executor.processes[first_job.job_id] = type(
+        "UnverifiedLiveProcess", (), {"returncode": None}
+    )()
+    newer_job_id = manager.create_job(
+        "resume",
+        "Already durable newer turn",
+        first_job.repo_path,
+        dict(first_job.options or {}),
+    )
+    manager.update_job_state(
+        newer_job_id,
+        JobState.COMPLETED,
+        result={"summary": "Newer turn has no pending cleanup."},
+        session_id="session-cleanup-message",
+        wrapper_cleanup_outcome="process_exited",
+    )
+
+    blocked = await runtime.message_worker(
+        worker="Cleanup Pending Messenger",
+        message="Continue with the second turn.",
+    )
+    projection = runtime.projection_snapshot()["workers"][0]
+
+    assert blocked["accepted"] is False
+    assert blocked["cleanup_pending"] is True
+    assert blocked["recommended_next_action"] == "retry_codex_worker_message"
+    assert blocked["can_message"] is False
+    assert blocked["can_message_reason"] == "terminal_cleanup_pending"
+    assert projection["can_message"] is False
+    assert projection["cleanup_pending"] is True
+    assert len(runtime._jobs_for_worker(started["worker_id"])) == 2
+
+    executor.processes.pop(first_job.job_id, None)
+    manager.update_job_state(
+        first_job.job_id,
+        JobState.COMPLETED,
+        wrapper_cleanup_outcome="terminated_after_terminal_async",
+    )
+    resumed = await runtime.message_worker(
+        worker="Cleanup Pending Messenger",
+        message="Continue with the second turn.",
+    )
+    duplicate = await runtime.message_worker(
+        worker="Cleanup Pending Messenger",
+        message="Do not create a third concurrent turn.",
+    )
+
+    assert resumed["accepted"] is True
+    assert duplicate["accepted"] is False
+    assert len(runtime._jobs_for_worker(started["worker_id"])) == 3
+
+
+@pytest.mark.asyncio
+async def test_untrusted_persisted_process_requires_recovery_in_public_state(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    started = await runtime.start_worker(
+        name="Recovery Required Worker",
+        brief="Complete one turn.",
+        repo_path=config["repositories"]["default"],
+    )
+    job = runtime._jobs_for_worker(started["worker_id"])[0]
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "Report is durable."},
+        session_id="session-recovery-required",
+        process_pid=454545,
+        process_pgid=454545,
+        wrapper_cleanup_outcome="cleanup_blocked_untrusted_process_identity",
+    )
+    executor._process_pid_is_live = lambda pid: False
+    executor._process_identity = lambda pid: None
+    executor._process_group_members_from_proc = lambda pgid: None
+    executor._process_group_members_from_ps = lambda pgid: {454546}
+    executor._job_marked_process_pids = lambda job_id: None
+
+    blocked = await runtime.message_worker(
+        worker="Recovery Required Worker",
+        message="Start another turn.",
+    )
+
+    assert blocked["accepted"] is False
+    assert blocked["cleanup_pending"] is True
+    assert blocked["recovery_required"] is True
+    assert blocked["cleanup_recovery_required"] is True
+    assert blocked["recommended_next_action"] == (
+        "report_patchbay_cleanup_recovery_required"
+    )
+    assert blocked["can_message_reason"] == "terminal_cleanup_recovery_required"
+
+
+@pytest.mark.asyncio
 async def test_integration_requires_takeover_for_other_owner(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

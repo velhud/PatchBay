@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- Rebuilt Hub/Edge reconciliation around immutable attempt contracts, fenced
+  expired-lease recovery, bounded fair receipt/recovery queues, indexed
+  dispatch and receipt lookup, atomic batch creation, and manager-level
+  operation status without exposing internal recovery transitions.
+- Preserved exact-once replay metadata across the Hub dispatch wrapper so
+  retrying a group, worker, or batch mutation cannot create a second domain
+  object behind an idempotently reused operation. Remote reads now correlate
+  delayed Edge results through opaque request references and dispatch only
+  their own operation.
+- Closed group-lifecycle crash windows for create, resume, reassign, and close.
+  Unfinished retries repair the original durable transition, while terminal
+  retries never reset completed preflight state, replace a newer current-group
+  selection, or reapply an old lifecycle side effect.
+- Added a bounded Hub-owned crash-recovery dispatcher, indexed and paginated
+  group status, fair fresh/replay receipt selection, and schema-valid manager
+  next actions. Read/status tools no longer sweep unrelated mutation backlogs.
+- Added process-shared Hub backup admission coordination, validated SQLite
+  backup/restore manifests, schema migration proofs, stale-owner recovery, and
+  fail-closed V1 activation checks. Online backups pause new mutations and
+  Edge claims while preserving result and reconciliation traffic.
+- Expanded backup manifests from representative summaries to complete durable
+  table/entity/schema proofs, made missing Hub/Edge singleton identity fail
+  closed, and added an exact-source pre-migration marker that is mandatory
+  before an older Hub schema can be opened by the new release.
+- Added a production-entrypoint restart evaluator that exercises the installed
+  Hub and Edge CLIs, enrollment, grouped dispatch, persisted receipts, stable
+  identities, and monotonic revisions across a real process restart.
+- Hardened worker terminal ownership: exact-session reports become durable
+  before cleanup, cancellation is crash-safe across process launch, detached
+  descendants are tracked independently of process groups and environment
+  markers, uncertain cleanup retains repository locks, and zombie children no
+  longer masquerade as unknown live processes.
+- Added a durable supervisor readiness/launch handshake, exact pre-target crash
+  proof, idempotent signal handling, bounded output capture, and terminal
+  epilogue admission semantics so cancellation, follow-up, and wrapper cleanup
+  cannot contradict each other under Linux or macOS scheduling pressure.
+- Added post-restart same-worker Hub/Edge continuation evidence, deterministic
+  cleanup-barrier live tests, explicit work-group association precedence,
+  current preflight reconciliation after accepted mutations, and bounded
+  20,000/50,000-record scaling regressions.
+- Made Hub V2 the default Hub/Edge control plane. Legacy V1 now requires an
+  explicit `hub.control_plane: v1`; invalid values fail clearly at startup.
+- Added graceful SIGTERM supervision for launched server/tunnel children so a
+  stopped launcher cannot leave a disposable PatchBay listener behind.
 - Made Spark the preferred first choice over GPT-5.4 Mini for bounded small-worker assignments, with an explicit immediate Mini fallback when Spark is unavailable, quota-depleted, or context-constrained.
 
 - Rewrote public positioning docs around PatchBay as a powerful ChatGPT-to-local-Codex control plane that eliminates copy-paste between ChatGPT context and local Codex execution.

@@ -1,6 +1,6 @@
 # Hub Manager Control Plane Rebuild
 
-Status: `IMPLEMENTED_AND_LIVE_VERIFIED_OPT_IN`
+Status: `IMPLEMENTED_AND_LIVE_VERIFIED`
 
 Design ID: `HUB-MANAGER-CONTROL-PLANE-V2`
 
@@ -9,9 +9,9 @@ PatchBay Hub manager-facing control plane. It records the evidence,
 invariants, rejected alternatives, selected architecture, exact public tool
 surface, state model, implementation sequence, and verification gates.
 
-The rebuild is implemented as the opt-in `hub.control_plane: v2` runtime. Hub
-V1 remains available as a compatibility path and regression fixture, but its
-reduced public control semantics are not the V2 contract.
+The rebuild is the default Hub/Edge runtime. Hub V1 remains available through
+the explicit `hub.control_plane: v1` compatibility path and as a regression
+fixture, but its reduced public control semantics are not the V2 contract.
 
 ## Why The Rebuild Is Necessary
 

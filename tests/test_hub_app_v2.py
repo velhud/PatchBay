@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from typing import Any, Mapping
 
 import pytest
 
-from patchbay.hub.adapters.pro_requests import HubProRequestAdapterV2
+from patchbay.hub.adapters.pro_requests import (
+    FleetHubProRequestAdapterV2,
+    HubProRequestAdapterV2,
+)
 from patchbay.hub.adapters.worker import HubWorkerAdapterV2
 from patchbay.hub.adapters.workspace import WorkspaceAdapter
 from patchbay.hub.app_v2 import (
@@ -16,8 +20,15 @@ from patchbay.hub.app_v2 import (
     HubWorkerProjectionPortV2,
 )
 from patchbay.hub.broker import OperationBroker
+from patchbay.hub.backup_v2 import AdmissionFreezeController
+from patchbay.hub.operations import public_envelope
 from patchbay.hub.protocol_v2 import HubProtocolV2
-from patchbay.hub.runtime_v2 import HubRuntimeV2, WORKER_PROJECTION_ENTITY, WORK_GROUP_ENTITY
+from patchbay.hub.runtime_v2 import (
+    FLEET_WORKER_ENTITY,
+    HubRuntimeV2,
+    WORKER_PROJECTION_ENTITY,
+    WORK_GROUP_ENTITY,
+)
 from patchbay.hub.store_v2 import HubStoreV2
 from patchbay.hub.tool_surface import HUB_V2_CONTRACT_HASH, HUB_V2_TOOL_NAMES
 from patchbay.protocol.context import RequestContext
@@ -29,6 +40,189 @@ WORKSPACE_REF = "workspace_patchbay"
 REPO_PATH = "/srv/projects/PatchBay"
 
 
+@pytest.mark.asyncio
+async def test_admission_freeze_blocks_new_mutations_but_keeps_reads_available(
+    tmp_path,
+):
+    gate = AdmissionFreezeController()
+    app = HubAppV2(
+        tmp_path / "frozen-hub.sqlite3",
+        edge_delivery=FakeEdgeDelivery(),
+        admission_gate=gate,
+    )
+    enroll_edge(app)
+    lease = gate.freeze_admissions(reason="state-preserving rollout")
+    try:
+        fleet = await app.handle_tool_call("patchbay_fleet_status", {})
+        blocked = await app.handle_tool_call(
+            "patchbay_work_group_create",
+            {
+                "title": "Must not start",
+                "goal": "Prove maintenance admission is closed.",
+                "workspace_ref": WORKSPACE_REF,
+                "lanes": [{"lane": "main", "title": "Main", "role": "Implement"}],
+                "idempotency_key": "frozen-group-create",
+            },
+        )
+    finally:
+        lease.release()
+
+    assert fleet["status"] == "ok"
+    assert blocked["status"] == "blocked"
+    assert blocked["result"]["reason"] == "hub_mutation_admission_frozen"
+    assert app.store.list_entities(WORK_GROUP_ENTITY) == []
+
+    created = await app.handle_tool_call(
+        "patchbay_work_group_create",
+        {
+            "title": "Allowed after rollout",
+            "goal": "Prove admission reopens after maintenance.",
+            "workspace_ref": WORKSPACE_REF,
+            "lanes": [{"lane": "main", "title": "Main", "role": "Implement"}],
+            "idempotency_key": "unfrozen-group-create",
+        },
+    )
+    assert created["status"] in {"ok", "pending"}
+
+
+@pytest.mark.asyncio
+async def test_read_tools_never_dispatch_pending_mutations_and_explicit_cycle_recovers_them(
+    tmp_path,
+):
+    edge = FakeEdgeDelivery()
+    app = HubAppV2(tmp_path / "read-is-not-dispatch.sqlite3", edge_delivery=edge)
+    enroll_edge(app)
+
+    created = app.runtime.create_work_group(
+        title="Pending recovery",
+        goal="Prove status reads cannot start unrelated effects.",
+        machine_id=MACHINE_ID,
+        lanes=[{"lane": "main", "title": "Main", "role": "Implement"}],
+        idempotency_key="pending-recovery-group",
+    )
+    operation_id = str(created["result"]["readiness"]["operation_id"])
+    before = app.store.get_operation(operation_id)
+    assert before is not None and before["state"] == "dispatchable"
+    assert edge.calls == []
+
+    fleet = await app.handle_tool_call("patchbay_fleet_status", {})
+    status = await app.handle_tool_call(
+        "patchbay_operation_status",
+        {"operation_id": operation_id, "include_result": True},
+    )
+
+    assert fleet["status"] == "ok"
+    assert status["status"] == "pending"
+    assert app.store.get_operation(operation_id)["state"] == "dispatchable"
+    assert edge.calls == []
+
+    delivered = await app.dispatch_pending_operations(max_operations=1)
+    reconciled = await app.handle_tool_call(
+        "patchbay_operation_status",
+        {"operation_id": operation_id, "include_result": True},
+    )
+
+    assert delivered == [operation_id]
+    assert edge.calls[-1]["action"] == "patchbay_edge_preflight"
+    assert app.store.get_operation(operation_id)["state"] == "succeeded"
+    assert reconciled["status"] == "ok"
+    assert reconciled["result"]["outcome"]["terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_remote_read_dispatches_only_its_own_matching_operation(
+    tmp_path, monkeypatch
+):
+    app = HubAppV2(
+        tmp_path / "targeted-read.sqlite3",
+        edge_delivery=FakeEdgeDelivery(),
+    )
+    unrelated = app.broker.create_operation(
+        tool="patchbay_worker_stop",
+        logical_target="worker:unrelated",
+        idempotency_key="unrelated-stop",
+        payload={"action": "codex_worker_stop"},
+    )
+    own = app.broker.create_operation(
+        tool="codex_read_file",
+        logical_target="workspace:file",
+        idempotency_key="targeted-read",
+        payload={"action": "codex_read_file"},
+    )
+    dispatched: list[str] = []
+
+    async def matching_read(name, arguments, *, context=None):
+        del arguments, context
+        assert name == "patchbay_workspace_read_file"
+        return public_envelope("pending", operation=own)
+
+    async def targeted_dispatch(operation_id, *, context=None):
+        del context
+        dispatched.append(operation_id)
+        return False
+
+    monkeypatch.setattr(app.runtime, "handle_tool_call", matching_read)
+    monkeypatch.setattr(app.dispatch_port, "dispatch_if_pending", targeted_dispatch)
+
+    result = await app.handle_tool_call(
+        "patchbay_workspace_read_file",
+        {"workspace_ref": WORKSPACE_REF, "path": "README.md"},
+    )
+
+    assert result["status"] == "pending"
+    assert dispatched == [own["operation_id"]]
+    assert unrelated["operation_id"] not in dispatched
+
+
+@pytest.mark.asyncio
+async def test_mutation_dispatches_only_operations_returned_by_that_call(
+    tmp_path, monkeypatch
+):
+    app = HubAppV2(
+        tmp_path / "targeted-mutation.sqlite3",
+        edge_delivery=FakeEdgeDelivery(),
+    )
+    unrelated = app.broker.create_operation(
+        tool="patchbay_worker_stop",
+        logical_target="worker:unrelated",
+        idempotency_key="unrelated-stop-mutation",
+        payload={"action": "codex_worker_stop"},
+    )
+    own = app.broker.create_operation(
+        tool="patchbay_worker_stop",
+        logical_target="worker:own",
+        idempotency_key="own-stop-mutation",
+        payload={"action": "codex_worker_stop"},
+    )
+    dispatched: list[str] = []
+
+    async def matching_mutation(name, arguments, *, context=None):
+        del arguments, context
+        assert name == "patchbay_worker_stop"
+        return public_envelope("pending", operation=own)
+
+    async def targeted_dispatch(operation_id, *, context=None):
+        del context
+        dispatched.append(operation_id)
+        return False
+
+    monkeypatch.setattr(app.runtime, "handle_tool_call", matching_mutation)
+    monkeypatch.setattr(app.dispatch_port, "dispatch_if_pending", targeted_dispatch)
+
+    result = await app.handle_tool_call(
+        "patchbay_worker_stop",
+        {
+            "work_group_id": "group_targeted",
+            "fleet_worker_ref": "fworker_targeted",
+            "idempotency_key": "targeted-stop",
+        },
+    )
+
+    assert result["status"] == "pending"
+    assert dispatched == [own["operation_id"]]
+    assert unrelated["operation_id"] not in dispatched
+
+
 class FakeEdgeDelivery:
     machine_id = MACHINE_ID
     edge_generation = EDGE_GENERATION
@@ -37,6 +231,7 @@ class FakeEdgeDelivery:
     def __init__(self):
         self.calls: list[dict[str, Any]] = []
         self.workers: dict[str, dict[str, Any]] = {}
+        self.preflight_pending = False
 
     async def execute(
         self,
@@ -61,6 +256,8 @@ class FakeEdgeDelivery:
         assert edge_generation == EDGE_GENERATION
 
         if action == "patchbay_edge_preflight":
+            if self.preflight_pending:
+                return public_envelope("pending", result={"accepted": True})
             repo_path = str(arguments.get("repo_path") or REPO_PATH)
             return {
                 "ok": True,
@@ -308,11 +505,208 @@ def enroll_edge(app: HubAppV2) -> dict[str, Any]:
     return enrolled
 
 
+async def complete_pending_preflight(app: HubAppV2, *, delay: float = 0.02) -> None:
+    while True:
+        for entity in app.store.list_entities(WORK_GROUP_ENTITY):
+            group = entity["record"]
+            readiness = group.get("readiness") or {}
+            operation_id = str(readiness.get("operation_id") or "")
+            operation = app.store.get_operation(operation_id) if operation_id else None
+            if (
+                readiness.get("status") == "pending"
+                and (operation or {}).get("state") == "running"
+            ):
+                await asyncio.sleep(delay)
+                app.runtime.record_preflight_result(
+                    work_group_id=str(group["work_group_id"]),
+                    operation_id=operation_id,
+                    result={
+                        "ok": True,
+                        "accepted": True,
+                        "repo_exists": True,
+                        "repo_resolved": str(
+                            group.get("resolved_repo_path") or REPO_PATH
+                        ),
+                        "repository_identity": "https://example.invalid/patchbay.git",
+                        "disk_free_bytes": 10_000_000_000,
+                        "free_worker_slots": 8,
+                        "queue_enabled": False,
+                    },
+                )
+                return
+        await asyncio.sleep(0.005)
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["patchbay_work_group_create", "patchbay_work_group_resume"],
+    ids=["create", "resume"],
+)
+@pytest.mark.parametrize("complete_early", [False, True], ids=["timeout", "early"])
+@pytest.mark.asyncio
+async def test_group_preflight_wait_honors_timeout_and_early_completion(
+    tmp_path,
+    monkeypatch,
+    tool_name,
+    complete_early,
+):
+    edge = FakeEdgeDelivery()
+    app = HubAppV2(tmp_path / f"{tool_name}-{complete_early}.sqlite3", edge_delivery=edge)
+    enroll_edge(app)
+    context = RequestContext(
+        client_ref="client_preflight_wait",
+        owner_ref="owner_preflight_wait",
+        chatgpt_session_ref="conversation_preflight_wait",
+        work_run_ref="run_preflight_wait",
+    )
+    client = ProtocolClient(app, context)
+    group_id = ""
+    if tool_name == "patchbay_work_group_resume":
+        created = await client.call(
+            "patchbay_work_group_create",
+            {
+                "title": "Resume preflight wait",
+                "goal": "Create the group used by the resume wait regression.",
+                "workspace_ref": WORKSPACE_REF,
+                "idempotency_key": f"resume-wait-setup-{complete_early}",
+            },
+        )
+        group_id = str(created["result"]["work_group"]["work_group_id"])
+
+    edge.preflight_pending = True
+    wait_calls: list[dict[str, Any]] = []
+    original_handle_tool_call = app.runtime.handle_tool_call
+
+    async def record_wait_and_warning(name, arguments, *, context=None):
+        if name == "patchbay_work_group_status":
+            wait_calls.append(deepcopy(dict(arguments)))
+        response = deepcopy(
+            dict(
+                await original_handle_tool_call(
+                    name,
+                    arguments,
+                    context=context,
+                )
+            )
+        )
+        if name == tool_name:
+            response["warnings"] = list(response.get("warnings") or []) + [
+                "Preserve the original operation warning."
+            ]
+        return response
+
+    monkeypatch.setattr(app.runtime, "handle_tool_call", record_wait_and_warning)
+    completion = (
+        asyncio.create_task(complete_pending_preflight(app))
+        if complete_early
+        else None
+    )
+    if tool_name == "patchbay_work_group_create":
+        arguments = {
+            "title": "Create preflight wait",
+            "goal": "Exercise the composition-layer preflight wait.",
+            "workspace_ref": WORKSPACE_REF,
+            "wait_for_preflight_seconds": 1,
+            "idempotency_key": f"create-wait-{complete_early}",
+        }
+    else:
+        arguments = {
+            "work_group_id": group_id,
+            "wait_for_preflight_seconds": 1,
+            "idempotency_key": f"resume-wait-{complete_early}",
+        }
+
+    result = await client.call(tool_name, arguments)
+    if completion is not None:
+        await completion
+
+    assert len(wait_calls) == 1
+    assert wait_calls[0]["work_group_id"] == result["result"]["work_group"]["work_group_id"]
+    assert wait_calls[0]["since_revision"] > 0
+    assert wait_calls[0]["wait_for_change_seconds"] == 1
+    assert result["operation"]["tool_name"] == tool_name
+    assert result["warnings"] == ["Preserve the original operation warning."]
+    assert result["result"]["changed"] is complete_early
+    assert result["result"]["readiness"]["status"] == (
+        "ready" if complete_early else "pending"
+    )
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["patchbay_work_group_create", "patchbay_work_group_resume"],
+    ids=["create", "resume"],
+)
+@pytest.mark.asyncio
+async def test_group_preflight_wait_returns_immediately_when_dispatch_is_ready(
+    tmp_path,
+    monkeypatch,
+    tool_name,
+):
+    edge = FakeEdgeDelivery()
+    app = HubAppV2(tmp_path / f"{tool_name}-ready.sqlite3", edge_delivery=edge)
+    enroll_edge(app)
+    context = RequestContext(
+        client_ref="client_preflight_ready",
+        owner_ref="owner_preflight_ready",
+        chatgpt_session_ref="conversation_preflight_ready",
+        work_run_ref="run_preflight_ready",
+    )
+    client = ProtocolClient(app, context)
+    group_id = ""
+    if tool_name == "patchbay_work_group_resume":
+        created = await client.call(
+            "patchbay_work_group_create",
+            {
+                "title": "Ready resume setup",
+                "goal": "Create a ready group before the resume regression.",
+                "workspace_ref": WORKSPACE_REF,
+                "idempotency_key": "ready-resume-setup",
+            },
+        )
+        group_id = str(created["result"]["work_group"]["work_group_id"])
+
+    wait_calls: list[dict[str, Any]] = []
+    original_handle_tool_call = app.runtime.handle_tool_call
+
+    async def record_wait(name, arguments, *, context=None):
+        if name == "patchbay_work_group_status":
+            wait_calls.append(deepcopy(dict(arguments)))
+        return await original_handle_tool_call(name, arguments, context=context)
+
+    monkeypatch.setattr(app.runtime, "handle_tool_call", record_wait)
+    if tool_name == "patchbay_work_group_create":
+        arguments = {
+            "title": "Already-ready create",
+            "goal": "Return without entering the status wait.",
+            "workspace_ref": WORKSPACE_REF,
+            "wait_for_preflight_seconds": 1,
+            "idempotency_key": "already-ready-create",
+        }
+    else:
+        arguments = {
+            "work_group_id": group_id,
+            "wait_for_preflight_seconds": 1,
+            "idempotency_key": "already-ready-resume",
+        }
+
+    result = await client.call(tool_name, arguments)
+
+    assert result["result"]["readiness"]["status"] == "ready"
+    assert wait_calls == []
+
+
 @pytest.mark.asyncio
 async def test_worker_wait_ignores_unchanged_worker_snapshots_on_new_heartbeats(
     tmp_path,
 ):
     app = HubAppV2(tmp_path / "hub-v2.sqlite3", edge_delivery=FakeEdgeDelivery())
+    projection = HubWorkerProjectionPortV2(
+        app.runtime,
+        max_wait_seconds=0.05,
+        minimum_poll_seconds=0.05,
+        recommended_poll_seconds=0.05,
+    )
     enrolled = enroll_edge(app)
     worker = {
         "edge_worker_id": "worker-stable",
@@ -332,7 +726,7 @@ async def test_worker_wait_ignores_unchanged_worker_snapshots_on_new_heartbeats(
         projection_revision=2,
         worker_projection={"snapshot_kind": "full", "workers": [worker]},
     )
-    initial = app.projection_port.query(view="status", filters={}, route={})
+    initial = projection.query(view="status", filters={}, route={})
     revision = initial["projection_revision"]
 
     app.runtime.heartbeat(
@@ -343,14 +737,119 @@ async def test_worker_wait_ignores_unchanged_worker_snapshots_on_new_heartbeats(
         worker_projection={"snapshot_kind": "full", "workers": [worker]},
         resource_status={"cpu_percent": 75.0},
     )
-    repeated = app.projection_port.query(view="status", filters={}, route={})
-    waited = await app.projection_port.wait(
+    repeated = projection.query(view="status", filters={}, route={})
+    waited = await projection.wait(
         filters={}, route={}, since_revision=revision, timeout_seconds=0.05
     )
 
     assert repeated["projection_revision"] == revision
+    assert repeated["poll_too_early"] is True
     assert waited["changed"] is False
     assert waited["projection_revision"] == revision
+
+
+def test_worker_list_and_status_share_cooldown_per_manager_and_group(tmp_path):
+    app = HubAppV2(tmp_path / "hub-v2.sqlite3", edge_delivery=FakeEdgeDelivery())
+    for name, state in (("Active", "working"), ("Complete", "completed")):
+        app.store.put_entity(
+            WORKER_PROJECTION_ENTITY,
+            f"worker_poll_{name.casefold()}",
+            {
+                "fleet_worker_ref": f"worker_poll_{name.casefold()}",
+                "edge_worker_id": f"edge_worker_poll_{name.casefold()}",
+                "work_group_id": "group_poll",
+                "name": name,
+                "turn_state": state,
+                "liveness": "active" if state == "working" else "completed",
+            },
+            expected_revision=0,
+        )
+    context_one = RequestContext(
+        client_ref="client_poll_one",
+        chatgpt_session_ref="conversation_poll_one",
+    )
+    context_two = RequestContext(
+        client_ref="client_poll_two",
+        chatgpt_session_ref="conversation_poll_two",
+    )
+    filters = {"work_group_id": "group_poll", "limit": 50}
+    route = {"work_group_id": "group_poll"}
+
+    listed = app.projection_port.query(
+        view="list", filters=filters, route=route, context=context_one
+    )
+    cached_status = app.projection_port.query(
+        view="status",
+        filters={**filters, "active_only": True, "force_refresh": True},
+        route=route,
+        context=context_one,
+    )
+    other_manager = app.projection_port.query(
+        view="status", filters=filters, route=route, context=context_two
+    )
+    other_group = app.projection_port.query(
+        view="status",
+        filters={"work_group_id": "group_other", "limit": 50},
+        route={"work_group_id": "group_other"},
+        context=context_one,
+    )
+
+    assert listed["poll_too_early"] is False
+    assert listed["count"] == 2
+    assert listed["minimum_next_poll_seconds"] == 20
+    assert listed["recommended_next_poll_seconds"] == 30
+    assert cached_status["view"] == "status"
+    assert cached_status["poll_too_early"] is True
+    assert cached_status["count"] == 1
+    assert cached_status["workers"][0]["name"] == "Active"
+    assert cached_status["status_current"] is False
+    assert 1 <= cached_status["retry_after_seconds"] <= 20
+    assert "same manager" not in cached_status["poll_guidance"]
+    assert "This manager checked this work group" in cached_status["poll_guidance"]
+    assert other_manager["poll_too_early"] is False
+    assert other_group["poll_too_early"] is False
+
+
+@pytest.mark.asyncio
+async def test_worker_wait_clamps_too_small_timeout_and_refreshes_poll_cache(tmp_path):
+    app = HubAppV2(tmp_path / "hub-v2.sqlite3", edge_delivery=FakeEdgeDelivery())
+    context = RequestContext(
+        client_ref="client_wait_clamp",
+        chatgpt_session_ref="conversation_wait_clamp",
+    )
+    app.store.put_entity(
+        WORKER_PROJECTION_ENTITY,
+        "worker_wait_clamp",
+        {
+            "fleet_worker_ref": "worker_wait_clamp",
+            "edge_worker_id": "edge_worker_wait_clamp",
+            "work_group_id": "group_wait_clamp",
+            "name": "Wait Clamp Worker",
+            "turn_state": "working",
+            "liveness": "active",
+        },
+        expected_revision=0,
+    )
+    filters = {"work_group_id": "group_wait_clamp"}
+    route = {"work_group_id": "group_wait_clamp"}
+
+    waited = await app.projection_port.wait(
+        filters=filters,
+        route=route,
+        since_revision=0,
+        timeout_seconds=0,
+        context=context,
+    )
+    cached = app.projection_port.query(
+        view="status", filters=filters, route=route, context=context
+    )
+
+    assert waited["changed"] is True
+    assert waited["requested_wait_seconds"] == 0
+    assert waited["effective_wait_seconds"] == 20
+    assert waited["minimum_next_poll_seconds"] == 20
+    assert waited["recommended_next_poll_seconds"] == 30
+    assert cached["poll_too_early"] is True
 
 
 def test_completion_contract_uses_all_workers_not_only_the_returned_page(tmp_path):
@@ -394,6 +893,108 @@ def test_completion_contract_uses_all_workers_not_only_the_returned_page(tmp_pat
     assert status["completion_contract"]["reason"] == "workers_or_operations_active"
     assert status["completion_contract"]["activity_counts"]["active"] == 1
     assert status["completion_contract"]["final_response_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_worker_target_falls_back_to_group_scoped_fleet_record_without_projection(tmp_path):
+    edge = FakeEdgeDelivery()
+    app = HubAppV2(tmp_path / "hub-v2.sqlite3", edge_delivery=edge)
+    enroll_edge(app)
+    context = RequestContext(
+        client_ref="client_projection_fallback",
+        owner_ref="owner_projection_fallback",
+        chatgpt_session_ref="conversation_projection_fallback",
+        work_run_ref="run_projection_fallback",
+    )
+    client = ProtocolClient(app, context)
+    created = await client.call(
+        "patchbay_work_group_create",
+        {
+            "title": "Projection fallback",
+            "goal": "Route from durable fleet identity when projection is absent.",
+            "workspace_ref": WORKSPACE_REF,
+            "lanes": [{"lane": "main", "title": "Main", "role": "Implement"}],
+            "idempotency_key": "projection-fallback-group",
+        },
+    )
+    group_id = created["result"]["work_group"]["work_group_id"]
+    fleet_ref = "fleet_projection_missing"
+    edge_worker_id = "edge_projection_missing"
+    fleet_record = {
+        "fleet_worker_ref": fleet_ref,
+        "machine_id": MACHINE_ID,
+        "edge_generation": EDGE_GENERATION,
+        "edge_worker_id": edge_worker_id,
+        "work_group_id": group_id,
+        "lane_id": "main",
+        "workspace_ref": WORKSPACE_REF,
+        "name": "Durable Worker",
+        "created_at": 1.0,
+    }
+    app.store.put_entity(FLEET_WORKER_ENTITY, fleet_ref, fleet_record, expected_revision=0)
+    app.store.put_entity(
+        FLEET_WORKER_ENTITY,
+        "fleet_wrong_group",
+        {**fleet_record, "fleet_worker_ref": "fleet_wrong_group", "work_group_id": "other-group"},
+        expected_revision=0,
+    )
+    app.store.put_entity(
+        FLEET_WORKER_ENTITY,
+        "fleet_wrong_generation",
+        {
+            **fleet_record,
+            "fleet_worker_ref": "fleet_wrong_generation",
+            "edge_worker_id": "edge_wrong_generation",
+            "edge_generation": "stale-generation",
+        },
+        expected_revision=0,
+    )
+    edge.workers[edge_worker_id] = {
+        "edge_worker_id": edge_worker_id,
+        "worker_id": edge_worker_id,
+        "name": "Durable Worker",
+        "worker_state": "available",
+        "turn_state": "completed",
+        "liveness": "terminal",
+        "integration_state": "no_changes",
+        "review_disposition": "accepted",
+        "report": "Durable worker remains authoritative at Edge.",
+    }
+
+    inspect_target = await app.runtime_port.resolve_target(
+        tool_name="patchbay_worker_inspect",
+        arguments={"work_group_id": group_id, "worker": "Durable Worker"},
+        context=context,
+    )
+    message_target = await app.runtime_port.resolve_target(
+        tool_name="patchbay_worker_message",
+        arguments={"work_group_id": group_id, "fleet_worker_ref": fleet_ref},
+        context=context,
+    )
+    inspected = await client.call(
+        "patchbay_worker_inspect",
+        {"work_group_id": group_id, "fleet_worker_ref": fleet_ref, "view": "report"},
+    )
+    messaged = await client.call(
+        "patchbay_worker_message",
+        {
+            "work_group_id": group_id,
+            "fleet_worker_ref": fleet_ref,
+            "message": "Continue from durable Edge state.",
+            "idempotency_key": "projection-fallback-message",
+        },
+    )
+
+    assert inspect_target["edge_worker_id"] == edge_worker_id
+    assert inspect_target["projection_missing"] is True
+    assert inspect_target["worker"]["projection_missing"] is True
+    assert message_target["edge_worker_id"] == edge_worker_id
+    assert message_target["projection_missing"] is True
+    assert inspected["status"] == "ok"
+    assert inspected["result"]["report"] == "Durable worker remains authoritative at Edge."
+    assert inspected["result"]["worker"]["projection_missing"] is True
+    assert messaged["status"] == "ok"
+    assert messaged["result"]["message_delivered"] is True
 
 
 @pytest.mark.asyncio
@@ -485,6 +1086,29 @@ async def test_composition_root_executes_consequential_full_surface_sequence(tmp
     assert created["result"]["readiness"]["status"] == "ready"
     assert app.store.get_operation(preflight_id)["state"] == "succeeded"
     assert edge.calls[-1]["action"] == "patchbay_edge_preflight"
+
+    preflight_call_count = sum(
+        call["action"] == "patchbay_edge_preflight" for call in edge.calls
+    )
+    replayed = await client.call(
+        "patchbay_work_group_create",
+        {
+            "title": "Compose Hub V2",
+            "goal": "Exercise every composed boundary with real durable state.",
+            "workspace_ref": WORKSPACE_REF,
+            "lanes": [
+                {"lane": "research", "title": "Research", "role": "Inspect"},
+                {"lane": "implementation", "title": "Implementation", "role": "Build"},
+            ],
+            "idempotency_key": "group-create-001",
+        },
+    )
+    assert replayed["result"]["work_group"]["work_group_id"] == group_id
+    assert replayed["result"]["readiness"]["operation_id"] == preflight_id
+    assert sum(
+        call["action"] == "patchbay_edge_preflight" for call in edge.calls
+    ) == preflight_call_count
+    assert len(app.store.list_entities(WORK_GROUP_ENTITY)) == 1
 
     groups = await client.call("patchbay_work_group_list", {"scope": "owned"})
     group_status = await client.call(
@@ -680,4 +1304,88 @@ async def test_composition_root_executes_consequential_full_surface_sequence(tmp
 
     app.close()
     assert app.store.closed is True
+    app.close()
+
+
+@pytest.mark.asyncio
+async def test_app_normalizes_unknown_direct_next_action_to_public_operation_status(
+    tmp_path, monkeypatch
+):
+    app = HubAppV2(tmp_path / "unknown-next-action.sqlite3", edge_delivery=FakeEdgeDelivery())
+
+    async def untrusted_handler(name, arguments, *, context=None):
+        assert name == "patchbay_fleet_status"
+        assert arguments == {}
+        return public_envelope(
+            "pending",
+            operation={"operation_id": "op-untrusted-action", "state": "running"},
+            next_actions=[
+                {
+                    "tool": "complete_reconciliation",
+                    "arguments": {"attempt_id": "untrusted"},
+                }
+            ],
+        )
+
+    async def no_pending_delivery(*, context=None):
+        return []
+
+    monkeypatch.setattr(app.runtime, "handle_tool_call", untrusted_handler)
+    monkeypatch.setattr(app.dispatch_port, "dispatch_pending", no_pending_delivery)
+
+    result = await app.handle_tool_call("patchbay_fleet_status", {})
+
+    assert result["next_actions"] == [
+        {
+            "tool": "patchbay_operation_status",
+            "arguments": {"operation_id": "op-untrusted-action"},
+            "reason": "Inspect this operation through Hub's public recovery tool.",
+        }
+    ]
+    assert "complete_reconciliation" not in str(result)
+
+
+def test_operation_status_decorates_canonical_pro_request_tool_names(
+    tmp_path, monkeypatch
+):
+    app = HubAppV2(
+        tmp_path / "canonical-pro-operation.sqlite3",
+        edge_delivery=FakeEdgeDelivery(),
+    )
+    assert isinstance(app.pro_request_adapter, FleetHubProRequestAdapterV2)
+    operation = {
+        "operation_id": "op-canonical-pro-read",
+        "tool": "codex_pro_request_read",
+    }
+    monkeypatch.setattr(
+        app.store,
+        "get_operation",
+        lambda operation_id: operation
+        if operation_id == operation["operation_id"]
+        else None,
+    )
+    monkeypatch.setattr(
+        app.pro_request_adapter,
+        "operation_result",
+        lambda value: public_envelope(
+            "ok",
+            result={
+                "request": {"request_id": "request-1"},
+                "machine_id": MACHINE_ID,
+                "edge_generation": EDGE_GENERATION,
+            },
+            operation=value,
+        ),
+    )
+
+    refreshed = app._refresh_operation_status_result(
+        {"operation_id": operation["operation_id"]},
+        public_envelope("ok", result={"outcome": {"terminal": True}}),
+    )
+
+    assert refreshed["result"]["domain_result"]["machine_id"] == MACHINE_ID
+    assert (
+        refreshed["result"]["domain_result"]["edge_generation"]
+        == EDGE_GENERATION
+    )
     app.close()

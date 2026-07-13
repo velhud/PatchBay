@@ -2,11 +2,11 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 
+import pytest
 import yaml
 
-from patchbay.cli import settings_main
+from patchbay.cli import _hub_v2_enabled, settings_main
 
 
 def subprocess_env(extra=None):
@@ -60,6 +60,36 @@ def base_config(root):
             "access_log": False,
         },
     }
+
+
+def test_hub_control_plane_defaults_to_v2_and_requires_explicit_valid_version(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PATCHBAY_HOME", str(tmp_path / "patchbay-home"))
+    assert _hub_v2_enabled({}) is True
+    assert _hub_v2_enabled({"hub": {}}) is True
+    assert _hub_v2_enabled({"hub": {"control_plane": "v2"}}) is True
+    assert _hub_v2_enabled({"hub": {"protocol_version": 2}}) is True
+    assert _hub_v2_enabled({"hub": {"control_plane": "v1"}}) is False
+    assert _hub_v2_enabled({"hub": {"protocol_version": 1}}) is False
+
+    with pytest.raises(ValueError, match="hub.control_plane"):
+        _hub_v2_enabled({"hub": {"control_plane": "typo"}})
+
+
+def test_implicit_v2_refuses_to_bypass_existing_v1_state(tmp_path, monkeypatch):
+    patchbay_home = tmp_path / "patchbay-home"
+    legacy = patchbay_home / "runtime" / "hub" / "hub-state.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"version": 2}\n', encoding="utf-8")
+    monkeypatch.setenv("PATCHBAY_HOME", str(patchbay_home))
+
+    with pytest.raises(ValueError, match="Existing Hub V1 state"):
+        _hub_v2_enabled({"hub": {}})
+
+    assert _hub_v2_enabled({"hub": {"control_plane": "v1"}}) is False
+    with pytest.raises(ValueError, match="Existing Hub V1 state"):
+        _hub_v2_enabled({"hub": {"control_plane": "v2"}})
 
 
 def test_patchbay_cli_help_lists_public_commands():

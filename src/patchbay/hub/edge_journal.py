@@ -4,6 +4,7 @@ The journal is intentionally independent from the Hub database.  An Edge must
 commit an intent here before invoking a mutating domain action, then commit the
 result to the outbox before telling the Hub that the attempt completed.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,10 +18,33 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from patchbay.hub.operations import semantic_payload_hash
+from patchbay.hub.sqlite_schema_contract import (
+    schema_contract_difference,
+    schema_contract_snapshot,
+)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
+MAX_OUTBOX_CONFIRMATION_BATCH_SIZE = 256
+
+_SCHEMA_OBJECTS_BY_VERSION: dict[int, frozenset[tuple[str, str]]] = {
+    1: frozenset(
+        {
+            ("table", "schema_metadata"),
+            ("table", "edge_state"),
+            ("table", "operation_intents"),
+            ("table", "operation_attempts"),
+            ("table", "result_outbox"),
+            ("index", "operation_intents_idempotency_idx"),
+            ("index", "operation_attempts_recovery_idx"),
+            ("index", "result_outbox_pending_idx"),
+            ("index", "result_outbox_uncertain_idx"),
+        }
+    ),
+    2: frozenset({("table", "control_loop_health")}),
+    3: frozenset({("index", "result_outbox_confirmation_pending_idx")}),
+}
 
 ATTEMPT_STATES = frozenset(
     {
@@ -31,6 +55,19 @@ ATTEMPT_STATES = frozenset(
         "acknowledged",
         "outcome_unknown",
         "manual_recovery",
+    }
+)
+
+# States which still require Edge restart work. ``manual_recovery`` is a
+# durable terminal disposition reached only after Hub reconciliation or receipt
+# acknowledgement, so it must never depend on a process-local replay cache.
+RESTART_RECOVERY_STATES = frozenset(
+    {
+        "intent_recorded",
+        "executing",
+        "effect_recorded",
+        "result_ready",
+        "outcome_unknown",
     }
 )
 
@@ -81,6 +118,7 @@ class EdgeJournal:
         edge_generation: str | None = None,
         busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
         clock: Callable[[], float] = time.time,
+        pre_migration_backup_marker: str | Path | None = None,
     ):
         self.path = Path(path).expanduser()
         try:
@@ -91,11 +129,25 @@ class EdgeJournal:
             raise ValueError("busy_timeout_ms must be positive")
 
         requested_generation = _optional_key(edge_generation, "edge_generation")
+        self.pre_migration_backup_marker = (
+            Path(pre_migration_backup_marker).expanduser().resolve(strict=False)
+            if pre_migration_backup_marker
+            else None
+        )
+        self.pre_migration_backup_report: dict[str, Any] = {
+            "status": "not_checked",
+            "required": False,
+            "valid": True,
+        }
+        self._preopen_schema_version: int | None = None
+        self._preopen_provably_new = False
         self._clock = clock
         self._lock = threading.RLock()
         self._closed = False
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
+            self._validate_preopen_state()
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self.path.parent, 0o700)
             self._connection = sqlite3.connect(
                 self.path,
                 timeout=self.busy_timeout_ms / 1_000,
@@ -111,7 +163,9 @@ class EdgeJournal:
             if connection is not None:
                 connection.close()
             self._closed = True
-            raise EdgeJournalCorrupt(f"Edge journal cannot be opened safely: {self.path}") from exc
+            raise EdgeJournalCorrupt(
+                f"Edge journal cannot be opened safely: {self.path}"
+            ) from exc
         except Exception:
             connection = getattr(self, "_connection", None)
             if connection is not None:
@@ -153,14 +207,34 @@ class EdgeJournal:
         return int(row["projection_revision"])
 
     def _configure_connection(self) -> None:
-        journal_mode = str(self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+        journal_mode = str(
+            self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        ).lower()
         if journal_mode != "wal":
-            raise EdgeJournalError(f"Edge journal requires WAL mode, got {journal_mode!r}")
+            raise EdgeJournalError(
+                f"Edge journal requires WAL mode, got {journal_mode!r}"
+            )
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._connection.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
         self._connection.execute("PRAGMA synchronous=FULL")
         if int(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise EdgeJournalError("Edge journal requires SQLite foreign keys")
+
+    def _database_is_provably_new(self) -> bool:
+        objects = self._connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_schema
+            WHERE name NOT LIKE 'sqlite_%'
+            LIMIT 1
+            """
+        ).fetchone()
+        persisted_markers = (
+            int(self._connection.execute("PRAGMA schema_version").fetchone()[0]),
+            int(self._connection.execute("PRAGMA user_version").fetchone()[0]),
+            int(self._connection.execute("PRAGMA application_id").fetchone()[0]),
+        )
+        return objects is None and persisted_markers == (0, 0, 0)
 
     def _migrate(self, requested_generation: str) -> None:
         migration_owner = f"edge_migration_{secrets.token_hex(16)}"
@@ -168,6 +242,9 @@ class EdgeJournal:
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                journal_was_empty = (
+                    self._preopen_provably_new and self._database_is_provably_new()
+                )
                 self._connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -193,12 +270,25 @@ class EdgeJournal:
                 if metadata is None:
                     raise EdgeJournalCorrupt("Edge journal schema metadata is missing")
                 if metadata["migration_lock"]:
-                    raise EdgeJournalConflict("Another or incomplete Edge journal migration owns the lock")
+                    raise EdgeJournalConflict(
+                        "Another or incomplete Edge journal migration owns the lock"
+                    )
                 current_version = int(metadata["schema_version"])
                 if current_version > SCHEMA_VERSION:
                     raise EdgeJournalCorrupt(
                         f"Edge journal schema {current_version} is newer than supported {SCHEMA_VERSION}"
                     )
+                if current_version == SCHEMA_VERSION:
+                    user_version = int(
+                        self._connection.execute("PRAGMA user_version").fetchone()[0]
+                    )
+                    if user_version != current_version:
+                        raise EdgeJournalCorrupt(
+                            "Edge journal schema_metadata and PRAGMA user_version disagree"
+                        )
+                    self._assert_schema_contract(self._connection, current_version)
+                if current_version < SCHEMA_VERSION and not journal_was_empty:
+                    self._validate_pre_migration_backup(force=True)
                 self._connection.execute(
                     """
                     UPDATE schema_metadata
@@ -213,12 +303,27 @@ class EdgeJournal:
                 if current_version < 2:
                     self._apply_schema_v2()
                     current_version = 2
-
+                if current_version < 3:
+                    self._apply_schema_v3()
+                    current_version = 3
+                state_table = self._connection.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_schema
+                    WHERE type = 'table' AND name = 'edge_state'
+                    """
+                ).fetchone()
+                if state_table is None:
+                    raise EdgeJournalCorrupt(self._missing_edge_state_message())
                 state = self._connection.execute(
                     "SELECT edge_generation FROM edge_state WHERE singleton = 1"
                 ).fetchone()
                 if state is None:
-                    generation = requested_generation or f"edgegen_{secrets.token_hex(16)}"
+                    if not journal_was_empty:
+                        raise EdgeJournalCorrupt(self._missing_edge_state_message())
+                    generation = (
+                        requested_generation or f"edgegen_{secrets.token_hex(16)}"
+                    )
                     self._connection.execute(
                         """
                         INSERT INTO edge_state
@@ -227,10 +332,14 @@ class EdgeJournal:
                         """,
                         (generation, now, now),
                     )
-                elif requested_generation and str(state["edge_generation"]) != requested_generation:
+                elif (
+                    requested_generation
+                    and str(state["edge_generation"]) != requested_generation
+                ):
                     raise EdgeJournalConflict("edge_generation_conflict")
 
                 self._connection.execute(f"PRAGMA user_version={current_version}")
+                self._assert_schema_contract(self._connection, current_version)
                 self._connection.execute(
                     """
                     UPDATE schema_metadata
@@ -243,6 +352,159 @@ class EdgeJournal:
             except Exception:
                 self._connection.rollback()
                 raise
+
+    def _validate_preopen_state(self) -> None:
+        """Classify and validate existing state before opening it for writes."""
+
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            self._preopen_provably_new = True
+            return
+        uri = f"file:{self.path.resolve(strict=False).as_posix()}?mode=ro"
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(uri, uri=True, isolation_level=None)
+            connection.row_factory = sqlite3.Row
+            objects = {
+                (str(row["type"]), str(row["name"]))
+                for row in connection.execute(
+                    """
+                    SELECT type, name
+                    FROM sqlite_schema
+                    WHERE name NOT LIKE 'sqlite_%'
+                    """
+                ).fetchall()
+            }
+            persisted_markers = (
+                int(connection.execute("PRAGMA schema_version").fetchone()[0]),
+                int(connection.execute("PRAGMA user_version").fetchone()[0]),
+                int(connection.execute("PRAGMA application_id").fetchone()[0]),
+            )
+            if not objects:
+                if persisted_markers == (0, 0, 0):
+                    self._preopen_provably_new = True
+                    return
+                raise EdgeJournalCorrupt(
+                    "Existing Edge journal contains persisted SQLite state but no "
+                    "recognized schema; refusing to generate a new Edge identity"
+                )
+            if ("table", "schema_metadata") not in objects:
+                raise EdgeJournalCorrupt(
+                    "Existing Edge journal has no schema_metadata table"
+                )
+            metadata = connection.execute(
+                "SELECT schema_version, migration_lock FROM schema_metadata WHERE singleton = 1"
+            ).fetchone()
+            if metadata is None:
+                raise EdgeJournalCorrupt("Edge journal schema metadata is missing")
+            if metadata["migration_lock"]:
+                raise EdgeJournalConflict(
+                    "Another or incomplete Edge journal migration owns the lock"
+                )
+            schema_version = int(metadata["schema_version"])
+            user_version = persisted_markers[1]
+            if schema_version > SCHEMA_VERSION:
+                raise EdgeJournalCorrupt(
+                    f"Edge journal schema {schema_version} is newer than supported {SCHEMA_VERSION}"
+                )
+            if user_version != schema_version:
+                raise EdgeJournalCorrupt(
+                    "Edge journal schema_metadata and PRAGMA user_version disagree"
+                )
+            self._assert_schema_contract(connection, schema_version)
+            state = connection.execute(
+                "SELECT edge_generation FROM edge_state WHERE singleton = 1"
+            ).fetchone()
+            if state is None or not str(state["edge_generation"] or "").strip():
+                raise EdgeJournalCorrupt(self._missing_edge_state_message())
+            self._preopen_schema_version = schema_version
+        except sqlite3.DatabaseError as exc:
+            raise EdgeJournalCorrupt(
+                f"Edge journal cannot be inspected safely: {self.path}"
+            ) from exc
+        finally:
+            if connection is not None:
+                connection.close()
+        if self._preopen_schema_version is not None:
+            self._validate_pre_migration_backup()
+
+    def _validate_pre_migration_backup(self, *, force: bool = False) -> None:
+        if not force and (
+            self._preopen_schema_version is None
+            or self._preopen_schema_version >= SCHEMA_VERSION
+        ):
+            self.pre_migration_backup_report = {
+                "status": "not_required",
+                "required": False,
+                "valid": True,
+            }
+            return
+        from patchbay.hub.backup_v2 import (
+            BackupV2ValidationError,
+            require_pre_migration_validated_backup,
+        )
+
+        try:
+            report = require_pre_migration_validated_backup(
+                self.path,
+                database_kind="edge_v2",
+                target_schema_version=SCHEMA_VERSION,
+                marker_path=self.pre_migration_backup_marker,
+                busy_timeout_ms=self.busy_timeout_ms,
+            )
+        except BackupV2ValidationError as exc:
+            self.pre_migration_backup_report = dict(exc.report)
+            raise EdgeJournalConflict(
+                "Edge journal migration is blocked until a validated "
+                "pre-migration backup marker proves the exact current state"
+            ) from exc
+        self.pre_migration_backup_report = dict(report)
+
+    @classmethod
+    def _assert_schema_contract(
+        cls, connection: sqlite3.Connection, schema_version: int
+    ) -> None:
+        if schema_version not in _SCHEMA_OBJECTS_BY_VERSION:
+            raise EdgeJournalCorrupt(
+                f"Unsupported Edge journal schema contract: {schema_version}"
+            )
+        expected_connection = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            expected_connection.execute("PRAGMA foreign_keys=ON")
+            expected_connection.execute(
+                """
+                CREATE TABLE schema_metadata (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    schema_version INTEGER NOT NULL CHECK (schema_version >= 0),
+                    migration_lock TEXT,
+                    migration_started_at REAL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            fixture = object.__new__(cls)
+            fixture._connection = expected_connection
+            fixture._apply_schema_v1()
+            if schema_version >= 2:
+                fixture._apply_schema_v2()
+            if schema_version >= 3:
+                fixture._apply_schema_v3()
+            expected = schema_contract_snapshot(expected_connection)
+        finally:
+            expected_connection.close()
+        actual = schema_contract_snapshot(connection)
+        if actual["sha256"] != expected["sha256"]:
+            difference = schema_contract_difference(actual, expected)
+            raise EdgeJournalCorrupt(
+                f"Edge journal schema {schema_version} definition mismatch: {difference!r}"
+            )
+
+    def _missing_edge_state_message(self) -> str:
+        return (
+            "Existing Edge journal is missing its singleton edge_state record; "
+            "refusing to reset edge_generation or projection_revision to zero. "
+            f"Restore {self.path} from backup, or move it aside only when intentionally "
+            "starting a new Edge journal."
+        )
 
     def _apply_schema_v1(self) -> None:
         statements = (
@@ -347,6 +609,20 @@ class EdgeJournal:
             """
         )
 
+    def _apply_schema_v3(self) -> None:
+        """Persist the Hub's outbox-retirement acknowledgement separately."""
+
+        self._connection.execute(
+            "ALTER TABLE result_outbox ADD COLUMN hub_confirmed_at REAL"
+        )
+        self._connection.execute(
+            """
+            CREATE INDEX result_outbox_confirmation_pending_idx
+            ON result_outbox(acknowledged_at, receipt_id)
+            WHERE acknowledged_at IS NOT NULL AND hub_confirmed_at IS NULL
+            """
+        )
+
     def record_control_loop_health(
         self,
         loop_name: str,
@@ -376,9 +652,15 @@ class EdgeJournal:
             if restarted:
                 restarts += 1
             values = {
-                "last_attempt_at": attempted_at if attempted_at is not None else (current["last_attempt_at"] if current else None),
-                "last_success_at": succeeded_at if succeeded_at is not None else (current["last_success_at"] if current else None),
-                "last_success_revision": success_revision if success_revision is not None else (current["last_success_revision"] if current else None),
+                "last_attempt_at": attempted_at
+                if attempted_at is not None
+                else (current["last_attempt_at"] if current else None),
+                "last_success_at": succeeded_at
+                if succeeded_at is not None
+                else (current["last_success_at"] if current else None),
+                "last_success_revision": success_revision
+                if success_revision is not None
+                else (current["last_success_revision"] if current else None),
             }
             self._connection.execute(
                 """
@@ -395,7 +677,16 @@ class EdgeJournal:
                     restart_count=excluded.restart_count,
                     updated_at=excluded.updated_at
                 """,
-                (name, values["last_attempt_at"], values["last_success_at"], values["last_success_revision"], failures, str(error_category or "")[:120], restarts, self._clock()),
+                (
+                    name,
+                    values["last_attempt_at"],
+                    values["last_success_at"],
+                    values["last_success_revision"],
+                    failures,
+                    str(error_category or "")[:120],
+                    restarts,
+                    self._clock(),
+                ),
             )
         return self.control_loop_health(name)
 
@@ -404,7 +695,8 @@ class EdgeJournal:
         with self._lock:
             if loop_name:
                 rows = self._connection.execute(
-                    "SELECT * FROM control_loop_health WHERE loop_name = ?", (loop_name,)
+                    "SELECT * FROM control_loop_health WHERE loop_name = ?",
+                    (loop_name,),
                 ).fetchall()
             else:
                 rows = self._connection.execute(
@@ -441,10 +733,18 @@ class EdgeJournal:
             return {
                 "schema_version": int(row["schema_version"]),
                 "migration_lock": row["migration_lock"],
-                "journal_mode": str(self._connection.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
-                "foreign_keys": bool(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]),
-                "busy_timeout_ms": int(self._connection.execute("PRAGMA busy_timeout").fetchone()[0]),
-                "synchronous": int(self._connection.execute("PRAGMA synchronous").fetchone()[0]),
+                "journal_mode": str(
+                    self._connection.execute("PRAGMA journal_mode").fetchone()[0]
+                ).lower(),
+                "foreign_keys": bool(
+                    self._connection.execute("PRAGMA foreign_keys").fetchone()[0]
+                ),
+                "busy_timeout_ms": int(
+                    self._connection.execute("PRAGMA busy_timeout").fetchone()[0]
+                ),
+                "synchronous": int(
+                    self._connection.execute("PRAGMA synchronous").fetchone()[0]
+                ),
             }
 
     def projection_identity(self) -> dict[str, Any]:
@@ -453,7 +753,9 @@ class EdgeJournal:
             "projection_revision": self.projection_revision,
         }
 
-    def advance_projection_revision(self, *, expected_revision: int | None = None) -> int:
+    def advance_projection_revision(
+        self, *, expected_revision: int | None = None
+    ) -> int:
         """Atomically allocate the next revision inside the persisted generation."""
 
         with self.immediate_transaction() as connection:
@@ -463,7 +765,10 @@ class EdgeJournal:
             if row is None:
                 raise EdgeJournalCorrupt("Edge projection record is missing")
             current = int(row["projection_revision"])
-            if expected_revision is not None and _revision(expected_revision) != current:
+            if (
+                expected_revision is not None
+                and _revision(expected_revision) != current
+            ):
                 raise EdgeJournalConflict(
                     f"projection_revision_conflict: expected {expected_revision}, actual {current}"
                 )
@@ -526,7 +831,9 @@ class EdgeJournal:
         attempt_value = _key(attempt_id, "attempt_id")
         action_value = _key(action, "action")
         target_value = _key(target_key, "target_key")
-        generation_value = _optional_key(edge_generation, "edge_generation") or self.edge_generation
+        generation_value = (
+            _optional_key(edge_generation, "edge_generation") or self.edge_generation
+        )
         if generation_value != self.edge_generation:
             raise EdgeJournalConflict("edge_generation_conflict")
         token_value = _fencing_token(fencing_token)
@@ -535,13 +842,18 @@ class EdgeJournal:
         computed_hash = semantic_payload_hash(payload_value)
         if payload_hash and str(payload_hash).strip().lower() != computed_hash:
             raise EdgeJournalConflict("operation_payload_hash_mismatch")
-        correlation_json = _encode_object(_object(correlation or {}, "correlation"))
+        requested_correlation = _object(correlation or {}, "correlation")
+        correlation_value = _merge_attempt_correlation(
+            {}, requested_correlation, attempt_value
+        )
+        correlation_json = _encode_object(correlation_value)
         idempotency_value = str(idempotency_key or "").strip()
         now = self._clock()
 
         with self.immediate_transaction() as connection:
             intent = connection.execute(
-                "SELECT * FROM operation_intents WHERE operation_id = ?", (operation_value,)
+                "SELECT * FROM operation_intents WHERE operation_id = ?",
+                (operation_value,),
             ).fetchone()
             if intent is None:
                 if idempotency_value:
@@ -550,7 +862,12 @@ class EdgeJournal:
                         SELECT operation_id FROM operation_intents
                         WHERE edge_generation = ? AND action = ? AND target_key = ? AND idempotency_key = ?
                         """,
-                        (generation_value, action_value, target_value, idempotency_value),
+                        (
+                            generation_value,
+                            action_value,
+                            target_value,
+                            idempotency_value,
+                        ),
                     ).fetchone()
                     if scoped is not None:
                         raise EdgeJournalConflict("idempotency_operation_conflict")
@@ -582,7 +899,6 @@ class EdgeJournal:
                     str(intent["idempotency_key"]),
                     str(intent["payload_hash"]),
                     str(intent["payload_json"]),
-                    str(intent["correlation_json"]),
                 )
                 requested = (
                     generation_value,
@@ -591,13 +907,29 @@ class EdgeJournal:
                     idempotency_value,
                     computed_hash,
                     payload_json,
-                    correlation_json,
                 )
                 if identity != requested:
                     raise EdgeJournalConflict("idempotency_payload_conflict")
+                stored_correlation = _decode_object(
+                    intent["correlation_json"], "operation correlation"
+                )
+                correlation_value = _merge_attempt_correlation(
+                    stored_correlation, requested_correlation, attempt_value
+                )
+                correlation_json = _encode_object(correlation_value)
+                if correlation_json != str(intent["correlation_json"]):
+                    connection.execute(
+                        """
+                        UPDATE operation_intents
+                        SET correlation_json = ?, updated_at = ?
+                        WHERE operation_id = ?
+                        """,
+                        (correlation_json, now, operation_value),
+                    )
 
             attempt = connection.execute(
-                "SELECT * FROM operation_attempts WHERE attempt_id = ?", (attempt_value,)
+                "SELECT * FROM operation_attempts WHERE attempt_id = ?",
+                (attempt_value,),
             ).fetchone()
             if attempt is not None:
                 if (
@@ -606,7 +938,9 @@ class EdgeJournal:
                     or int(attempt["fencing_token"]) != token_value
                 ):
                     raise EdgeJournalConflict("attempt_identity_conflict")
-                return self._attempt_bundle(connection, attempt_value, idempotent_replay=True)
+                return self._attempt_bundle(
+                    connection, attempt_value, idempotent_replay=True
+                )
 
             maximum = connection.execute(
                 "SELECT COALESCE(MAX(fencing_token), 0) FROM operation_attempts WHERE operation_id = ?",
@@ -624,9 +958,18 @@ class EdgeJournal:
                      revision, created_at, updated_at)
                 VALUES (?, ?, ?, ?, 'intent_recorded', 1, ?, ?)
                 """,
-                (attempt_value, operation_value, generation_value, token_value, now, now),
+                (
+                    attempt_value,
+                    operation_value,
+                    generation_value,
+                    token_value,
+                    now,
+                    now,
+                ),
             )
-            return self._attempt_bundle(connection, attempt_value, idempotent_replay=False)
+            return self._attempt_bundle(
+                connection, attempt_value, idempotent_replay=False
+            )
 
     persist_intent = record_intent
 
@@ -688,6 +1031,24 @@ class EdgeJournal:
             target_state="outcome_unknown",
         )
 
+    def mark_manual_recovery(
+        self,
+        operation_id: str,
+        attempt_id: str,
+        fencing_token: int,
+        *,
+        edge_generation: str = "",
+    ) -> dict[str, Any]:
+        """Persist the terminal local disposition for an uncertain effect."""
+
+        return self._transition_attempt(
+            operation_id=operation_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            edge_generation=edge_generation,
+            target_state="manual_recovery",
+        )
+
     def _transition_attempt(
         self,
         *,
@@ -701,13 +1062,22 @@ class EdgeJournal:
         operation_value = _key(operation_id, "operation_id")
         attempt_value = _key(attempt_id, "attempt_id")
         token_value = _fencing_token(fencing_token)
-        generation_value = _optional_key(edge_generation, "edge_generation") or self.edge_generation
+        generation_value = (
+            _optional_key(edge_generation, "edge_generation") or self.edge_generation
+        )
         now = self._clock()
-        effect_json = _encode_object(_object(effect or {}, "effect")) if effect is not None else None
+        effect_json = (
+            _encode_object(_object(effect or {}, "effect"))
+            if effect is not None
+            else None
+        )
         allowed = {
             "executing": frozenset({"intent_recorded"}),
             "effect_recorded": frozenset({"executing"}),
             "outcome_unknown": frozenset({"executing", "effect_recorded"}),
+            "manual_recovery": frozenset(
+                {"executing", "effect_recorded", "outcome_unknown"}
+            ),
         }
         with self.immediate_transaction() as connection:
             attempt = self._fenced_attempt(
@@ -719,11 +1089,18 @@ class EdgeJournal:
             )
             current = str(attempt["state"])
             if current == target_state:
-                if effect_json is not None and str(attempt["effect_json"] or "") != effect_json:
+                if (
+                    effect_json is not None
+                    and str(attempt["effect_json"] or "") != effect_json
+                ):
                     raise EdgeJournalConflict("effect_record_conflict")
-                return self._attempt_bundle(connection, attempt_value, idempotent_replay=True)
+                return self._attempt_bundle(
+                    connection, attempt_value, idempotent_replay=True
+                )
             if current not in allowed[target_state]:
-                raise EdgeJournalStateError(f"Invalid Edge attempt transition: {current} -> {target_state}")
+                raise EdgeJournalStateError(
+                    f"Invalid Edge attempt transition: {current} -> {target_state}"
+                )
 
             assignments = ["state = ?", "revision = revision + 1", "updated_at = ?"]
             values: list[Any] = [target_state, now]
@@ -738,7 +1115,9 @@ class EdgeJournal:
                 f"UPDATE operation_attempts SET {', '.join(assignments)} WHERE attempt_id = ?",
                 tuple(values),
             )
-            return self._attempt_bundle(connection, attempt_value, idempotent_replay=False)
+            return self._attempt_bundle(
+                connection, attempt_value, idempotent_replay=False
+            )
 
     def record_result(
         self,
@@ -759,7 +1138,9 @@ class EdgeJournal:
         attempt_value = _key(attempt_id, "attempt_id")
         token_value = _fencing_token(fencing_token)
         outcome_value = _key(outcome, "outcome")
-        generation_value = _optional_key(edge_generation, "edge_generation") or self.edge_generation
+        generation_value = (
+            _optional_key(edge_generation, "edge_generation") or self.edge_generation
+        )
         result_value = _object(result or {}, "result")
         result_json = _encode_object(result_value)
         error_value = str(error or "")
@@ -790,9 +1171,11 @@ class EdgeJournal:
                 saved_receipt = str(attempt["receipt_id"] or "")
                 if requested_receipt and requested_receipt != saved_receipt:
                     raise EdgeJournalConflict("receipt_identity_conflict")
-                outbox = connection.execute(
-                    "SELECT * FROM result_outbox WHERE attempt_id = ?", (attempt_value,)
-                ).fetchone()
+                outbox = self._outbox_row(
+                    connection,
+                    "o.attempt_id = ?",
+                    (attempt_value,),
+                )
                 if outbox is not None:
                     replay = self._outbox_from_row(outbox)
                     replay["idempotent_replay"] = True
@@ -802,13 +1185,20 @@ class EdgeJournal:
                 replay["idempotent_replay"] = True
                 return replay
 
-            if str(attempt["state"]) in {"acknowledged", "manual_recovery", "result_ready"}:
+            if str(attempt["state"]) in {
+                "acknowledged",
+                "manual_recovery",
+                "result_ready",
+            }:
                 raise EdgeJournalStateError(
                     f"Attempt {attempt_value} cannot record a new result from {attempt['state']}"
                 )
             receipt_value = requested_receipt or f"receipt_{secrets.token_hex(16)}"
             intent = connection.execute(
-                "SELECT payload_hash, target_key FROM operation_intents WHERE operation_id = ?",
+                """
+                SELECT payload_hash, target_key, correlation_json
+                FROM operation_intents WHERE operation_id = ?
+                """,
                 (operation_value,),
             ).fetchone()
             if intent is None:
@@ -859,11 +1249,15 @@ class EdgeJournal:
                     attempt_value,
                 ),
             )
-            outbox = connection.execute(
-                "SELECT * FROM result_outbox WHERE receipt_id = ?", (receipt_value,)
-            ).fetchone()
+            outbox = self._outbox_row(
+                connection,
+                "o.receipt_id = ?",
+                (receipt_value,),
+            )
             if outbox is None:
-                raise EdgeJournalCorrupt("Committed Edge result is missing from the outbox")
+                raise EdgeJournalCorrupt(
+                    "Committed Edge result is missing from the outbox"
+                )
             saved = self._outbox_from_row(outbox)
             saved["idempotent_replay"] = False
             saved["pruned"] = False
@@ -885,16 +1279,20 @@ class EdgeJournal:
         receipt_value = _key(receipt_id, "receipt_id")
         now = self._clock()
         with self.immediate_transaction() as connection:
-            row = connection.execute(
-                "SELECT * FROM result_outbox WHERE receipt_id = ?", (receipt_value,)
-            ).fetchone()
+            row = self._outbox_row(
+                connection,
+                "o.receipt_id = ?",
+                (receipt_value,),
+            )
             if row is None:
                 attempt = connection.execute(
                     "SELECT attempt_id, acknowledged_at FROM operation_attempts WHERE receipt_id = ?",
                     (receipt_value,),
                 ).fetchone()
                 if attempt is not None and attempt["acknowledged_at"] is not None:
-                    replay = self._pruned_receipt_from_attempt(connection, str(attempt["attempt_id"]))
+                    replay = self._pruned_receipt_from_attempt(
+                        connection, str(attempt["attempt_id"])
+                    )
                     self._validate_receipt_ack(
                         replay,
                         operation_id=operation_id,
@@ -904,7 +1302,9 @@ class EdgeJournal:
                     )
                     replay["idempotent_replay"] = True
                     return replay
-                raise EdgeJournalNotFound(f"Unknown Edge outbox receipt: {receipt_value}")
+                raise EdgeJournalNotFound(
+                    f"Unknown Edge outbox receipt: {receipt_value}"
+                )
 
             self._validate_receipt_ack(
                 row,
@@ -932,9 +1332,11 @@ class EdgeJournal:
                 """,
                 (now, now, str(row["attempt_id"])),
             )
-            saved = connection.execute(
-                "SELECT * FROM result_outbox WHERE receipt_id = ?", (receipt_value,)
-            ).fetchone()
+            saved = self._outbox_row(
+                connection,
+                "o.receipt_id = ?",
+                (receipt_value,),
+            )
             if saved is None:
                 raise EdgeJournalCorrupt("Acknowledged Edge receipt disappeared")
             result = self._outbox_from_row(saved)
@@ -948,6 +1350,57 @@ class EdgeJournal:
         """Acknowledge a Hub-supplied receipt list idempotently."""
 
         return [self.acknowledge_outbox(receipt_id) for receipt_id in receipt_ids]
+
+    def list_outbox_pending_confirmation(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return one bounded page of Hub-acknowledged receipts to retire."""
+
+        limit_value = min(_limit(limit), MAX_OUTBOX_CONFIRMATION_BATCH_SIZE)
+        self._require_open()
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT o.*, i.correlation_json
+                FROM result_outbox AS o
+                JOIN operation_intents AS i ON i.operation_id = o.operation_id
+                WHERE o.acknowledged_at IS NOT NULL
+                  AND o.hub_confirmed_at IS NULL
+                ORDER BY o.acknowledged_at, o.receipt_id
+                LIMIT ?
+                """,
+                (limit_value,),
+            ).fetchall()
+        return [self._outbox_from_row(row) for row in rows]
+
+    def confirm_outbox_deliveries(self, receipt_ids: Sequence[str]) -> int:
+        """Durably mark a bounded Hub-confirmed outbox page as retired."""
+
+        values = tuple(
+            dict.fromkeys(_key(value, "receipt_id") for value in receipt_ids)
+        )
+        if not values:
+            return 0
+        if len(values) > MAX_OUTBOX_CONFIRMATION_BATCH_SIZE:
+            raise ValueError(
+                "receipt confirmation batch exceeds "
+                f"{MAX_OUTBOX_CONFIRMATION_BATCH_SIZE} items"
+            )
+        placeholders = ", ".join("?" for _ in values)
+        with self.immediate_transaction() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE result_outbox
+                SET hub_confirmed_at = ?
+                WHERE receipt_id IN ({placeholders})
+                  AND acknowledged_at IS NOT NULL
+                  AND hub_confirmed_at IS NULL
+                """,
+                (self._clock(), *values),
+            )
+            return int(cursor.rowcount)
 
     def prune_acknowledged(
         self,
@@ -963,7 +1416,9 @@ class EdgeJournal:
         Uncertain receipts remain even after Hub acknowledgement.
         """
 
-        retention = retention_seconds if older_than_seconds is None else older_than_seconds
+        retention = (
+            retention_seconds if older_than_seconds is None else older_than_seconds
+        )
         try:
             retention_value = float(retention)
         except (TypeError, ValueError) as exc:
@@ -979,7 +1434,10 @@ class EdgeJournal:
             cursor = connection.execute(
                 """
                 DELETE FROM result_outbox
-                WHERE acknowledged_at IS NOT NULL AND uncertain = 0 AND acknowledged_at <= ?
+                WHERE acknowledged_at IS NOT NULL
+                  AND hub_confirmed_at IS NOT NULL
+                  AND uncertain = 0
+                  AND acknowledged_at <= ?
                 """,
                 (cutoff,),
             )
@@ -990,7 +1448,8 @@ class EdgeJournal:
         self._require_open()
         with self._lock:
             row = self._connection.execute(
-                "SELECT * FROM operation_intents WHERE operation_id = ?", (operation_value,)
+                "SELECT * FROM operation_intents WHERE operation_id = ?",
+                (operation_value,),
             ).fetchone()
         return self._intent_from_row(row) if row is not None else None
 
@@ -1013,20 +1472,43 @@ class EdgeJournal:
         receipt_value = _key(receipt_id, "receipt_id")
         self._require_open()
         with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM result_outbox WHERE receipt_id = ?", (receipt_value,)
-            ).fetchone()
+            row = self._outbox_row(
+                self._connection,
+                "o.receipt_id = ?",
+                (receipt_value,),
+            )
         return self._outbox_from_row(row) if row is not None else None
 
-    def list_pending_outbox(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def list_pending_outbox(
+        self,
+        *,
+        limit: int | None = None,
+        after: tuple[float, str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return durable receipts that still need Hub acknowledgement."""
 
-        query = "SELECT * FROM result_outbox WHERE acknowledged_at IS NULL ORDER BY created_at, receipt_id"
+        query = """
+            SELECT o.*, i.correlation_json
+            FROM result_outbox AS o
+            JOIN operation_intents AS i ON i.operation_id = o.operation_id
+            WHERE o.acknowledged_at IS NULL
+        """
         parameters: tuple[Any, ...] = ()
+        if after is not None:
+            created_at, receipt_id = after
+            query += (
+                " AND (o.created_at > ? OR (o.created_at = ? AND o.receipt_id > ?))"
+            )
+            parameters = (
+                float(created_at),
+                float(created_at),
+                _key(receipt_id, "receipt_id"),
+            )
+        query += " ORDER BY o.created_at, o.receipt_id"
         if limit is not None:
             limit_value = _limit(limit)
             query += " LIMIT ?"
-            parameters = (limit_value,)
+            parameters = (*parameters, limit_value)
         self._require_open()
         with self._lock:
             rows = self._connection.execute(query, parameters).fetchall()
@@ -1040,11 +1522,19 @@ class EdgeJournal:
         self._require_open()
         with self._lock:
             rows = self._connection.execute(
-                "SELECT * FROM result_outbox WHERE uncertain = 1 ORDER BY created_at, receipt_id"
+                """
+                SELECT o.*, i.correlation_json
+                FROM result_outbox AS o
+                JOIN operation_intents AS i ON i.operation_id = o.operation_id
+                WHERE o.uncertain = 1
+                ORDER BY o.created_at, o.receipt_id
+                """
             ).fetchall()
         return [self._outbox_from_row(row) for row in rows]
 
-    def list_restart_recovery(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def list_restart_recovery(
+        self, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         """Classify non-final attempts after process restart.
 
         ``execute_intent`` is the only class safe to execute without
@@ -1052,7 +1542,7 @@ class EdgeJournal:
         manual-recovery evidence and cannot write a result.
         """
 
-        query = """
+        query = f"""
             SELECT a.*, i.action, i.target_key, i.payload_hash, i.payload_json, i.correlation_json,
                    o.receipt_id AS outbox_receipt_id,
                    o.acknowledged_at AS outbox_acknowledged_at,
@@ -1063,7 +1553,7 @@ class EdgeJournal:
             FROM operation_attempts AS a
             JOIN operation_intents AS i ON i.operation_id = a.operation_id
             LEFT JOIN result_outbox AS o ON o.attempt_id = a.attempt_id
-            WHERE a.state <> 'acknowledged'
+            WHERE a.state IN ({_sql_values(RESTART_RECOVERY_STATES)})
             ORDER BY a.created_at, a.attempt_id
         """
         parameters: tuple[Any, ...] = ()
@@ -1074,6 +1564,71 @@ class EdgeJournal:
         with self._lock:
             rows = self._connection.execute(query, parameters).fetchall()
         return [self._recovery_from_row(row) for row in rows]
+
+    def get_restart_recovery(self, attempt_id: str) -> dict[str, Any] | None:
+        """Return one restart-recovery record without decoding every attempt."""
+
+        attempt_value = _key(attempt_id, "attempt_id")
+        self._require_open()
+        with self._lock:
+            row = self._connection.execute(
+                f"""
+                SELECT a.*, i.action, i.target_key, i.payload_hash, i.payload_json,
+                       i.correlation_json, o.receipt_id AS outbox_receipt_id,
+                       o.acknowledged_at AS outbox_acknowledged_at,
+                       o.uncertain AS outbox_uncertain,
+                       (SELECT MAX(newer.fencing_token)
+                        FROM operation_attempts AS newer
+                        WHERE newer.operation_id = a.operation_id) AS current_fencing_token
+                FROM operation_attempts AS a
+                JOIN operation_intents AS i ON i.operation_id = a.operation_id
+                LEFT JOIN result_outbox AS o ON o.attempt_id = a.attempt_id
+                WHERE a.attempt_id = ?
+                  AND a.state IN ({_sql_values(RESTART_RECOVERY_STATES)})
+                """,
+                (attempt_value,),
+            ).fetchone()
+        return self._recovery_from_row(row) if row is not None else None
+
+    def list_restart_recovery_references(
+        self,
+        *,
+        limit: int,
+        after: tuple[float, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Page compact recovery identities without materializing payloads/results."""
+
+        query = f"""
+            SELECT operation_id, attempt_id, edge_generation, fencing_token, updated_at
+            FROM operation_attempts
+            WHERE state IN ({_sql_values(RESTART_RECOVERY_STATES)})
+        """
+        parameters: tuple[Any, ...] = ()
+        if after is not None:
+            updated_at, attempt_id = after
+            query += """
+                AND (updated_at > ? OR (updated_at = ? AND attempt_id > ?))
+            """
+            parameters = (
+                float(updated_at),
+                float(updated_at),
+                _key(attempt_id, "attempt_id"),
+            )
+        query += " ORDER BY updated_at, attempt_id LIMIT ?"
+        parameters = (*parameters, _limit(limit))
+        self._require_open()
+        with self._lock:
+            rows = self._connection.execute(query, parameters).fetchall()
+        return [
+            {
+                "operation_id": str(row["operation_id"]),
+                "attempt_id": str(row["attempt_id"]),
+                "edge_generation": str(row["edge_generation"]),
+                "fencing_token": int(row["fencing_token"]),
+                "updated_at": float(row["updated_at"]),
+            }
+            for row in rows
+        ]
 
     list_recovery_attempts = list_restart_recovery
     list_unfinished_intents = list_restart_recovery
@@ -1110,7 +1665,9 @@ class EdgeJournal:
             "SELECT MAX(fencing_token) FROM operation_attempts WHERE operation_id = ?",
             (operation_id,),
         ).fetchone()
-        current_fence = int(maximum[0]) if maximum is not None and maximum[0] is not None else 0
+        current_fence = (
+            int(maximum[0]) if maximum is not None and maximum[0] is not None else 0
+        )
         if fencing_token != current_fence:
             raise EdgeJournalConflict(
                 f"stale_fencing_token: current {current_fence}, received {fencing_token}"
@@ -1144,7 +1701,7 @@ class EdgeJournal:
     ) -> dict[str, Any]:
         row = connection.execute(
             """
-            SELECT a.*, i.target_key, i.payload_hash
+            SELECT a.*, i.target_key, i.payload_hash, i.correlation_json
             FROM operation_attempts AS a
             JOIN operation_intents AS i ON i.operation_id = a.operation_id
             WHERE a.attempt_id = ?
@@ -1152,7 +1709,9 @@ class EdgeJournal:
             (attempt_id,),
         ).fetchone()
         if row is None or not row["receipt_id"]:
-            raise EdgeJournalCorrupt(f"Receipt tombstone for attempt {attempt_id} is missing")
+            raise EdgeJournalCorrupt(
+                f"Receipt tombstone for attempt {attempt_id} is missing"
+            )
         return {
             "receipt_id": str(row["receipt_id"]),
             "operation_id": str(row["operation_id"]),
@@ -1160,6 +1719,9 @@ class EdgeJournal:
             "edge_generation": str(row["edge_generation"]),
             "fencing_token": int(row["fencing_token"]),
             "operation_payload_hash": str(row["payload_hash"]),
+            "contract_hash": _contract_hash_from_correlation_json(
+                row["correlation_json"], str(row["attempt_id"])
+            ),
             "target_key": str(row["target_key"]),
             "outcome": str(row["outcome"] or ""),
             "result_hash": str(row["result_hash"] or ""),
@@ -1168,10 +1730,30 @@ class EdgeJournal:
             "uncertain": bool(row["result_uncertain"]),
             "created_at": float(row["result_recorded_at"] or row["created_at"]),
             "acknowledged_at": (
-                float(row["acknowledged_at"]) if row["acknowledged_at"] is not None else None
+                float(row["acknowledged_at"])
+                if row["acknowledged_at"] is not None
+                else None
             ),
             "pruned": True,
         }
+
+    @staticmethod
+    def _outbox_row(
+        connection: sqlite3.Connection,
+        where_sql: str,
+        parameters: tuple[Any, ...],
+    ) -> sqlite3.Row | None:
+        """Read a receipt with its immutable attempt contract source."""
+
+        return connection.execute(
+            f"""
+            SELECT o.*, i.correlation_json
+            FROM result_outbox AS o
+            JOIN operation_intents AS i ON i.operation_id = o.operation_id
+            WHERE {where_sql}
+            """,
+            parameters,
+        ).fetchone()
 
     @staticmethod
     def _validate_receipt_ack(
@@ -1190,7 +1772,9 @@ class EdgeJournal:
         for expected, actual, field in comparisons:
             if expected and _key(expected, field) != actual:
                 raise EdgeJournalConflict(f"receipt_{field}_conflict")
-        if fencing_token is not None and _fencing_token(fencing_token) != int(row["fencing_token"]):
+        if fencing_token is not None and _fencing_token(fencing_token) != int(
+            row["fencing_token"]
+        ):
             raise EdgeJournalConflict("receipt_fencing_token_conflict")
 
     @staticmethod
@@ -1203,7 +1787,9 @@ class EdgeJournal:
             "idempotency_key": str(row["idempotency_key"]),
             "payload_hash": str(row["payload_hash"]),
             "payload": _decode_object(row["payload_json"], "operation payload"),
-            "correlation": _decode_object(row["correlation_json"], "operation correlation"),
+            "correlation": _decode_object(
+                row["correlation_json"], "operation correlation"
+            ),
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
         }
@@ -1221,7 +1807,9 @@ class EdgeJournal:
             "target_key": str(row["target_key"]),
             "payload_hash": str(row["payload_hash"]),
             "payload": _decode_object(row["payload_json"], "operation payload"),
-            "correlation": _decode_object(row["correlation_json"], "operation correlation"),
+            "correlation": _decode_object(
+                row["correlation_json"], "operation correlation"
+            ),
             "effect": _decode_object(row["effect_json"], "effect record"),
             "outcome": str(row["outcome"] or ""),
             "result": _decode_object(row["result_json"], "attempt result"),
@@ -1231,16 +1819,24 @@ class EdgeJournal:
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
             "effect_started_at": (
-                float(row["effect_started_at"]) if row["effect_started_at"] is not None else None
+                float(row["effect_started_at"])
+                if row["effect_started_at"] is not None
+                else None
             ),
             "effect_recorded_at": (
-                float(row["effect_recorded_at"]) if row["effect_recorded_at"] is not None else None
+                float(row["effect_recorded_at"])
+                if row["effect_recorded_at"] is not None
+                else None
             ),
             "result_recorded_at": (
-                float(row["result_recorded_at"]) if row["result_recorded_at"] is not None else None
+                float(row["result_recorded_at"])
+                if row["result_recorded_at"] is not None
+                else None
             ),
             "acknowledged_at": (
-                float(row["acknowledged_at"]) if row["acknowledged_at"] is not None else None
+                float(row["acknowledged_at"])
+                if row["acknowledged_at"] is not None
+                else None
             ),
         }
 
@@ -1253,6 +1849,9 @@ class EdgeJournal:
             "edge_generation": str(row["edge_generation"]),
             "fencing_token": int(row["fencing_token"]),
             "operation_payload_hash": str(row["operation_payload_hash"]),
+            "contract_hash": _contract_hash_from_correlation_json(
+                row["correlation_json"], str(row["attempt_id"])
+            ),
             "target_key": str(row["target_key"]),
             "outcome": str(row["outcome"]),
             "result_hash": str(row["result_hash"]),
@@ -1261,7 +1860,14 @@ class EdgeJournal:
             "uncertain": bool(row["uncertain"]),
             "created_at": float(row["created_at"]),
             "acknowledged_at": (
-                float(row["acknowledged_at"]) if row["acknowledged_at"] is not None else None
+                float(row["acknowledged_at"])
+                if row["acknowledged_at"] is not None
+                else None
+            ),
+            "hub_confirmed_at": (
+                float(row["hub_confirmed_at"])
+                if row["hub_confirmed_at"] is not None
+                else None
             ),
         }
 
@@ -1269,7 +1875,10 @@ class EdgeJournal:
         result = self._attempt_from_row(row)
         current_fence = int(row["current_fencing_token"])
         is_current = int(row["fencing_token"]) == current_fence
-        pending_upload = row["outbox_receipt_id"] is not None and row["outbox_acknowledged_at"] is None
+        pending_upload = (
+            row["outbox_receipt_id"] is not None
+            and row["outbox_acknowledged_at"] is None
+        )
         uncertain = bool(row["result_uncertain"] or row["outbox_uncertain"])
         state = str(row["state"])
         if not is_current:
@@ -1291,12 +1900,19 @@ class EdgeJournal:
                 "recovery_action": recovery_action,
                 "needs_upload": pending_upload,
                 "needs_reconciliation": uncertain
-                or state in {"executing", "effect_recorded", "outcome_unknown", "manual_recovery"},
+                or state
+                in {
+                    "executing",
+                    "effect_recorded",
+                    "outcome_unknown",
+                    "manual_recovery",
+                },
             }
         )
         return result
 
     def _harden_permissions(self) -> None:
+        os.chmod(self.path.parent, 0o700)
         for path in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
             try:
                 os.chmod(path, 0o600)
@@ -1351,6 +1967,80 @@ def _decode_object(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(decoded, dict):
         raise EdgeJournalCorrupt(f"Expected an object in {context}")
     return decoded
+
+
+def edge_transport_for_attempt(
+    correlation: Mapping[str, Any], attempt_id: str
+) -> dict[str, Any]:
+    """Return immutable attempt transport metadata with legacy fallback."""
+
+    transport = correlation.get("edge_transport")
+    if not isinstance(transport, Mapping):
+        return {}
+    attempts = transport.get("attempts")
+    if isinstance(attempts, Mapping):
+        attempt = attempts.get(str(attempt_id or ""))
+        if isinstance(attempt, Mapping):
+            return dict(attempt)
+    return {str(key): value for key, value in transport.items() if key != "attempts"}
+
+
+def _merge_attempt_correlation(
+    stored: Mapping[str, Any], requested: Mapping[str, Any], attempt_id: str
+) -> dict[str, Any]:
+    stored_value = dict(stored)
+    requested_value = dict(requested)
+    stored_transport = stored_value.pop("edge_transport", None)
+    requested_transport = requested_value.pop("edge_transport", None)
+    if stored and stored_value != requested_value:
+        raise EdgeJournalConflict("idempotency_payload_conflict")
+    if not isinstance(stored_transport, Mapping) and not isinstance(
+        requested_transport, Mapping
+    ):
+        return dict(stored or requested)
+
+    legacy = {
+        str(key): value
+        for key, value in (
+            stored_transport
+            if isinstance(stored_transport, Mapping)
+            else requested_transport
+        ).items()
+        if key != "attempts"
+    }
+    attempts: dict[str, Any] = {}
+    if isinstance(stored_transport, Mapping) and isinstance(
+        stored_transport.get("attempts"), Mapping
+    ):
+        attempts = {
+            str(key): dict(value)
+            for key, value in stored_transport["attempts"].items()
+            if isinstance(value, Mapping)
+        }
+    requested_attempt = (
+        edge_transport_for_attempt({"edge_transport": requested_transport}, attempt_id)
+        if isinstance(requested_transport, Mapping)
+        else {}
+    )
+    existing_attempt = attempts.get(attempt_id)
+    if (
+        isinstance(requested_transport, Mapping)
+        and existing_attempt is not None
+        and existing_attempt != requested_attempt
+    ):
+        raise EdgeJournalConflict("attempt_transport_contract_conflict")
+    if requested_attempt or isinstance(requested_transport, Mapping):
+        attempts[attempt_id] = requested_attempt
+    return {
+        **(stored_value if stored else requested_value),
+        "edge_transport": {**legacy, "attempts": attempts},
+    }
+
+
+def _contract_hash_from_correlation_json(value: Any, attempt_id: str) -> str:
+    correlation = _decode_object(value, "operation correlation")
+    transport = edge_transport_for_attempt(correlation, attempt_id)
+    return str(transport.get("contract_hash") or "").strip()
 
 
 def _key(value: Any, field: str) -> str:

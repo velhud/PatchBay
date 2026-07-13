@@ -1,4 +1,4 @@
-"""Administrative functions for Hub V1-to-V2 migration and cutover.
+"""Administrative functions for Hub V1-to-V2 migration, cutover, and V2 recovery.
 
 These functions provide the fail-closed mechanics needed to rehearse and
 verify migration before the atomic Hub V2 cutover.
@@ -15,6 +15,13 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from patchbay.hub.backup_v2 import (
+    create_edge_v2_backup,
+    create_hub_v2_backup,
+    restore_edge_v2_backup,
+    restore_hub_v2_backup,
+    validate_v2_backup,
+)
 from patchbay.hub.store import STORE_VERSION, hub_state_path
 from patchbay.hub.store_v2 import (
     ACTIVE_LEGACY_COMMAND_STATES,
@@ -94,6 +101,8 @@ _V2_TABLES = frozenset(
         "hub_identity",
         "legacy_imports",
         "entity_records",
+        "entity_control_index",
+        "operation_group_index",
         "operations",
         "attempts",
         "events",
@@ -141,6 +150,19 @@ _V2_TABLE_COLUMNS = {
         "source_import_id",
         "created_at",
         "updated_at",
+    ),
+    "entity_control_index": (
+        "entity_type",
+        "entity_id",
+        "machine_id",
+        "edge_generation",
+        "status",
+        "sort_created_at",
+    ),
+    "operation_group_index": (
+        "operation_id",
+        "work_group_id",
+        "kind",
     ),
     "operations": (
         "operation_id",
@@ -205,7 +227,11 @@ _V2_EXPLICIT_INDEXES = frozenset(
     {
         "one_operator_principal",
         "entity_records_import_idx",
+        "entity_control_route_status_idx",
+        "entity_control_type_order_idx",
         "operations_parent_idx",
+        "operations_state_created_idx",
+        "operation_group_index_group_operation_idx",
         "attempts_operation_idx",
         "events_operation_idx",
         "events_entity_idx",
@@ -1458,12 +1484,137 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Non-standard JSON constant: {value}")
 
 
+def hub_v2_backup_create(
+    database_or_config: str | Path | Mapping[str, Any],
+    *,
+    backup_path: str | Path,
+    database_path: str | Path | None = None,
+    expected_generation: str = "",
+    deployed_revision: str = "",
+    busy_timeout_ms: int = 30_000,
+    drain_timeout_seconds: float | None = 30.0,
+) -> dict[str, Any]:
+    """Create a real WAL-consistent Hub V2 SQLite backup.
+
+    This intentionally supersedes the old alias to :func:`create_v1_backup`.
+    V1 migration snapshots remain available through their explicit V1 names.
+    """
+
+    source = _resolve_database_path(database_or_config, database_path=database_path)
+    from patchbay.hub.backup_v2 import (
+        AdmissionFreezeController,
+        admission_coordination_path,
+    )
+
+    admission_gate = AdmissionFreezeController(admission_coordination_path(source))
+    return create_hub_v2_backup(
+        source,
+        backup_path,
+        expected_generation=expected_generation,
+        deployed_revision=deployed_revision,
+        busy_timeout_ms=busy_timeout_ms,
+        admission_freeze=admission_gate,
+        drain_timeout_seconds=drain_timeout_seconds,
+    )
+
+
+def hub_v2_backup_validate(
+    backup_path: str | Path,
+    *,
+    expected_generation: str = "",
+    expected_deployed_revision: str = "",
+    busy_timeout_ms: int = 30_000,
+) -> dict[str, Any]:
+    """Validate a Hub V2 SQLite backup bundle and its state proof."""
+
+    return validate_v2_backup(
+        backup_path,
+        expected_kind="hub_v2",
+        expected_generation=expected_generation,
+        expected_deployed_revision=expected_deployed_revision,
+        busy_timeout_ms=busy_timeout_ms,
+    )
+
+
+def hub_v2_backup_restore(
+    backup_path: str | Path,
+    *,
+    restore_path: str | Path,
+    expected_generation: str = "",
+    expected_deployed_revision: str = "",
+    busy_timeout_ms: int = 30_000,
+) -> dict[str, Any]:
+    """Restore a validated Hub V2 snapshot only to a fresh database path."""
+
+    return restore_hub_v2_backup(
+        backup_path,
+        restore_path,
+        expected_generation=expected_generation,
+        expected_deployed_revision=expected_deployed_revision,
+        busy_timeout_ms=busy_timeout_ms,
+    )
+
+
+def edge_v2_backup_create(
+    database_path: str | Path,
+    *,
+    backup_path: str | Path,
+    expected_generation: str = "",
+    deployed_revision: str = "",
+    busy_timeout_ms: int = 30_000,
+) -> dict[str, Any]:
+    """Create a real WAL-consistent Edge journal backup."""
+
+    return create_edge_v2_backup(
+        database_path,
+        backup_path,
+        expected_generation=expected_generation,
+        deployed_revision=deployed_revision,
+        busy_timeout_ms=busy_timeout_ms,
+    )
+
+
+def edge_v2_backup_validate(
+    backup_path: str | Path,
+    *,
+    expected_generation: str = "",
+    expected_deployed_revision: str = "",
+    busy_timeout_ms: int = 30_000,
+) -> dict[str, Any]:
+    """Validate an Edge journal backup bundle and its state proof."""
+
+    return validate_v2_backup(
+        backup_path,
+        expected_kind="edge_v2",
+        expected_generation=expected_generation,
+        expected_deployed_revision=expected_deployed_revision,
+        busy_timeout_ms=busy_timeout_ms,
+    )
+
+
+def edge_v2_backup_restore(
+    backup_path: str | Path,
+    *,
+    restore_path: str | Path,
+    expected_generation: str = "",
+    expected_deployed_revision: str = "",
+    busy_timeout_ms: int = 30_000,
+) -> dict[str, Any]:
+    """Restore a validated Edge journal snapshot only to a fresh path."""
+
+    return restore_edge_v2_backup(
+        backup_path,
+        restore_path,
+        expected_generation=expected_generation,
+        expected_deployed_revision=expected_deployed_revision,
+        busy_timeout_ms=busy_timeout_ms,
+    )
+
+
 # Explicit aliases keep future parser wiring independent of internal naming.
 hub_v2_migration_dry_run = migration_dry_run
 hub_v2_migration_apply = migration_apply
 hub_v2_migration_status = migration_status
-hub_v2_backup_create = create_v1_backup
-hub_v2_backup_validate = validate_backup_checksum
 hub_v2_store_doctor = v2_store_doctor
 hub_v2_contract_manifest = exact_contract_manifest
 hub_v2_rollback_eligibility = rollback_eligibility
@@ -1480,8 +1631,12 @@ __all__ = [
     "backup_checksum_validate",
     "contract_manifest",
     "create_v1_backup",
+    "edge_v2_backup_create",
+    "edge_v2_backup_restore",
+    "edge_v2_backup_validate",
     "exact_contract_manifest",
     "hub_v2_backup_create",
+    "hub_v2_backup_restore",
     "hub_v2_backup_validate",
     "hub_v2_contract_manifest",
     "hub_v2_migration_apply",

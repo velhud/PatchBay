@@ -8,6 +8,7 @@ history through its session id, and git remains the code-state store.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from copy import deepcopy
 import fnmatch
 import hashlib
@@ -19,7 +20,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from patchbay.artifacts import ArtifactStore
 from patchbay.hub.integration_tokens import (
@@ -33,6 +34,10 @@ from patchbay.hub.integration_tokens import (
 )
 from patchbay.workers.model_options import build_reasoning_config_override, validate_reasoning_effort, validate_worker_model
 from patchbay.jobs.manager import JobInfo, JobManager, JobState
+from patchbay.jobs.executor import (
+    terminal_cleanup_pending,
+    terminal_cleanup_recovery_required,
+)
 from patchbay.ownership import (
     clean_takeover_reason,
     merge_owner_metadata,
@@ -92,8 +97,12 @@ DEFAULT_WORKER_FILE_RESPONSE_BYTES = 25_000
 DEFAULT_HEARTBEAT_FRESH_SECONDS = 120
 DEFAULT_HEARTBEAT_QUIET_SECONDS = 600
 DEFAULT_STOP_ARTIFACT_WAIT_SECONDS = 2.0
-DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 20
-DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 10
+DEFAULT_STATUS_RECOMMENDED_POLL_SECONDS = 30
+DEFAULT_STATUS_MINIMUM_POLL_SECONDS = 20
+DEFAULT_STATUS_CACHE_TTL_SECONDS = 60 * 60
+MAX_STATUS_CACHE_RESPONSES = 512
+MAX_STATUS_CACHE_IDENTITIES = 512
+MAX_STATUS_SIGNATURES_PER_IDENTITY = 1_024
 DEFAULT_STOP_CONFIRMATION_GRACE_SECONDS = 300
 DEFAULT_WORKER_RECENT_SCOPE_SECONDS = 4 * 60 * 60
 DEFAULT_INTEGRATION_PREVIEW_TOKEN_TTL_SECONDS = 5 * 60
@@ -152,6 +161,7 @@ class WorkerRuntime:
         job_executor: Any,
         *,
         repo_locks: RepoMutationLockManager | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
     ):
         self.config = config
         self.job_manager = job_manager
@@ -160,8 +170,27 @@ class WorkerRuntime:
         if hasattr(job_executor, "repo_locks"):
             job_executor.repo_locks = self.repo_locks
         self.artifact_store = ArtifactStore(config)
-        self._status_poll_snapshots: dict[str, dict[str, Dict[str, Any]]] = {}
-        self._status_poll_responses: dict[str, Dict[str, Any]] = {}
+        self._monotonic_clock = monotonic_clock or time.monotonic
+        self._status_poll_snapshots: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+        self._status_poll_responses: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+
+    def _prune_monitoring_caches(self, *, now: float | None = None) -> None:
+        """Apply idle TTL and LRU bounds without changing durable worker visibility."""
+
+        current = self._monotonic_clock() if now is None else now
+        for cache_key, cached in list(self._status_poll_responses.items()):
+            touched_at = float(cached.get("touched_at") or cached.get("polled_at") or 0.0)
+            if current - touched_at >= DEFAULT_STATUS_CACHE_TTL_SECONDS:
+                self._status_poll_responses.pop(cache_key, None)
+        while len(self._status_poll_responses) > MAX_STATUS_CACHE_RESPONSES:
+            self._status_poll_responses.popitem(last=False)
+
+        for poll_key, snapshot in list(self._status_poll_snapshots.items()):
+            touched_at = float(snapshot.get("touched_at") or 0.0)
+            if current - touched_at >= DEFAULT_STATUS_CACHE_TTL_SECONDS:
+                self._status_poll_snapshots.pop(poll_key, None)
+        while len(self._status_poll_snapshots) > MAX_STATUS_CACHE_IDENTITIES:
+            self._status_poll_snapshots.popitem(last=False)
 
     def _clear_monitoring_caches(self) -> None:
         """Forget cached manager status after a real worker-side state change."""
@@ -176,14 +205,19 @@ class WorkerRuntime:
     ) -> Dict[str, Any] | None:
         if force_refresh:
             return None
+        now = self._monotonic_clock()
+        self._prune_monitoring_caches(now=now)
         cached = self._status_poll_responses.get(cache_key)
         if not cached:
             return None
         poll_policy = self._status_poll_policy()
         minimum = int(poll_policy["minimum_next_poll_seconds"])
-        elapsed = max(0.0, time.time() - float(cached.get("at") or 0))
+        elapsed = max(0.0, now - float(cached.get("polled_at") or 0.0))
         if elapsed >= minimum:
+            self._status_poll_responses.pop(cache_key, None)
             return None
+        cached["touched_at"] = now
+        self._status_poll_responses.move_to_end(cache_key)
         retry_after = max(1, int(round(minimum - elapsed)))
         payload = deepcopy(cached.get("payload") or {})
         payload.update(
@@ -203,7 +237,16 @@ class WorkerRuntime:
         return payload
 
     def _store_monitoring_response(self, cache_key: str, payload: Dict[str, Any]) -> None:
-        self._status_poll_responses[cache_key] = {"at": time.time(), "payload": deepcopy(payload)}
+        now = self._monotonic_clock()
+        self._prune_monitoring_caches(now=now)
+        self._status_poll_responses[cache_key] = {
+            "polled_at": now,
+            "touched_at": now,
+            "payload": deepcopy(payload),
+        }
+        self._status_poll_responses.move_to_end(cache_key)
+        while len(self._status_poll_responses) > MAX_STATUS_CACHE_RESPONSES:
+            self._status_poll_responses.popitem(last=False)
 
     async def start_worker(
         self,
@@ -222,7 +265,7 @@ class WorkerRuntime:
         allow_concurrent_shared_write: bool = False,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
-        self._reconcile_active_jobs()
+        await self._reconcile_active_jobs_async()
         worker_name = self._validate_name(name)
         worker_brief = self._validate_message(brief, field_name="brief")
         workspace_mode = self._validate_workspace_mode(workspace_mode)
@@ -322,7 +365,7 @@ class WorkerRuntime:
         takeover: bool = False,
         takeover_reason: str = "",
     ) -> Dict[str, Any]:
-        self._reconcile_active_jobs()
+        await self._reconcile_active_jobs_async()
         repo_path = self._normalize_optional_repo_path(repo_path)
         jobs = self._resolve_worker(worker, repo_path=repo_path)
         latest = jobs[-1]
@@ -336,6 +379,37 @@ class WorkerRuntime:
         )
         if refusal:
             return refusal
+        cleanup_blocker = self._workspace_cleanup_blocker_for_jobs(jobs)
+        if (
+            latest.state not in (JobState.PENDING, JobState.RUNNING)
+            and cleanup_blocker["blocked"]
+        ):
+            view = self._public_view(jobs, request_context=request_context)
+            recovery_required = cleanup_blocker["recovery_required"]
+            view.update(
+                {
+                    "accepted": False,
+                    "cleanup_pending": cleanup_blocker["cleanup_pending"],
+                    "cleanup_unresolved": cleanup_blocker["cleanup_unresolved"],
+                    "recovery_required": recovery_required,
+                    "recommended_next_action": (
+                        "report_patchbay_cleanup_recovery_required"
+                        if recovery_required
+                        else "retry_codex_worker_message"
+                    ),
+                    "note": (
+                        "The worker report is durable, but PatchBay cannot safely identify the old "
+                        "process well enough to finish cleanup. Do not retry indefinitely or start a "
+                        "replacement writer; report this PatchBay recovery blocker for operator repair."
+                        if recovery_required
+                        else "The worker report is durable, but PatchBay still has live executor/process "
+                        "evidence or is finishing internal Codex wrapper cleanup. Retry the same "
+                        "codex_worker_message after runtime cleanup completes; do not start a replacement "
+                        "worker for this transient state."
+                    ),
+                }
+            )
+            return view
         worker_message = self._validate_message(message, field_name="message")
         worker_repo_path = repo_path or self._workspace_for_jobs(jobs)["base_repo_path"]
         worker_context = self._worker_context_prompt(context_from_workers, detail=context_detail, repo_path=worker_repo_path)
@@ -476,7 +550,7 @@ class WorkerRuntime:
         repo_path = self._normalize_optional_repo_path(repo_path)
 
         while True:
-            self._reconcile_active_jobs()
+            await self._reconcile_active_jobs_async()
             jobs = self._resolve_worker(worker, repo_path=repo_path)
             latest = jobs[-1]
             worker_id, _ = self._worker_identity(jobs)
@@ -620,7 +694,7 @@ class WorkerRuntime:
             cached = self._cached_monitoring_response(list_cache_key, tool_name="codex_worker_list")
             if cached:
                 return cached
-        self._reconcile_active_jobs()
+        await self._reconcile_active_jobs_async()
         groups = self._worker_groups()
         if repo_path:
             resolved = str(Path(repo_path).expanduser().resolve())
@@ -688,9 +762,43 @@ class WorkerRuntime:
         deterministic content revisions so it can suppress duplicate snapshots
         without coupling to manager polling.
         """
-        self._reconcile_active_jobs()
-        groups = sorted(self._worker_groups(), key=lambda jobs: self._worker_identity(jobs)[0])
-        workers = [self._worker_projection(jobs) for jobs in groups]
+        self._reconcile_active_jobs_sync()
+        return self._build_projection_snapshot(
+            previous_edge_worker_ids=previous_edge_worker_ids
+        )
+
+    async def projection_snapshot_async(
+        self,
+        *,
+        previous_edge_worker_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        """Reconcile with the owning loop, then build projection off-loop."""
+
+        await self._reconcile_active_jobs_async()
+        return await asyncio.to_thread(
+            self._build_projection_snapshot,
+            previous_edge_worker_ids=previous_edge_worker_ids,
+        )
+
+    def _build_projection_snapshot(
+        self,
+        *,
+        previous_edge_worker_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        """Build projection content without reconciling runtime state."""
+
+        groups = self._projection_worker_groups_snapshot()
+        workers: list[Dict[str, Any]] = []
+        for jobs in groups:
+            try:
+                workers.append(self._worker_projection(jobs))
+            except Exception as error:
+                logger.warning(
+                    "Worker projection failed for %s (%s)",
+                    self._projection_identity_fields(jobs)["edge_worker_id"],
+                    type(error).__name__,
+                )
+                workers.append(self._projection_error_worker(jobs, error))
         current_ids = [str(worker["edge_worker_id"]) for worker in workers]
         previous_ids = self._normalize_projection_worker_ids(previous_edge_worker_ids)
         tombstones = [
@@ -728,7 +836,6 @@ class WorkerRuntime:
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
         """Return the compact pull-based manager status bar for a worker team."""
-        poll_policy = self._status_poll_policy()
         poll_key = self._status_response_key(
             repo_path=repo_path,
             active_only=active_only,
@@ -738,28 +845,13 @@ class WorkerRuntime:
             scope=scope,
             request_context=request_context,
         )
-        now = time.time()
-        cached = self._status_poll_responses.get(poll_key)
-        minimum = int(poll_policy["minimum_next_poll_seconds"])
-        if cached and not force_refresh:
-            elapsed = max(0.0, now - float(cached.get("at") or 0))
-            if elapsed < minimum:
-                retry_after = max(1, int(round(minimum - elapsed)))
-                payload = deepcopy(cached.get("payload") or {})
-                payload.update(
-                    {
-                        "poll_too_early": True,
-                        "status_current": False,
-                        "seconds_since_last_poll": int(elapsed),
-                        "retry_after_seconds": retry_after,
-                        "poll_guidance": (
-                            f"Status was checked {int(elapsed)}s ago. For normal worker monitoring, wait "
-                            f"about {minimum}-{poll_policy['recommended_next_poll_seconds']} seconds between "
-                            "checks. This cached response did not reset activity deltas."
-                        ),
-                    }
-                )
-                return payload
+        cached = self._cached_monitoring_response(
+            poll_key,
+            tool_name="codex_worker_status",
+            force_refresh=force_refresh,
+        )
+        if cached:
+            return cached
 
         listed = await self.list_workers(
             repo_path=repo_path,
@@ -828,7 +920,7 @@ class WorkerRuntime:
         cached = self._cached_monitoring_response(poll_key, tool_name="codex_worker_wait")
         if cached:
             wait_seconds = max(wait_seconds, int(cached.get("retry_after_seconds") or 0))
-        started = time.monotonic()
+        started = self._monotonic_clock()
         await asyncio.sleep(wait_seconds)
         payload = await self.worker_status(
             repo_path=repo_path,
@@ -840,7 +932,7 @@ class WorkerRuntime:
             force_refresh=True,
             request_context=request_context,
         )
-        elapsed_seconds = int(time.monotonic() - started)
+        elapsed_seconds = int(self._monotonic_clock() - started)
         payload["waited_seconds"] = max(wait_seconds, elapsed_seconds)
         payload["requested_wait_seconds"] = requested_wait_seconds
         payload["minimum_wait_seconds_applied"] = minimum_wait_seconds
@@ -865,7 +957,7 @@ class WorkerRuntime:
         takeover: bool = False,
         takeover_reason: str = "",
     ) -> Dict[str, Any]:
-        self._reconcile_active_jobs()
+        await self._reconcile_active_jobs_async()
         repo_path = self._normalize_optional_repo_path(repo_path)
         jobs = self._resolve_worker(worker, repo_path=repo_path)
         refusal = self._owner_takeover_refusal(
@@ -899,6 +991,76 @@ class WorkerRuntime:
         discard_confirmation_required = False
         unintegrated_changes: list[str] = []
         if cleanup_workspace:
+            workspace = self._workspace_for_jobs(jobs)
+            cleanup_blocker = self._workspace_cleanup_blocker_for_jobs(jobs)
+            if (
+                workspace["mode"] == "isolated_write"
+                and workspace["available"]
+                and cleanup_blocker["blocked"]
+            ):
+                view = self._public_view(
+                    jobs,
+                    request_context=request_context,
+                    include_change_state=False,
+                )
+                reason = (
+                    "terminal_cleanup_recovery_required"
+                    if cleanup_blocker["recovery_required"]
+                    else "terminal_cleanup_pending"
+                    if cleanup_blocker["cleanup_pending"]
+                    else "codex_runtime_cleanup_unresolved"
+                )
+                view.update(
+                    {
+                        "status": "blocked",
+                        "reason": reason,
+                        "retryable": True,
+                        "stopped": cancelled,
+                        "stop_confirmation_required": False,
+                        "workspace_cleaned": False,
+                        "workspace_cleanup_blocked": True,
+                        "cleanup_pending": cleanup_blocker["cleanup_pending"],
+                        "cleanup_unresolved": cleanup_blocker["cleanup_unresolved"],
+                        "cleanup_recovery_required": cleanup_blocker[
+                            "recovery_required"
+                        ],
+                        "discard_unintegrated_changes": (
+                            discard_unintegrated_changes is True
+                        ),
+                        "discard_confirmation_required": False,
+                        "unintegrated_changed_files": [],
+                        "unintegrated_changes_checked": False,
+                        "recommended_next_action": (
+                            "report_patchbay_cleanup_recovery_required"
+                            if cleanup_blocker["recovery_required"]
+                            else "retry_codex_worker_stop"
+                        ),
+                        "note": (
+                            (
+                                "The active turn was stopped, but workspace cleanup was blocked. "
+                                if cancelled
+                                else "Workspace cleanup was blocked. "
+                            )
+                            + (
+                                "PatchBay preserved the isolated worker workspace and reports because Codex "
+                                "wrapper or descendant cleanup is not resolved yet. Retry the same "
+                                "codex_worker_stop cleanup request after cleanup completes."
+                                if not cleanup_blocker["recovery_required"]
+                                else "PatchBay preserved the isolated worker workspace and reports because "
+                                "Codex cleanup requires operator recovery. Report the cleanup blocker, then "
+                                "retry the same codex_worker_stop cleanup request after recovery."
+                            )
+                        ),
+                    }
+                )
+                if takeover:
+                    view["takeover_performed"] = True
+                    view["note"] = (
+                        "Control was transferred to this MCP connection. " + view["note"]
+                    )
+                if cancelled:
+                    self._clear_monitoring_caches()
+                return view
             unintegrated_changes = self._unintegrated_changed_files(jobs)
             discard_confirmation_required = bool(unintegrated_changes) and discard_unintegrated_changes is not True
             if discard_confirmation_required:
@@ -969,7 +1131,7 @@ class WorkerRuntime:
         takeover_reason: str = "",
     ) -> Dict[str, Any]:
         """Apply one isolated worker's accepted result to the base checkout."""
-        self._reconcile_active_jobs()
+        await self._reconcile_active_jobs_async()
         repo_path = self._normalize_optional_repo_path(repo_path)
         jobs = self._resolve_worker(worker, repo_path=repo_path)
         refusal = self._owner_takeover_refusal(
@@ -1219,7 +1381,28 @@ class WorkerRuntime:
         self._clear_monitoring_caches()
         return applied
 
-    def _reconcile_active_jobs(self) -> None:
+    async def reconcile_active_jobs(self) -> None:
+        """Reconcile durable process state without blocking the owning event loop."""
+
+        await self._reconcile_active_jobs_async()
+
+    async def _reconcile_active_jobs_async(self) -> None:
+        """Run process discovery away from the manager request event loop."""
+
+        reconcile_async = getattr(
+            self.job_executor, "reconcile_stale_running_jobs_async", None
+        )
+        if callable(reconcile_async):
+            try:
+                await reconcile_async()
+            except Exception as error:
+                logger.warning("Failed to reconcile active worker jobs: %s", error)
+            return
+        await asyncio.to_thread(self._reconcile_active_jobs_sync)
+
+    def _reconcile_active_jobs_sync(self) -> None:
+        """Synchronous bridge retained for projection callers without an event loop."""
+
         reconcile = getattr(self.job_executor, "reconcile_stale_running_jobs", None)
         if not callable(reconcile):
             return
@@ -1266,13 +1449,21 @@ class WorkerRuntime:
         takeover_reason: str = "",
     ) -> None:
         latest = jobs[-1]
-        options = merge_owner_metadata(latest.options or {}, request_context, existing=latest.options or {})
-        if options == (latest.options or {}):
-            return
-        if takeover:
-            options["_mcp_takeover_reason"] = clean_takeover_reason(takeover_reason)
-            options["_mcp_takeover_at"] = time.time()
-        self.job_manager.update_job_options(latest.job_id, options)
+
+        def mutate(current: dict[str, Any]) -> dict[str, Any]:
+            options = merge_owner_metadata(
+                current,
+                request_context,
+                existing=current,
+            )
+            if takeover:
+                options["_mcp_takeover_reason"] = clean_takeover_reason(
+                    takeover_reason
+                )
+                options["_mcp_takeover_at"] = time.time()
+            return options
+
+        self.job_manager.mutate_job_options(latest.job_id, mutate)
 
     async def _create_worker_job_with_optional_repo_lock(
         self,
@@ -1837,9 +2028,13 @@ class WorkerRuntime:
                 str(workspace.get("branch_name") or ""),
             )
         for job in jobs:
-            options = dict(job.options or {})
-            options[WORKER_WORKSPACE_DISCARDED_OPTION] = True
-            self.job_manager.update_job_options(job.job_id, options)
+            self.job_manager.mutate_job_options(
+                job.job_id,
+                lambda current: {
+                    **current,
+                    WORKER_WORKSPACE_DISCARDED_OPTION: True,
+                },
+            )
         return True
 
     def _unintegrated_changed_files(self, jobs: list[JobInfo]) -> list[str]:
@@ -1861,6 +2056,67 @@ class WorkerRuntime:
             if worker_id:
                 groups.setdefault(worker_id, []).append(job)
         return [self._sort_jobs(jobs) for jobs in groups.values()]
+
+    def _projection_worker_groups_snapshot(self) -> list[list[JobInfo]]:
+        jobs_snapshot: list[JobInfo] | None = None
+        for _ in range(3):
+            try:
+                jobs_snapshot = list(self.job_manager.jobs.values())
+                break
+            except RuntimeError:
+                # A worker may be admitted by another request while projection
+                # is taking its collection snapshot. Retry before iterating.
+                continue
+        if jobs_snapshot is None:
+            jobs_snapshot = list(self.job_manager.jobs.values())
+
+        grouped: Dict[str, list[JobInfo]] = {}
+        for job in jobs_snapshot:
+            worker_id = self._worker_id(job)
+            if worker_id:
+                grouped.setdefault(worker_id, []).append(job)
+        groups = [self._sort_jobs(list(jobs)) for jobs in grouped.values()]
+        groups.sort(key=lambda jobs: self._projection_identity_fields(jobs)["edge_worker_id"])
+        return groups
+
+    def _terminal_cleanup_pending_for_jobs(self, jobs: Iterable[JobInfo]) -> bool:
+        return any(
+            job.state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+            and terminal_cleanup_pending(job.wrapper_cleanup_outcome)
+            for job in jobs
+        )
+
+    def _terminal_cleanup_recovery_required_for_jobs(
+        self, jobs: Iterable[JobInfo]
+    ) -> bool:
+        return any(
+            job.state in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+            and terminal_cleanup_recovery_required(job.wrapper_cleanup_outcome)
+            for job in jobs
+        )
+
+    def _workspace_cleanup_blocker_for_jobs(
+        self, jobs: Iterable[JobInfo]
+    ) -> Dict[str, bool]:
+        jobs = list(jobs)
+        cleanup_pending = any(
+            terminal_cleanup_pending(job.wrapper_cleanup_outcome) for job in jobs
+        )
+        cleanup_unresolved = any(
+            job.state in {JobState.PENDING, JobState.RUNNING}
+            or bool(self._runtime_liveness_for_job(job).get("runtime_alive"))
+            for job in jobs
+        )
+        recovery_required = any(
+            terminal_cleanup_recovery_required(job.wrapper_cleanup_outcome)
+            for job in jobs
+        )
+        return {
+            "blocked": cleanup_pending or cleanup_unresolved,
+            "cleanup_pending": cleanup_pending,
+            "cleanup_unresolved": cleanup_unresolved,
+            "recovery_required": recovery_required,
+        }
 
     def _jobs_for_worker(self, worker_id: str) -> list[JobInfo]:
         jobs = [job for job in self.job_manager.jobs.values() if self._worker_id(job) == worker_id]
@@ -1999,6 +2255,10 @@ class WorkerRuntime:
         ]
         report_summary = self._projection_report_summary(jobs)
         checkpoint_summary = self._latest_checkpoint_summary(jobs)
+        cleanup_pending = self._terminal_cleanup_pending_for_jobs(jobs)
+        cleanup_recovery_required = (
+            self._terminal_cleanup_recovery_required_for_jobs(jobs)
+        )
         worker = {
             "edge_worker_id": edge_worker_id,
             "worker_id": edge_worker_id,
@@ -2032,7 +2292,10 @@ class WorkerRuntime:
                 session_id
                 and workspace["available"]
                 and turn_state not in {"queued", "starting", "working"}
+                and not cleanup_pending
             ),
+            "cleanup_pending": cleanup_pending,
+            "cleanup_recovery_required": cleanup_recovery_required,
             "turn_count": len(jobs),
             "report_summary": report_summary,
             "checkpoint_summary": checkpoint_summary,
@@ -2053,9 +2316,75 @@ class WorkerRuntime:
                 "changed_files": list(change_summary.get("changed_files") or []),
                 "change_count": int(change_summary.get("change_count") or 0),
                 "dirty": bool(change_summary.get("has_changes")),
-                "observed_at": time.time(),
+                "observed_at": float(
+                    latest.completed_at
+                    or latest.terminal_observed_at
+                    or latest.last_heartbeat_at
+                    or latest.started_at
+                    or 0.0
+                ),
                 "source": "terminal_shared_write_projection",
             }
+        content_sha256 = self._projection_content_sha256(worker)
+        worker.update(
+            {
+                "content_revision": f"sha256:{content_sha256}",
+                "content_sha256": content_sha256,
+            }
+        )
+        return worker
+
+    def _projection_identity_fields(self, jobs: list[JobInfo]) -> Dict[str, Any]:
+        latest = jobs[-1]
+        option_records = [job.options for job in reversed(jobs) if isinstance(job.options, dict)]
+
+        def option(key: str, default: Any = "") -> Any:
+            return next((record.get(key) for record in option_records if record.get(key) not in (None, "")), default)
+
+        fallback_worker_id = "wrk_projection_" + hashlib.sha256(
+            "|".join(sorted(str(job.job_id) for job in jobs)).encode("utf-8")
+        ).hexdigest()[:20]
+        edge_worker_id = str(option(WORKER_ID_OPTION, fallback_worker_id))
+        worker_name = str(option(WORKER_NAME_OPTION, edge_worker_id))
+        repo_path = str(option(WORKER_BASE_REPO_OPTION, latest.repo_path or ""))
+        execution_path = str(option(WORKER_WORKTREE_OPTION, latest.worktree_path or repo_path))
+        return {
+            "edge_worker_id": edge_worker_id,
+            "worker_id": edge_worker_id,
+            "name": worker_name,
+            "work_group_id": str(option(WORKER_WORK_GROUP_ID_OPTION, "")),
+            "lane_id": str(option(WORKER_LANE_ID_OPTION, "")),
+            "workspace_id": "ws_" + hashlib.sha256(repo_path.encode("utf-8")).hexdigest()[:24],
+            "workspace_instance_id": "wsi_"
+            + hashlib.sha256(execution_path.encode("utf-8")).hexdigest()[:24],
+            "workspace_name": Path(repo_path).name or "workspace",
+            "workspace_mode": str(option(WORKER_MODE_OPTION, "unknown")),
+        }
+
+    def _projection_error_worker(
+        self,
+        jobs: list[JobInfo],
+        error: Exception,
+    ) -> Dict[str, Any]:
+        if isinstance(error, (AttributeError, KeyError, TypeError, ValueError)):
+            category = "invalid_worker_projection"
+        elif isinstance(error, (OSError, subprocess.SubprocessError)):
+            category = "workspace_projection_unavailable"
+        else:
+            category = "projection_internal_error"
+        worker = {
+            **self._projection_identity_fields(jobs),
+            "worker_state": "projection_error",
+            "turn_state": "unknown",
+            "liveness": "unknown",
+            "integration_state": "uncertain",
+            "review_disposition": "unreviewed",
+            "has_session": False,
+            "can_message": False,
+            "cleanup_pending": False,
+            "projection_error": True,
+            "projection_error_category": category,
+        }
         content_sha256 = self._projection_content_sha256(worker)
         worker.update(
             {
@@ -2329,8 +2658,19 @@ class WorkerRuntime:
         request_context: Optional[RequestContext],
     ) -> Dict[str, Any]:
         poll_key = self._status_poll_key(request_context)
-        previous = self._status_poll_snapshots.setdefault(poll_key, {})
-        current: dict[str, Dict[str, Any]] = {}
+        now = self._monotonic_clock()
+        self._prune_monitoring_caches(now=now)
+        snapshot = self._status_poll_snapshots.get(poll_key)
+        if snapshot is None:
+            snapshot = {"touched_at": now, "signatures": OrderedDict()}
+            self._status_poll_snapshots[poll_key] = snapshot
+        else:
+            snapshot["touched_at"] = now
+        self._status_poll_snapshots.move_to_end(poll_key)
+        previous = snapshot.get("signatures")
+        if not isinstance(previous, OrderedDict):
+            previous = OrderedDict(previous or {})
+            snapshot["signatures"] = previous
         for view in views:
             worker_id = str(view.get("worker_id") or view.get("name") or "")
             signature = self._worker_status_signature(view)
@@ -2339,8 +2679,12 @@ class WorkerRuntime:
             view["compact_status"] = self._compact_status_payload(view)
             view["status_line"] = self._worker_status_line(view)
             if worker_id:
-                current[worker_id] = signature
-        previous.update(current)
+                previous[worker_id] = signature
+                previous.move_to_end(worker_id)
+        while len(previous) > MAX_STATUS_SIGNATURES_PER_IDENTITY:
+            previous.popitem(last=False)
+        while len(self._status_poll_snapshots) > MAX_STATUS_CACHE_IDENTITIES:
+            self._status_poll_snapshots.popitem(last=False)
         return self._team_status(views)
 
     def _worker_status_signature(self, view: Dict[str, Any]) -> Dict[str, Any]:
@@ -2546,6 +2890,8 @@ class WorkerRuntime:
             "phase": liveness.get("phase"),
             "alive": {
                 "process": bool(liveness.get("process_alive")),
+                "executor_task": bool(liveness.get("executor_task_alive")),
+                "runtime": bool(liveness.get("runtime_alive")),
                 "session": bool(liveness.get("session_created")),
             },
             "last_activity_age_seconds": liveness.get("last_activity_age_seconds"),
@@ -3204,19 +3550,37 @@ class WorkerRuntime:
         integrated_result: Optional[Dict[str, Any]] = None,
     ) -> None:
         latest = jobs[-1]
-        options = dict(latest.options or {})
-        if token_state is not None:
-            options[WORKER_INTEGRATION_TOKENS_OPTION] = deepcopy(token_state)
-        if integrated_result is not None:
-            options["_worker_integrated_at"] = time.time()
-            options["_worker_integrated_changed_files"] = list(integrated_result.get("changed_files") or [])
-            options["_worker_integrated_patch_sha256"] = str(integrated_result.get("patch_sha256") or "")
-            options = merge_owner_metadata(options, request_context, existing=options)
-            if takeover:
-                options["_mcp_takeover_reason"] = clean_takeover_reason(takeover_reason)
-                options["_mcp_takeover_at"] = time.time()
-            options.update(self._request_interaction_metadata(request_context, existing=latest.options or {}))
-        self.job_manager.update_job_options(latest.job_id, options)
+
+        def mutate(options: dict[str, Any]) -> dict[str, Any]:
+            if token_state is not None:
+                options[WORKER_INTEGRATION_TOKENS_OPTION] = deepcopy(token_state)
+            if integrated_result is not None:
+                options["_worker_integrated_at"] = time.time()
+                options["_worker_integrated_changed_files"] = list(
+                    integrated_result.get("changed_files") or []
+                )
+                options["_worker_integrated_patch_sha256"] = str(
+                    integrated_result.get("patch_sha256") or ""
+                )
+                options = merge_owner_metadata(
+                    options,
+                    request_context,
+                    existing=options,
+                )
+                if takeover:
+                    options["_mcp_takeover_reason"] = clean_takeover_reason(
+                        takeover_reason
+                    )
+                    options["_mcp_takeover_at"] = time.time()
+                options.update(
+                    self._request_interaction_metadata(
+                        request_context,
+                        existing=options,
+                    )
+                )
+            return options
+
+        self.job_manager.mutate_job_options(latest.job_id, mutate)
 
     def _issue_integration_preview_token(
         self,
@@ -3591,6 +3955,25 @@ class WorkerRuntime:
         if latest.state in (JobState.PENDING, JobState.RUNNING):
             view["note"] = "The worker is still working. Wait for its report before integrating its result."
             return view
+        cleanup_blocker = self._workspace_cleanup_blocker_for_jobs(jobs)
+        if cleanup_blocker["blocked"]:
+            recovery_required = cleanup_blocker["recovery_required"]
+            view.update(
+                {
+                    "cleanup_pending": cleanup_blocker["cleanup_pending"],
+                    "cleanup_unresolved": cleanup_blocker["cleanup_unresolved"],
+                    "recovery_required": recovery_required,
+                    "note": (
+                        "The worker report is durable, but PatchBay cannot safely identify the old process. "
+                        "Do not retry integration indefinitely; report this cleanup recovery blocker."
+                        if recovery_required
+                        else "The worker report is durable, but PatchBay still has live executor/process "
+                        "evidence or is finishing internal Codex wrapper cleanup. Retry integration after "
+                        "runtime cleanup completes."
+                    ),
+                }
+            )
+            return view
         if workspace["mode"] != "isolated_write":
             view["note"] = "Only isolated writing workers can be integrated into the base checkout."
             return view
@@ -3845,7 +4228,16 @@ class WorkerRuntime:
         model, reasoning_effort = self._worker_execution_choices(jobs)
         latest_checkpoints = self._latest_checkpoints_for_jobs(jobs)
         latest_partial_note = self._latest_partial_note_for_jobs(jobs)
-        can_message = state not in {"starting", "working"} and bool(session_id) and workspace_available
+        cleanup_pending = self._terminal_cleanup_pending_for_jobs(jobs)
+        cleanup_recovery_required = (
+            self._terminal_cleanup_recovery_required_for_jobs(jobs)
+        )
+        can_message = (
+            state not in {"starting", "working"}
+            and bool(session_id)
+            and workspace_available
+            and not cleanup_pending
+        )
         liveness = self._liveness_for_job(latest, session_id=session_id, latest_partial_note=latest_partial_note)
 
         view = {
@@ -3877,7 +4269,11 @@ class WorkerRuntime:
                 state,
                 has_session=bool(session_id),
                 workspace_available=workspace_available,
+                cleanup_pending=cleanup_pending,
+                cleanup_recovery_required=cleanup_recovery_required,
             ),
+            "cleanup_pending": cleanup_pending,
+            "cleanup_recovery_required": cleanup_recovery_required,
             "followup_mode": "next_turn_after_completion",
             "active_steering_supported": False,
             "can_message_now": can_message,
@@ -3987,9 +4383,23 @@ class WorkerRuntime:
             return "Repo report files, if created, live in the isolated worker worktree until explicitly integrated or copied."
         return "Repo report files, if created, live in the base checkout."
 
-    def _can_message_reason(self, state: str, *, has_session: bool, workspace_available: bool) -> str:
+    def _can_message_reason(
+        self,
+        state: str,
+        *,
+        has_session: bool,
+        workspace_available: bool,
+        cleanup_pending: bool = False,
+        cleanup_recovery_required: bool = False,
+    ) -> str:
         if state in {"starting", "working"}:
             return "active_turn_running"
+        if cleanup_pending:
+            return (
+                "terminal_cleanup_recovery_required"
+                if cleanup_recovery_required
+                else "terminal_cleanup_pending"
+            )
         if not has_session:
             return "no_resumable_codex_session"
         if not workspace_available:
@@ -4167,6 +4577,8 @@ class WorkerRuntime:
         if job.state == JobState.FAILED:
             return "failed"
         if job.state == JobState.RUNNING:
+            if job.terminal_source in {"session_task_complete", "stdout_turn_completed"}:
+                return "codex_complete_cleaning_up_wrapper"
             if not job.process_started_at:
                 return "launching"
             if not session_id:
@@ -4181,6 +4593,12 @@ class WorkerRuntime:
         return "unknown"
 
     def _job_has_live_runtime(self, job: JobInfo) -> bool:
+        snapshot = getattr(self.job_executor, "runtime_liveness_snapshot", None)
+        if callable(snapshot):
+            try:
+                return bool(snapshot(job.job_id).get("runtime_alive"))
+            except Exception:
+                pass
         checker = getattr(self.job_executor, "_job_has_live_runtime", None)
         if callable(checker):
             try:
@@ -4188,6 +4606,28 @@ class WorkerRuntime:
             except Exception:
                 return bool(job.process_started_at)
         return bool(job.process_started_at)
+
+    def _runtime_liveness_for_job(self, job: JobInfo) -> Dict[str, bool]:
+        snapshot = getattr(self.job_executor, "runtime_liveness_snapshot", None)
+        if callable(snapshot):
+            try:
+                return dict(snapshot(job.job_id))
+            except Exception:
+                pass
+        inspector = getattr(self.job_executor, "_runtime_liveness", None)
+        if callable(inspector):
+            try:
+                return dict(inspector(job.job_id))
+            except Exception:
+                pass
+        fallback = self._job_has_live_runtime(job)
+        return {
+            "executor_task_alive": False,
+            "tracked_process_alive": fallback,
+            "recorded_pid_alive": False,
+            "process_alive": fallback,
+            "runtime_alive": fallback,
+        }
 
     def _job_looks_lost(self, job: JobInfo) -> bool:
         if job.state != JobState.RUNNING or self._job_has_live_runtime(job):
@@ -4236,6 +4676,7 @@ class WorkerRuntime:
         age = self._heartbeat_age_seconds(job)
         fresh_seconds, quiet_seconds = self._heartbeat_thresholds()
         phase = self._phase_for_job(job, session_id=session_id)
+        runtime_liveness = self._runtime_liveness_for_job(job)
         last_activity_age = self._last_activity_age_seconds(job)
         latest_partial_note = latest_partial_note or {"available": False, "preview": "", "age_seconds": None, "count": 0}
         payload: Dict[str, Any] = {
@@ -4243,7 +4684,9 @@ class WorkerRuntime:
             "turn_state": job.state.value,
             "process_started": bool(job.process_started_at),
             "session_created": bool(session_id),
-            "process_alive": self._job_has_live_runtime(job),
+            "process_alive": bool(runtime_liveness.get("process_alive")),
+            "executor_task_alive": bool(runtime_liveness.get("executor_task_alive")),
+            "runtime_alive": bool(runtime_liveness.get("runtime_alive")),
             "heartbeat_age_seconds": age,
             "heartbeat_fresh_seconds": fresh_seconds,
             "heartbeat_quiet_seconds": quiet_seconds,

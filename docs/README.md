@@ -55,6 +55,7 @@ The repository root keeps the practical entrypoints: `README.md`, `QUICKSTART.md
 - [PR review](maintainer/workflows/pr-review.md)
 - [Release notes](maintainer/workflows/release-notes.md)
 - [Test generation](maintainer/workflows/test-generation.md)
+- [Hub V2 and Edge backup/restore](maintainer/workflows/hub-v2-backup-restore.md)
 
 ## Project Notes
 

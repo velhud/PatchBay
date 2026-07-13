@@ -9,7 +9,8 @@ Broken boundaries reduce usable power:
 - a leaked connector token means the user should not keep the bridge running;
 - a path escape means ChatGPT cannot be trusted with repo context;
 - bad read-only metadata means ChatGPT asks for too many confirmations or skips needed confirmations;
-- raw prompt/session logging means users cannot use the tool on serious work.
+- raw prompt/session text in public responses or ordinary audit/access logs
+  means users cannot use the tool on serious work.
 
 The goal is maximum useful capability with explicit control.
 
@@ -27,6 +28,33 @@ The goal is maximum useful capability with explicit control.
 | Handoff watcher | Plan becomes local execution | Explicit local command, dry-run, status artifacts |
 | Public tunnel | Internet-exposed MCP endpoint | Token required, no `--no-auth`, rotation, warnings |
 | Session history | Private transcript exposure | Default off, metadata first, bounded reads |
+| Hub to Edge operations | Duplicate, stale, or cross-version effects | Durable idempotency, immutable attempt contracts, fencing tokens, payload hashes, lease reconciliation, and current-session authentication |
+
+Hub transport identity has two deliberate layers. The current Edge-session
+contract authenticates the live connection, while every claimed attempt and
+durable result receipt retains its immutable original contract. A rolling
+upgrade must not rewrite that historical fence. Lease expiry and result replay
+are reconciled internally; the ChatGPT manager receives only semantic worker,
+group, and operation-status controls, never a raw state-transition tool.
+
+## Worker Process Cleanup Boundary
+
+PatchBay's process supervisor is crash cleanup for trusted Codex worker code; it
+is not a hostile-code containment sandbox. Linux Edge deployments use a child
+subreaper, process-group ownership, exact process-start identities, and a
+per-job marker. macOS lacks an equivalent unprivileged lossless descendant
+tracker, so PatchBay combines process groups, kqueue fork observation,
+attributable child identities, and the per-job environment marker. A process
+that deliberately creates a detached session and erases that marker can evade
+macOS cleanup discovery. Run adversarial or intentionally marker-stripping code
+on a Linux VM/container boundary rather than relying on PatchBay cleanup as a
+security boundary. Ordinary Codex workers remain fully supported on macOS.
+
+The supervisor never publishes absence before the target launch gate and
+tracker boundary are established. Cleanup proof is fsync-durable, terminal
+reports become durable before wrapper cleanup, and repository mutation remains
+blocked whenever ownership is genuinely unknown inside the supported trusted
+worker contract.
 
 ## Auth And Tunnel Policy
 
@@ -102,7 +130,7 @@ The current implementation ports the CodexPro-style path-guard model into the Py
 
 ## Secret And Redaction Policy
 
-Do not return or log:
+Do not return publicly or write to ordinary audit/access logs:
 
 - API keys;
 - OAuth tokens;
@@ -114,6 +142,12 @@ Do not return or log:
 - full Codex stdout/stderr by default.
 
 Returned context should include omission notes so ChatGPT knows when data was intentionally withheld.
+
+Durable Hub dispatch state is a separate private boundary. The Hub must retain
+the worker brief and bounded operation arguments required to deliver or replay a
+manager-requested mutation after interruption. Those payloads belong only in
+the authenticated Hub state database and private backups; they must not be
+copied into public status, audit logs, documentation, or repository artifacts.
 
 Artifact inbox imports intentionally allow sensitive-looking filenames and content when the user asks ChatGPT to transfer a generated file or zip. Import/list responses stay compact and do not echo contents. Specific file inspection is deliberate and bounded, and the MCP protocol still applies global secret-like output redaction before returning tool results.
 

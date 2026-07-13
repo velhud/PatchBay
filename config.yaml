@@ -6,6 +6,7 @@ server:
   job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
   codex_session_start_timeout_seconds: 180  # fail only if Codex starts but no JSON session appears
   codex_post_completion_exit_grace_seconds: 2  # wrapper cleanup only after an authoritative terminal event
+  codex_post_completion_cleanup_timeout_seconds: 3  # bound pipe/process cleanup after the final report is durable
   codex_startup_serialization_enabled: true  # serialize auth/session startup only; full turns still run concurrently
   stale_running_job_grace_seconds: 600  # restart/stale reconciliation window; not a worker turn timeout
   job_cleanup_after_hours: 24
@@ -37,11 +38,32 @@ ownership:
   scope: token
 
 hub:
-  # Optional multi-machine hub/edge runtime state. Blank paths resolve under
-  # PATCHBAY_HOME/runtime/hub/ and are not repository data.
+  # The shipped Hub example selects the complete 31-tool V2 control plane.
+  # Set this explicitly to v1 only when operating a legacy deployment.
+  control_plane: v2
+  # Private multi-machine Hub/Edge runtime state. Blank paths resolve under
+  # PATCHBAY_HOME/runtime/hub/ and are not repository data. state_file is the
+  # legacy V1 store; V2 uses state_db.
   state_file:
+  state_db:
+  # Deployment continuity guards. Keep false/blank only for first-time setup;
+  # production should require the existing database and pin its known Hub id.
+  require_existing_state: false
+  expected_hub_id:
+  # Optional explicit migration marker; blank uses the marker beside state_db.
+  pre_migration_backup_marker:
   heartbeat_stale_seconds: 90
   max_events: 1000
+  edge:
+    # Set true after the first journal has been created. A production Edge then
+    # refuses a missing/misbound journal instead of starting empty state.
+    require_existing_journal: false
+    journal_file:
+    pre_migration_backup_marker:
+  # The Hub process, rather than read/status calls, reoffers durable
+  # dispatchable operations left behind by a crash or restart.
+  recovery_dispatch_interval_seconds: 1.0
+  recovery_dispatch_batch_size: 100
   routing:
     enabled: false
     min_disk_free_bytes: 2147483648
@@ -122,8 +144,8 @@ workers:
   file_response_max_bytes: 1000000
   heartbeat_fresh_seconds: 120
   heartbeat_quiet_seconds: 600
-  status_recommended_poll_seconds: 20
-  status_minimum_poll_seconds: 10
+  status_recommended_poll_seconds: 30
+  status_minimum_poll_seconds: 20
   stop_artifact_wait_seconds: 2
   stop_confirmation_grace_seconds: 300
 
@@ -156,6 +178,10 @@ logging:
   job_state_dir:
   private_evidence_dir:
   job_log_max_bytes: 200000
+  # In-memory subprocess output is a bounded tail, not an unbounded transcript.
+  # Oversized JSONL events are drained without blocking the Codex process.
+  process_capture_max_bytes: 4000000
+  process_event_line_max_bytes: 8000000
   write_raw_job_logs: false
   access_log: false
   private_evidence_log: false

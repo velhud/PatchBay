@@ -35,9 +35,11 @@ Exceptional ungrouped target:
 Callers should not repeatedly supply `machine_id` for a grouped worker. Hub
 resolves the owning machine from immutable group/worker records.
 
-Mutating calls include an optional caller `idempotency_key`; Hub generates and
-returns one when omitted. Retried calls with the same key and semantically
-identical payload return the existing operation/result.
+Every mutating public call requires a caller-generated `idempotency_key`.
+Generate it before the first call and reuse it only when retrying the exact same
+semantic payload. Hub never invents a missing key. A same-key, same-payload
+retry returns the existing operation/result; a same-key, different-payload call
+returns `blocked` with `idempotency_payload_conflict`.
 
 ## Common Semantic Output
 
@@ -45,28 +47,27 @@ Every tool defines a strict action-specific output schema inside this envelope:
 
 ```json
 {
-  "status": "succeeded|pending|blocked|needs_confirmation|failed|unknown_outcome",
-  "summary": "Human-readable semantic result",
-  "work_group": {},
-  "lane": {},
-  "worker": {},
-  "machine": {},
-  "workspace": {},
+  "status": "ok|pending|partial|blocked|failed|not_found",
+  "result": {
+    "summary": "Action-specific semantic result",
+    "work_group": {},
+    "lane": {},
+    "worker": {},
+    "machine": {},
+    "workspace": {}
+  },
   "operation": {},
-  "result": {},
-  "side_effects": [],
-  "next_actions": [],
-  "error": {
-    "code": "",
-    "message": "",
-    "retryable": false
-  }
+  "warnings": [],
+  "next_actions": []
 }
 ```
 
-Omit irrelevant objects, but do not change the meaning of `status` between
-tools. `pending` means the domain result is not known yet. Hub queue acceptance
-alone never produces `succeeded`.
+The five top-level fields are always present. Action-specific objects live under
+`result`; omit irrelevant result members without changing status meaning.
+`pending` means the domain result is not known yet. Hub queue acceptance alone
+never produces `ok`. `needs_confirmation` and `unknown_outcome` are internal or
+domain reasons represented inside a canonical public status, not extra public
+status values.
 
 ## Family 1: Fleet And Discovery (2)
 
@@ -228,15 +229,23 @@ Inputs:
 - required `work_group_id`;
 - `outcome = complete|partial|abandoned|failed`;
 - required `summary`;
-- `active_work_disposition = refuse|stop|leave_running` (default `refuse`);
-- optional `cleanup_completed_workspaces`;
+- required `worker_dispositions`, one explicit disposition for every worker in
+  the group: `integrated`, `no_changes`, `reviewed_failure`,
+  `stopped_preserved`, `discarded`, or `leave_running`;
+- `discarded` requires explicit `discard_unintegrated_changes=true` for that
+  worker;
 - `idempotency_key`.
 
 Rules:
 
 - `complete` refuses active, uncertain, failed-unreviewed, or unintegrated work;
-- `stop` uses normal worker stop confirmation semantics;
-- `leave_running` cannot produce complete outcome and preserves orphan warnings;
+- group close records the manager decision only: it never stops a worker or
+  cleans/disposes a workspace;
+- explicitly stop active workers with `patchbay_worker_stop` before closing when
+  they are not intentionally retained, and complete any workspace disposal with
+  that worker-specific control before recording the close;
+- `leave_running` records the exceptional retained-worker decision only. It
+  performs no stop or cleanup and cannot produce a complete outcome;
 - closing cancels safe unclaimed group operations;
 - closing never rewrites an active worker as idle;
 - closed group history remains immutable.
@@ -288,7 +297,8 @@ Required:
 
 Preserved optional fields:
 
-- `repo_path` compatibility override when explicitly allowed;
+- `repo_path` may be omitted or repeat the exact repository resolved by the
+  group preflight; it cannot retarget grouped work to another repository;
 - `workspace_mode = isolated_write|read_only|shared_write`;
 - `auto_suffix`;
 - `include_untracked_from_base` patterns;
@@ -316,6 +326,7 @@ Inputs:
 - `shared_brief` containing common goal/context/constraints;
 - shared `context_from_workers`, `context_from_artifacts`, `context_detail`;
 - `workers[]`, each containing:
+  - required stable `item_id` and child `idempotency_key`;
   - required `name`, `lane`, `mission`;
   - optional `workspace_mode`, `model`, `reasoning_effort`;
   - optional personal context/artifacts;
@@ -332,6 +343,10 @@ Behavior:
 - partial start does not roll back already created workers;
 - retry cannot duplicate successful items;
 - no artificial small worker count below Edge/configured capacity.
+
+Group-level operations that exist before any worker, especially repository
+preflight, recommend a bounded `patchbay_work_group_status` wait. They never
+recommend `patchbay_worker_wait` until at least one worker turn is active.
 
 ### 13. `patchbay_worker_message`
 
@@ -350,8 +365,10 @@ Behavior:
 
 - resolve immutable owning Edge/workspace;
 - preserve Codex session and worktree continuity;
-- use active steering/queued follow-up semantics supported by Edge;
-- report whether delivered, queued, steering, blocked, or needs confirmation.
+- start the next Codex turn only after the current turn is terminal;
+- return `active_turn_in_progress` while a turn is still active rather than
+  claiming active steering or queued delivery;
+- report whether the continuation started, was blocked, or needs confirmation.
 
 ### 14. `patchbay_worker_list`
 
@@ -359,24 +376,30 @@ Purpose: discover/reuse workers without historical clutter.
 
 Inputs:
 
-- `work_group_id` preferred;
-- optional `lane`, `active_only`, `include_stopped`, `owned_only`,
-  `created_after`;
-- `scope = current_group|conversation|recent|history`;
+- required `work_group_id`;
+- optional `lane`, `active_only`, `include_stopped`;
 - pagination.
 
-Returns stable worker refs, compact state, latest report summary, ownership,
-machine, lane, integration/disposition, hidden-history counts, and freshness.
+Hub list/status/wait are only work-group views. They do not accept
+single-machine `repo_path`, ownership/history `scope`, `owned_only`, or
+`created_after` filters because those filters have no Hub projection meaning.
+
+Returns stable worker refs, compact state, latest report summary, machine,
+lane, integration/disposition, and freshness.
 
 ### 15. `patchbay_worker_status`
 
-Purpose: immediate compact team status from authoritative Hub projections.
+Purpose: compact team status from authoritative Hub projections.
 
-Inputs mirror list filters plus optional `force_refresh` and `since_revision`.
+Inputs mirror list filters plus optional `since_revision`. There is no
+`force_refresh` compatibility field: Hub enforces the manager/group monitoring
+cadence.
 
 Returns activity deltas, liveness counts, one line per worker, checkpoints,
 recommended next poll interval, projection freshness, and suggested action. It
-does not return fleet/group status under the same name.
+does not return fleet/group status under the same name. List and status share a
+20-second minimum / 30-second recommended cache per manager and group; an early
+repeat returns cached `poll_too_early` guidance.
 
 ### 16. `patchbay_worker_wait`
 
@@ -389,7 +412,8 @@ Inputs:
 - optional `since_revision`.
 
 Hub waits on its event/projection store. It does not queue a sleeping Edge
-command and does not block Edge heartbeat/message/stop processing.
+command and does not block Edge heartbeat/message/stop processing. Omitted
+waits use 30 seconds; values below 20 seconds are raised to 20.
 
 ### 17. `patchbay_worker_inspect`
 

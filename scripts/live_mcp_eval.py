@@ -57,8 +57,18 @@ def main() -> int:
         if args.exercise_terminal_reconciliation:
             fake_bin = _write_lingering_codex(temp_dir)
             env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+            if sys.platform == "darwin":
+                # Darwin cannot prove arbitrary fork ownership without a
+                # privileged containment backend. The dedicated supervisor
+                # stress test covers fail-closed fork uncertainty; this MCP
+                # scenario keeps one process so it can verify the successful
+                # terminal/reconciliation path as well.
+                env["PATCHBAY_LIVE_SINGLE_PROCESS"] = "1"
 
-        config_path = _write_eval_config(temp_dir)
+        config_path = _write_eval_config(
+            temp_dir,
+            hold_cleanup_barrier=args.exercise_terminal_reconciliation,
+        )
         process = _start_server(repo, port, env, tool_mode=args.tool_mode, config_path=config_path)
         _wait_for_health(port, process, output_tail, timeout=args.timeout)
         client = McpClient(f"http://127.0.0.1:{port}")
@@ -342,6 +352,9 @@ def main() -> int:
         _print_report(report, json_only=args.json)
         return 1
     finally:
+        cleanup_release = temp_dir / "repo" / ".patchbay-live-cleanup-release"
+        if cleanup_release.parent.exists():
+            cleanup_release.touch()
         if process and process.poll() is None:
             process.terminate()
             try:
@@ -357,9 +370,12 @@ class McpClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
         self.session_id: str | None = None
+        self.request_timeout_seconds = 30
 
     def get(self, path: str) -> dict[str, Any]:
-        with urllib.request.urlopen(self.base_url + path, timeout=10) as response:
+        with urllib.request.urlopen(
+            self.base_url + path, timeout=self.request_timeout_seconds
+        ) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def post(self, message: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
@@ -369,7 +385,9 @@ class McpClient:
             headers["Mcp-Session-Id"] = self.session_id
         request = urllib.request.Request(self.base_url + "/mcp", data=data, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.urlopen(
+                request, timeout=self.request_timeout_seconds
+            ) as response:
                 return response.headers.get("Mcp-Session-Id"), json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             return None, json.loads(error.read().decode("utf-8"))
@@ -416,14 +434,20 @@ def _create_disposable_repo(temp_dir: Path) -> Path:
     return repo
 
 
-def _write_eval_config(temp_dir: Path) -> Path:
+def _write_eval_config(
+    temp_dir: Path,
+    *,
+    hold_cleanup_barrier: bool = False,
+) -> Path:
     config_path = temp_dir / "config.yaml"
     with open(ROOT / "config.yaml", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
     workers = config.setdefault("workers", {})
     workers["status_minimum_poll_seconds"] = 1
     workers["status_recommended_poll_seconds"] = 1
-    config.setdefault("server", {})["codex_post_completion_exit_grace_seconds"] = 0.1
+    config.setdefault("server", {})["codex_post_completion_exit_grace_seconds"] = (
+        15.0 if hold_cleanup_barrier else 0.1
+    )
     config_path.write_text(
         yaml.safe_dump(config, sort_keys=False),
         encoding="utf-8",
@@ -437,25 +461,57 @@ def _write_lingering_codex(temp_dir: Path) -> Path:
     executable = bin_dir / "codex"
     executable.write_text(
         "#!/usr/bin/env python3\n"
-        "import datetime, json, os, pathlib, sys, time, uuid\n"
+        "import datetime, json, os, pathlib, signal, subprocess, sys, time, uuid\n"
         "if '--version' in sys.argv:\n"
         "    print('codex-cli terminal-reconciliation-fixture')\n"
         "    raise SystemExit(0)\n"
-        "session_id = str(uuid.uuid4())\n"
+        "is_resume = 'resume' in sys.argv\n"
+        "session_id = sys.argv[sys.argv.index('resume') + 1] if is_resume else str(uuid.uuid4())\n"
         "home = pathlib.Path(os.environ.get('CODEX_HOME') or pathlib.Path.home() / '.codex')\n"
-        "source = home / 'sessions' / '2026' / '07' / '11' / f'rollout-live-{session_id}.jsonl'\n"
+        "matches = list((home / 'sessions').glob(f'**/*{session_id}*.jsonl')) if is_resume else []\n"
+        "source = matches[0] if matches else home / 'sessions' / '2026' / '07' / '11' / f'rollout-live-{session_id}.jsonl'\n"
         "source.parent.mkdir(parents=True, exist_ok=True)\n"
         "now = datetime.datetime.now(datetime.timezone.utc).isoformat()\n"
         "meta = {'timestamp': now, 'type': 'session_meta', 'payload': {'id': session_id, 'cwd': os.getcwd()}}\n"
-        "source.write_text(json.dumps(meta) + '\\n', encoding='utf-8')\n"
-        "print(json.dumps({'type': 'thread.started', 'thread_id': session_id}), flush=True)\n"
+        "if not source.exists():\n"
+        "    source.write_text(json.dumps(meta) + '\\n', encoding='utf-8')\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "single_process = os.environ.get('PATCHBAY_LIVE_SINGLE_PROCESS') == '1'\n"
+        "child_code = 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'\n"
+        "child = None if single_process else subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "pid_file = pathlib.Path(os.getcwd()) / '.patchbay-live-lingering-pids.json'\n"
+        "pid_file.write_text(json.dumps({'parent': os.getpid(), 'child': child.pid if child else os.getpid()}), encoding='utf-8')\n"
+        "if not is_resume:\n"
+        "    print(json.dumps({'type': 'thread.started', 'thread_id': session_id}), flush=True)\n"
         "time.sleep(0.2)\n"
-        "result = {'summary': 'PUBLIC_MCP_TERMINAL_RECONCILIATION_OK', 'files_changed': [], 'tests_run': ['live fixture']}\n"
+        "result = {\n"
+        "    'summary': 'PUBLIC_MCP_TERMINAL_RECONCILIATION_OK',\n"
+        "    'detailed_report': 'The exact-session terminal report became durable before wrapper cleanup.',\n"
+        "    'evidence': ['task_complete emitted while the process group remained alive'],\n"
+        "    'files_changed': [],\n"
+        "    'commands_run': [],\n"
+        "    'tests_run': ['live fixture'],\n"
+        "    'notes': '',\n"
+        "    'risks': [],\n"
+        "    'open_questions': [],\n"
+        "    'next_steps': [],\n"
+        "}\n"
         "with source.open('a', encoding='utf-8') as handle:\n"
         "    handle.write(json.dumps({'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': json.dumps(result)}}) + '\\n')\n"
         "    handle.write(json.dumps({'timestamp': now, 'type': 'event_msg', 'payload': {'type': 'task_complete', 'last_agent_message': json.dumps(result)}}) + '\\n')\n"
         "    handle.flush()\n"
-        "time.sleep(30)\n",
+        "barrier_ready = pathlib.Path(os.getcwd()) / '.patchbay-live-cleanup-barrier-ready'\n"
+        "barrier_release = pathlib.Path(os.getcwd()) / '.patchbay-live-cleanup-release'\n"
+        "if not is_resume:\n"
+        "    barrier_ready.write_text('held\\n', encoding='utf-8')\n"
+        "    while not barrier_release.exists():\n"
+        "        time.sleep(0.02)\n"
+        "try:\n"
+        "    if child is not None:\n"
+        "        child.kill()\n"
+        "        child.wait(timeout=2)\n"
+        "except (OSError, subprocess.SubprocessError):\n"
+        "    pass\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
@@ -470,13 +526,14 @@ def _exercise_terminal_reconciliation(report: dict[str, Any], client: "McpClient
             "name": "Terminal Reconciliation Worker",
             "brief": "Return the requested bounded live-evaluation report.",
             "repo_path": str(repo),
-            "workspace_mode": "read_only",
+            "workspace_mode": "shared_write",
         },
     )
     started_data = started["result"]["structuredContent"]
     worker_ref = started_data.get("worker_id") or started_data.get("name") or "Terminal Reconciliation Worker"
     deadline = time.monotonic() + 12
     inspected_data: dict[str, Any] = {}
+    cleanup_pending_data: dict[str, Any] = {}
     while time.monotonic() < deadline:
         inspected = client.call_tool(
             131,
@@ -484,9 +541,94 @@ def _exercise_terminal_reconciliation(report: dict[str, Any], client: "McpClient
             {"worker": worker_ref, "view": "diagnostics"},
         )
         inspected_data = inspected["result"]["structuredContent"]
-        if inspected_data.get("state") not in {"starting", "working"}:
+        latest_turn = inspected_data.get("latest_turn") or {}
+        if (
+            "PUBLIC_MCP_TERMINAL_RECONCILIATION_OK"
+            in str(inspected_data.get("report") or "")
+            and latest_turn.get("wrapper_cleanup_outcome") == "cleanup_pending"
+        ):
+            cleanup_pending_data = inspected_data
             break
-        time.sleep(0.5)
+        time.sleep(0.05)
+    _check(
+        report,
+        "terminal_report_visible_while_cleanup_pending",
+        bool(cleanup_pending_data),
+    )
+    cleanup_preview = client.call_tool(
+        132,
+        "codex_worker_inspect",
+        {"worker": worker_ref, "view": "integration_preview"},
+    )["result"]["structuredContent"]
+    _check(
+        report,
+        "terminal_cleanup_blocks_integration",
+        cleanup_preview.get("cleanup_pending") is True
+        and cleanup_preview.get("can_apply") is False,
+    )
+    blocked_integration = client.call_tool(
+        134,
+        "codex_worker_integrate",
+        {
+            "worker": worker_ref,
+            "idempotency_key": "terminal-cleanup-held-integration",
+        },
+    )["result"]["structuredContent"]
+    _check(
+        report,
+        "terminal_cleanup_rejects_real_integration_while_barrier_held",
+        blocked_integration.get("cleanup_pending") is True
+        and blocked_integration.get("applied") is False
+        and blocked_integration.get("can_apply") is False,
+    )
+    cleanup_message = client.call_tool(
+        136,
+        "codex_worker_message",
+        {
+            "worker": worker_ref,
+            "message": "Confirm this only after internal wrapper cleanup completes.",
+        },
+    )["result"]["structuredContent"]
+    _check(
+        report,
+        "terminal_cleanup_blocks_same_worker_followup",
+        cleanup_message.get("cleanup_pending") is True
+        and cleanup_message.get("accepted") is False
+        and cleanup_message.get("can_message_now") is False,
+    )
+
+    pid_file = repo / ".patchbay-live-lingering-pids.json"
+    pids = json.loads(pid_file.read_text(encoding="utf-8"))
+    _check(
+        report,
+        "terminal_process_group_alive_during_cleanup",
+        _pid_is_live(int(pids["parent"])) and _pid_is_live(int(pids["child"])),
+    )
+    barrier_ready = repo / ".patchbay-live-cleanup-barrier-ready"
+    barrier_release = repo / ".patchbay-live-cleanup-release"
+    _check(
+        report,
+        "terminal_cleanup_barrier_intentionally_held",
+        barrier_ready.read_text(encoding="utf-8").strip() == "held"
+        and not barrier_release.exists(),
+    )
+    barrier_release.write_text("release\n", encoding="utf-8")
+
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        inspected = client.call_tool(
+            133,
+            "codex_worker_inspect",
+            {"worker": worker_ref, "view": "diagnostics"},
+        )
+        inspected_data = inspected["result"]["structuredContent"]
+        latest_turn = inspected_data.get("latest_turn") or {}
+        if (
+            inspected_data.get("state") not in {"starting", "working"}
+            and latest_turn.get("wrapper_cleanup_outcome") not in {None, "", "cleanup_pending"}
+        ):
+            break
+        time.sleep(0.1)
     latest_turn = inspected_data.get("latest_turn") or {}
     report["terminal_reconciliation"] = {
         "state": inspected_data.get("state"),
@@ -497,14 +639,102 @@ def _exercise_terminal_reconciliation(report: dict[str, Any], client: "McpClient
     _check(
         report,
         "terminal_reconciliation_report_preserved",
-        inspected_data.get("report") == "PUBLIC_MCP_TERMINAL_RECONCILIATION_OK",
+        "PUBLIC_MCP_TERMINAL_RECONCILIATION_OK"
+        in str(inspected_data.get("report") or ""),
     )
     _check(
         report,
         "terminal_reconciliation_source_visible",
         latest_turn.get("terminal_source") == "session_task_complete"
-        and latest_turn.get("wrapper_cleanup_outcome") == "terminated_after_terminal",
+        and latest_turn.get("wrapper_cleanup_outcome")
+        in {
+            "terminated_after_terminal",
+            "terminated_after_terminal_async",
+            "terminated_after_terminal_recovery",
+            "process_not_live_after_terminal",
+            "process_exited",
+            "supervisor_proved_no_descendants_after_terminal",
+        },
     )
+    death_deadline = time.monotonic() + 5
+    while time.monotonic() < death_deadline and (
+        _pid_is_live(int(pids["parent"])) or _pid_is_live(int(pids["child"]))
+    ):
+        time.sleep(0.05)
+    _check(
+        report,
+        "terminal_process_group_reaped",
+        not _pid_is_live(int(pids["parent"])) and not _pid_is_live(int(pids["child"])),
+    )
+
+    resumed = client.call_tool(
+        137,
+        "codex_worker_message",
+        {
+            "worker": worker_ref,
+            "message": "Return one follow-up confirmation after cleanup.",
+        },
+    )["result"]["structuredContent"]
+    resumed_deadline = time.monotonic() + 12
+    resumed_inspection: dict[str, Any] = {}
+    while time.monotonic() < resumed_deadline:
+        resumed_inspection = client.call_tool(
+            138,
+            "codex_worker_inspect",
+            {"worker": worker_ref, "view": "diagnostics"},
+        )["result"]["structuredContent"]
+        latest = resumed_inspection.get("latest_turn") or {}
+        report_artifacts = resumed_inspection.get("report_artifacts") or []
+        if (
+            len(report_artifacts) == 2
+            and resumed_inspection.get("state") == "idle"
+            and latest.get("wrapper_cleanup_outcome") not in {
+                None,
+                "",
+                "cleanup_pending",
+                "cleanup_retry_pending_process_live",
+            }
+        ):
+            break
+        time.sleep(0.1)
+    report["terminal_followup"] = {
+        "accepted": resumed.get("accepted"),
+        "can_message_reason": resumed.get("can_message_reason"),
+        "cleanup_pending": resumed.get("cleanup_pending"),
+        "cleanup_unresolved": resumed.get("cleanup_unresolved"),
+        "repo_busy": resumed.get("repo_busy"),
+        "note": resumed.get("note"),
+        "state": resumed_inspection.get("state"),
+        "report_artifact_count": len(resumed_inspection.get("report_artifacts") or []),
+        "cleanup_outcome": (resumed_inspection.get("latest_turn") or {}).get(
+            "wrapper_cleanup_outcome"
+        ),
+    }
+    _check(
+        report,
+        "same_worker_followup_succeeds_once_after_cleanup",
+        resumed.get("accepted") is True
+        and len(resumed_inspection.get("report_artifacts") or []) == 2
+        and resumed_inspection.get("state") == "idle",
+    )
+
+
+def _pid_is_live(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    try:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        state = ""
+    return bool(state) and not state.startswith("Z")
 
 
 def _start_server(repo: Path, port: int, env: dict[str, str], *, tool_mode: str, config_path: Path) -> subprocess.Popen[str]:

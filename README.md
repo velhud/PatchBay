@@ -83,12 +83,12 @@ flowchart LR
 | **No copy-paste bridge** | Move briefs, generated files, worker reports, diffs, and follow-up instructions through MCP instead of manually shuttling text between apps. |
 | **ChatGPT as project lead** | Use ChatGPT for high-context planning, decomposition, worker assignment, report comparison, and final synthesis. |
 | **Named durable workers** | Start workers such as `Architecture Investigator`, `Backend Implementer`, `Adversarial Reviewer`, or `Verification Worker`, then continue them later by name. |
-| **Truthful terminal state** | Recover exact Codex `task_complete` evidence and final reports even when a completed CLI wrapper lingers instead of exiting normally. |
+| **Truthful terminal state** | Persist exact Codex `task_complete` reports and completed worker state before bounded cleanup of the complete process group; follow-up and integration wait until cleanup finishes. |
 | **Local execution stays local** | Codex still runs through your local Codex CLI against your repository, git state, dependencies, shell, and configured account. |
 | **Reviewable integration** | Inspect reports, changed files, one-file diffs, and integration previews before applying accepted worker output. |
 | **Artifact transfer** | Import ChatGPT-generated files or zip packages into local worker context without manual file handling. |
 | **Advanced escalation loop** | Store a local blocked-problem report for ChatGPT, write the answer back into PatchBay, then explicitly dispatch it to a worker when useful. |
-| **Optional machine fleet** | Experimental hub/edge mode lets one ChatGPT connector create durable task groups and route grouped worker lanes to enrolled PatchBay machines. |
+| **Optional machine fleet** | Implemented Hub/Edge mode lets one or more ChatGPT conversations create independent durable task groups and route each grouped worker team to one enrolled machine, with fenced result recovery across lease expiry and rolling upgrades. |
 
 ## Example: ChatGPT as manager
 
@@ -214,7 +214,7 @@ More detail: [SECURITY.md](SECURITY.md), [docs/security/product-boundary.md](doc
 | **Repository controls** | Allowed roots, path guard, token-gated public tunnels, per-repo mutation locks, and dirty-base checks |
 | **Artifacts** | ChatGPT-generated files/zips can be imported into worker context without editing the repo |
 | **Power modes** | `worker`, `standard`, `full`, and `minimal` tool surfaces with runtime-aware tool advertisement |
-| **Optional hub/edge mode** | Set `hub.control_plane: v2`; `patchbay hub start` plus `patchbay edge start` exposes the exact 31-tool manager surface across enrolled machines, with durable work groups pinning each task to one machine and an end-to-end completion contract preventing premature manager handoff. Omitting the setting preserves V1 compatibility. |
+| **Optional hub/edge mode** | `patchbay hub start` plus `patchbay edge start` uses Hub V2 by default and exposes the exact 31-tool manager surface across enrolled machines, with durable work groups pinning each task to one machine and an end-to-end completion contract preventing premature manager handoff. Set `hub.control_plane: v1` only for an intentional legacy deployment; invalid values fail at startup. |
 
 ## Current status
 
@@ -240,7 +240,7 @@ See [TESTING.md](TESTING.md), [docs/testing/evals.md](docs/testing/evals.md), an
 | --- | --- |
 | Codex CLI baseline | Current local verification recorded `codex-cli 0.144.1` |
 | Python checks | `compileall` passes |
-| Test suite | `661` tests pass |
+| Test suite | Current repair candidate: `955 passed, 4 skipped` on macOS and `958 passed, 1 skipped` in the production Linux environment (the same 959-test inventory with platform-specific skips) |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Pro Escalation request loop | Unit tests and live MCP probe cover create/list/read/claim/respond/dispatch paths |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |

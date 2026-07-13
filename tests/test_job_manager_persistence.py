@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -70,6 +71,101 @@ def test_job_manager_persists_redacted_completed_job(tmp_path):
     }
 
 
+def test_completion_evidence_is_redacted_and_survives_reload(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job(
+        "plan", "inspect", config["repositories"]["default"], {}
+    )
+    manager.update_job_state(job_id, JobState.RUNNING)
+
+    assert manager.record_completion_evidence(
+        job_id,
+        source="stdout_turn_completed",
+        observed_at=123.5,
+        fallback_result={
+            "summary": "done with token=fixture-value",
+            "completion_evidence_recovered": True,
+        },
+        session_id="session-evidence",
+        result_status="structured",
+    )
+
+    record_path = tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json"
+    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    assert persisted["state"] == "running"
+    assert persisted["terminal_source"] is None
+    assert persisted["completion_evidence_source"] == "stdout_turn_completed"
+    assert persisted["completion_evidence_observed_at"] == 123.5
+    assert persisted["completion_evidence_session_id"] == "session-evidence"
+    assert persisted["completion_evidence_result_status"] == "structured"
+    assert persisted["completion_evidence_version"] == 1
+    assert persisted["completion_evidence_result"]["summary"] == (
+        "done with token=[REDACTED_POSSIBLE_SECRET]"
+    )
+    assert "fixture-value" not in record_path.read_text(encoding="utf-8")
+
+    reloaded = JobManager(config).get_job(job_id)
+    assert reloaded.state == JobState.RUNNING
+    assert reloaded.completion_evidence_source == "stdout_turn_completed"
+    assert reloaded.completion_evidence_result["summary"] == (
+        "done with token=[REDACTED_POSSIBLE_SECRET]"
+    )
+
+
+def test_completion_evidence_is_structurally_capped_without_invalid_json(tmp_path):
+    config = make_config(tmp_path)
+    config["logging"]["job_log_max_bytes"] = 128
+    manager = JobManager(config)
+    job_id = manager.create_job(
+        "plan", "large completion", config["repositories"]["default"], {}
+    )
+    manager.update_job_state(job_id, JobState.RUNNING)
+
+    manager.record_completion_evidence(
+        job_id,
+        source="stdout_turn_completed",
+        observed_at=123.5,
+        fallback_result={
+            "summary": "S" * 10_000,
+            "detailed_report": "D" * 1_000_000,
+            "_private": "must not persist",
+        },
+        result_status="structured",
+    )
+
+    record_path = tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json"
+    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    evidence = persisted["completion_evidence_result"]
+    compact = json.dumps(
+        evidence, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    assert len(compact) <= 128
+    assert persisted["completion_evidence_result_status"] == "truncated"
+    assert "_private" not in evidence
+    assert "must not persist" not in record_path.read_text(encoding="utf-8")
+
+
+def test_running_job_does_not_adopt_secondary_result_artifact_on_reload(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job(
+        "plan", "running result artifact", config["repositories"]["default"], {}
+    )
+    manager.update_job_state(job_id, JobState.RUNNING)
+    result_path = tmp_path / "logs" / "jobs" / f"{job_id}_result.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(
+        json.dumps({"summary": "secondary artifact", "files_changed": []}),
+        encoding="utf-8",
+    )
+
+    reloaded = JobManager(config).get_job(job_id)
+
+    assert reloaded.state == JobState.RUNNING
+    assert reloaded.result is None
+
+
 def test_job_manager_can_store_complete_private_prompt_evidence(tmp_path):
     config = make_config(tmp_path)
     config["logging"]["private_evidence_log"] = True
@@ -113,7 +209,7 @@ def test_completed_job_clears_prior_running_error(tmp_path):
     manager = JobManager(config)
     job_id = manager.create_job("plan", "inspect", config["repositories"]["default"], {})
     manager.update_job_state(job_id, JobState.RUNNING)
-    manager.update_job_state(job_id, JobState.FAILED, error="temporary stale marker")
+    manager.update_job_state(job_id, JobState.RUNNING, error="temporary stale marker")
 
     manager.update_job_state(
         job_id,
@@ -261,6 +357,69 @@ def test_job_creation_can_queue_when_enabled(tmp_path):
     assert manager.active_job_count() == 2
 
 
+def test_job_manager_serializes_high_contention_state_and_option_persistence(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job("plan", "persistence race", config["repositories"]["default"], {})
+    operation_count = 1_024
+    workers = 32
+    start = threading.Barrier(workers)
+
+    def mutate(index: int) -> None:
+        start.wait()
+        if index % 2:
+            manager.update_job_options(job_id, {"kind": "options", "sequence": index})
+        else:
+            manager.update_job_state(
+                job_id,
+                JobState.RUNNING,
+                progress=f"state-{index}",
+                last_event=f"event-{index}",
+                event_count=index,
+            )
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(mutate, range(operation_count)))
+
+    job = manager.get_job(job_id)
+    assert job is not None
+    record_path = tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json"
+    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    assert persisted == job.to_persisted_dict()
+    assert persisted["state"] == JobState.RUNNING.value
+    assert not list(record_path.parent.glob("*.tmp"))
+
+    reloaded = JobManager(config)
+    reloaded_job = reloaded.get_job(job_id)
+    assert reloaded_job is not None
+    assert reloaded_job.to_persisted_dict() == persisted
+
+
+def test_job_option_mutations_merge_without_losing_concurrent_fields(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job(
+        "plan", "atomic option patches", config["repositories"]["default"], {}
+    )
+    workers = 32
+    start = threading.Barrier(workers)
+
+    def mutate(index: int) -> None:
+        start.wait()
+        manager.mutate_job_options(
+            job_id,
+            lambda current: {**current, f"field_{index}": index},
+        )
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(mutate, range(workers)))
+
+    options = manager.get_job(job_id).options
+    assert options == {f"field_{index}": index for index in range(workers)}
+    reloaded = JobManager(config)
+    assert reloaded.get_job(job_id).options == options
+
+
 def test_cleanup_old_jobs_removes_persisted_record(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -273,3 +432,37 @@ def test_cleanup_old_jobs_removes_persisted_record(tmp_path):
 
     assert manager.get_job(job_id) is None
     assert not (tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json").exists()
+
+
+@pytest.mark.parametrize(
+    "cleanup_outcome",
+    [
+        "cleanup_pending",
+        "cleanup_retry_pending_process_live",
+        "cleanup_blocked_untrusted_process_identity",
+    ],
+)
+def test_retention_and_explicit_cleanup_preserve_unresolved_process_ownership(
+    tmp_path, cleanup_outcome
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job(
+        "plan", "retain unresolved ownership", config["repositories"]["default"], {}
+    )
+    manager.transition_job_terminal(
+        job_id,
+        JobState.FAILED,
+        result={"summary": "terminal"},
+        wrapper_cleanup_outcome=cleanup_outcome,
+    )
+    manager.jobs[job_id].completed_at = time.time() - (25 * 3600)
+    manager._persist_job(manager.jobs[job_id])
+    record = tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json"
+
+    manager.cleanup_old_jobs()
+    explicit = manager.cleanup_job(job_id)
+
+    assert explicit is False
+    assert manager.get_job(job_id) is not None
+    assert record.exists()

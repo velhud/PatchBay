@@ -9,7 +9,8 @@ import logging
 import os
 import threading
 import errno
-from typing import Dict, Optional, Any
+import tempfile
+from typing import Any, Callable, Dict, Optional
 from pathlib import Path
 from enum import Enum
 from dataclasses import dataclass, asdict
@@ -29,6 +30,38 @@ class JobState(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+TERMINAL_CLEANUP_PENDING_OUTCOMES = frozenset(
+    {
+        "cleanup_pending",
+        "cleanup_timeout_after_terminal",
+        "cleanup_retry_pending_process_live",
+        "cleanup_blocked_untrusted_process_identity",
+        "cleanup_signal_failed",
+        "cleanup_kill_failed",
+    }
+)
+
+TERMINAL_CLEANUP_RECOVERY_REQUIRED_OUTCOMES = frozenset(
+    {
+        "cleanup_blocked_untrusted_process_identity",
+        "cleanup_signal_failed",
+        "cleanup_kill_failed",
+    }
+)
+
+
+def terminal_cleanup_pending(outcome: Any) -> bool:
+    """Return whether semantic completion still owns transport cleanup."""
+
+    return str(outcome or "") in TERMINAL_CLEANUP_PENDING_OUTCOMES
+
+
+def terminal_cleanup_recovery_required(outcome: Any) -> bool:
+    """Return whether cleanup needs operator-visible recovery, not blind retry."""
+
+    return str(outcome or "") in TERMINAL_CLEANUP_RECOVERY_REQUIRED_OUTCOMES
 
 
 @dataclass
@@ -75,6 +108,12 @@ class JobInfo:
     prompt_recorded_at: Optional[str] = None
     terminal_source: Optional[str] = None
     terminal_observed_at: Optional[float] = None
+    completion_evidence_source: Optional[str] = None
+    completion_evidence_observed_at: Optional[float] = None
+    completion_evidence_session_id: Optional[str] = None
+    completion_evidence_result_status: Optional[str] = None
+    completion_evidence_version: Optional[int] = None
+    completion_evidence_result: Optional[Dict[str, Any]] = None
     wrapper_cleanup_outcome: Optional[str] = None
     late_terminal_source: Optional[str] = None
     late_terminal_observed_at: Optional[float] = None
@@ -95,6 +134,10 @@ class JobInfo:
                 for key, value in self.result.items()
                 if not key.startswith("_")
             }
+        if self.completion_evidence_result:
+            data["completion_evidence_result"] = redact_sensitive_output(
+                self.completion_evidence_result
+            )
         if self.checkpoints:
             data["checkpoints"] = redact_sensitive_output(self.checkpoints)
         if self.error:
@@ -121,6 +164,9 @@ class JobManager:
         self.config = config
         self.jobs: Dict[str, JobInfo] = {}
         self._admission_lock = threading.Lock()
+        # Job mutations, their durable snapshots, and record deletion share one
+        # re-entrant boundary. create_job takes _admission_lock before this lock;
+        # no other path takes _admission_lock, so the ordering cannot invert.
         self._state_lock = threading.RLock()
         self.max_concurrent = config['server']['max_concurrent_jobs']
         self.queue_enabled = bool(config.get("server", {}).get("queue_enabled", False))
@@ -151,7 +197,8 @@ class JobManager:
 
     def active_job_count(self) -> int:
         """Return PENDING + RUNNING jobs that count against concurrency."""
-        return sum(1 for job in self.jobs.values() if job.state in (JobState.PENDING, JobState.RUNNING))
+        with self._state_lock:
+            return sum(1 for job in self.jobs.values() if job.state in (JobState.PENDING, JobState.RUNNING))
 
     def _create_job_unlocked(self, mode: str, prompt: str, repo_path: str, options: Optional[Dict] = None) -> str:
         """
@@ -234,8 +281,9 @@ class JobManager:
             job.prompt_bytes = prompt_record["prompt_bytes"]
             job.prompt_recorded_at = prompt_record["prompt_recorded_at"]
         
-        self.jobs[job_id] = job
-        self._persist_job(job)
+        with self._state_lock:
+            self.jobs[job_id] = job
+            self._persist_job(job)
         logger.info("Created job %s: mode=%s", job_id, mode)
         
         return job_id
@@ -340,10 +388,31 @@ class JobManager:
 
     def update_job_options(self, job_id: str, options: Dict[str, Any]) -> None:
         """Replace a job's private options and persist the durable record."""
-        if job_id not in self.jobs:
-            raise ValueError(f"Unknown job: {job_id}")
-        self.jobs[job_id].options = dict(options)
-        self._persist_job(self.jobs[job_id])
+        with self._state_lock:
+            if job_id not in self.jobs:
+                raise ValueError(f"Unknown job: {job_id}")
+            job = self.jobs[job_id]
+            job.options = dict(options)
+            self._persist_job(job)
+
+    def mutate_job_options(
+        self,
+        job_id: str,
+        mutator: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Atomically read, patch, and persist private job options."""
+
+        with self._state_lock:
+            if job_id not in self.jobs:
+                raise ValueError(f"Unknown job: {job_id}")
+            job = self.jobs[job_id]
+            options = dict(job.options or {})
+            replacement = mutator(options)
+            if replacement is not None:
+                options = dict(replacement)
+            job.options = options
+            self._persist_job(job)
+            return dict(options)
 
     def _validate_worker_worktree_path(self, worktree_path: str) -> Path:
         path = Path(worktree_path).expanduser().resolve()
@@ -359,12 +428,49 @@ class JobManager:
                 raise ValueError(f"Unknown job: {job_id}")
 
             job = self.jobs[job_id]
-            if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED) and state in (
-                JobState.PENDING,
-                JobState.RUNNING,
-            ):
-                logger.debug("Ignored state change for terminal job %s: %s -> %s", job_id, job.state, state)
+            terminal_states = {
+                JobState.COMPLETED,
+                JobState.FAILED,
+                JobState.CANCELLED,
+            }
+            authoritative_sources = {
+                "session_task_complete",
+                "stdout_turn_completed",
+            }
+            if job.state in terminal_states and state != job.state:
+                logger.debug(
+                    "Ignored state change for terminal job %s: %s -> %s",
+                    job_id,
+                    job.state,
+                    state,
+                )
                 return
+            if (
+                job.state in {JobState.PENDING, JobState.RUNNING}
+                and state in {JobState.FAILED, JobState.CANCELLED}
+                and job.terminal_source in authoritative_sources
+            ):
+                logger.debug(
+                    "Ignored non-completion terminal change after semantic completion claim for job %s",
+                    job_id,
+                )
+                return
+            if (
+                job.state in terminal_states
+                and job.terminal_source in authoritative_sources
+                and isinstance(job.result, dict)
+            ):
+                kwargs.pop("result", None)
+                kwargs.pop("error", None)
+                for protected in (
+                    "terminal_source",
+                    "terminal_observed_at",
+                    "session_id",
+                    "exit_code",
+                    "completed_at",
+                ):
+                    if getattr(job, protected, None) is not None:
+                        kwargs.pop(protected, None)
             job.state = state
 
             # Update timestamps
@@ -396,7 +502,7 @@ class JobManager:
             if job is None:
                 raise ValueError(f"Unknown job: {job_id}")
             if (
-                state == JobState.CANCELLED
+                state in {JobState.FAILED, JobState.CANCELLED}
                 and job.state in (JobState.PENDING, JobState.RUNNING)
                 and job.terminal_source in {"session_task_complete", "stdout_turn_completed"}
             ):
@@ -405,7 +511,23 @@ class JobManager:
                 self._persist_job(job)
                 return False
             if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                terminal_source = str(kwargs.get("terminal_source") or "")
                 if job.state == state:
+                    if (
+                        job.terminal_source
+                        in {"session_task_complete", "stdout_turn_completed"}
+                        and isinstance(job.result, dict)
+                    ):
+                        for protected in (
+                            "result",
+                            "error",
+                            "terminal_source",
+                            "terminal_observed_at",
+                            "session_id",
+                            "exit_code",
+                            "completed_at",
+                        ):
+                            kwargs.pop(protected, None)
                     for key, value in kwargs.items():
                         if hasattr(job, key):
                             setattr(job, key, value)
@@ -424,20 +546,125 @@ class JobManager:
             self.update_job_state(job_id, state, **kwargs)
             return True
 
-    def claim_job_semantic_completion(self, job_id: str, *, source: str, observed_at: float) -> bool:
-        """Atomically record authoritative completion before wrapper cleanup."""
+    def record_completion_evidence(
+        self,
+        job_id: str,
+        *,
+        source: str,
+        observed_at: float,
+        fallback_result: Dict[str, Any],
+        session_id: str = "",
+        result_status: str = "missing",
+    ) -> bool:
+        """Persist pre-terminal completion evidence without choosing terminal state.
+
+        A stdout ``turn.completed`` event proves the Codex turn finished, but
+        the exact session report may still arrive and has higher authority.
+        Keeping this separate from ``terminal_source`` preserves that ordering
+        while making a crash between event observation and wrapper exit
+        recoverable.
+        """
+
+        if source != "stdout_turn_completed":
+            raise ValueError("Unsupported completion evidence source")
+        allowed_statuses = {
+            "structured",
+            "text",
+            "checkpoint",
+            "missing",
+            "malformed",
+            "truncated",
+        }
+        if result_status not in allowed_statuses:
+            raise ValueError("Unsupported completion evidence result status")
         with self._state_lock:
             job = self.jobs.get(job_id)
             if job is None:
                 raise ValueError(f"Unknown job: {job_id}")
             if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
-                return job.state == JobState.COMPLETED
-            if job.terminal_source and job.terminal_source != source:
                 return False
-            job.terminal_source = source
-            job.terminal_observed_at = float(observed_at)
+            if job.completion_evidence_source:
+                return job.completion_evidence_source == source
+            bounded_result, bounded_status = self._bounded_completion_evidence_result(
+                fallback_result,
+                result_status=result_status,
+            )
+            job.completion_evidence_source = str(source)
+            job.completion_evidence_observed_at = float(observed_at)
+            job.completion_evidence_session_id = str(session_id or "") or None
+            job.completion_evidence_result_status = bounded_status
+            job.completion_evidence_version = 1
+            job.completion_evidence_result = bounded_result
             self._persist_job(job)
             return True
+
+    def _bounded_completion_evidence_result(
+        self,
+        value: Dict[str, Any],
+        *,
+        result_status: str,
+    ) -> tuple[Dict[str, Any], str]:
+        """Redact and structurally compact one pre-terminal report envelope."""
+
+        redacted = redact_sensitive_output(dict(value))
+        safe = (
+            {key: item for key, item in redacted.items() if not str(key).startswith("_")}
+            if isinstance(redacted, dict)
+            else {}
+        )
+        configured = self.config.get("logging", {}).get(
+            "job_log_max_bytes", 200_000
+        )
+        try:
+            limit = max(2, min(int(configured), 200_000))
+        except (TypeError, ValueError):
+            limit = 200_000
+
+        def encoded_size(payload: Dict[str, Any]) -> int:
+            return len(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+
+        if encoded_size(safe) <= limit:
+            return safe, result_status
+
+        summary = str(safe.get("summary") or "Completion report exceeded the durable evidence limit.")
+        compact: Dict[str, Any] = {
+            "summary": summary,
+            "report_completeness": "truncated",
+        }
+        while summary and encoded_size(compact) > limit:
+            summary = summary[: max(0, len(summary) // 2)]
+            compact["summary"] = summary
+        if encoded_size(compact) > limit:
+            compact = {"summary": "[truncated]"}
+        if encoded_size(compact) > limit:
+            compact = {}
+
+        for key in (
+            "detailed_report",
+            "files_changed",
+            "commands_run",
+            "tests_run",
+            "notes",
+            "risks",
+            "open_questions",
+            "next_steps",
+            "parsed_output_schema_valid",
+            "final_structured_result",
+            "result_source",
+        ):
+            if key not in safe:
+                continue
+            candidate = dict(compact)
+            candidate[key] = safe[key]
+            if encoded_size(candidate) <= limit:
+                compact = candidate
+        return compact, "truncated"
 
     def _normalize_terminal_job(self, job: JobInfo) -> None:
         """Clear live-only activity fields once a job reaches a terminal state."""
@@ -451,44 +678,64 @@ class JobManager:
     
     def get_job(self, job_id: str) -> Optional[JobInfo]:
         """Get job info by ID"""
-        return self.jobs.get(job_id)
+        with self._state_lock:
+            return self.jobs.get(job_id)
     
-    def cleanup_job(self, job_id: str):
+    def cleanup_job(self, job_id: str) -> bool:
         """
         Clean up job resources (worktree, logs).
         """
-        job = self.get_job(job_id)
-        if not job:
-            return
+        with self._state_lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return False
+            if terminal_cleanup_pending(job.wrapper_cleanup_outcome):
+                logger.warning(
+                    "Refused cleanup of job %s while process ownership is unresolved",
+                    job_id,
+                )
+                return False
+            mode = job.mode
+            worktree_path = job.worktree_path
+            repo_path = job.repo_path
         
         # Remove worktree if it was created
-        if job.mode == "apply" and job.worktree_path:
+        if mode == "apply" and worktree_path:
             try:
-                worktree_path = Path(job.worktree_path)
-                if worktree_path.exists():
-                    repo = git.Repo(job.repo_path)
-                    repo.git.worktree('remove', str(worktree_path), '--force')
+                worktree = Path(worktree_path)
+                if worktree.exists():
+                    repo = git.Repo(repo_path)
+                    repo.git.worktree('remove', str(worktree), '--force')
                     logger.info(f"Removed worktree for job {job_id}")
             except Exception as e:
                 logger.warning("Failed to remove worktree for job %s: %s", job_id, internal_log_error(e))
         
-        # Remove from tracking
-        del self.jobs[job_id]
-        self._delete_job_record(job_id)
+        # Remove from tracking and disk as one serialized state transition. A
+        # concurrent update either persists before this deletion or observes an
+        # unknown job; it cannot recreate the record after deletion.
+        with self._state_lock:
+            if self.jobs.get(job_id) is not job:
+                return False
+            del self.jobs[job_id]
+            self._delete_job_record(job_id)
         logger.info(f"Cleaned up job {job_id}")
+        return True
     
     def cleanup_old_jobs(self):
         """Remove jobs older than cleanup_after_hours"""
         cleanup_threshold = time.time() - (self.cleanup_after_hours * 3600)
-        
-        to_remove = []
-        for job_id, job in self.jobs.items():
-            # Workers are derived from worker-tagged durable job records.
-            # Ordinary age cleanup must not delete their identity/session index.
-            if (job.options or {}).get("_worker_id"):
-                continue
-            if job.completed_at and job.completed_at < cleanup_threshold:
-                to_remove.append(job_id)
+
+        with self._state_lock:
+            to_remove = []
+            for job_id, job in self.jobs.items():
+                # Workers are derived from worker-tagged durable job records.
+                # Ordinary age cleanup must not delete their identity/session index.
+                if (job.options or {}).get("_worker_id"):
+                    continue
+                if terminal_cleanup_pending(job.wrapper_cleanup_outcome):
+                    continue
+                if job.completed_at and job.completed_at < cleanup_threshold:
+                    to_remove.append(job_id)
         
         for job_id in to_remove:
             self.cleanup_job(job_id)
@@ -498,24 +745,55 @@ class JobManager:
 
     def mark_active_jobs_cancelled(self, reason: str):
         """Mark non-terminal jobs as cancelled without deleting their durable records."""
-        for job_id, job in list(self.jobs.items()):
-            if job.state in (JobState.PENDING, JobState.RUNNING):
-                self.update_job_state(job_id, JobState.CANCELLED, error=reason)
+        with self._state_lock:
+            for job_id, job in list(self.jobs.items()):
+                if job.state in (JobState.PENDING, JobState.RUNNING):
+                    self.update_job_state(job_id, JobState.CANCELLED, error=reason)
 
     def _job_record_path(self, job_id: str) -> Path:
         return self.job_state_dir / f"{job_id}.json"
 
     def _persist_job(self, job: JobInfo) -> None:
-        path = self._job_record_path(job.job_id)
-        tmp_path = path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(job.to_persisted_dict(), indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(path)
+        """Atomically persist one state-locked JobInfo snapshot."""
+        with self._state_lock:
+            path = self._job_record_path(job.job_id)
+            payload = json.dumps(job.to_persisted_dict(), indent=2, sort_keys=True)
+            descriptor, temporary_path = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=self.job_state_dir,
+                text=True,
+            )
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary_path, path)
+                self._fsync_job_state_dir()
+            finally:
+                Path(temporary_path).unlink(missing_ok=True)
+
+    def _fsync_job_state_dir(self) -> None:
+        """Best-effort directory sync after replacing a durable job record."""
+        if os.name == "nt":
+            return
+        try:
+            descriptor = os.open(self.job_state_dir, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            logger.debug("Failed to sync job state directory: %s", internal_log_error(error))
 
     def _delete_job_record(self, job_id: str) -> None:
-        try:
-            self._job_record_path(job_id).unlink(missing_ok=True)
-        except Exception as error:
-            logger.warning("Failed to delete job record %s: %s", job_id, internal_log_error(error))
+        with self._state_lock:
+            try:
+                self._job_record_path(job_id).unlink(missing_ok=True)
+                self._fsync_job_state_dir()
+            except Exception as error:
+                logger.warning("Failed to delete job record %s: %s", job_id, internal_log_error(error))
 
     def _load_jobs(self) -> None:
         loaded = 0
@@ -534,8 +812,9 @@ class JobManager:
                     job.error = None
                 if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
                     self._normalize_terminal_job(job)
-                self.jobs[job.job_id] = job
-                self._persist_job(job)
+                with self._state_lock:
+                    self.jobs[job.job_id] = job
+                    self._persist_job(job)
                 loaded += 1
             except Exception as error:
                 logger.warning("Failed to load job record %s: %s", path.name, internal_log_error(error))
@@ -544,6 +823,12 @@ class JobManager:
 
     def _recover_result_artifact(self, job: JobInfo) -> None:
         """Recover a terminal result payload when the state file lost it."""
+        if job.state not in {
+            JobState.COMPLETED,
+            JobState.FAILED,
+            JobState.CANCELLED,
+        }:
+            return
         if isinstance(job.result, dict):
             return
         result_path = self.job_logs_dir / f"{job.job_id}_result.json"

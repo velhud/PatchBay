@@ -6,14 +6,15 @@ production pull-transport graph.
 """
 from __future__ import annotations
 
-import hashlib
 import inspect
+import asyncio
 import json
 import logging
 import os
 import re
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from importlib import import_module
@@ -36,9 +37,9 @@ from patchbay.hub.protocol_v2 import (
     HUB_V2_PROTOCOL_METADATA,
     HubProtocolV2,
 )
-from patchbay.hub.broker import ATTEMPT_CONTRACT_ENTITY_TYPE
 from patchbay.hub.store_v2 import HubStoreV2Conflict, HubStoreV2StateError
-from patchbay.hub.tool_surface import HUB_V2_ACTION_MAP, HUB_V2_CONTRACT_HASH
+from patchbay.hub.backup_v2 import AdmissionFrozenError
+from patchbay.hub.transport_v2 import HubPullTransportBridgeV2
 from patchbay.protocol.context import RequestContext, make_client_ref, make_hashed_ref
 from patchbay.security import internal_log_error, redact_sensitive_output
 
@@ -46,9 +47,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 DEFAULT_WORK_RUN_IDLE_SECONDS = 900
+DEFAULT_MCP_SESSION_TTL_SECONDS = 24 * 60 * 60
+DEFAULT_MAX_MCP_SESSIONS = 1_024
+DEFAULT_RECOVERY_DISPATCH_INTERVAL_SECONDS = 1.0
+DEFAULT_RECOVERY_DISPATCH_BATCH_SIZE = 100
 EDGE_V2_PREFIX = "/edge/v2"
-EDGE_DISPATCH_ENTITY = "hub.edge_dispatch"
-EDGE_RECEIPT_ENTITY = "hub.edge_receipt"
 
 
 @runtime_checkable
@@ -385,606 +388,13 @@ class _PublicToolHandler:
         return _public_result(deepcopy(dict(result)))
 
 
-class _RuntimeEdgeController:
-    """Edge HTTP application over the services exposed by ``HubAppV2``."""
+class _RuntimeEdgeController(HubPullTransportBridgeV2):
+    """Production pull transport used for injected Hub applications.
 
-    def __init__(self, domain_app: Any):
-        candidate_runtime = getattr(domain_app, "runtime", None)
-        self.runtime = candidate_runtime or (
-            domain_app
-            if callable(getattr(domain_app, "authenticate_machine", None))
-            and callable(getattr(domain_app, "heartbeat", None))
-            else None
-        )
-        self.broker = getattr(domain_app, "broker", None) or getattr(self.runtime, "broker", None)
-        self.store = getattr(domain_app, "store", None) or getattr(self.runtime, "store", None)
-        if self.runtime is None or self.broker is None or self.store is None:
-            raise TypeError(
-                "HubV2App must expose Edge methods or its runtime, broker, and store services"
-            )
-
-    def edge_enroll(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        return self.runtime.enroll_machine(
-            code=str(payload.get("code") or ""),
-            machine_id=str(payload.get("machine_id") or ""),
-            display_name=str(payload.get("display_name") or ""),
-            tags=payload.get("tags"),
-            role=str(payload.get("role") or ""),
-            capabilities=(
-                payload.get("capabilities")
-                if isinstance(payload.get("capabilities"), Mapping)
-                else None
-            ),
-            workspaces=(
-                payload.get("workspaces")
-                if isinstance(payload.get("workspaces"), list)
-                else None
-            ),
-            edge_generation=str(payload.get("edge_generation") or ""),
-        )
-
-    def edge_heartbeat(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        token: str,
-    ) -> Mapping[str, Any]:
-        self._authenticate(payload, token, require_contract=False)
-        return self.runtime.heartbeat(
-            machine_id=str(payload["machine_id"]),
-            token=token,
-            edge_generation=str(payload["edge_generation"]),
-            projection_revision=int(payload["projection_revision"]),
-            capabilities=(
-                payload.get("capabilities")
-                if isinstance(payload.get("capabilities"), Mapping)
-                else None
-            ),
-            workspaces=(
-                payload.get("workspaces")
-                if isinstance(payload.get("workspaces"), list)
-                else None
-            ),
-            worker_status=(
-                payload.get("worker_status")
-                if isinstance(payload.get("worker_status"), Mapping)
-                else None
-            ),
-            resource_status=(
-                payload.get("resource_status")
-                if isinstance(payload.get("resource_status"), Mapping)
-                else None
-            ),
-        )
-
-    def edge_projection(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        token: str,
-    ) -> Mapping[str, Any]:
-        self._authenticate(payload, token, require_contract=True)
-        projection = payload.get("projection")
-        if not isinstance(projection, Mapping):
-            raise EdgeRequestError("projection must be an object")
-        return self.runtime.heartbeat(
-            machine_id=str(payload["machine_id"]),
-            token=token,
-            edge_generation=str(payload["edge_generation"]),
-            projection_revision=int(payload["projection_revision"]),
-            worker_projection=projection,
-        )
-
-    def edge_claim(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        token: str,
-    ) -> Mapping[str, Any]:
-        machine = self._authenticate(payload, token, require_contract=True)
-        machine_id = str(payload["machine_id"])
-        edge_generation = str(payload["edge_generation"])
-        generation_number = self._generation_number(edge_generation)
-        contract_hash = self._requested_contract_hash(payload)
-        try:
-            maximum = max(1, min(int(payload.get("max_attempts") or 1), 64))
-            available = max(0, int(payload.get("available_slots", maximum)))
-        except (TypeError, ValueError) as error:
-            raise EdgeRequestError("max_attempts and available_slots must be integers") from error
-        maximum = min(maximum, available)
-        if maximum < 1:
-            return {"accepted": True, "attempt": None, "attempts": []}
-
-        self.broker.expire_leases()
-        claimed: list[dict[str, Any]] = []
-        dispatches = sorted(
-            self.store.list_entities(EDGE_DISPATCH_ENTITY),
-            key=lambda item: (
-                float(item["record"].get("created_at") or 0),
-                str(item["entity_id"]),
-            ),
-        )
-        for entity in dispatches:
-            if len(claimed) >= maximum:
-                break
-            operation_id = str(entity["entity_id"])
-            operation = self.store.get_operation(operation_id)
-            if operation is None or operation.get("state") not in {"dispatchable", "running"}:
-                continue
-            dispatch_payload = self._dispatch_payload(entity)
-            target = (
-                dispatch_payload.get("target")
-                if isinstance(dispatch_payload.get("target"), Mapping)
-                else {}
-            )
-            target_machine = str(
-                dispatch_payload.get("machine_id") or target.get("machine_id") or ""
-            )
-            target_generation = str(
-                dispatch_payload.get("edge_generation")
-                or target.get("edge_generation")
-                or ""
-            )
-            if target_machine != machine_id or target_generation != edge_generation:
-                continue
-            offered = self.broker.offer_attempt(
-                operation_id,
-                machine_id=machine_id,
-                edge_generation=generation_number,
-                required_contract_hash=contract_hash,
-                principal_ref=str(operation["principal_ref"]),
-            )
-            attempt = self.broker.claim_attempt(
-                operation_id,
-                str(offered["attempt_id"]),
-                machine_id=machine_id,
-                edge_generation=generation_number,
-                contract_hash=contract_hash,
-                fencing_token=int(offered["fencing_token"]),
-                principal_ref=str(operation["principal_ref"]),
-            )
-            claimed.append(
-                self._wire_attempt(
-                    attempt,
-                    operation=operation,
-                    dispatch=entity["record"],
-                    machine=machine,
-                    external_generation=edge_generation,
-                )
-            )
-        return {
-            "accepted": True,
-            "attempt": claimed[0] if claimed else None,
-            "attempts": claimed,
-        }
-
-    def edge_lease(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        token: str,
-    ) -> Mapping[str, Any]:
-        machine = self._authenticate(payload, token, require_contract=True)
-        operation, attempt, contract = self._require_attempt_fences(payload)
-        fences = {
-            "expected_revision": int(payload["expected_revision"]),
-            "machine_id": str(payload["machine_id"]),
-            "edge_generation": self._generation_number(str(payload["edge_generation"])),
-            "contract_hash": self._requested_contract_hash(payload),
-            "fencing_token": int(payload["fencing_token"]),
-            "principal_ref": str(operation["principal_ref"]),
-        }
-        if attempt["state"] == "claimed":
-            saved = self.broker.mark_attempt_executing(
-                str(operation["operation_id"]),
-                str(attempt["attempt_id"]),
-                **fences,
-            )
-        else:
-            saved = self.broker.renew_lease(
-                str(operation["operation_id"]),
-                str(attempt["attempt_id"]),
-                lease_seconds=payload.get("lease_seconds"),
-                **fences,
-            )
-        if saved is None:
-            raise StaleEdgeRequest("stale_attempt_revision")
-        dispatch = self.store.get_entity(EDGE_DISPATCH_ENTITY, str(operation["operation_id"]))
-        return {
-            "accepted": True,
-            "attempt": self._wire_attempt(
-                saved,
-                operation=operation,
-                dispatch=dispatch["record"] if dispatch else {"payload": {}},
-                machine=machine,
-                external_generation=str(payload["edge_generation"]),
-                contract=contract,
-            ),
-        }
-
-    def edge_result(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        token: str,
-    ) -> Mapping[str, Any]:
-        self._authenticate(payload, token, require_contract=True)
-        receipt = payload.get("receipt")
-        receipt = dict(receipt) if isinstance(receipt, Mapping) else dict(payload)
-        receipt_id = str(receipt.get("receipt_id") or "").strip()
-        if not receipt_id:
-            raise EdgeRequestError("receipt_id is required")
-        combined = {**dict(payload), **receipt}
-        operation, attempt, _ = self._require_attempt_fences(combined)
-        operation_id = str(operation["operation_id"])
-        attempt_id = str(attempt["attempt_id"])
-        dispatch = self.store.get_entity(EDGE_DISPATCH_ENTITY, operation_id)
-        expected_payload_hash = str(
-            (dispatch or {}).get("record", {}).get("payload_hash")
-            or operation.get("semantic_payload_hash")
-            or ""
-        )
-        received_payload_hash = str(receipt.get("operation_payload_hash") or "").strip()
-        if expected_payload_hash and received_payload_hash != expected_payload_hash:
-            raise HubStoreV2Conflict("operation_payload_hash_mismatch")
-        result = receipt.get("result")
-        if result is not None and not isinstance(result, Mapping):
-            raise EdgeRequestError("receipt.result must be an object")
-        saved_operation = self.broker.finish_operation(
-            operation_id,
-            attempt_id,
-            expected_operation_revision=int(operation["revision"]),
-            machine_id=str(payload["machine_id"]),
-            edge_generation=self._generation_number(str(payload["edge_generation"])),
-            contract_hash=self._requested_contract_hash(combined),
-            fencing_token=int(combined["fencing_token"]),
-            result=result,
-            transport_error=str(receipt.get("error") or ""),
-            principal_ref=str(operation["principal_ref"]),
-        )
-        if saved_operation is None:
-            raise StaleEdgeRequest("stale_operation_revision")
-        saved_attempt = self.store.get_attempt(attempt_id)
-        if saved_attempt is None:
-            raise RuntimeError("Attempt disappeared after result commit")
-        acknowledged = self.broker.acknowledge_result(
-            operation_id,
-            attempt_id,
-            expected_revision=int(saved_attempt["revision"]),
-            machine_id=str(payload["machine_id"]),
-            edge_generation=self._generation_number(str(payload["edge_generation"])),
-            contract_hash=self._requested_contract_hash(combined),
-            fencing_token=int(combined["fencing_token"]),
-            principal_ref=str(operation["principal_ref"]),
-        )
-        if acknowledged is None:
-            raise StaleEdgeRequest("stale_attempt_revision")
-
-        acknowledgement = {
-            "receipt_id": receipt_id,
-            "operation_id": operation_id,
-            "attempt_id": attempt_id,
-            "fencing_token": int(combined["fencing_token"]),
-            "edge_generation": str(payload["edge_generation"]),
-        }
-        if receipt_id:
-            self._record_receipt(acknowledgement, machine_id=str(payload["machine_id"]))
-        self._apply_dispatch_result(operation_id, receipt.get("result"))
-        return {
-            "accepted": True,
-            "operation": saved_operation,
-            "attempt": self._external_attempt(
-                acknowledged,
-                external_generation=str(payload["edge_generation"]),
-            ),
-            "receipt_acknowledgements": [acknowledgement] if receipt_id else [],
-        }
-
-    def edge_outbox_ack(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        token: str,
-    ) -> Mapping[str, Any]:
-        self._authenticate(payload, token, require_contract=True)
-        receipt_ids = payload.get("receipt_ids")
-        if not isinstance(receipt_ids, list):
-            raise EdgeRequestError("receipt_ids must be an array")
-        acknowledged: list[dict[str, Any]] = []
-        for receipt_id in receipt_ids:
-            entity = self.store.get_entity(EDGE_RECEIPT_ENTITY, str(receipt_id))
-            if entity is None:
-                continue
-            record = entity["record"]
-            if (
-                record.get("machine_id") == payload["machine_id"]
-                and record.get("edge_generation") == payload["edge_generation"]
-            ):
-                acknowledged.append(
-                    {key: deepcopy(value) for key, value in record.items() if key != "machine_id"}
-                )
-        return {
-            "accepted": len(acknowledged) == len(receipt_ids),
-            "acknowledged_receipts": acknowledged,
-            "receipt_acknowledgements": acknowledged,
-        }
-
-    def edge_reconcile(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        token: str,
-    ) -> Mapping[str, Any]:
-        # Historical reconciliation is fenced by the stored attempt contract,
-        # so it must survive a later advertised-contract upgrade.
-        machine = self._authenticate(payload, token, require_contract=False)
-        self.broker.expire_leases(operation_id=str(payload["operation_id"]))
-        operation, attempt, contract = self._require_attempt_fences(payload)
-        if attempt["state"] == "lease_expired":
-            saved = self.broker.begin_reconciliation(
-                str(operation["operation_id"]),
-                str(attempt["attempt_id"]),
-                expected_revision=int(attempt["revision"]),
-                machine_id=str(payload["machine_id"]),
-                edge_generation=self._generation_number(str(payload["edge_generation"])),
-                contract_hash=self._requested_contract_hash(payload),
-                fencing_token=int(payload["fencing_token"]),
-                principal_ref=str(operation["principal_ref"]),
-            )
-            if saved is None:
-                raise StaleEdgeRequest("stale_attempt_revision")
-            attempt = saved
-
-        local = payload.get("local_recovery")
-        local = local if isinstance(local, Mapping) else {}
-        receipt = local.get("receipt")
-        if isinstance(receipt, Mapping) and receipt.get("result") is not None:
-            return self.edge_result(
-                {
-                    **dict(payload),
-                    "receipt": {**dict(receipt), **self._external_fences(attempt, payload)},
-                },
-                token=token,
-            )
-        dispatch = self.store.get_entity(EDGE_DISPATCH_ENTITY, str(operation["operation_id"]))
-        return {
-            "accepted": True,
-            "found": True,
-            "attempt": self._wire_attempt(
-                attempt,
-                operation=operation,
-                dispatch=dispatch["record"] if dispatch else {"payload": {}},
-                machine=machine,
-                external_generation=str(payload["edge_generation"]),
-                contract=contract,
-            ),
-        }
-
-    def _authenticate(
-        self,
-        payload: Mapping[str, Any],
-        token: str,
-        *,
-        require_contract: bool,
-    ) -> dict[str, Any]:
-        nested_contract = payload.get("contract")
-        if isinstance(nested_contract, Mapping):
-            nested_generation = str(nested_contract.get("edge_generation") or "").strip()
-            if nested_generation and nested_generation != str(payload.get("edge_generation") or ""):
-                raise HubStoreV2Conflict("attempt_edge_generation_mismatch")
-        record = self.runtime.authenticate_machine(
-            str(payload.get("machine_id") or ""),
-            token,
-            edge_generation=str(payload.get("edge_generation") or ""),
-        )
-        if require_contract:
-            requested = self._requested_contract_hash(payload)
-            advertised = str((record.get("capabilities") or {}).get("contract_hash") or "")
-            # Permit an enrolled older Edge to finish only attempts bound to
-            # its advertised contract during a rolling upgrade. Attempt-level
-            # fences still reject mismatched operations, and placement blocks
-            # new work until the Edge advertises the current contract.
-            if requested != advertised:
-                raise HubStoreV2Conflict("attempt_contract_hash_mismatch")
-        return record
-
-    @staticmethod
-    def _requested_contract_hash(payload: Mapping[str, Any]) -> str:
-        nested = payload.get("contract")
-        nested = nested if isinstance(nested, Mapping) else {}
-        values = {
-            str(value).strip()
-            for value in (
-                payload.get("contract_hash"),
-                payload.get("required_contract_hash"),
-                nested.get("contract_hash"),
-            )
-            if str(value or "").strip()
-        }
-        if not values:
-            raise EdgeRequestError("contract_hash is required")
-        if len(values) != 1:
-            raise HubStoreV2Conflict("attempt_contract_hash_mismatch")
-        return values.pop()
-
-    @staticmethod
-    def _generation_number(edge_generation: str) -> int:
-        digest = hashlib.sha256(edge_generation.encode("utf-8")).digest()
-        return int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
-
-    @staticmethod
-    def _dispatch_payload(entity: Mapping[str, Any]) -> dict[str, Any]:
-        payload = entity.get("record", {}).get("payload") if "record" in entity else entity.get("payload")
-        return deepcopy(dict(payload)) if isinstance(payload, Mapping) else {}
-
-    def _require_attempt_fences(
-        self,
-        payload: Mapping[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        operation_id = str(payload.get("operation_id") or "").strip()
-        attempt_id = str(payload.get("attempt_id") or "").strip()
-        if not operation_id or not attempt_id:
-            raise EdgeRequestError("operation_id and attempt_id are required")
-        operation = self.store.get_operation(operation_id)
-        attempt = self.store.get_attempt(attempt_id)
-        contract_entity = self.store.get_entity(ATTEMPT_CONTRACT_ENTITY_TYPE, attempt_id)
-        if operation is None or attempt is None or contract_entity is None:
-            raise KeyError(attempt_id)
-        contract = deepcopy(dict(contract_entity["record"]))
-        expected = {
-            "operation_id": operation_id,
-            "machine_id": str(payload.get("machine_id") or ""),
-            "edge_generation": self._generation_number(str(payload.get("edge_generation") or "")),
-            "required_contract_hash": self._attempt_requested_contract_hash(payload),
-            "fencing_token": int(payload.get("fencing_token") or 0),
-        }
-        actual = {
-            "operation_id": str(attempt.get("operation_id") or ""),
-            "machine_id": str(attempt.get("machine_id") or ""),
-            "edge_generation": int(attempt.get("edge_generation") or -1),
-            "required_contract_hash": str(contract.get("required_contract_hash") or ""),
-            "fencing_token": int(attempt.get("fencing_token") or 0),
-        }
-        for field, value in expected.items():
-            if actual[field] != value:
-                raise HubStoreV2Conflict(f"attempt_{field}_mismatch")
-        return operation, attempt, contract
-
-    @staticmethod
-    def _attempt_requested_contract_hash(payload: Mapping[str, Any]) -> str:
-        """Prefer the attempt fence over current Edge metadata during recovery."""
-        for value in (payload.get("contract_hash"), payload.get("required_contract_hash")):
-            if str(value or "").strip():
-                return str(value).strip()
-        return _RuntimeEdgeController._requested_contract_hash(payload)
-
-    def _wire_attempt(
-        self,
-        attempt: Mapping[str, Any],
-        *,
-        operation: Mapping[str, Any],
-        dispatch: Mapping[str, Any],
-        machine: Mapping[str, Any],
-        external_generation: str,
-        contract: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        dispatch_payload = self._dispatch_payload(dispatch)
-        arguments = dispatch_payload.get("arguments")
-        if not isinstance(arguments, Mapping):
-            arguments = {
-                key: deepcopy(value)
-                for key, value in dispatch_payload.items()
-                if key not in {"action", "context", "target", "machine_id", "edge_generation"}
-            }
-        action = str(dispatch_payload.get("action") or "")
-        capabilities = (
-            machine.get("capabilities") if isinstance(machine.get("capabilities"), Mapping) else {}
-        )
-        action_capabilities = capabilities.get("action_capabilities")
-        if not isinstance(action_capabilities, Mapping):
-            action_capabilities = capabilities.get("action_capability_versions")
-        action_capabilities = (
-            dict(action_capabilities) if isinstance(action_capabilities, Mapping) else {}
-        )
-        action_version = str(action_capabilities.get(action) or "")
-        if not action_version:
-            raise HubStoreV2Conflict("attempt_action_capability_mismatch")
-        required_contract = str(
-            (contract or {}).get("required_contract_hash")
-            or attempt.get("required_contract_hash")
-            or capabilities.get("contract_hash")
-            or ""
-        )
-        requirements = {
-            "protocol_version": str(capabilities.get("protocol_version") or ""),
-            "contract_version": str(capabilities.get("contract_version") or ""),
-            "manifest_hash": str(capabilities.get("manifest_hash") or ""),
-            "schema_hash": str(capabilities.get("schema_hash") or ""),
-            "contract_hash": required_contract,
-            "edge_generation": external_generation,
-            "action_capabilities": {action: action_version},
-        }
-        wire = {
-            **self._external_attempt(attempt, external_generation=external_generation),
-            "machine_id": str(machine["machine_id"]),
-            "required_edge_generation": external_generation,
-            "required_contract_hash": required_contract,
-            "required_action_capability_version": action_version,
-            "action": action,
-            "arguments": deepcopy(dict(arguments)),
-            "payload": deepcopy(dispatch_payload),
-            "target": deepcopy(
-                dict(dispatch_payload.get("target"))
-                if isinstance(dispatch_payload.get("target"), Mapping)
-                else {}
-            ),
-            "context": deepcopy(
-                dict(dispatch_payload.get("context"))
-                if isinstance(dispatch_payload.get("context"), Mapping)
-                else {}
-            ),
-            "idempotency_key": str(operation.get("idempotency_key") or ""),
-            "operation_payload_hash": str(
-                dispatch.get("payload_hash") or operation.get("semantic_payload_hash") or ""
-            ),
-            "requirements": requirements,
-            "operation_revision": int(operation.get("revision") or 0),
-        }
-        tool_name = str(operation.get("tool") or "")
-        if tool_name in HUB_V2_ACTION_MAP:
-            wire["tool_name"] = tool_name
-        for field in ("parent_operation_id", "item_id", "work_group_id", "lane_id"):
-            value = operation.get(field) or dispatch_payload.get(field)
-            if value:
-                wire[field] = value
-        return wire
-
-    @staticmethod
-    def _external_attempt(
-        attempt: Mapping[str, Any],
-        *,
-        external_generation: str,
-    ) -> dict[str, Any]:
-        result = deepcopy(dict(attempt))
-        result["edge_generation"] = external_generation
-        return result
-
-    @staticmethod
-    def _external_fences(
-        attempt: Mapping[str, Any],
-        payload: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        return {
-            "operation_id": str(attempt["operation_id"]),
-            "attempt_id": str(attempt["attempt_id"]),
-            "fencing_token": int(attempt["fencing_token"]),
-            "edge_generation": str(payload["edge_generation"]),
-            "contract_hash": _RuntimeEdgeController._requested_contract_hash(payload),
-        }
-
-    def _record_receipt(self, acknowledgement: Mapping[str, Any], *, machine_id: str) -> None:
-        receipt_id = str(acknowledgement["receipt_id"])
-        record = {**deepcopy(dict(acknowledgement)), "machine_id": machine_id}
-        existing = self.store.get_entity(EDGE_RECEIPT_ENTITY, receipt_id)
-        if existing is not None:
-            if existing["record"] != record:
-                raise HubStoreV2Conflict("receipt_identity_conflict")
-            return
-        self.store.put_entity(EDGE_RECEIPT_ENTITY, receipt_id, record, expected_revision=0)
-
-    def _apply_dispatch_result(self, operation_id: str, result: Any) -> None:
-        del result  # Authoritative worker truth arrives through the projection endpoint.
-        dispatch = self.store.get_entity(EDGE_DISPATCH_ENTITY, operation_id)
-        if dispatch is None:
-            return
-        record = deepcopy(dict(dispatch["record"]))
-        record.update({"status": "complete", "updated_at": time.time()})
-        self.store.put_entity(
-            EDGE_DISPATCH_ENTITY,
-            operation_id,
-            record,
-            expected_revision=int(dispatch["revision"]),
-        )
+    Keeping this compatibility name lets the HTTP factory support runtime-backed
+    injected apps without maintaining a second claim/result/recovery state machine.
+    All Edge behavior is inherited from ``HubPullTransportBridgeV2``.
+    """
 
 
 def _client_metadata(message: Any) -> Mapping[str, Any]:
@@ -1178,7 +588,10 @@ def _edge_error_response(error: BaseException) -> JSONResponse:
             {"error": {"code": "invalid_request", "message": "Invalid Edge V2 request"}},
             status_code=400,
         )
-    logger.error("Hub V2 Edge handling error: %s", internal_log_error(error))
+    logger.error(
+        "Hub V2 Edge handling error: %s",
+        internal_log_error(error) or type(error).__name__,
+    )
     return JSONResponse(
         {"error": {"code": "internal_error", "message": "Internal processing error"}},
         status_code=500,
@@ -1196,8 +609,16 @@ def create_hub_v2_server(
     principal_ref: str = "",
     session_ref_salt: str = "",
     max_request_bytes: int | None = None,
+    mcp_session_ttl_seconds: float = DEFAULT_MCP_SESSION_TTL_SECONDS,
+    max_mcp_sessions: int = DEFAULT_MAX_MCP_SESSIONS,
+    monotonic_clock: Callable[[], float] | None = None,
 ) -> FastAPI:
-    """Construct the opt-in Hub V2 HTTP surface around injected dependencies."""
+    """Construct the opt-in Hub V2 HTTP surface around injected dependencies.
+
+    MCP sessions are process-local and bounded by idle TTL plus LRU cardinality.
+    Evicted clients receive the normal expired-session error and may initialize a
+    new, identity-isolated session by retrying without ``Mcp-Session-Id``.
+    """
 
     if hub_app is not None and hub_app_factory is not None:
         raise TypeError("Pass hub_app or hub_app_factory, not both")
@@ -1225,12 +646,84 @@ def create_hub_v2_server(
     protocol_builder = protocol_factory or HubProtocolV2
     public_handler = _PublicToolHandler(domain_app)
     protocol = protocol_builder(public_handler)  # type: ignore[arg-type]
+    clock = monotonic_clock or time.monotonic
+    try:
+        session_ttl_seconds = max(1.0, float(mcp_session_ttl_seconds))
+        session_capacity = max(1, int(max_mcp_sessions))
+    except (TypeError, ValueError) as error:
+        raise ValueError("MCP session TTL and cardinality bounds must be numeric") from error
+
+    hub_config = (
+        config_value.get("hub")
+        if isinstance(config_value.get("hub"), Mapping)
+        else {}
+    )
+    try:
+        recovery_dispatch_interval = max(
+            0.1,
+            min(
+                float(
+                    hub_config.get(
+                        "recovery_dispatch_interval_seconds",
+                        DEFAULT_RECOVERY_DISPATCH_INTERVAL_SECONDS,
+                    )
+                ),
+                60.0,
+            ),
+        )
+        recovery_dispatch_batch_size = max(
+            1,
+            min(
+                int(
+                    hub_config.get(
+                        "recovery_dispatch_batch_size",
+                        DEFAULT_RECOVERY_DISPATCH_BATCH_SIZE,
+                    )
+                ),
+                1_000,
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("Hub recovery dispatch settings must be numeric") from error
+
+    async def recovery_dispatch_loop() -> None:
+        dispatch = getattr(domain_app, "dispatch_pending_operations", None)
+        if not callable(dispatch):
+            return
+        while True:
+            try:
+                result = dispatch(max_operations=recovery_dispatch_batch_size)
+                if inspect.isawaitable(result):
+                    await result
+            except AdmissionFrozenError:
+                # Backup maintenance deliberately pauses new effect admission.
+                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning(
+                    "Hub recovery dispatch cycle failed: %s",
+                    internal_log_error(error),
+                )
+            await asyncio.sleep(recovery_dispatch_interval)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        recovery_task: asyncio.Task[None] | None = None
+        if callable(getattr(domain_app, "dispatch_pending_operations", None)):
+            recovery_task = asyncio.create_task(
+                recovery_dispatch_loop(),
+                name="patchbay-hub-v2-recovery-dispatch",
+            )
         try:
             yield
         finally:
+            if recovery_task is not None:
+                recovery_task.cancel()
+                try:
+                    await recovery_task
+                except asyncio.CancelledError:
+                    pass
             close = getattr(domain_app, "close", None) if owns_hub_app else None
             if callable(close):
                 result = close()
@@ -1238,7 +731,49 @@ def create_hub_v2_server(
                     await result
 
     api = FastAPI(title="PatchBay Hub V2", lifespan=lifespan)
-    sessions: dict[str, dict[str, Any]] = {}
+    sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    in_flight_sessions: dict[str, int] = {}
+
+    def prune_sessions(
+        now: float,
+        *,
+        preserve_for_capacity: frozenset[str] = frozenset(),
+    ) -> None:
+        """Expire idle sessions, then evict inactive LRU entries to the cap."""
+
+        for candidate_id, candidate in list(sessions.items()):
+            if in_flight_sessions.get(candidate_id, 0) > 0:
+                continue
+            last_activity = float(candidate.get("_last_activity_monotonic") or 0.0)
+            if now - last_activity >= session_ttl_seconds:
+                sessions.pop(candidate_id, None)
+
+        if len(sessions) <= session_capacity:
+            return
+        protected = {
+            candidate_id
+            for candidate_id, count in in_flight_sessions.items()
+            if count > 0
+        } | set(preserve_for_capacity)
+        for candidate_id in list(sessions):
+            if len(sessions) <= session_capacity:
+                break
+            if candidate_id in protected:
+                continue
+            sessions.pop(candidate_id, None)
+
+    def finish_session_request(session_id: str) -> None:
+        remaining = in_flight_sessions.get(session_id, 0) - 1
+        if remaining > 0:
+            in_flight_sessions[session_id] = remaining
+            return
+        in_flight_sessions.pop(session_id, None)
+        other_inactive = any(
+            candidate_id != session_id and in_flight_sessions.get(candidate_id, 0) == 0
+            for candidate_id in sessions
+        )
+        preserve = frozenset() if other_inactive else frozenset({session_id})
+        prune_sessions(clock(), preserve_for_capacity=preserve)
 
     app_config = config_value.get("app") if isinstance(config_value.get("app"), Mapping) else {}
     raw_idle = app_config.get("work_run_idle_seconds", DEFAULT_WORK_RUN_IDLE_SECONDS)
@@ -1251,6 +786,9 @@ def create_hub_v2_server(
     api.state.hub_v2_edge_app = edge_app
     api.state.hub_v2_protocol = protocol
     api.state.hub_v2_sessions = sessions
+    api.state.hub_v2_in_flight_sessions = in_flight_sessions
+    api.state.hub_v2_session_ttl_seconds = session_ttl_seconds
+    api.state.hub_v2_max_sessions = session_capacity
     api.state.hub_v2_principal_ref = resolved_principal
     api.state.hub_v2_auth_policy = operator_auth
     api.state.hub_v2_request_limit = request_limit
@@ -1276,6 +814,7 @@ def create_hub_v2_server(
         unauthorized = _authorize_operator(request, operator_auth)
         if unauthorized:
             return unauthorized
+        prune_sessions(clock())
         return JSONResponse(
             {
                 "server": "healthy",
@@ -1301,6 +840,9 @@ def create_hub_v2_server(
             return unauthorized
 
         session_id = request.headers.get("Mcp-Session-Id") or request.headers.get("MCP-Session-Id")
+        now_monotonic = clock()
+        preserve = frozenset({session_id}) if session_id else frozenset()
+        prune_sessions(now_monotonic, preserve_for_capacity=preserve)
         if session_id and session_id not in sessions:
             return JSONResponse(
                 {
@@ -1315,6 +857,8 @@ def create_hub_v2_server(
             sessions[session_id] = {
                 "created_at": time.time(),
                 "last_activity": time.time(),
+                "_created_monotonic": now_monotonic,
+                "_last_activity_monotonic": now_monotonic,
                 "client_ref": make_client_ref(session_id, salt=salt),
                 "owner_ref": resolved_principal,
                 "owner_scope": "server",
@@ -1322,44 +866,51 @@ def create_hub_v2_server(
             }
         else:
             sessions[session_id]["last_activity"] = time.time()
+            sessions[session_id]["_last_activity_monotonic"] = now_monotonic
+        sessions.move_to_end(session_id)
+        in_flight_sessions[session_id] = in_flight_sessions.get(session_id, 0) + 1
+        prune_sessions(now_monotonic, preserve_for_capacity=frozenset({session_id}))
 
         headers = {"Mcp-Session-Id": session_id}
         try:
-            message = await _read_limited_json(request, limit=request_limit)
-        except RequestBodyTooLarge:
-            return JSONResponse(
-                {"error": {"code": "request_too_large", "message": "Request body too large"}},
-                status_code=413,
-                headers=headers,
-            )
-        except EdgeRequestError:
-            return JSONResponse(
-                {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
-                status_code=400,
-                headers=headers,
-            )
+            try:
+                message = await _read_limited_json(request, limit=request_limit)
+            except RequestBodyTooLarge:
+                return JSONResponse(
+                    {"error": {"code": "request_too_large", "message": "Request body too large"}},
+                    status_code=413,
+                    headers=headers,
+                )
+            except EdgeRequestError:
+                return JSONResponse(
+                    {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+                    status_code=400,
+                    headers=headers,
+                )
 
-        session = sessions[session_id]
-        _apply_request_metadata(session, message, salt=salt, idle_seconds=idle_seconds)
-        context = _context_for_session(
-            session_id,
-            session,
-            salt=salt,
-            active_sessions=len(sessions),
-        )
-        try:
-            response = await protocol.handle_message(message, context=context)
-        except Exception as error:
-            logger.error("Hub V2 MCP handling error: %s", internal_log_error(error))
-            message_id = message.get("id") if isinstance(message, Mapping) else None
-            response = {
-                "jsonrpc": "2.0",
-                "id": message_id,
-                "error": {"code": -32603, "message": "Internal processing error"},
-            }
-        if response is None:
-            return Response(status_code=204, headers=headers)
-        return JSONResponse(response, headers=headers)
+            session = sessions[session_id]
+            _apply_request_metadata(session, message, salt=salt, idle_seconds=idle_seconds)
+            context = _context_for_session(
+                session_id,
+                session,
+                salt=salt,
+                active_sessions=len(sessions),
+            )
+            try:
+                response = await protocol.handle_message(message, context=context)
+            except Exception as error:
+                logger.error("Hub V2 MCP handling error: %s", internal_log_error(error))
+                message_id = message.get("id") if isinstance(message, Mapping) else None
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": message_id,
+                    "error": {"code": -32603, "message": "Internal processing error"},
+                }
+            if response is None:
+                return Response(status_code=204, headers=headers)
+            return JSONResponse(response, headers=headers)
+        finally:
+            finish_session_request(session_id)
 
     @api.delete("/mcp")
     async def mcp_delete(request: Request) -> Response:
@@ -1367,6 +918,7 @@ def create_hub_v2_server(
         if unauthorized:
             return unauthorized
         session_id = request.headers.get("Mcp-Session-Id") or request.headers.get("MCP-Session-Id")
+        prune_sessions(clock(), preserve_for_capacity=frozenset({session_id}) if session_id else frozenset())
         if session_id and sessions.pop(session_id, None) is not None:
             return Response(status_code=204)
         return JSONResponse(
@@ -1456,6 +1008,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "DEFAULT_MAX_MCP_SESSIONS",
+    "DEFAULT_MCP_SESSION_TTL_SECONDS",
     "EDGE_V2_PREFIX",
     "HubV2App",
     "HubV2AppFactory",

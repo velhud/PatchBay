@@ -7,9 +7,11 @@ from typing import Any, Mapping
 import pytest
 
 from patchbay.hub.adapters.worker import HubWorkerAdapterV2
+from patchbay.hub.app_v2 import EdgeDeliveryBridgeV2, HubBrokerEdgeDispatchPortV2
 from patchbay.hub.broker import OperationBroker, OperationBrokerConflict
 from patchbay.hub.operations import public_envelope
 from patchbay.hub.protocol_v2 import validate_hub_v2_tool_output
+from patchbay.hub.runtime_v2 import HubRuntimeV2
 from patchbay.hub.store_v2 import HubStoreV2, semantic_payload_hash
 from patchbay.protocol.context import RequestContext
 
@@ -78,15 +80,20 @@ class RecordingRuntime:
                 "context": context,
             }
         )
-        if tool_name in {
-            "patchbay_worker_start",
-            "patchbay_worker_start_batch",
-            "patchbay_worker_list",
-            "patchbay_worker_status",
-            "patchbay_worker_wait",
-            "patchbay_worker_options",
-            "patchbay_worker_inbox",
-        } and not arguments.get("worker") and not arguments.get("fleet_worker_ref"):
+        if (
+            tool_name
+            in {
+                "patchbay_worker_start",
+                "patchbay_worker_start_batch",
+                "patchbay_worker_list",
+                "patchbay_worker_status",
+                "patchbay_worker_wait",
+                "patchbay_worker_options",
+                "patchbay_worker_inbox",
+            }
+            and not arguments.get("worker")
+            and not arguments.get("fleet_worker_ref")
+        ):
             return deepcopy(self.group_route)
         return deepcopy(self.worker_route)
 
@@ -156,10 +163,21 @@ class RecordingProjection:
         return deepcopy(dict(self.wait_result))
 
     async def get_worker(self, *, route, context=None):
-        self.worker_calls.append(
-            {"route": deepcopy(dict(route)), "context": context}
+        self.worker_calls.append({"route": deepcopy(dict(route)), "context": context})
+        return (
+            deepcopy(dict(self.worker_result))
+            if self.worker_result is not None
+            else None
         )
-        return deepcopy(dict(self.worker_result)) if self.worker_result is not None else None
+
+
+class RecordingEdgeDelivery:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute(self, **kwargs: Any) -> Mapping[str, Any]:
+        self.calls.append(deepcopy(kwargs))
+        return {"accepted": True}
 
 
 @pytest.mark.asyncio
@@ -196,15 +214,21 @@ class RecordingBroker:
         self.operations: dict[str, dict[str, Any]] = {}
         self.operation_scopes: dict[tuple[str, str, str, str], str] = {}
         self.children: dict[tuple[str, str], str] = {}
+        self.manifests: dict[str, list[str]] = {}
         self.child_results = deepcopy(dict(child_results or {}))
         self.create_calls: list[dict[str, Any]] = []
+        self.batch_calls: list[dict[str, Any]] = []
         self.child_calls: list[dict[str, Any]] = []
+        self.manifest_calls: list[dict[str, Any]] = []
+        self.call_order: list[str] = []
         self.prepare_calls: list[str] = []
         self.dispatch_calls: list[str] = []
         self.aggregate_calls: list[str] = []
         self.association_calls: list[dict[str, str]] = []
 
-    def _new_operation(self, *, tool, logical_target, idempotency_key, payload, **extra):
+    def _new_operation(
+        self, *, tool, logical_target, idempotency_key, payload, **extra
+    ):
         self.counter += 1
         operation_id = f"op_{self.counter}"
         operation = {
@@ -257,6 +281,73 @@ class RecordingBroker:
         self.operation_scopes[scope] = operation["operation_id"]
         return deepcopy(operation)
 
+    def create_batch_operation(
+        self,
+        *,
+        logical_target,
+        idempotency_key,
+        payload,
+        child_specs,
+        principal_ref="",
+    ):
+        snapshot = (
+            self.counter,
+            deepcopy(self.operations),
+            deepcopy(self.operation_scopes),
+            deepcopy(self.children),
+            deepcopy(self.manifests),
+        )
+        self.call_order.append("atomic_batch")
+        self.batch_calls.append(
+            {
+                "logical_target": logical_target,
+                "idempotency_key": idempotency_key,
+                "payload": deepcopy(dict(payload)),
+                "child_specs": deepcopy(list(child_specs)),
+                "principal_ref": principal_ref,
+            }
+        )
+        try:
+            parent = self.create_operation(
+                tool="patchbay_worker_start_batch",
+                logical_target=logical_target,
+                idempotency_key=idempotency_key,
+                payload=payload,
+                principal_ref=principal_ref,
+            )
+            manifest = self.declare_child_manifest(
+                parent["operation_id"],
+                expected_item_ids=[spec["item_id"] for spec in child_specs],
+                principal_ref=principal_ref,
+            )
+            children = [
+                self.create_child_operation(
+                    parent["operation_id"],
+                    item_id=spec["item_id"],
+                    tool=spec["tool"],
+                    logical_target=spec["logical_target"],
+                    payload=spec["payload"],
+                    principal_ref=principal_ref,
+                )
+                for spec in child_specs
+            ]
+        except Exception:
+            (
+                self.counter,
+                self.operations,
+                self.operation_scopes,
+                self.children,
+                self.manifests,
+            ) = snapshot
+            raise
+        return {
+            "parent": parent,
+            "manifest": manifest["record"],
+            "children": children,
+            "idempotent_replay": bool(parent.get("idempotent_replay"))
+            and all(child.get("idempotent_replay") for child in children),
+        }
+
     def create_child_operation(
         self,
         parent_operation_id,
@@ -267,6 +358,7 @@ class RecordingBroker:
         payload,
         principal_ref="",
     ):
+        self.call_order.append(f"child:{item_id}")
         call = {
             "parent_operation_id": parent_operation_id,
             "item_id": item_id,
@@ -276,6 +368,9 @@ class RecordingBroker:
             "principal_ref": principal_ref,
         }
         self.child_calls.append(call)
+        expected = self.manifests.get(parent_operation_id)
+        if expected is not None and item_id not in expected:
+            raise OperationBrokerConflict("child_operation_not_declared_in_manifest")
         key = (parent_operation_id, item_id)
         existing_id = self.children.get(key)
         if existing_id:
@@ -304,6 +399,32 @@ class RecordingBroker:
         self.children[key] = operation["operation_id"]
         return deepcopy(operation)
 
+    def declare_child_manifest(
+        self,
+        parent_operation_id,
+        *,
+        expected_item_ids,
+        principal_ref="",
+    ):
+        normalized = [str(item_id) for item_id in expected_item_ids]
+        self.call_order.append("manifest")
+        self.manifest_calls.append(
+            {
+                "parent_operation_id": parent_operation_id,
+                "expected_item_ids": normalized,
+                "principal_ref": principal_ref,
+            }
+        )
+        existing = self.manifests.get(parent_operation_id)
+        if existing is not None and existing != normalized:
+            raise OperationBrokerConflict("batch_child_manifest_conflict")
+        self.manifests[parent_operation_id] = normalized
+        return {
+            "entity_id": parent_operation_id,
+            "record": {"expected_item_ids": normalized},
+            "idempotent_replay": existing is not None,
+        }
+
     def prepare_operation(self, operation_id, *, expected_revision, principal_ref=""):
         self.prepare_calls.append(operation_id)
         operation = self.operations[operation_id]
@@ -327,9 +448,37 @@ class RecordingBroker:
             if parent_id == parent_operation_id
         ]
         terminal_states = {"succeeded", "blocked", "failed", "cancelled"}
-        if child_operations and all(
+        expected_item_ids = self.manifests.get(parent_operation_id)
+        actual_item_ids = [child["item_id"] for child in child_operations]
+        exact_child_set = (
+            bool(child_operations)
+            if expected_item_ids is None
+            else len(actual_item_ids) == len(expected_item_ids)
+            and set(actual_item_ids) == set(expected_item_ids)
+        )
+        while exact_child_set and parent["state"] in {
+            "created",
+            "payload_ready",
+            "dispatchable",
+        }:
+            parent.update(
+                state={
+                    "created": "payload_ready",
+                    "payload_ready": "dispatchable",
+                    "dispatchable": "running",
+                }[parent["state"]],
+                revision=parent["revision"] + 1,
+            )
+        if exact_child_set and all(
             child["state"] in terminal_states for child in child_operations
         ):
+            if expected_item_ids is not None:
+                children_by_item_id = {
+                    child["item_id"]: child for child in child_operations
+                }
+                child_operations = [
+                    children_by_item_id[item_id] for item_id in expected_item_ids
+                ]
             statuses = [child["result"]["status"] for child in child_operations]
             status = statuses[0] if len(set(statuses)) == 1 else "partial"
             parent.update(
@@ -384,20 +533,25 @@ def make_adapter(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tool_name", "arguments", "expected_action", "expected_edge_arguments", "mutating"),
+    (
+        "tool_name",
+        "arguments",
+        "expected_action",
+        "expected_edge_arguments",
+        "mutating",
+    ),
     [
         (
             "patchbay_worker_options",
             {
                 "work_group_id": "group_alpha",
-                "repo_path": "/explicit/repo",
                 "model": "gpt-test",
                 "max_models": 0,
                 "include_model_details": False,
             },
             "codex_worker_options",
             {
-                "repo_path": "/explicit/repo",
+                "repo_path": "/srv/repos/patchbay",
                 "model": "gpt-test",
                 "max_models": 0,
                 "include_model_details": False,
@@ -969,7 +1123,9 @@ async def test_batch_rejects_multiple_shared_write_workers_before_dispatch():
 async def test_batch_allows_multiple_shared_write_workers_when_architect_controls_policy():
     route = deepcopy(GROUP_ROUTE)
     route["work_group"]["shared_write_policy"] = "manager_controlled"
-    adapter, runtime, broker, _ = make_adapter(runtime=RecordingRuntime(group_route=route))
+    adapter, runtime, broker, _ = make_adapter(
+        runtime=RecordingRuntime(group_route=route)
+    )
     arguments = batch_arguments()
     for worker in arguments["workers"]:
         worker["workspace_mode"] = "shared_write"
@@ -982,6 +1138,132 @@ async def test_batch_allows_multiple_shared_write_workers_when_architect_control
         call["payload"]["arguments"]["allow_concurrent_shared_write"] is True
         for call in broker.child_calls
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "extra"),
+    [
+        (
+            "patchbay_worker_start",
+            {
+                "lane": "implementation",
+                "name": "Writer",
+                "brief": "Write in the authoritative group repository.",
+                "idempotency_key": "repo-binding-start",
+            },
+        ),
+        ("patchbay_worker_list", {}),
+        (
+            "patchbay_worker_message",
+            {
+                "fleet_worker_ref": "fworker_machine_one_implementer",
+                "message": "Continue in the group repository.",
+                "idempotency_key": "repo-binding-message",
+            },
+        ),
+    ],
+)
+async def test_grouped_worker_calls_cannot_override_preflighted_repository(
+    tool_name, extra
+):
+    adapter, runtime, broker, _ = make_adapter()
+
+    with pytest.raises(ValueError, match="repository resolved by the work-group preflight"):
+        await adapter.handle_tool_call(
+            tool_name,
+            {
+                "work_group_id": "group_alpha",
+                "repo_path": "/srv/repos/another-allowed-repo",
+                **extra,
+            },
+        )
+
+    assert len(runtime.resolve_calls) == 1
+    assert broker.create_calls == []
+    assert runtime.read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_grouped_worker_start_uses_authoritative_repo_when_omitted_or_exact():
+    adapter, _, broker, _ = make_adapter()
+    base = {
+        "work_group_id": "group_alpha",
+        "lane": "implementation",
+        "name": "Writer",
+        "brief": "Write in the authoritative group repository.",
+        "workspace_mode": "isolated_write",
+    }
+
+    omitted = await adapter.handle_tool_call(
+        "patchbay_worker_start", {**base, "idempotency_key": "repo-omitted"}
+    )
+    exact = await adapter.handle_tool_call(
+        "patchbay_worker_start",
+        {
+            **base,
+            "repo_path": "/srv/repos/patchbay",
+            "idempotency_key": "repo-exact",
+        },
+    )
+
+    assert omitted["status"] == exact["status"] == "pending"
+    assert [
+        call["payload"]["arguments"]["repo_path"] for call in broker.create_calls
+    ] == ["/srv/repos/patchbay", "/srv/repos/patchbay"]
+
+
+@pytest.mark.asyncio
+async def test_serialized_group_rejects_single_shared_writer_concurrency_override():
+    adapter, _, broker, _ = make_adapter()
+
+    with pytest.raises(ValueError, match="shared_write_policy=serialized"):
+        await adapter.handle_tool_call(
+            "patchbay_worker_start",
+            {
+                "work_group_id": "group_alpha",
+                "lane": "implementation",
+                "name": "Writer",
+                "brief": "Write concurrently.",
+                "workspace_mode": "shared_write",
+                "allow_concurrent_shared_write": True,
+                "idempotency_key": "serialized-override",
+            },
+        )
+
+    assert broker.create_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [("serialized", False), ("manager_controlled", True)],
+)
+async def test_group_policy_authoritatively_sets_single_shared_writer_concurrency(
+    policy, expected
+):
+    route = deepcopy(GROUP_ROUTE)
+    route["work_group"]["shared_write_policy"] = policy
+    adapter, _, broker, _ = make_adapter(
+        runtime=RecordingRuntime(group_route=route)
+    )
+
+    result = await adapter.handle_tool_call(
+        "patchbay_worker_start",
+        {
+            "work_group_id": "group_alpha",
+            "lane": "implementation",
+            "name": "Writer",
+            "brief": "Write under the group policy.",
+            "workspace_mode": "shared_write",
+            "idempotency_key": f"single-shared-{policy}",
+        },
+    )
+
+    assert result["status"] == "pending"
+    assert broker.create_calls[0]["payload"]["arguments"][
+        "allow_concurrent_shared_write"
+    ] is expected
 
 
 def batch_arguments():
@@ -1034,16 +1316,46 @@ async def test_batch_creates_stable_parent_children_and_replays_without_duplicat
     validate_hub_v2_tool_output("patchbay_worker_start_batch", second)
 
     assert first["status"] == second["status"] == "pending"
-    assert first["operation"]["operation_id"] == second["operation"]["operation_id"] == "op_1"
+    assert (
+        first["operation"]["operation_id"]
+        == second["operation"]["operation_id"]
+        == "op_1"
+    )
+    assert first["operation"]["state"] == second["operation"]["state"] == "running"
     assert [item["operation"]["operation_id"] for item in first["result"]["items"]] == [
         "op_2",
         "op_3",
     ]
-    assert [item["operation"]["operation_id"] for item in second["result"]["items"]] == [
+    assert [
+        item["operation"]["operation_id"] for item in second["result"]["items"]
+    ] == [
         "op_2",
         "op_3",
     ]
     assert len(broker.operations) == 3
+    assert broker.aggregate_calls == ["op_1", "op_1"]
+    assert broker.manifest_calls == [
+        {
+            "parent_operation_id": "op_1",
+            "expected_item_ids": ["implementation", "verification"],
+            "principal_ref": "principal_adapter",
+        },
+        {
+            "parent_operation_id": "op_1",
+            "expected_item_ids": ["implementation", "verification"],
+            "principal_ref": "principal_adapter",
+        },
+    ]
+    assert broker.call_order == [
+        "atomic_batch",
+        "manifest",
+        "child:implementation",
+        "child:verification",
+        "atomic_batch",
+        "manifest",
+        "child:implementation",
+        "child:verification",
+    ]
     assert [call["item_id"] for call in broker.child_calls] == [
         "implementation",
         "verification",
@@ -1143,13 +1455,67 @@ async def test_completed_batch_retry_replays_parent_result_without_recreating_ch
         "Implementer",
         "Verifier",
     ]
-    assert len(broker.child_calls) == 2
+    assert len(broker.batch_calls) == 2
+    assert len(broker.child_calls) == 4
     assert len(broker.operations) == 3
     assert [call["operation_id"] for call in broker.association_calls] == [
         "op_1",
         "op_2",
         "op_3",
         "op_1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_child_creation_failure_rolls_back_before_idempotent_retry():
+    broker = RecordingBroker(
+        child_results={
+            "implementation": {
+                "state": "succeeded",
+                "result": public_envelope("ok", result={"name": "Implementer"}),
+            },
+            "verification": {
+                "state": "succeeded",
+                "result": public_envelope("ok", result={"name": "Verifier"}),
+            },
+        }
+    )
+    adapter, _, _, _ = make_adapter(broker=broker)
+    create_child = broker.create_child_operation
+    failed_once = False
+
+    def fail_before_second_child(parent_operation_id, *, item_id, **kwargs):
+        nonlocal failed_once
+        if item_id == "verification" and not failed_once:
+            failed_once = True
+            raise RuntimeError("simulated process crash")
+        return create_child(parent_operation_id, item_id=item_id, **kwargs)
+
+    broker.create_child_operation = fail_before_second_child
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        await adapter.handle_tool_call(
+            "patchbay_worker_start_batch", batch_arguments(), context=CONTEXT
+        )
+
+    assert broker.operations == {}
+    assert broker.manifests == {}
+    assert broker.children == {}
+
+    recovered = await adapter.handle_tool_call(
+        "patchbay_worker_start_batch", batch_arguments(), context=CONTEXT
+    )
+
+    assert recovered["status"] == "ok"
+    assert recovered["operation"]["state"] == "succeeded"
+    assert [item["result"]["name"] for item in recovered["result"]["items"]] == [
+        "Implementer",
+        "Verifier",
+    ]
+    assert len(broker.operations) == 3
+    assert [call["item_id"] for call in broker.child_calls] == [
+        "implementation",
+        "implementation",
+        "verification",
     ]
 
 
@@ -1182,7 +1548,9 @@ async def test_batch_retry_ignores_volatile_request_activity_metadata():
 
     assert replay["operation"]["operation_id"] == first["operation"]["operation_id"]
     assert broker.create_calls[0]["payload"] == broker.create_calls[1]["payload"]
-    assert "work_run_last_activity_at" not in broker.create_calls[0]["payload"]["context"]
+    assert (
+        "work_run_last_activity_at" not in broker.create_calls[0]["payload"]["context"]
+    )
     assert "active_mcp_sessions" not in broker.create_calls[0]["payload"]["context"]
 
 
@@ -1213,9 +1581,257 @@ async def test_real_broker_idempotency_replays_and_conflicts_semantically(tmp_pa
     assert conflict["status"] == "blocked"
     assert conflict["result"]["reason"] == "idempotency_payload_conflict"
     assert conflict["operation"] == {}
-    operation_count = store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
+    operation_count = store.connection.execute(
+        "SELECT COUNT(*) FROM operations"
+    ).fetchone()[0]
     assert operation_count == 1
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_atomic_batch_group_associations_roll_back_with_children_and_dispatch(
+    tmp_path, monkeypatch
+):
+    store = HubStoreV2(tmp_path / "atomic-batch-associations.sqlite3")
+    broker = OperationBroker(store)
+    runtime = HubRuntimeV2(store, broker=broker)
+    edge = RecordingEdgeDelivery()
+    dispatch_port = HubBrokerEdgeDispatchPortV2(
+        broker, runtime, EdgeDeliveryBridgeV2(edge)
+    )
+    adapter = HubWorkerAdapterV2(
+        RecordingRuntime(
+            group_route={**GROUP_ROUTE, "principal_ref": store.principal_ref}
+        ),
+        dispatch_port,
+        RecordingProjection(),
+    )
+    persist_association = store._put_scoped_operation_group_association_in_transaction
+    persisted = 0
+
+    def crash_after_second_association(*args, **kwargs):
+        nonlocal persisted
+        result = persist_association(*args, **kwargs)
+        persisted += 1
+        if persisted == 2:
+            raise RuntimeError("simulated batch association crash")
+        return result
+
+    monkeypatch.setattr(
+        store,
+        "_put_scoped_operation_group_association_in_transaction",
+        crash_after_second_association,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated batch association crash"):
+        await adapter.handle_tool_call("patchbay_worker_start_batch", batch_arguments())
+
+    assert store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM entity_records WHERE entity_type = 'hub.operation_group'"
+    ).fetchone()[0] == 0
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM entity_records WHERE entity_type = 'hub.edge_dispatch'"
+    ).fetchone()[0] == 0
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_single_grouped_operation_and_association_roll_back_together(
+    tmp_path, monkeypatch
+):
+    store = HubStoreV2(tmp_path / "atomic-single-association.sqlite3")
+    broker = OperationBroker(store)
+    runtime = HubRuntimeV2(store, broker=broker)
+    edge = RecordingEdgeDelivery()
+    dispatch_port = HubBrokerEdgeDispatchPortV2(
+        broker, runtime, EdgeDeliveryBridgeV2(edge)
+    )
+    adapter = HubWorkerAdapterV2(
+        RecordingRuntime(
+            group_route={**GROUP_ROUTE, "principal_ref": store.principal_ref}
+        ),
+        dispatch_port,
+        RecordingProjection(),
+    )
+
+    def crash_during_association(*args, **kwargs):
+        raise RuntimeError("simulated single association crash")
+
+    monkeypatch.setattr(
+        store,
+        "_put_scoped_operation_group_association_in_transaction",
+        crash_during_association,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated single association crash"):
+        await adapter.handle_tool_call(
+            "patchbay_worker_start",
+            {
+                "work_group_id": "group_alpha",
+                "lane": "implementation",
+                "name": "Atomic Implementer",
+                "brief": "Prove atomic single-worker persistence.",
+                "idempotency_key": "atomic-single-start",
+            },
+        )
+
+    assert store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM entity_records WHERE entity_type = 'hub.operation_group'"
+    ).fetchone()[0] == 0
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM entity_records WHERE entity_type = 'hub.edge_dispatch'"
+    ).fetchone()[0] == 0
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_single_grouped_operation_is_discoverable_after_post_commit_crash(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "restart-single-association.sqlite3"
+    store = HubStoreV2(database_path)
+    broker = OperationBroker(store)
+    runtime = HubRuntimeV2(store, broker=broker)
+    edge = RecordingEdgeDelivery()
+    dispatch_port = HubBrokerEdgeDispatchPortV2(
+        broker, runtime, EdgeDeliveryBridgeV2(edge)
+    )
+    adapter = HubWorkerAdapterV2(
+        RecordingRuntime(
+            group_route={**GROUP_ROUTE, "principal_ref": store.principal_ref}
+        ),
+        dispatch_port,
+        RecordingProjection(),
+    )
+    verify_association = store.assert_operation_group_association
+
+    def crash_after_operation_commit(**kwargs):
+        verify_association(**kwargs)
+        raise RuntimeError("simulated process crash after single commit")
+
+    monkeypatch.setattr(
+        store,
+        "assert_operation_group_association",
+        crash_after_operation_commit,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated process crash after single commit"):
+        await adapter.handle_tool_call(
+            "patchbay_worker_start",
+            {
+                "work_group_id": "group_alpha",
+                "lane": "implementation",
+                "name": "Recoverable Implementer",
+                "brief": "Remain visible after process interruption.",
+                "idempotency_key": "recoverable-single-start",
+            },
+        )
+
+    operation_id = str(
+        store.connection.execute("SELECT operation_id FROM operations").fetchone()[0]
+    )
+    assert store.operation_ids_for_work_group("group_alpha") == [operation_id]
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM entity_records WHERE entity_type = 'hub.edge_dispatch'"
+    ).fetchone()[0] == 1
+    store.close()
+
+    reopened_store = HubStoreV2(database_path)
+    reopened_broker = OperationBroker(reopened_store)
+    reopened_runtime = HubRuntimeV2(reopened_store, broker=reopened_broker)
+    reopened_dispatch_port = HubBrokerEdgeDispatchPortV2(
+        reopened_broker, reopened_runtime, EdgeDeliveryBridgeV2(edge)
+    )
+
+    assert [
+        operation["operation_id"]
+        for operation in reopened_runtime._operations_for_group("group_alpha")
+    ] == [operation_id]
+    assert await reopened_dispatch_port.dispatch_pending(max_operations=1) == [
+        operation_id
+    ]
+    assert edge.calls[-1]["action"] == "codex_worker_start"
+    reopened_store.close()
+
+
+@pytest.mark.asyncio
+async def test_atomic_batch_group_associations_survive_restart_for_cancellation(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "restart-batch-associations.sqlite3"
+    store = HubStoreV2(database_path)
+    broker = OperationBroker(store)
+    runtime = HubRuntimeV2(store, broker=broker)
+    edge = RecordingEdgeDelivery()
+    dispatch_port = HubBrokerEdgeDispatchPortV2(
+        broker, runtime, EdgeDeliveryBridgeV2(edge)
+    )
+    adapter = HubWorkerAdapterV2(
+        RecordingRuntime(
+            group_route={**GROUP_ROUTE, "principal_ref": store.principal_ref}
+        ),
+        dispatch_port,
+        RecordingProjection(),
+    )
+
+    def crash_after_batch_commit(**kwargs):
+        raise RuntimeError("simulated process crash after batch commit")
+
+    monkeypatch.setattr(
+        store,
+        "assert_batch_operation_group_associations",
+        crash_after_batch_commit,
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash after batch commit"):
+        await adapter.handle_tool_call("patchbay_worker_start_batch", batch_arguments())
+
+    operation_ids = {
+        str(row[0])
+        for row in store.connection.execute("SELECT operation_id FROM operations")
+    }
+    assert len(operation_ids) == 3
+    assert {
+        str(row[0])
+        for row in store.connection.execute(
+            "SELECT operation_id FROM operation_group_index WHERE work_group_id = ?",
+            ("group_alpha",),
+        )
+    } == operation_ids
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM entity_records WHERE entity_type = 'hub.edge_dispatch'"
+    ).fetchone()[0] == 2
+    store.close()
+
+    reopened_store = HubStoreV2(database_path)
+    reopened_broker = OperationBroker(reopened_store)
+    reopened_runtime = HubRuntimeV2(reopened_store, broker=reopened_broker)
+    reopened_dispatch_port = HubBrokerEdgeDispatchPortV2(
+        reopened_broker, reopened_runtime, EdgeDeliveryBridgeV2(edge)
+    )
+
+    discovered_ids = {
+        operation["operation_id"]
+        for operation in reopened_runtime._operations_for_group("group_alpha")
+    }
+    parent_operation_id = next(
+        operation["operation_id"]
+        for operation in reopened_runtime._operations_for_group("group_alpha")
+        if operation["parent_operation_id"] is None
+    )
+    child_operation_ids = operation_ids - {parent_operation_id}
+    cancelled = reopened_runtime._cancel_unclaimed_group_operations("group_alpha")
+
+    assert discovered_ids == operation_ids
+    assert set(cancelled) == child_operation_ids
+    assert {
+        reopened_store.get_operation(operation_id)["state"]
+        for operation_id in child_operation_ids
+    } == {"cancelled"}
+    assert await reopened_dispatch_port.dispatch_pending(max_operations=10) == []
+    assert edge.calls == []
+    reopened_store.close()
 
 
 @pytest.mark.asyncio

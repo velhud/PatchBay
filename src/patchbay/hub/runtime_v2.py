@@ -22,7 +22,6 @@ from patchbay.hub.groups_v2 import (
     ACTIVE_TURN_STATES,
     TERMINAL_OPERATION_STATES,
     create_successor_group,
-    derive_group_activity,
     derive_completion_contract,
     validate_close_dispositions,
 )
@@ -63,6 +62,8 @@ DEFAULT_HEARTBEAT_STALE_SECONDS = 90
 DEFAULT_MIN_DISK_FREE_BYTES = 2_147_483_648
 DEFAULT_RESULT_LIMIT = 100
 MAX_RESULT_LIMIT = 500
+DEFAULT_GROUP_STATUS_DETAIL_LIMIT = 100
+MAX_GROUP_STATUS_DETAIL_LIMIT = 100
 
 ADAPTER_FAMILIES = frozenset(
     {
@@ -337,19 +338,32 @@ class HubRuntimeV2:
             else max(0, _as_int(result.get("status_revision"), 0))
         )
         started = time.monotonic()
-        while _as_int(result.get("status_revision"), 0) <= baseline:
+        group_id = str(
+            ((result.get("work_group") or {}).get("work_group_id") or "")
+            if isinstance(result.get("work_group"), Mapping)
+            else ""
+        )
+        current_revision = _as_int(result.get("status_revision"), 0)
+        while current_revision == baseline:
             remaining = requested_wait - (time.monotonic() - started)
             if remaining <= 0:
                 break
             await asyncio.sleep(min(0.1, remaining))
-            current = self.work_group_status(context=context, **args)
-            if current.get("status") != "ok":
-                return current
-            result = current.get("result") if isinstance(current.get("result"), Mapping) else {}
+            current_revision = self.store.work_group_status_revision(group_id)
+            if current_revision != baseline:
+                current = self.work_group_status(context=context, **args)
+                if current.get("status") != "ok":
+                    return current
+                result = (
+                    current.get("result")
+                    if isinstance(current.get("result"), Mapping)
+                    else {}
+                )
+                current_revision = _as_int(result.get("status_revision"), 0)
         result = deepcopy(dict(result))
         result["waited_seconds"] = round(time.monotonic() - started, 3)
         result["requested_wait_seconds"] = requested_wait
-        result["changed"] = _as_int(result.get("status_revision"), 0) > baseline
+        result["changed"] = _as_int(result.get("status_revision"), 0) != baseline
         current["result"] = result
         contract = result.get("completion_contract")
         if isinstance(contract, Mapping) and contract.get("manager_must_continue"):
@@ -1034,8 +1048,9 @@ class HubRuntimeV2:
 
     def _workers_for_group(self, work_group_id: str) -> list[dict[str, Any]]:
         workers: list[dict[str, Any]] = []
-        for entity in self.store.list_entities(FLEET_WORKER_ENTITY):
-            if entity["record"].get("work_group_id") != work_group_id:
+        for worker_ref in self.store.worker_refs_for_work_group(work_group_id):
+            entity = self.store.get_entity(FLEET_WORKER_ENTITY, worker_ref)
+            if entity is None:
                 continue
             projection = self.store.get_entity(WORKER_PROJECTION_ENTITY, entity["entity_id"])
             value = deepcopy(projection["record"] if projection else entity["record"])
@@ -1372,6 +1387,342 @@ class HubRuntimeV2:
         )
         return operation
 
+    def _finish_group_creation(
+        self,
+        *,
+        group_id: str,
+        operation: Mapping[str, Any],
+        idempotency_key: str,
+        identity: ManagerIdentity,
+        candidates: list[Mapping[str, Any]] | None = None,
+        rejections: list[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Finish or replay every post-persist group-creation side effect."""
+
+        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
+        if group_entity is None:
+            raise HubStoreV2Conflict("group_create_entity_missing")
+        if str(operation.get("state") or "") in TERMINAL_OPERATION_STATES:
+            return self._group_envelope(group_entity["record"], operation=operation)
+        group = deepcopy(group_entity["record"])
+        self._persist_participation(identity, group_id)
+        preflight = self._create_preflight_operation(
+            group,
+            idempotency_key=f"{idempotency_key}:preflight",
+            reason="group_create",
+        )
+        readiness = group.get("readiness") if isinstance(group.get("readiness"), Mapping) else {}
+        if str(readiness.get("operation_id") or "") != str(preflight["operation_id"]):
+            group["readiness"] = {
+                **deepcopy(dict(readiness)),
+                "operation_id": preflight["operation_id"],
+                "updated_at": self._clock(),
+            }
+            group_entity = self.store.put_entity(
+                WORK_GROUP_ENTITY,
+                group_id,
+                group,
+                expected_revision=group_entity["revision"],
+            )
+
+        self._upsert_entity(
+            OPERATION_GROUP_ENTITY,
+            str(operation["operation_id"]),
+            {
+                "operation_id": operation["operation_id"],
+                "work_group_id": group_id,
+                "kind": "group_create",
+            },
+        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
+        event_needed = str(current.get("state") or "") not in TERMINAL_OPERATION_STATES
+        terminal = (
+            self._complete_hub_operation(
+                current, public_envelope("ok", result={"work_group_id": group_id})
+            )
+            if event_needed
+            else current
+        )
+        saved_group = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
+        if saved_group is None:
+            raise HubStoreV2Conflict("group_create_entity_missing")
+        if event_needed:
+            self.store.append_event(
+                "work_group.created",
+                {
+                    "work_group_id": group_id,
+                    "machine_id": saved_group["record"]["pinned_machine_id"],
+                    "edge_generation": saved_group["record"]["pinned_edge_generation"],
+                    "participant_ref": identity.participant_ref,
+                },
+                entity_type=WORK_GROUP_ENTITY,
+                entity_id=group_id,
+                entity_revision=saved_group["revision"],
+            )
+        return self._group_envelope(
+            saved_group["record"],
+            operation=terminal,
+            candidate_summary=[
+                self._public_candidate(item) for item in list(candidates or [])
+            ],
+            rejection_summary=list(rejections or []),
+        )
+
+    def _finish_group_reassignment(
+        self,
+        *,
+        predecessor_id: str,
+        successor_id: str,
+        operation: Mapping[str, Any],
+        idempotency_key: str,
+        identity: ManagerIdentity,
+        candidates: list[Mapping[str, Any]] | None = None,
+        rejections: list[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Finish or replay one durable successor-group transition."""
+
+        successor_entity = self.store.get_entity(WORK_GROUP_ENTITY, successor_id)
+        if successor_entity is None:
+            raise HubStoreV2Conflict("group_reassign_successor_missing")
+        if str(operation.get("state") or "") in TERMINAL_OPERATION_STATES:
+            return self._group_envelope(successor_entity["record"], operation=operation)
+        successor = deepcopy(successor_entity["record"])
+        preflight = self._create_preflight_operation(
+            successor,
+            idempotency_key=f"{idempotency_key}:successor-preflight",
+            reason="group_reassign",
+        )
+        readiness = (
+            successor.get("readiness")
+            if isinstance(successor.get("readiness"), Mapping)
+            else {}
+        )
+        if str(readiness.get("operation_id") or "") != str(preflight["operation_id"]):
+            successor["readiness"] = {
+                **deepcopy(dict(readiness)),
+                "operation_id": preflight["operation_id"],
+                "updated_at": self._clock(),
+            }
+            successor_entity = self.store.put_entity(
+                WORK_GROUP_ENTITY,
+                successor_id,
+                successor,
+                expected_revision=successor_entity["revision"],
+            )
+
+        self._cancel_unclaimed_group_operations(
+            predecessor_id,
+            exclude_operation_ids={str(operation["operation_id"])},
+        )
+        predecessor_entity = self.store.get_entity(WORK_GROUP_ENTITY, predecessor_id)
+        if predecessor_entity is None:
+            raise HubStoreV2Conflict("group_reassign_predecessor_missing")
+        predecessor = deepcopy(predecessor_entity["record"])
+        if predecessor.get("status") == "open":
+            predecessor["status"] = "superseded"
+            predecessor["lifecycle"] = "superseded"
+            predecessor["superseded_by"] = successor_id
+            predecessor["updated_at"] = self._clock()
+            self.store.put_entity(
+                WORK_GROUP_ENTITY,
+                predecessor_id,
+                predecessor,
+                expected_revision=predecessor_entity["revision"],
+            )
+        elif not (
+            predecessor.get("status") == "superseded"
+            and str(predecessor.get("superseded_by") or "") == successor_id
+        ):
+            raise HubStoreV2Conflict("group_reassign_predecessor_state_conflict")
+
+        self._persist_participation(identity, successor_id)
+        self._upsert_entity(
+            OPERATION_GROUP_ENTITY,
+            str(operation["operation_id"]),
+            {
+                "operation_id": operation["operation_id"],
+                "work_group_id": successor_id,
+                "kind": "group_reassign",
+            },
+        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
+        terminal = (
+            self._complete_hub_operation(
+                current,
+                public_envelope(
+                    "ok",
+                    result={
+                        "work_group_id": successor_id,
+                        "predecessor_work_group_id": predecessor_id,
+                    },
+                ),
+            )
+            if str(current.get("state") or "") not in TERMINAL_OPERATION_STATES
+            else current
+        )
+        saved_successor = self.store.get_entity(WORK_GROUP_ENTITY, successor_id)
+        if saved_successor is None:
+            raise HubStoreV2Conflict("group_reassign_successor_missing")
+        return self._group_envelope(
+            saved_successor["record"],
+            operation=terminal,
+            candidate_summary=[
+                self._public_candidate(item) for item in list(candidates or [])
+            ],
+            rejection_summary=list(rejections or []),
+        )
+
+    def _finish_group_close(
+        self,
+        *,
+        group_id: str,
+        operation: Mapping[str, Any],
+        outcome: str,
+        summary: str,
+        dispositions: Mapping[str, str],
+        active_work_disposition: str,
+    ) -> dict[str, Any]:
+        """Finish or replay group closure after its durable operation exists."""
+
+        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
+        if group_entity is None:
+            raise HubStoreV2Conflict("group_close_entity_missing")
+        if str(operation.get("state") or "") in TERMINAL_OPERATION_STATES:
+            return self._group_envelope(group_entity["record"], operation=operation)
+        group = deepcopy(group_entity["record"])
+        now = self._clock()
+        if group.get("status") == "open":
+            group.update(
+                {
+                    "status": "closed",
+                    "lifecycle": "closed",
+                    "outcome": outcome,
+                    "summary": summary,
+                    "closure_dispositions": dict(dispositions),
+                    "active_work_disposition": active_work_disposition,
+                    "closed_at": now,
+                    "updated_at": now,
+                }
+            )
+            group_entity = self.store.put_entity(
+                WORK_GROUP_ENTITY,
+                group_id,
+                group,
+                expected_revision=group_entity["revision"],
+            )
+        elif not (
+            group.get("status") == "closed"
+            and group.get("outcome") == outcome
+            and str(group.get("summary") or "") == summary
+            and dict(group.get("closure_dispositions") or {}) == dict(dispositions)
+            and group.get("active_work_disposition") == active_work_disposition
+        ):
+            raise HubStoreV2Conflict("group_close_state_conflict")
+
+        for pointer in self.store.list_entities(CURRENT_GROUP_ENTITY):
+            if pointer["record"].get("work_group_id") != group_id:
+                continue
+            replacement = deepcopy(pointer["record"])
+            replacement.update({"work_group_id": "", "updated_at": now})
+            self.store.put_entity(
+                CURRENT_GROUP_ENTITY,
+                pointer["entity_id"],
+                replacement,
+                expected_revision=pointer["revision"],
+            )
+        self._upsert_entity(
+            OPERATION_GROUP_ENTITY,
+            str(operation["operation_id"]),
+            {
+                "operation_id": operation["operation_id"],
+                "work_group_id": group_id,
+                "kind": "group_close",
+            },
+        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
+        terminal = (
+            self._complete_hub_operation(
+                current,
+                public_envelope(
+                    "ok", result={"work_group_id": group_id, "outcome": outcome}
+                ),
+            )
+            if str(current.get("state") or "") not in TERMINAL_OPERATION_STATES
+            else current
+        )
+        saved = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
+        if saved is None:
+            raise HubStoreV2Conflict("group_close_entity_missing")
+        return self._group_envelope(saved["record"], operation=terminal)
+
+    def _finish_group_resume(
+        self,
+        *,
+        group_id: str,
+        operation: Mapping[str, Any],
+        idempotency_key: str,
+        identity: ManagerIdentity,
+        takeover: bool,
+        takeover_reason: str,
+    ) -> dict[str, Any]:
+        """Finish or replay one durable resume without reapplying terminal side effects."""
+
+        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
+        if group_entity is None:
+            raise HubStoreV2Conflict("group_resume_entity_missing")
+        if str(operation.get("state") or "") in TERMINAL_OPERATION_STATES:
+            return self._group_envelope(group_entity["record"], operation=operation)
+        group = deepcopy(group_entity["record"])
+        if group.get("status") != "open":
+            raise HubStoreV2Conflict("group_resume_state_conflict")
+        participants = list(group.get("participants") or [])
+        if identity.participant_ref not in participants:
+            participants.append(identity.participant_ref)
+        group["participants"] = participants
+        group["active_participant_ref"] = identity.participant_ref
+        group["updated_at"] = self._clock()
+        group["last_takeover_reason"] = (
+            _optional_text(takeover_reason, 500) if takeover else ""
+        )
+        preflight = self._create_preflight_operation(
+            group,
+            idempotency_key=f"{idempotency_key}:preflight",
+            reason="group_resume",
+        )
+        readiness = (
+            deepcopy(dict(group.get("readiness") or {}))
+            if isinstance(group.get("readiness"), Mapping)
+            else {}
+        )
+        if str(readiness.get("operation_id") or "") != str(preflight["operation_id"]):
+            group["readiness"] = {
+                "status": "pending",
+                "reason": "strict_preflight_refresh_required",
+                "operation_id": preflight["operation_id"],
+                "updated_at": self._clock(),
+            }
+        saved = self.store.put_entity(
+            WORK_GROUP_ENTITY,
+            group_id,
+            group,
+            expected_revision=group_entity["revision"],
+        )
+        self._persist_participation(identity, group_id, takeover=takeover)
+        self._upsert_entity(
+            OPERATION_GROUP_ENTITY,
+            str(operation["operation_id"]),
+            {
+                "operation_id": operation["operation_id"],
+                "work_group_id": group_id,
+                "kind": "group_resume",
+            },
+        )
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
+        terminal = self._complete_hub_operation(
+            current, public_envelope("ok", result={"work_group_id": group_id})
+        )
+        return self._group_envelope(saved["record"], operation=terminal)
+
     def create_work_group(
         self,
         *,
@@ -1428,13 +1779,47 @@ class HubRuntimeV2:
             payload=payload,
             principal_ref=identity.principal_ref,
         )
+        group_id = stable_ref(
+            "group", str(operation["operation_id"]), salt=self._identity_salt
+        )
         association = self.store.get_entity(OPERATION_GROUP_ENTITY, operation["operation_id"])
         if operation.get("idempotent_replay") and association:
             group_id = str(association["record"].get("work_group_id") or "")
             group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
             if group_entity:
-                self._persist_participation(identity, group_id)
-                return self._group_envelope(group_entity["record"], operation=operation)
+                return self._finish_group_creation(
+                    group_id=group_id,
+                    operation=operation,
+                    idempotency_key=key,
+                    identity=identity,
+                )
+        if operation.get("idempotent_replay"):
+            # The deterministic identity closes the crash window between the
+            # group write and its operation association.  Replaying the parent
+            # finishes the same group and preflight instead of inventing a new
+            # task object.
+            recovered_group = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
+            if recovered_group is not None:
+                return self._finish_group_creation(
+                    group_id=group_id,
+                    operation=operation,
+                    idempotency_key=key,
+                    identity=identity,
+                )
+            if str(operation.get("state") or "") in TERMINAL_OPERATION_STATES:
+                saved = operation.get("result")
+                if isinstance(saved, Mapping) and str(saved.get("status") or "") != "ok":
+                    replay = deepcopy(dict(saved))
+                    replay["operation"] = self._operation_summary(operation)
+                    return replay
+                return public_envelope(
+                    "blocked",
+                    result={
+                        "reason": "group_create_recovery_required",
+                        "operation_id": operation["operation_id"],
+                    },
+                    operation=self._operation_summary(operation),
+                )
 
         if not machine_id and not self.routing_enabled:
             blocked = public_envelope(
@@ -1467,9 +1852,9 @@ class HubRuntimeV2:
 
         now = self._clock()
         projection = selected["projection"]
-        group_id = new_ref("group")
         group = {
             "work_group_id": group_id,
+            "create_operation_id": operation["operation_id"],
             "principal_ref": identity.principal_ref,
             "title": title_value,
             "goal": goal_value,
@@ -1504,43 +1889,13 @@ class HubRuntimeV2:
             "superseded_by": "",
         }
         self.store.put_entity(WORK_GROUP_ENTITY, group_id, group, expected_revision=0)
-        self._persist_participation(identity, group_id)
-        preflight = self._create_preflight_operation(
-            group, idempotency_key=f"{key}:preflight", reason="group_create"
-        )
-        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
-        group = deepcopy(group_entity["record"])
-        group["readiness"].update(
-            {"operation_id": preflight["operation_id"], "updated_at": now}
-        )
-        saved_group = self.store.put_entity(
-            WORK_GROUP_ENTITY, group_id, group, expected_revision=group_entity["revision"]
-        )
-        self._upsert_entity(
-            OPERATION_GROUP_ENTITY,
-            operation["operation_id"],
-            {"operation_id": operation["operation_id"], "work_group_id": group_id, "kind": "group_create"},
-        )
-        terminal = self._complete_hub_operation(
-            operation, public_envelope("ok", result={"work_group_id": group_id})
-        )
-        self.store.append_event(
-            "work_group.created",
-            {
-                "work_group_id": group_id,
-                "machine_id": selected["machine_id"],
-                "edge_generation": selected["edge_generation"],
-                "participant_ref": identity.participant_ref,
-            },
-            entity_type=WORK_GROUP_ENTITY,
-            entity_id=group_id,
-            entity_revision=saved_group["revision"],
-        )
-        return self._group_envelope(
-            saved_group["record"],
-            operation=terminal,
-            candidate_summary=[self._public_candidate(item) for item in candidates],
-            rejection_summary=rejections,
+        return self._finish_group_creation(
+            group_id=group_id,
+            operation=operation,
+            idempotency_key=key,
+            identity=identity,
+            candidates=candidates,
+            rejections=rejections,
         )
 
     def record_preflight_result(
@@ -1764,10 +2119,18 @@ class HubRuntimeV2:
                 continue
             if machine_id and group.get("pinned_machine_id") != machine_id:
                 continue
-            activity = derive_group_activity(
-                self._workers_for_group(str(group["work_group_id"])),
-                self._operations_for_group(str(group["work_group_id"])),
-            )["activity"]
+            group_id = str(group["work_group_id"])
+            snapshot = self.store.work_group_status_projection(
+                group_id,
+                operation_limit=0,
+                worker_limit=DEFAULT_GROUP_STATUS_DETAIL_LIMIT,
+                integration_limit=0,
+            )
+            activity = self._summary_activity_and_contract(
+                group,
+                worker_summary=snapshot["worker_summary"],
+                operation_summary=snapshot["operation_summary"],
+            )[0]["activity"]
             if status and status not in {
                 group.get("status"),
                 group.get("readiness", {}).get("status"),
@@ -1781,7 +2144,15 @@ class HubRuntimeV2:
             ).casefold()
             if query_text and query_text not in haystack:
                 continue
-            values.append(self._public_group(group, workers=self._workers_for_group(str(group["work_group_id"]))))
+            values.append(
+                self._public_group(
+                    group,
+                    workers=snapshot["workers"],
+                    worker_summary=snapshot["worker_summary"],
+                    operation_summary=snapshot["operation_summary"],
+                    lane_summaries=snapshot["lane_summaries"],
+                )
+            )
         values.sort(key=lambda item: _as_float(item.get("updated_at"), 0), reverse=True)
         start = max(0, _as_int(cursor, 0))
         bounded = max(1, min(_as_int(limit, 20), 100))
@@ -1807,9 +2178,15 @@ class HubRuntimeV2:
         include_workers: bool = True,
         include_operations: bool = True,
         include_integrations: bool = True,
+        worker_cursor: str = "",
+        worker_limit: int = DEFAULT_GROUP_STATUS_DETAIL_LIMIT,
+        operation_cursor: str = "",
+        operation_limit: int = DEFAULT_GROUP_STATUS_DETAIL_LIMIT,
+        integration_cursor: str = "",
+        integration_limit: int = DEFAULT_GROUP_STATUS_DETAIL_LIMIT,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
-        del since_revision, wait_for_change_seconds, include_integrations
+        del since_revision, wait_for_change_seconds
         identity = self._manager_identity(context)
         group_id = str(work_group_id or self._current_group_id(identity) or "")
         if not group_id:
@@ -1818,7 +2195,34 @@ class HubRuntimeV2:
         if entity is None or entity["record"].get("principal_ref") != identity.principal_ref:
             return public_envelope("not_found", result={"reason": "work_group_not_found"})
         return self._group_envelope(
-            entity["record"], include_workers=include_workers, include_operations=include_operations
+            entity["record"],
+            include_workers=include_workers,
+            include_operations=include_operations,
+            include_integrations=include_integrations,
+            worker_offset=max(0, _as_int(worker_cursor, 0)),
+            worker_limit=max(
+                1,
+                min(
+                    _as_int(worker_limit, DEFAULT_GROUP_STATUS_DETAIL_LIMIT),
+                    MAX_GROUP_STATUS_DETAIL_LIMIT,
+                ),
+            ),
+            operation_offset=max(0, _as_int(operation_cursor, 0)),
+            operation_limit=max(
+                1,
+                min(
+                    _as_int(operation_limit, DEFAULT_GROUP_STATUS_DETAIL_LIMIT),
+                    MAX_GROUP_STATUS_DETAIL_LIMIT,
+                ),
+            ),
+            integration_offset=max(0, _as_int(integration_cursor, 0)),
+            integration_limit=max(
+                1,
+                min(
+                    _as_int(integration_limit, DEFAULT_GROUP_STATUS_DETAIL_LIMIT),
+                    MAX_GROUP_STATUS_DETAIL_LIMIT,
+                ),
+            ),
         )
 
     def resume_work_group(
@@ -1847,39 +2251,22 @@ class HubRuntimeV2:
             )
         if takeover and active and active != identity.participant_ref and not str(takeover_reason or "").strip():
             raise ValueError("takeover_reason is required when taking over another active participant")
+        key = _clean_text(idempotency_key, field="idempotency_key", maximum=256)
         operation = self.broker.create_operation(
             tool="patchbay_work_group_resume",
             logical_target=work_group_id,
-            idempotency_key=_clean_text(idempotency_key, field="idempotency_key", maximum=256),
+            idempotency_key=key,
             payload={"work_group_id": work_group_id, "takeover": takeover, "takeover_reason": takeover_reason},
             principal_ref=identity.principal_ref,
         )
-        participants = list(group.get("participants") or [])
-        if identity.participant_ref not in participants:
-            participants.append(identity.participant_ref)
-        group["participants"] = participants
-        group["active_participant_ref"] = identity.participant_ref
-        group["updated_at"] = self._clock()
-        group["last_takeover_reason"] = _optional_text(takeover_reason, 500) if takeover else ""
-        preflight = self._create_preflight_operation(
-            group,
-            idempotency_key=f"{idempotency_key}:preflight",
-            reason="group_resume",
+        return self._finish_group_resume(
+            group_id=work_group_id,
+            operation=operation,
+            idempotency_key=key,
+            identity=identity,
+            takeover=takeover,
+            takeover_reason=takeover_reason,
         )
-        group["readiness"] = {
-            "status": "pending",
-            "reason": "strict_preflight_refresh_required",
-            "operation_id": preflight["operation_id"],
-            "updated_at": self._clock(),
-        }
-        saved = self.store.put_entity(
-            WORK_GROUP_ENTITY, work_group_id, group, expected_revision=group_entity["revision"]
-        )
-        self._persist_participation(identity, work_group_id, takeover=takeover)
-        terminal = self._complete_hub_operation(
-            operation, public_envelope("ok", result={"work_group_id": work_group_id})
-        )
-        return self._group_envelope(saved["record"], operation=terminal)
 
     def reassign_work_group(
         self,
@@ -1900,32 +2287,72 @@ class HubRuntimeV2:
         if predecessor_entity is None or predecessor_entity["record"].get("principal_ref") != identity.principal_ref:
             return public_envelope("not_found", result={"reason": "work_group_not_found"})
         predecessor = deepcopy(predecessor_entity["record"])
-        coordination = self._coordination_blocker(predecessor, identity)
-        if coordination:
-            return public_envelope("blocked", result={"reason": coordination})
-        if predecessor.get("status") != "open":
-            return public_envelope("blocked", result={"reason": "closed_group_cannot_reassign"})
+        key = _clean_text(idempotency_key, field="idempotency_key", maximum=256)
         operation = self.broker.create_operation(
             tool="patchbay_work_group_reassign",
             logical_target=work_group_id,
-            idempotency_key=_clean_text(idempotency_key, field="idempotency_key", maximum=256),
+            idempotency_key=key,
             payload={
                 "work_group_id": work_group_id,
                 "reason": reason,
                 "machine_id": machine_id,
-                "allowed_machine_ids": _string_list(allowed_machine_ids, field="allowed_machine_ids"),
+                "allowed_machine_ids": _string_list(
+                    allowed_machine_ids, field="allowed_machine_ids"
+                ),
                 "required_tags": _string_list(required_tags, field="required_tags"),
                 "carry_context": carry_context,
             },
             principal_ref=identity.principal_ref,
         )
-        association = self.store.get_entity(OPERATION_GROUP_ENTITY, operation["operation_id"])
+        association = self.store.get_entity(
+            OPERATION_GROUP_ENTITY, operation["operation_id"]
+        )
         if operation.get("idempotent_replay") and association:
+            associated_successor_id = str(
+                association["record"].get("work_group_id") or ""
+            )
             successor_entity = self.store.get_entity(
-                WORK_GROUP_ENTITY, str(association["record"].get("work_group_id") or "")
+                WORK_GROUP_ENTITY, associated_successor_id
             )
             if successor_entity:
-                return self._group_envelope(successor_entity["record"], operation=operation)
+                return self._finish_group_reassignment(
+                    predecessor_id=work_group_id,
+                    successor_id=associated_successor_id,
+                    operation=operation,
+                    idempotency_key=key,
+                    identity=identity,
+                )
+        successor_id = stable_ref(
+            "group",
+            str(operation["operation_id"]),
+            "successor",
+            salt=self._identity_salt,
+        )
+        if operation.get("idempotent_replay"):
+            recovered_successor = self.store.get_entity(
+                WORK_GROUP_ENTITY, successor_id
+            )
+            if recovered_successor is not None:
+                return self._finish_group_reassignment(
+                    predecessor_id=work_group_id,
+                    successor_id=successor_id,
+                    operation=operation,
+                    idempotency_key=key,
+                    identity=identity,
+                )
+        coordination = self._coordination_blocker(predecessor, identity)
+        if coordination:
+            blocked = public_envelope("blocked", result={"reason": coordination})
+            terminal = self._complete_hub_operation(operation, blocked)
+            blocked["operation"] = self._operation_summary(terminal)
+            return blocked
+        if predecessor.get("status") != "open":
+            blocked = public_envelope(
+                "blocked", result={"reason": "closed_group_cannot_reassign"}
+            )
+            terminal = self._complete_hub_operation(operation, blocked)
+            blocked["operation"] = self._operation_summary(terminal)
+            return blocked
         if not machine_id and not self.routing_enabled:
             blocked = public_envelope(
                 "blocked",
@@ -1962,10 +2389,12 @@ class HubRuntimeV2:
             machine_id=selected["machine_id"],
             edge_generation=selected["edge_generation"],
             reason=_clean_text(reason, field="reason", maximum=1_000),
+            successor_id=successor_id,
             now=self._clock(),
         )
         successor.update(
             {
+                "create_operation_id": operation["operation_id"],
                 "principal_ref": identity.principal_ref,
                 "status": "open",
                 "lifecycle": "open",
@@ -1988,55 +2417,15 @@ class HubRuntimeV2:
                 },
             }
         )
-        successor_id = str(successor["work_group_id"])
         self.store.put_entity(WORK_GROUP_ENTITY, successor_id, successor, expected_revision=0)
-        preflight = self._create_preflight_operation(
-            successor,
-            idempotency_key=f"{idempotency_key}:successor-preflight",
-            reason="group_reassign",
-        )
-        successor_entity = self.store.get_entity(WORK_GROUP_ENTITY, successor_id)
-        successor = deepcopy(successor_entity["record"])
-        successor["readiness"].update(
-            {"operation_id": preflight["operation_id"], "updated_at": self._clock()}
-        )
-        saved_successor = self.store.put_entity(
-            WORK_GROUP_ENTITY,
-            successor_id,
-            successor,
-            expected_revision=successor_entity["revision"],
-        )
-        self._cancel_unclaimed_group_operations(
-            work_group_id, exclude_operation_ids={str(operation["operation_id"])}
-        )
-        predecessor["status"] = "superseded"
-        predecessor["lifecycle"] = "superseded"
-        predecessor["superseded_by"] = successor_id
-        predecessor["updated_at"] = self._clock()
-        self.store.put_entity(
-            WORK_GROUP_ENTITY,
-            work_group_id,
-            predecessor,
-            expected_revision=predecessor_entity["revision"],
-        )
-        self._persist_participation(identity, successor_id)
-        self._upsert_entity(
-            OPERATION_GROUP_ENTITY,
-            operation["operation_id"],
-            {"operation_id": operation["operation_id"], "work_group_id": successor_id, "kind": "group_reassign"},
-        )
-        terminal = self._complete_hub_operation(
-            operation,
-            public_envelope(
-                "ok",
-                result={"work_group_id": successor_id, "predecessor_work_group_id": work_group_id},
-            ),
-        )
-        return self._group_envelope(
-            saved_successor["record"],
-            operation=terminal,
-            candidate_summary=[self._public_candidate(item) for item in candidates],
-            rejection_summary=rejections,
+        return self._finish_group_reassignment(
+            predecessor_id=work_group_id,
+            successor_id=successor_id,
+            operation=operation,
+            idempotency_key=key,
+            identity=identity,
+            candidates=candidates,
+            rejections=rejections,
         )
 
     def close_work_group(
@@ -2061,11 +2450,10 @@ class HubRuntimeV2:
         if group_entity is None or group_entity["record"].get("principal_ref") != identity.principal_ref:
             return public_envelope("not_found", result={"reason": "work_group_not_found"})
         group = deepcopy(group_entity["record"])
-        if group.get("status") != "open":
-            return public_envelope("blocked", result={"reason": "closed_group_is_immutable"})
-        coordination = self._coordination_blocker(group, identity)
-        if coordination:
-            return public_envelope("blocked", result={"reason": coordination})
+        if group.get("status") == "open":
+            coordination = self._coordination_blocker(group, identity)
+            if coordination:
+                return public_envelope("blocked", result={"reason": coordination})
         workers = self._workers_for_group(work_group_id)
         dispositions, disposition_errors = self._normalize_dispositions(worker_dispositions, workers)
         validation = validate_close_dispositions(workers, dispositions, outcome=outcome)
@@ -2081,27 +2469,14 @@ class HubRuntimeV2:
                 disposition == "leave_running" for disposition in dispositions.values()
             ):
                 blockers.append({"reason": "leave_running_cannot_complete"})
-            for worker in workers:
-                if worker.get("turn_state") == "failed" and worker.get("review_disposition") == "unreviewed":
-                    blockers.append(
-                        {"worker": worker.get("fleet_worker_ref"), "reason": "failed_worker_is_unreviewed"}
-                    )
-        operations = self._operations_for_group(work_group_id)
-        unsafe_operations = [
-            operation
-            for operation in operations
-            if operation.get("state") in {"running", "outcome_unknown", "reconciling"}
-        ]
-        if unsafe_operations:
-            blockers.append({"reason": "active_or_uncertain_operations", "count": len(unsafe_operations)})
-        accepted = (
+        preliminarily_accepted = (
             validation["accepted"]
             and not disposition_errors
             and not blockers
             and not validation["missing_dispositions"]
             and not validation["invalid_dispositions"]
         )
-        if not accepted:
+        if not preliminarily_accepted:
             return public_envelope(
                 "blocked",
                 result={
@@ -2111,57 +2486,89 @@ class HubRuntimeV2:
                 },
             )
 
-        for operation in operations:
-            if operation.get("state") in {"created", "payload_ready", "dispatchable"}:
-                self.broker.cancel_operation(
-                    operation["operation_id"],
-                    expected_revision=operation["revision"],
-                    reason="work_group_closed_before_claim",
-                )
+        summary_value = _clean_text(summary, field="summary", maximum=8_000)
+        key = _clean_text(
+            idempotency_key,
+            field="idempotency_key",
+            maximum=256,
+        )
+        existing_close = self.store.get_operation_by_idempotency(
+            tool="patchbay_work_group_close",
+            logical_target=work_group_id,
+            idempotency_key=key,
+            principal_ref=identity.principal_ref,
+        )
+        existing_close_id = str(
+            (existing_close or {}).get("operation_id") or ""
+        )
+        operations = self._operations_for_group(work_group_id)
+        unsafe_operations = [
+            item
+            for item in operations
+            if str(item.get("operation_id") or "") != existing_close_id
+            if item.get("state") in {"running", "outcome_unknown", "reconciling"}
+        ]
+        if unsafe_operations:
+            # Refusal is validation, not durable work. Do not create a close
+            # operation that would itself remain active and poison the group's
+            # completion contract after the original work becomes terminal.
+            return public_envelope(
+                "blocked",
+                result={
+                    "reason": "close_disposition_refused",
+                    "validation": {
+                        **validation,
+                        "blockers": [
+                            {
+                                "reason": "active_or_uncertain_operations",
+                                "count": len(unsafe_operations),
+                            }
+                        ],
+                    },
+                    "workers": workers,
+                },
+            )
         operation = self.broker.create_operation(
             tool="patchbay_work_group_close",
             logical_target=work_group_id,
-            idempotency_key=_clean_text(idempotency_key, field="idempotency_key", maximum=256),
+            idempotency_key=key,
             payload={
                 "work_group_id": work_group_id,
                 "outcome": outcome,
-                "summary": summary,
+                "summary": summary_value,
                 "worker_dispositions": dispositions,
                 "active_work_disposition": active_work_disposition,
             },
             principal_ref=identity.principal_ref,
         )
-        now = self._clock()
-        group.update(
-            {
-                "status": "closed",
-                "lifecycle": "closed",
-                "outcome": outcome,
-                "summary": _clean_text(summary, field="summary", maximum=8_000),
-                "closure_dispositions": dispositions,
-                "active_work_disposition": active_work_disposition,
-                "closed_at": now,
-                "updated_at": now,
-            }
-        )
-        saved = self.store.put_entity(
-            WORK_GROUP_ENTITY, work_group_id, group, expected_revision=group_entity["revision"]
-        )
-        for pointer in self.store.list_entities(CURRENT_GROUP_ENTITY):
-            if pointer["record"].get("work_group_id") != work_group_id:
-                continue
-            replacement = deepcopy(pointer["record"])
-            replacement.update({"work_group_id": "", "updated_at": now})
-            self.store.put_entity(
-                CURRENT_GROUP_ENTITY,
-                pointer["entity_id"],
-                replacement,
-                expected_revision=pointer["revision"],
+        if group.get("status") != "open" and not operation.get("idempotent_replay"):
+            blocked = public_envelope(
+                "blocked", result={"reason": "closed_group_is_immutable"}
             )
-        terminal = self._complete_hub_operation(
-            operation, public_envelope("ok", result={"work_group_id": work_group_id, "outcome": outcome})
+            terminal = self._complete_hub_operation(operation, blocked)
+            blocked["operation"] = self._operation_summary(terminal)
+            return blocked
+
+        for pending in operations:
+            if (
+                str(pending.get("operation_id") or "")
+                != str(operation["operation_id"])
+                and pending.get("state")
+                in {"created", "payload_ready", "dispatchable"}
+            ):
+                self.broker.cancel_operation(
+                    pending["operation_id"],
+                    expected_revision=pending["revision"],
+                    reason="work_group_closed_before_claim",
+                )
+        return self._finish_group_close(
+            group_id=work_group_id,
+            operation=operation,
+            outcome=outcome,
+            summary=summary_value,
+            dispositions=dispositions,
+            active_work_disposition=active_work_disposition,
         )
-        return self._group_envelope(saved["record"], operation=terminal)
 
     # -- Public projections and operation recovery ----------------------
 
@@ -2256,23 +2663,63 @@ class HubRuntimeV2:
         operation = self.store.get_operation(operation_id)
         if operation is not None and operation.get("principal_ref") == identity.principal_ref:
             envelope["operation"] = self._operation_summary(operation)
-        envelope["next_actions"] = [
-            ({"tool": item["action"]} if isinstance(item, Mapping) and item.get("action") and not item.get("tool") else item)
-            for item in envelope.get("next_actions") or []
-        ]
+        revision = int(
+            ((envelope.get("result") or {}).get("dispatch") or {}).get("event_revision")
+            or (envelope.get("operation") or {}).get("revision")
+            or 0
+        )
+        operation_state = str((envelope.get("operation") or {}).get("state") or "")
+        internal_wait_states = {
+            "created",
+            "payload_ready",
+            "dispatchable",
+            "running",
+            "outcome_unknown",
+            "reconciling",
+        }
+        normalized_actions: list[Any] = []
+        for item in envelope.get("next_actions") or []:
+            if not isinstance(item, Mapping) or item.get("tool") or not item.get("action"):
+                normalized_actions.append(item)
+                continue
+            if operation_state in internal_wait_states:
+                normalized_actions.append(
+                    {
+                        "tool": "patchbay_operation_status",
+                        "arguments": {
+                            "operation_id": operation_id,
+                            "wait_seconds": 20,
+                            "since_revision": revision,
+                        },
+                        "reason": str(item["action"]),
+                    }
+                )
+            else:
+                # Terminal guidance such as "use_domain_result" is advice, not
+                # a callable MCP tool. Keep it as a plain action string so the
+                # manager never sees an invented tool name.
+                normalized_actions.append(str(item["action"]))
+        envelope["next_actions"] = normalized_actions
         return envelope
 
     # -- Internal projection helpers ------------------------------------
 
     def _operations_for_group(self, work_group_id: str) -> list[dict[str, Any]]:
-        operation_ids = {
-            str(entity["record"].get("operation_id") or entity["entity_id"])
-            for entity in self.store.list_entities(OPERATION_GROUP_ENTITY)
-            if entity["record"].get("work_group_id") == work_group_id
-        }
+        operation_ids = set(self.store.operation_ids_for_work_group(work_group_id))
         rows = self.store.connection.execute(
-            "SELECT operation_id FROM operations WHERE logical_target = ? ORDER BY created_at, operation_id",
-            (work_group_id,),
+            """
+            SELECT operation.operation_id
+            FROM operations AS operation
+            WHERE operation.logical_target = ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM entity_records AS association
+                  WHERE association.entity_type = ?
+                    AND association.entity_id = operation.operation_id
+              )
+            ORDER BY operation.created_at, operation.operation_id
+            """,
+            (work_group_id, OPERATION_GROUP_ENTITY),
         ).fetchall()
         operation_ids.update(str(row["operation_id"]) for row in rows)
         return [
@@ -2325,21 +2772,134 @@ class HubRuntimeV2:
                 cancelled.append(operation_id)
         return cancelled
 
+    @staticmethod
+    def _summary_activity_and_contract(
+        group: Mapping[str, Any],
+        *,
+        worker_summary: Mapping[str, Any],
+        operation_summary: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        counts = {
+            "workers": _as_int(worker_summary.get("total"), 0),
+            "active": _as_int(worker_summary.get("active"), 0),
+            "quiet": _as_int(worker_summary.get("quiet"), 0),
+            "stale": _as_int(worker_summary.get("stale"), 0),
+            "lost": _as_int(worker_summary.get("lost"), 0),
+            "failed": _as_int(worker_summary.get("failed"), 0),
+            "unintegrated": _as_int(worker_summary.get("unintegrated"), 0),
+            "uncertain_operations": _as_int(operation_summary.get("uncertain"), 0),
+            "active_operations": _as_int(operation_summary.get("active"), 0),
+        }
+        if counts["lost"] or counts["uncertain_operations"]:
+            activity_name = "recovery_required"
+        elif counts["stale"]:
+            activity_name = "degraded"
+        elif counts["active"] or counts["active_operations"]:
+            activity_name = "active"
+        elif counts["workers"]:
+            activity_name = "idle"
+        else:
+            activity_name = "planned"
+        activity = {"activity": activity_name, "counts": counts}
+
+        representative_workers: list[dict[str, Any]] = []
+        if counts["workers"]:
+            representative_workers.append(
+                {
+                    "turn_state": (
+                        "working"
+                        if counts["active"]
+                        else ("failed" if counts["failed"] else "completed")
+                    ),
+                    "liveness": (
+                        "lost"
+                        if counts["lost"]
+                        else ("stale" if counts["stale"] else "terminal")
+                    ),
+                    "integration_state": (
+                        "not_integrated"
+                        if counts["unintegrated"]
+                        else "integrated"
+                    ),
+                }
+            )
+        representative_operations: list[dict[str, Any]] = []
+        if counts["uncertain_operations"]:
+            representative_operations.append({"state": "reconciling"})
+        elif counts["active_operations"]:
+            representative_operations.append({"state": "running"})
+        elif _as_int(operation_summary.get("total"), 0):
+            representative_operations.append({"state": "succeeded"})
+        completion_contract = derive_completion_contract(
+            group, representative_workers, representative_operations
+        )
+        completion_contract["activity"] = activity_name
+        completion_contract["activity_counts"] = deepcopy(counts)
+        return activity, completion_contract
+
     def _public_group(
-        self, group: Mapping[str, Any], *, workers: list[Mapping[str, Any]]
+        self,
+        group: Mapping[str, Any],
+        *,
+        workers: list[Mapping[str, Any]],
+        worker_summary: Mapping[str, Any] | None = None,
+        operation_summary: Mapping[str, Any] | None = None,
+        lane_summaries: list[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        operations = self._operations_for_group(str(group["work_group_id"]))
-        activity = derive_group_activity(workers, operations)
-        completion_contract = derive_completion_contract(group, workers, operations)
+        if worker_summary is None or operation_summary is None or lane_summaries is None:
+            snapshot = self.store.work_group_status_projection(
+                str(group["work_group_id"]),
+                operation_limit=0,
+                worker_limit=0,
+                integration_limit=0,
+            )
+            worker_summary = snapshot["worker_summary"]
+            operation_summary = snapshot["operation_summary"]
+            lane_summaries = snapshot["lane_summaries"]
+        activity, completion_contract = self._summary_activity_and_contract(
+            group,
+            worker_summary=worker_summary,
+            operation_summary=operation_summary,
+        )
         lanes: list[dict[str, Any]] = []
         lane_records = group.get("lanes") if isinstance(group.get("lanes"), Mapping) else {}
-        lane_ids = set(lane_records).union(str(worker.get("lane_id") or "main") for worker in workers)
+        lane_summary_by_id = {
+            str(item.get("lane_id") or "main"): dict(item)
+            for item in lane_summaries
+        }
+        lane_ids = set(lane_records).union(lane_summary_by_id)
         for lane_id in sorted(lane_ids):
             lane_workers = [worker for worker in workers if str(worker.get("lane_id") or "main") == lane_id]
             lane = deepcopy(dict(lane_records.get(lane_id) or {"lane_id": lane_id, "lane": lane_id, "title": lane_id, "role": ""}))
-            lane.update(derive_group_activity(lane_workers, []))
+            lane_summary = lane_summary_by_id.get(lane_id, {})
+            lane_activity_counts = {
+                "workers": _as_int(lane_summary.get("worker_count"), len(lane_workers)),
+                "active": _as_int(lane_summary.get("active"), 0),
+                "quiet": _as_int(lane_summary.get("quiet"), 0),
+                "stale": _as_int(lane_summary.get("stale"), 0),
+                "lost": _as_int(lane_summary.get("lost"), 0),
+                "failed": _as_int(lane_summary.get("failed"), 0),
+                "unintegrated": _as_int(lane_summary.get("unintegrated"), 0),
+                "uncertain_operations": 0,
+                "active_operations": 0,
+            }
+            if lane_activity_counts["lost"]:
+                lane_activity = "recovery_required"
+            elif lane_activity_counts["stale"]:
+                lane_activity = "degraded"
+            elif lane_activity_counts["active"]:
+                lane_activity = "active"
+            elif lane_activity_counts["workers"]:
+                lane_activity = "idle"
+            else:
+                lane_activity = "planned"
+            lane.update({"activity": lane_activity, "counts": lane_activity_counts})
             lane["worker_refs"] = [str(worker.get("fleet_worker_ref") or "") for worker in lane_workers]
+            lane["worker_count"] = lane_activity_counts["workers"]
+            lane["worker_refs_truncated"] = len(lane["worker_refs"]) < lane["worker_count"]
             lanes.append(lane)
+        worker_refs = [str(worker.get("fleet_worker_ref") or "") for worker in workers]
+        worker_total = _as_int(worker_summary.get("total"), len(worker_refs))
         return {
             "work_group_id": group.get("work_group_id"),
             "title": group.get("title"),
@@ -2365,7 +2925,9 @@ class HubRuntimeV2:
             "participants": list(group.get("participants") or []),
             "active_participant_ref": group.get("active_participant_ref") or "",
             "lanes": lanes,
-            "worker_refs": [str(worker.get("fleet_worker_ref") or "") for worker in workers],
+            "worker_refs": worker_refs,
+            "worker_count": worker_total,
+            "worker_refs_truncated": len(worker_refs) < worker_total,
             "supersedes": group.get("supersedes") or "",
             "superseded_by": group.get("superseded_by") or "",
             "closure_dispositions": deepcopy(dict(group.get("closure_dispositions") or {})),
@@ -2405,24 +2967,81 @@ class HubRuntimeV2:
         operation: Mapping[str, Any] | None = None,
         include_workers: bool = True,
         include_operations: bool = True,
+        include_integrations: bool = True,
+        worker_offset: int = 0,
+        worker_limit: int = DEFAULT_GROUP_STATUS_DETAIL_LIMIT,
+        operation_offset: int = 0,
+        operation_limit: int = DEFAULT_GROUP_STATUS_DETAIL_LIMIT,
+        integration_offset: int = 0,
+        integration_limit: int = DEFAULT_GROUP_STATUS_DETAIL_LIMIT,
         candidate_summary: list[Mapping[str, Any]] | None = None,
         rejection_summary: list[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         group_id = str(group["work_group_id"])
-        workers = self._workers_for_group(group_id)
-        public_group = self._public_group(group, workers=workers)
-        operations = self._operations_for_group(group_id)
-        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
-        status_revision = int(group_entity.get("revision") or 0) if group_entity else 0
-        status_revision += sum(_as_int(worker.get("projection_revision"), 0) for worker in workers)
-        status_revision += sum(_as_int(item.get("revision"), 0) for item in operations)
+        projection = self.store.work_group_status_projection(
+            group_id,
+            operation_offset=operation_offset,
+            operation_limit=operation_limit if include_operations else 0,
+            worker_offset=worker_offset,
+            worker_limit=worker_limit if include_workers else 0,
+            integration_offset=integration_offset,
+            integration_limit=integration_limit if include_integrations else 0,
+        )
+        workers = projection["workers"]
+        for worker in workers:
+            worker.setdefault("worker_state", "available")
+            worker.setdefault("turn_state", "none")
+            worker.setdefault("liveness", "lost")
+            worker.setdefault("integration_state", "uncertain")
+            worker.setdefault("review_disposition", "unreviewed")
+        public_group = self._public_group(
+            group,
+            workers=workers,
+            worker_summary=projection["worker_summary"],
+            operation_summary=projection["operation_summary"],
+            lane_summaries=projection["lane_summaries"],
+        )
         completion_contract = deepcopy(dict(public_group["completion_contract"]))
+
+        def page_metadata(
+            *, total: int, offset: int, limit: int, returned: int, included: bool
+        ) -> dict[str, Any]:
+            next_offset = offset + returned
+            return {
+                "included": included,
+                "total": total,
+                "cursor": str(offset),
+                "limit": limit,
+                "returned": returned,
+                "next_cursor": str(next_offset) if included and next_offset < total else "",
+                "truncated": included and next_offset < total,
+            }
+
+        operation_total = _as_int(projection["operation_summary"].get("total"), 0)
+        worker_total = _as_int(projection["worker_summary"].get("total"), 0)
+        integration_total = _as_int(projection["integration_summary"].get("total"), 0)
         result: dict[str, Any] = {
             "work_group": public_group,
             "lanes": deepcopy(public_group["lanes"]),
             "readiness": deepcopy(public_group["readiness"]),
             "completion_contract": completion_contract,
-            "status_revision": status_revision,
+            "status_revision": projection["status_revision"],
+            "operation_summary": deepcopy(projection["operation_summary"]),
+            "worker_summary": deepcopy(projection["worker_summary"]),
+            "operation_page": page_metadata(
+                total=operation_total,
+                offset=operation_offset,
+                limit=operation_limit,
+                returned=len(projection["operations"]),
+                included=include_operations,
+            ),
+            "worker_page": page_metadata(
+                total=worker_total,
+                offset=worker_offset,
+                limit=worker_limit,
+                returned=len(workers),
+                included=include_workers,
+            ),
             "routing": deepcopy(dict(group.get("routing") or {})),
             "candidate_summary": deepcopy(list(candidate_summary or [])),
             "rejection_summary": deepcopy(list(rejection_summary or [])),
@@ -2431,8 +3050,20 @@ class HubRuntimeV2:
             result["workers"] = workers
         if include_operations:
             result["operations"] = [
-                self._operation_summary(item) for item in operations
+                self._operation_summary(item) for item in projection["operations"]
             ]
+        if include_integrations:
+            result["integration_summary"] = deepcopy(
+                projection["integration_summary"]
+            )
+            result["integrations"] = deepcopy(projection["integrations"])
+            result["integration_page"] = page_metadata(
+                total=integration_total,
+                offset=integration_offset,
+                limit=integration_limit,
+                returned=len(projection["integrations"]),
+                included=True,
+            )
         next_actions: list[dict[str, Any]] = []
         if completion_contract.get("manager_must_continue"):
             action = completion_contract.get("recommended_next_action")

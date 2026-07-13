@@ -49,7 +49,7 @@ The user-provided ChatGPT report said:
 
 - Several Codex workers stayed in `working` after apparent progress events.
 - Workers did not surface usable final reports.
-- Workers such as `RM UI Surface Complete Pass`, `RM Data Lifecycle Trace`, `RM Evidence Review VerifyEU Pass`, and `RM Final Gap Synthesis` were eventually stopped.
+- Four representative UI, data-lifecycle, evidence-review, and final-synthesis workers were eventually stopped.
 - Some workers showed events like `item.completed` but still appeared as `working`.
 - One worker reportedly failed with a tracking mismatch: "Job was marked running, but no live Codex process is tracked."
 - Some reports were over-compressed.
@@ -62,14 +62,15 @@ That report is not fake, but the logs suggest it may partly describe ChatGPT's i
 
 In the copied runtime state, the main latest SampleRepo workers were not missing sessions. They had process IDs and Codex session IDs.
 
-Timestamps below are UTC.
+Times below are relative to the start of the private observation window; raw
+job identifiers and deployment timestamps remain in ignored private evidence.
 
 | Worker | Job id | Started | Final state | Last event | Session? | Result file? | Notes |
 | --- | --- | ---: | --- | --- | --- | --- | --- |
-| `RM UI Surface Complete Pass` | `0507a865-8ae9-4af1-bc08-ec92e4c0bb89` | 16:46:41 | `cancelled` | `item.started` | yes | no | Cancelled at 16:54:59 while a command was in progress. |
-| `RM Data Lifecycle Trace` | `7ccba03c-58f3-4c6a-b142-064d419be8a1` | 16:47:03 | `cancelled` | `item.started` | yes | no | Contained several intermediate agent messages and many command events; stdout hit 200 KB cap. |
-| `RM Evidence Review VerifyEU Pass` | `1e9ef17d-e54f-4508-b5a0-e6566636c9fc` | 16:47:25 | `cancelled` | `item.started` | yes | no | Very early in a broad search/read command when cancelled. |
-| `RM Final Gap Synthesis` | `18e2f11f-1229-40f7-904d-63e3a8040f52` | 16:47:46 | `cancelled` | `item.started` | yes | no | Contained several intermediate agent messages; stdout hit 200 KB cap. |
+| UI surface worker | private | T+00:00 | `cancelled` | `item.started` | yes | no | Cancelled several minutes later while a command was in progress. |
+| Data-lifecycle worker | private | T+00:22 | `cancelled` | `item.started` | yes | no | Contained several intermediate agent messages and many command events; stdout hit 200 KB cap. |
+| Evidence-review worker | private | T+00:44 | `cancelled` | `item.started` | yes | no | Very early in a broad search/read command when cancelled. |
+| Final-synthesis worker | private | T+01:05 | `cancelled` | `item.started` | yes | no | Contained several intermediate agent messages; stdout hit 200 KB cap. |
 
 Important contrast:
 
@@ -83,7 +84,8 @@ The copied state for `SampleRepo UI Quick Mapper` does not support the idea that
 
 ## Tool Usage Pattern During The Latest Run
 
-From the VM audit log for approximately 16:46-16:59 UTC:
+From the private runtime audit log for an approximately 13-minute observation
+window:
 
 | Tool | Count |
 | --- | ---: |
@@ -139,7 +141,7 @@ For a human manager, "still working" for several minutes is not enough. A manage
 
 Some cancelled workers did emit useful intermediate `agent_message` events.
 
-For example, `RM Final Gap Synthesis` emitted messages such as:
+For example, one final-gap synthesis worker emitted messages such as:
 
 - it had mapped the repo as compact Python service code plus a static web UI;
 - it was separating real behavior from roadmap language;

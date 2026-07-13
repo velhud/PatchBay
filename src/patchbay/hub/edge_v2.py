@@ -334,10 +334,15 @@ class EdgeExecutionService:
     execute = execute_attempt
     handle_attempt = execute_attempt
 
-    def pending_results(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def pending_results(
+        self,
+        *,
+        limit: int | None = None,
+        after: tuple[float, str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return durable outbox receipts that still require Hub acknowledgement."""
 
-        return self.journal.list_pending_outbox(limit=limit)
+        return self.journal.list_pending_outbox(limit=limit, after=after)
 
     pending_outbox = pending_results
 
@@ -402,13 +407,45 @@ class EdgeExecutionService:
         snapshot_builder = getattr(runtime, "projection_snapshot", None)
         if not callable(snapshot_builder):
             raise EdgeExecutionError("ToolHandler has no WorkerRuntime projection API")
-        if isinstance(previous_edge_worker_ids, str):
-            previous = [previous_edge_worker_ids]
-        elif previous_edge_worker_ids is not None:
-            previous = list(previous_edge_worker_ids)
-        else:
-            previous = list(self._last_projection_worker_ids)
+        previous = self._projection_previous_worker_ids(previous_edge_worker_ids)
         raw = snapshot_builder(previous_edge_worker_ids=previous)
+        return self._finalize_projection_snapshot(raw)
+
+    async def projection_snapshot_async(
+        self,
+        *,
+        previous_edge_worker_ids: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        """Emit a projection without moving loop-owned reconciliation off-loop."""
+
+        runtime = getattr(self.handler, "worker_runtime", None)
+        snapshot_builder = getattr(runtime, "projection_snapshot_async", None)
+        previous = self._projection_previous_worker_ids(previous_edge_worker_ids)
+        if callable(snapshot_builder):
+            raw = await snapshot_builder(previous_edge_worker_ids=previous)
+        else:
+            sync_builder = getattr(runtime, "projection_snapshot", None)
+            if not callable(sync_builder):
+                raise EdgeExecutionError("ToolHandler has no WorkerRuntime projection API")
+            raw = await asyncio.to_thread(
+                sync_builder,
+                previous_edge_worker_ids=previous,
+            )
+        return self._finalize_projection_snapshot(raw)
+
+    def _projection_previous_worker_ids(
+        self,
+        previous_edge_worker_ids: Iterable[str] | None,
+    ) -> list[str]:
+        if isinstance(previous_edge_worker_ids, str):
+            return [previous_edge_worker_ids]
+        if previous_edge_worker_ids is not None:
+            return list(previous_edge_worker_ids)
+        return list(self._last_projection_worker_ids)
+
+    def _finalize_projection_snapshot(self, raw: Any) -> dict[str, Any]:
+        """Validate and envelope one already-built runtime projection."""
+
         if not isinstance(raw, Mapping):
             raise EdgeExecutionError("WorkerRuntime projection snapshot must be an object")
         snapshot = deepcopy(dict(raw))
@@ -849,14 +886,7 @@ class EdgeExecutionService:
 
     def _reconciliation_record(self, attempt: Mapping[str, Any]) -> dict[str, Any]:
         attempt_id = str(attempt["attempt_id"])
-        recovery = next(
-            (
-                item
-                for item in self.journal.list_restart_recovery()
-                if item["attempt_id"] == attempt_id
-            ),
-            None,
-        )
+        recovery = self.journal.get_restart_recovery(attempt_id)
         if recovery is None:
             state = str(attempt.get("state") or "")
             recovery_action = {

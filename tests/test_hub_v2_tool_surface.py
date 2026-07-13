@@ -16,8 +16,10 @@ from patchbay.hub.tool_surface import (
     HUB_V2_TOOL_MANIFEST_HASH,
     HUB_V2_TOOL_NAMES,
     HUB_V2_TOOL_SCHEMA_HASH,
+    HUB_V2_UNSUPPORTED_WORKER_COLLECTION_FIELDS,
     compute_tool_manifest_hash,
     compute_tool_schema_hash,
+    normalize_hub_v2_next_action,
 )
 from patchbay.protocol.mcp import PUBLIC_TOOL_DESCRIPTORS_BY_NAME
 
@@ -216,6 +218,42 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _validate_schema_instance(instance: Any, schema: Mapping[str, Any], path: str = "$") -> None:
+    """Validate the closed JSON Schema subset used by the regression payload."""
+
+    expected_type = schema.get("type")
+    if expected_type == "object":
+        assert isinstance(instance, Mapping), f"{path} must be an object"
+        properties = schema.get("properties", {})
+        for required in schema.get("required", []):
+            assert required in instance, f"{path}.{required} is required"
+        if schema.get("additionalProperties") is False:
+            assert set(instance) <= set(properties), f"{path} has unknown properties"
+        for key, value in instance.items():
+            if key in properties:
+                _validate_schema_instance(value, properties[key], f"{path}.{key}")
+    elif expected_type == "array":
+        assert isinstance(instance, list), f"{path} must be an array"
+        item_schema = schema.get("items")
+        if isinstance(item_schema, Mapping):
+            for index, value in enumerate(instance):
+                _validate_schema_instance(value, item_schema, f"{path}[{index}]")
+    elif expected_type == "string":
+        assert isinstance(instance, str), f"{path} must be a string"
+    elif expected_type == "integer":
+        assert isinstance(instance, int) and not isinstance(instance, bool), (
+            f"{path} must be an integer"
+        )
+    elif expected_type == "number":
+        assert isinstance(instance, (int, float)) and not isinstance(instance, bool), (
+            f"{path} must be a number"
+        )
+    elif expected_type == "boolean":
+        assert isinstance(instance, bool), f"{path} must be a boolean"
+    if "enum" in schema:
+        assert instance in schema["enum"], f"{path} is outside the enum"
+
+
 def test_exact_ordered_tool_manifest_and_family_counts():
     descriptor_names = tuple(
         descriptor["name"] for descriptor in HUB_V2_TOOL_DESCRIPTORS
@@ -289,6 +327,66 @@ def test_every_output_schema_uses_the_resolved_semantic_envelope():
         assert "operation_id" not in properties
         assert "next_action" not in properties
 
+        action_schema = properties["next_actions"]["items"]["oneOf"][1]
+        assert tuple(action_schema["properties"]["tool"]["enum"]) == HUB_V2_TOOL_NAMES
+
+
+def test_next_action_normalization_validates_the_referenced_tool_input_schema():
+    fallback = {
+        "tool": "patchbay_operation_status",
+        "arguments": {"operation_id": "op_invalid_action"},
+        "reason": "Inspect this operation through Hub's public recovery tool.",
+    }
+
+    for invalid in (
+        {"tool": "patchbay_worker_wait"},
+        {
+            "tool": "patchbay_worker_wait",
+            "arguments": {"work_group_id": 7},
+        },
+        {
+            "tool": "patchbay_worker_wait",
+            "arguments": {"work_group_id": "group-a", "unsupported": True},
+        },
+    ):
+        assert normalize_hub_v2_next_action(
+            invalid, operation_id="op_invalid_action"
+        ) == fallback
+
+    valid = {
+        "tool": "patchbay_worker_wait",
+        "arguments": {
+            "work_group_id": "group-a",
+            "since_revision": 4,
+            "wait_seconds": 20,
+        },
+        "reason": "Wait for the worker projection to change.",
+    }
+    assert normalize_hub_v2_next_action(
+        valid, operation_id="op_invalid_action"
+    ) == valid
+
+
+def test_public_operation_output_schema_validates_integer_fencing_token():
+    descriptor = _descriptors_by_name()["patchbay_operation_status"]
+    output_schema = descriptor["outputSchema"]
+    payload = {
+        "status": "pending",
+        "result": {},
+        "operation": {
+            "operation_id": "op_schema_regression",
+            "state": "running",
+            "fencing_token": 7,
+        },
+        "warnings": [],
+        "next_actions": [],
+    }
+
+    _validate_schema_instance(payload, output_schema)
+    assert output_schema["properties"]["operation"]["properties"]["fencing_token"] == {
+        "type": "integer"
+    }
+
 
 def test_annotations_match_the_resolved_side_effect_contract():
     expected_annotation_keys = {
@@ -302,7 +400,7 @@ def test_annotations_match_the_resolved_side_effect_contract():
         name = descriptor["name"]
         annotations = descriptor["annotations"]
         assert set(annotations) == expected_annotation_keys, name
-        assert all(type(value) is bool for value in annotations.values()), name
+        assert all(isinstance(value, bool) for value in annotations.values()), name
         assert annotations == {
             "readOnlyHint": name in READ_ONLY_TOOL_NAMES,
             "destructiveHint": name in DESTRUCTIVE_TOOL_NAMES,
@@ -330,7 +428,7 @@ def test_mutations_require_idempotency_keys_and_reads_do_not_accept_them():
             assert "idempotency_key" not in required, name
 
 
-def test_worker_tools_preserve_every_canonical_input_field_and_schema():
+def test_worker_tools_preserve_every_supported_canonical_input_field_and_schema():
     by_name = _descriptors_by_name()
 
     for hub_name, canonical_name in CANONICAL_WORKER_TOOL_MAP.items():
@@ -338,8 +436,17 @@ def test_worker_tools_preserve_every_canonical_input_field_and_schema():
         canonical_properties = PUBLIC_TOOL_DESCRIPTORS_BY_NAME[canonical_name][
             "inputSchema"
         ]["properties"]
-        assert set(canonical_properties) <= set(hub_properties), hub_name
-        for field_name, canonical_schema in canonical_properties.items():
+        supported_canonical_properties = {
+            field_name: canonical_schema
+            for field_name, canonical_schema in canonical_properties.items()
+            if not (
+                hub_name
+                in {"patchbay_worker_list", "patchbay_worker_status", "patchbay_worker_wait"}
+                and field_name in HUB_V2_UNSUPPORTED_WORKER_COLLECTION_FIELDS
+            )
+        }
+        assert set(supported_canonical_properties) <= set(hub_properties), hub_name
+        for field_name, canonical_schema in supported_canonical_properties.items():
             assert _strip_documentation(hub_properties[field_name]) == (
                 _strip_documentation(canonical_schema)
             ), (hub_name, field_name)
@@ -366,9 +473,76 @@ def test_worker_tools_add_group_fleet_routing_without_dropping_parity_fields():
     assert stop["properties"]["reason"]["type"] == "string"
 
 
+def test_group_worker_monitoring_schema_exposes_only_supported_group_filters():
+    by_name = _descriptors_by_name()
+    expected_fields = {
+        "patchbay_worker_list": {
+            "work_group_id",
+            "lane",
+            "active_only",
+            "include_stopped",
+            "cursor",
+            "limit",
+        },
+        "patchbay_worker_status": {
+            "work_group_id",
+            "lane",
+            "active_only",
+            "include_stopped",
+            "cursor",
+            "limit",
+            "since_revision",
+        },
+        "patchbay_worker_wait": {
+            "work_group_id",
+            "lane",
+            "active_only",
+            "include_stopped",
+            "cursor",
+            "limit",
+            "wait_seconds",
+            "since_revision",
+        },
+    }
+
+    for name, expected in expected_fields.items():
+        schema = by_name[name]["inputSchema"]
+        assert set(schema["properties"]) == expected
+        assert schema["required"] == ["work_group_id"]
+        assert {"scope", "owned_only", "created_after", "repo_path", "force_refresh"}.isdisjoint(
+            schema["properties"]
+        )
+        assert "required work group" in by_name[name]["description"]
+
+
+def test_group_close_schema_records_dispositions_without_stop_or_cleanup_controls():
+    close = _descriptors_by_name()["patchbay_work_group_close"]["inputSchema"]
+    properties = close["properties"]
+
+    assert "active_work_disposition" not in properties
+    assert "cleanup_completed_workspaces" not in properties
+    dispositions = properties["worker_dispositions"]["items"]
+    assert dispositions["properties"]["disposition"]["enum"] == [
+        "integrated",
+        "no_changes",
+        "reviewed_failure",
+        "stopped_preserved",
+        "discarded",
+        "leave_running",
+    ]
+    assert dispositions["allOf"][0]["then"] == {
+        "properties": {"discard_unintegrated_changes": {"const": True}},
+        "required": ["discard_unintegrated_changes"],
+    }
+    assert "never stops workers or cleans workspaces" in _descriptors_by_name()[
+        "patchbay_work_group_close"
+    ]["description"]
+
+
 def test_group_tools_expose_execution_and_completion_contracts():
     by_name = _descriptors_by_name()
     create = by_name["patchbay_work_group_create"]["inputSchema"]
+    status_input = by_name["patchbay_work_group_status"]["inputSchema"]
     status = by_name["patchbay_work_group_status"]["outputSchema"]
 
     assert create["properties"]["execution_mode"]["enum"] == [
@@ -376,6 +550,17 @@ def test_group_tools_expose_execution_and_completion_contracts():
         "asynchronous_handoff",
     ]
     assert "definition_of_done" in create["properties"]
+    assert {
+        "worker_cursor",
+        "worker_limit",
+        "operation_cursor",
+        "operation_limit",
+        "integration_cursor",
+        "integration_limit",
+    } <= set(status_input["properties"])
+    assert status_input["properties"]["worker_limit"]["maximum"] == 100
+    assert status_input["properties"]["operation_limit"]["maximum"] == 100
+    assert status_input["properties"]["integration_limit"]["maximum"] == 100
     result = status["properties"]["result"]["properties"]
     assert "completion_contract" in result
     assert "status_revision" in result

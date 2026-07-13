@@ -5,13 +5,15 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
 import time
 import webbrowser
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 import yaml
 
@@ -27,7 +29,6 @@ from patchbay.connector.profiles import (
     list_workspace_profiles,
     normalize_root,
     read_workspace_profile,
-    save_workspace_profile,
     write_runtime_status,
 )
 from patchbay.connector.status import (
@@ -60,6 +61,14 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PACKAGE_ROOT / "src"
 
 
+class _SupervisionTermination(Exception):
+    """Internal signal used to unwind through supervised child cleanup."""
+
+    def __init__(self, signum: int):
+        super().__init__(f"supervision terminated by signal {signum}")
+        self.signum = int(signum)
+
+
 def default_config_path() -> str:
     configured = os.environ.get("PATCHBAY_CONFIG")
     if configured:
@@ -73,8 +82,36 @@ def default_config_path() -> str:
 
 def _hub_v2_enabled(config: Mapping[str, Any]) -> bool:
     hub = config.get("hub") if isinstance(config.get("hub"), Mapping) else {}
-    version = str(hub.get("control_plane") or hub.get("protocol_version") or "").strip().lower()
-    return version in {"2", "v2", "hub-v2"}
+    configured = hub.get("control_plane") or hub.get("protocol_version")
+    if configured is None or not str(configured).strip():
+        from patchbay.hub.store_v2 import (
+            HubStoreV2Conflict,
+            assert_v2_activation_safe,
+        )
+
+        try:
+            assert_v2_activation_safe(config)
+        except HubStoreV2Conflict as error:
+            raise ValueError(str(error)) from error
+        return True
+    version = str(configured).strip().lower()
+    if version in {"2", "v2", "hub-v2"}:
+        from patchbay.hub.store_v2 import (
+            HubStoreV2Conflict,
+            assert_v2_activation_safe,
+        )
+
+        try:
+            assert_v2_activation_safe(config)
+        except HubStoreV2Conflict as error:
+            raise ValueError(str(error)) from error
+        return True
+    if version in {"1", "v1", "hub-v1"}:
+        return False
+    raise ValueError(
+        "hub.control_plane must be one of v2 (default) or v1; "
+        f"received {configured!r}"
+    )
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -459,6 +496,8 @@ def hub_main(argv: Iterable[str] | None = None) -> int:
         return hub_enroll_code_main(rest)
     if command == "machine":
         return hub_machine_main(rest)
+    if command == "backup":
+        return hub_backup_main(rest)
     print(f"Unknown hub command: {command}\n\n{_hub_help()}", file=sys.stderr)
     return 2
 
@@ -480,24 +519,27 @@ def hub_enroll_code_main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parsed = parser.parse_args(rest)
     config = load_config(parsed.config)
-    if _hub_v2_enabled(config):
-        from patchbay.hub.runtime_v2 import HubRuntimeV2
-
-        runtime = HubRuntimeV2(config)
-    else:
+    if not _hub_v2_enabled(config):
         from patchbay.hub.runtime import HubRuntime
 
         runtime = HubRuntime(config)
-    try:
-        result = runtime.create_enrollment_code(
-            name=parsed.name,
-            tags=parsed.tag,
-            ttl_minutes=parsed.ttl_minutes,
-        )
-    finally:
-        close = getattr(runtime, "close", None)
-        if callable(close):
-            close()
+        try:
+            result = runtime.create_enrollment_code(
+                name=parsed.name,
+                tags=parsed.tag,
+                ttl_minutes=parsed.ttl_minutes,
+            )
+        finally:
+            close = getattr(runtime, "close", None)
+            if callable(close):
+                close()
+    else:
+        with _hub_v2_admitted_admin_runtime(config) as runtime:
+            result = runtime.create_enrollment_code(
+                name=parsed.name,
+                tags=parsed.tag,
+                ttl_minutes=parsed.ttl_minutes,
+            )
     print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else f"Enrollment code: {result['code']}")
     return 0
 
@@ -519,35 +561,68 @@ def hub_machine_main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parsed = parser.parse_args(rest)
     config = load_config(parsed.config)
-    if _hub_v2_enabled(config):
-        from patchbay.hub.runtime_v2 import HubRuntimeV2
-
-        runtime = HubRuntimeV2(config)
-    else:
+    if not _hub_v2_enabled(config):
         from patchbay.hub.runtime import HubRuntime
 
         runtime = HubRuntime(config)
-    try:
-        if command == "retire":
-            values = {
-                "machine_id": parsed.machine_id,
-                "reason": parsed.reason,
-            }
-            if not _hub_v2_enabled(config):
-                values["superseded_by"] = parsed.superseded_by
-            result = runtime.retire_machine(**values)
-        else:
-            result = runtime.restore_machine(machine_id=parsed.machine_id)
-    finally:
-        close = getattr(runtime, "close", None)
-        if callable(close):
-            close()
+        try:
+            if command == "retire":
+                result = runtime.retire_machine(
+                    machine_id=parsed.machine_id,
+                    reason=parsed.reason,
+                    superseded_by=parsed.superseded_by,
+                )
+            else:
+                result = runtime.restore_machine(machine_id=parsed.machine_id)
+        finally:
+            close = getattr(runtime, "close", None)
+            if callable(close):
+                close()
+    else:
+        with _hub_v2_admitted_admin_runtime(config) as runtime:
+            if command == "retire":
+                result = runtime.retire_machine(
+                    machine_id=parsed.machine_id,
+                    reason=parsed.reason,
+                )
+            else:
+                result = runtime.restore_machine(machine_id=parsed.machine_id)
     if parsed.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         machine = result.get("machine") if isinstance(result.get("machine"), dict) else result
         print(f"{machine.get('machine_id', parsed.machine_id)}: {machine.get('status', command)}")
     return 0
+
+
+@contextmanager
+def _hub_v2_admitted_admin_runtime(
+    config: Mapping[str, Any],
+) -> Iterator[Any]:
+    """Run one official Hub V2 administrative mutation under backup admission."""
+
+    from patchbay.hub.backup_v2 import (
+        AdmissionFreezeController,
+        admission_coordination_path,
+    )
+    from patchbay.hub.runtime_v2 import HubRuntimeV2
+    from patchbay.hub.store_v2 import hub_state_v2_path
+
+    gate = AdmissionFreezeController(
+        admission_coordination_path(hub_state_v2_path(config))
+    )
+    with gate.admit_mutation():
+        runtime = HubRuntimeV2(config)
+        try:
+            yield runtime
+        finally:
+            runtime.close()
+
+
+def hub_backup_main(argv: Iterable[str] | None = None) -> int:
+    """Run private Hub V2 SQLite backup and fresh-path restore commands."""
+
+    return _v2_backup_main(argv, database_kind="hub")
 
 
 def edge_main(argv: Iterable[str] | None = None) -> int:
@@ -640,8 +715,174 @@ def edge_main(argv: Iterable[str] | None = None) -> int:
         result = {"profile": public_edge_profile(load_edge_profile())}
         print(json.dumps(result, indent=2, sort_keys=True) if parsed.json else yaml.safe_dump(result, sort_keys=False))
         return 0
+    if command == "backup":
+        return edge_backup_main(rest)
     print(f"Unknown edge command: {command}\n\n{_edge_help()}", file=sys.stderr)
     return 2
+
+
+def edge_backup_main(argv: Iterable[str] | None = None) -> int:
+    """Run private Edge V2 journal backup and fresh-path restore commands."""
+
+    return _v2_backup_main(argv, database_kind="edge")
+
+
+def _v2_backup_main(argv: Iterable[str] | None, *, database_kind: str) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    label = "Hub V2" if database_kind == "hub" else "Edge V2"
+    usage = (
+        f"patchbay {'hub' if database_kind == 'hub' else 'edge'} backup "
+        "<create|validate|restore> [options]"
+    )
+    if not args or args[0] in {"-h", "--help"}:
+        print(f"{label} private SQLite backup\n\nUsage:\n  {usage}")
+        return 0
+    command, rest = args[0], args[1:]
+    if command not in {"create", "validate", "restore"}:
+        print(f"Unknown {database_kind} backup command: {command}\n\nUsage:\n  {usage}", file=sys.stderr)
+        return 2
+
+    parser = argparse.ArgumentParser(description=f"{label} private SQLite backup {command}.")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    parser.add_argument(
+        "--expected-generation",
+        default="",
+        help="Reject a backup whose Hub id or Edge generation differs.",
+    )
+    parser.add_argument(
+        "--expected-deployed-revision",
+        default="",
+        help="Reject a manifest from another explicitly named deployment revision.",
+    )
+    if command == "create":
+        parser.add_argument(
+            "--database",
+            help=(
+                "Live Hub V2 SQLite path. Defaults to hub.state_db from --config."
+                if database_kind == "hub"
+                else "Live Edge V2 journal SQLite path."
+            ),
+        )
+        if database_kind == "hub":
+            parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+        else:
+            parser.add_argument("--config", default="", help=argparse.SUPPRESS)
+        parser.add_argument("--backup", required=True, help="New private destination SQLite backup path.")
+        parser.add_argument(
+            "--deployed-revision",
+            default="",
+            help="Optional deployed commit/revision recorded in the manifest.",
+        )
+        parser.add_argument(
+            "--prepare-migration",
+            action="store_true",
+            help=(
+                "After creating and validating the snapshot, bind it to this "
+                "exact older database as the required startup migration marker."
+            ),
+        )
+        if database_kind == "hub":
+            parser.add_argument(
+                "--drain-timeout-seconds",
+                type=float,
+                default=30.0,
+                help=(
+                    "Seconds to wait for already-admitted Hub mutations to leave "
+                    "their short dispatch section after new admissions are frozen."
+                ),
+            )
+    else:
+        parser.add_argument("--backup", required=True, help="Existing private SQLite backup path.")
+        if command == "restore":
+            parser.add_argument(
+                "--restore-to",
+                required=True,
+                help="Fresh database path; an existing path or SQLite sidecar is rejected.",
+            )
+    parsed = parser.parse_args(rest)
+
+    from patchbay.hub.backup_v2 import BackupV2Error
+    from patchbay.hub.cli_v2 import (
+        edge_v2_backup_create,
+        edge_v2_backup_restore,
+        edge_v2_backup_validate,
+        hub_v2_backup_create,
+        hub_v2_backup_restore,
+        hub_v2_backup_validate,
+    )
+
+    try:
+        if database_kind == "hub":
+            create = hub_v2_backup_create
+            validate = hub_v2_backup_validate
+            restore = hub_v2_backup_restore
+        else:
+            create = edge_v2_backup_create
+            validate = edge_v2_backup_validate
+            restore = edge_v2_backup_restore
+
+        if command == "create":
+            source: Any = parsed.database
+            if database_kind == "hub" and not source:
+                config = load_config(parsed.config)
+                if not _hub_v2_enabled(config):
+                    raise ValueError("Hub V2 backup requires hub.control_plane: v2")
+                source = config
+            if not source:
+                raise ValueError("--database is required for Edge V2 backup")
+            create_arguments = {
+                "backup_path": parsed.backup,
+                "expected_generation": parsed.expected_generation,
+                "deployed_revision": parsed.deployed_revision,
+            }
+            if database_kind == "hub":
+                create_arguments["drain_timeout_seconds"] = (
+                    parsed.drain_timeout_seconds
+                )
+            result = create(source, **create_arguments)
+            if parsed.prepare_migration:
+                from patchbay.hub.backup_v2 import (
+                    create_pre_migration_backup_marker,
+                )
+
+                source_path = str(result.get("source", {}).get("path") or "")
+                if not source_path:
+                    raise ValueError(
+                        "Backup result did not identify the migration source database"
+                    )
+                result["pre_migration_backup"] = (
+                    create_pre_migration_backup_marker(
+                        source_path,
+                        parsed.backup,
+                        database_kind=(
+                            "hub_v2" if database_kind == "hub" else "edge_v2"
+                        ),
+                        expected_generation=parsed.expected_generation,
+                        expected_deployed_revision=parsed.deployed_revision,
+                    )
+                )
+        elif command == "validate":
+            result = validate(
+                parsed.backup,
+                expected_generation=parsed.expected_generation,
+                expected_deployed_revision=parsed.expected_deployed_revision,
+            )
+        else:
+            result = restore(
+                parsed.backup,
+                restore_path=parsed.restore_to,
+                expected_generation=parsed.expected_generation,
+                expected_deployed_revision=parsed.expected_deployed_revision,
+            )
+    except (BackupV2Error, ValueError) as error:
+        print(f"patchbay {database_kind} backup: {error}", file=sys.stderr)
+        return 2
+
+    if parsed.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(yaml.safe_dump(result, sort_keys=False))
+    return 0 if result.get("valid", result.get("restored", result.get("created", False))) else 1
 
 
 def _add_pro_request_common(parser: argparse.ArgumentParser) -> None:
@@ -807,6 +1048,21 @@ def _run_supervised_with_tunnel(
     server = None
     tunnel = None
     tunnel_tail = None
+    previous_sigterm: Any = None
+    sigterm_installed = False
+
+    def request_shutdown(signum: int, _frame: Any) -> None:
+        raise _SupervisionTermination(signum)
+
+    try:
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, request_shutdown)
+        sigterm_installed = True
+    except (AttributeError, ValueError):
+        # The public CLI runs on the main thread. Embedded/non-main-thread
+        # callers cannot install process signal handlers and keep legacy
+        # caller-owned shutdown semantics.
+        pass
     try:
         server, _server_tail = spawn_logged(
             "server",
@@ -860,6 +1116,8 @@ def _run_supervised_with_tunnel(
         )
         _post_connection_actions(server_url, copy_url=copy_url, open_chatgpt=open_chatgpt)
         return _wait_supervised(server, tunnel, server_url=server_url)
+    except _SupervisionTermination as stopped:
+        return 128 + stopped.signum
     except TunnelLaunchError as error:
         detail = str(error)
         if tunnel_tail:
@@ -868,8 +1126,14 @@ def _run_supervised_with_tunnel(
                 detail = f"{detail}\n\nRecent {mode} output:\n{tail_text}"
         raise TunnelLaunchError(f"{detail}{_tunnel_failure_hint(mode)}") from error
     finally:
-        terminate_process(tunnel)
-        terminate_process(server)
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            terminate_process(tunnel)
+            terminate_process(server)
+        finally:
+            if sigterm_installed:
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def _wait_supervised(server: subprocess.Popen[str], tunnel: subprocess.Popen[str], *, server_url: str) -> int:
@@ -1020,7 +1284,9 @@ Usage:
   patchbay settings list
   patchbay pro-request list
   patchbay hub start --config config.yaml
+  patchbay hub backup create --backup <snapshot.sqlite3>
   patchbay edge enroll --hub <url> --code <code>
+  patchbay edge backup create --database <journal.sqlite3> --backup <snapshot.sqlite3>
   patchbay stdio --config config.yaml
   patchbay ngrok --root <repo> --hostname <reserved-domain>
   patchbay stable --root <repo> --hostname <host> --tunnel-name <name>
@@ -1051,8 +1317,9 @@ Usage:
   patchbay hub enroll-code create --name <machine-name> [--tag laptop] [--json]
   patchbay hub machine retire <machine-id> [--reason <text>] [--superseded-by <machine-id>] [--json]
   patchbay hub machine restore <machine-id> [--json]
+  patchbay hub backup <create|validate|restore> [options]
 
-Hub mode is optional. It exposes one MCP server that routes work to enrolled PatchBay Edge machines."""
+Hub mode is optional. It exposes one MCP server that routes work to enrolled PatchBay Edge machines. Backup commands are private operator commands and do not add MCP tools."""
 
 
 def _hub_enroll_code_help() -> str:
@@ -1080,8 +1347,9 @@ Usage:
   patchbay edge start --config config.yaml
   patchbay edge run-once --config config.yaml --json
   patchbay edge status --json
+  patchbay edge backup <create|validate|restore> [options]
 
-Edge mode runs on each worker machine and executes hub-routed commands through that machine's local PatchBay ToolHandler."""
+Edge mode runs on each worker machine and executes hub-routed commands through that machine's local PatchBay ToolHandler. Backup commands are private operator commands and do not add MCP tools."""
 
 
 def _settings_help() -> str:

@@ -39,6 +39,13 @@ purpose, context, outcome, boundaries, deliverables, and verification evidence.
 Use direct workspace tools only for focused orientation, tiny checks, or a
 concrete doubt that worker follow-up did not resolve.
 
+A valid Hub V2 connector exposes exactly 31 PatchBay tools. Verify that the
+catalog includes fleet, workspace, group, worker lifecycle, Pro Request, and
+operation-status controls. Fewer tools or a missing required lifecycle action
+means the connector manifest is stale or partial: do not improvise a manual
+replacement workflow or claim Hub work began; tell the user to refresh or
+reconnect the connector.
+
 For each non-trivial task: inspect fleet/workspaces, list existing groups, then
 resume the same task or create one group. One task is one group with named lanes,
 not one group per worker. Create normal tasks with execution_mode=end_to_end and
@@ -56,6 +63,21 @@ failure, completion, or execution limit. Never invent a tool-call, generation,
 or time limit; only report an explicit platform error or an unrecoverable
 PatchBay blocker.
 
+A recommended_next_action is either a complete callable tool action whose
+arguments already satisfy the advertised schema, or natural-language manager
+guidance when PatchBay cannot truthfully infer a shared brief, worker mission,
+worker selector, outcome, summary, dispositions, or idempotency keys. Follow
+that guidance by making the required managerial decisions; never execute it as
+a partial call and never fabricate missing judgment just to satisfy a schema.
+
+If the platform explicitly reports a tool-call, generation, response, or
+context limit, do not stop workers, abandon the group, or misreport failure.
+Return a continuation-state packet containing repository and revision,
+work_group_id, pinned machine, lanes, worker names and models, completed and
+active work, integration/commit/push state, PatchBay issues, blockers, and exact
+next actions. On Continue, resume the same durable group and workers. Elapsed
+time, healthy quiet work, and a wait timeout are not platform limits.
+
 Use patchbay_worker_start_batch for a parallel team and patchbay_worker_start for
 one lane. Continue the same completed worker with patchbay_worker_message when a
 report needs correction, evidence, or deeper work. Use isolated_write for normal
@@ -63,6 +85,12 @@ parallel implementation; manager_controlled shared writes are an architect's
 explicit concurrency choice. Preview and explicitly integrate accepted isolated
 changes, verify requested outcomes, commit/push when requested, account for every
 worker, and close the end-to-end group before the final answer.
+
+A batch parent is Hub aggregate work, not an Edge command. While its children
+run, follow the original operation id through aggregate_running and
+wait_for_child_operations. A completed report can become visible before Codex
+wrapper cleanup finishes; if message or integration returns cleanup_pending,
+wait and retry after cleanup instead of replacing or force-stopping the worker.
 
 Generate stable idempotency keys for mutations and reuse the same key only for an
 identical retry. pending is not completion; follow operation/status guidance.
@@ -259,6 +287,23 @@ def validate_hub_v2_tool_output(name: str, output: Any) -> None:
     try:
         _validate_json_value(output, path="output")
         _validate_schema(output, descriptor["outputSchema"], path="output")
+        for index, action in enumerate(output.get("next_actions") or []):
+            if not isinstance(action, Mapping):
+                continue
+            action_name = str(action.get("tool") or "")
+            action_arguments = action.get("arguments")
+            if action_arguments is None:
+                action_arguments = {}
+            if not isinstance(action_arguments, Mapping):
+                raise _InvalidRequest(
+                    f"output.next_actions[{index}].arguments: expected object"
+                )
+            try:
+                validate_hub_v2_tool_arguments(action_name, action_arguments)
+            except _InvalidRequest as error:
+                raise _InvalidRequest(
+                    f"output.next_actions[{index}] is not callable: {error}"
+                ) from error
     except _InvalidRequest as error:
         raise _HandlerContractError(f"Invalid {name} handler output: {error}") from error
 

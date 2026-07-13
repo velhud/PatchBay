@@ -21,6 +21,18 @@ dist/
 validation-reports/
 .local/
 
+# Private runtime state. These files may contain durable operation payloads,
+# worker briefs, machine enrollment data, and reconciliation evidence.
+.patchbay/
+hub-state*.json
+hub-state*.sqlite3
+hub-state*.sqlite3-wal
+hub-state*.sqlite3-shm
+edge-v2-journal*.sqlite3
+edge-v2-journal*.sqlite3-wal
+edge-v2-journal*.sqlite3-shm
+edge-profile.json
+
 # Local/private planning and campaign artifacts.
 .agents/
 .architect/

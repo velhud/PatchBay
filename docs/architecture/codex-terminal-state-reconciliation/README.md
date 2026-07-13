@@ -33,5 +33,5 @@ in the production reliability report.
 9. [Decision record](design-decision-record.md)
 10. [Conflict-review handoff](solution-to-conflict-review-handoff.md)
 11. [Additional runtime findings](additional-runtime-findings.md)
-12. [RetailMind continuation fixes](retailmind-continuation-fixes.md)
+12. [Shared-checkout continuation fixes](shared-checkout-continuation-fixes.md)
 13. [Cross-project production reliability release](cross-project-production-reliability-release.md)

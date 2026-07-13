@@ -1608,6 +1608,10 @@ class FleetHubProRequestAdapterV2(HubProRequestAdapterV2):
         association: Mapping[str, Any], args: Mapping[str, Any]
     ) -> dict[str, Any]:
         return {
+            # The opaque fleet reference is required to correlate a delayed
+            # Edge result back to its Hub projection.  The Edge still receives
+            # the machine-local request id in the arguments below.
+            "request_ref": association["request_ref"],
             "machine_id": association["machine_id"],
             "edge_generation": association["edge_generation"],
             "workspace_ref": association.get("workspace_ref") or "",

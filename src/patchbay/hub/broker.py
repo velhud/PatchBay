@@ -24,10 +24,13 @@ from patchbay.hub.store_v2 import (
     HubStoreV2StateError,
     semantic_payload_hash,
 )
+from patchbay.hub.tool_surface import normalize_hub_v2_next_action
 
 
 ATTEMPT_CONTRACT_ENTITY_TYPE = "hub.operation_attempt_contract"
 OPERATION_GROUP_ENTITY_TYPE = "hub.operation_group"
+BATCH_CHILD_MANIFEST_ENTITY_TYPE = "hub.operation_batch_child_manifest"
+EDGE_DISPATCH_ENTITY_TYPE = "hub.edge_dispatch"
 ACTIVE_ATTEMPT_STATES = frozenset(
     {
         "offered",
@@ -40,6 +43,12 @@ ACTIVE_ATTEMPT_STATES = frozenset(
 )
 LEASED_ATTEMPT_STATES = frozenset({"claimed", "executing", "effect_recorded"})
 TERMINAL_ATTEMPT_STATES = frozenset({"acknowledged", "retryable", "manual_recovery"})
+_LATE_RESULT_REPAIRABLE_BLOCKERS = frozenset(
+    {
+        "edge_attempt_history_unavailable",
+        "edge_outcome_unknown_requires_manual_recovery",
+    }
+)
 
 DEFAULT_LEASE_SECONDS = 30.0
 MAX_LEASE_SECONDS = 15 * 60.0
@@ -157,9 +166,10 @@ class OperationBroker:
             concurrent = self.store.get_entity(
                 OPERATION_GROUP_ENTITY_TYPE, operation_value
             )
-            if concurrent is not None and str(
-                concurrent["record"].get("work_group_id") or ""
-            ) == group_value:
+            if (
+                concurrent is not None
+                and str(concurrent["record"].get("work_group_id") or "") == group_value
+            ):
                 return concurrent
             raise
 
@@ -199,6 +209,11 @@ class OperationBroker:
             )
             if str(parent["state"]) in TERMINAL_OPERATION_STATES:
                 raise HubStoreV2StateError("Cannot add a child to a terminal operation")
+            expected_item_ids = self._batch_manifest_item_ids_in_transaction(
+                connection, parent_id
+            )
+            if expected_item_ids is not None and item not in expected_item_ids:
+                raise HubStoreV2Conflict("child_operation_not_declared_in_manifest")
 
             existing = connection.execute(
                 "SELECT * FROM operations WHERE parent_operation_id = ? AND item_id = ?",
@@ -267,6 +282,483 @@ class OperationBroker:
             result = self._operation_from_row(saved)
             result["idempotent_replay"] = False
             return result
+
+    def create_batch_operation(
+        self,
+        *,
+        logical_target: str,
+        idempotency_key: str,
+        payload: Mapping[str, Any],
+        child_specs: list[Mapping[str, Any]],
+        child_dispatch_specs: list[Mapping[str, Any]] | None = None,
+        operation_id: str = "",
+        principal_ref: str = "",
+    ) -> dict[str, Any]:
+        """Atomically create or replay a batch parent, manifest, children, and dispatches."""
+
+        target = _clean(logical_target, "logical_target")
+        key = _clean(idempotency_key, "idempotency_key")
+        principal = principal_ref or self.store.principal_ref
+        parent_hash = semantic_payload_hash(payload)
+        requested_parent_id = operation_id or f"op_{secrets.token_hex(16)}"
+        normalized_specs = self._normalize_batch_child_specs(child_specs)
+        normalized_dispatches = self._normalize_batch_child_dispatch_specs(
+            child_dispatch_specs, normalized_specs
+        )
+        dispatches_by_item_id = {
+            dispatch["item_id"]: dispatch for dispatch in normalized_dispatches
+        }
+
+        with self.store.immediate_transaction() as connection:
+            parent = connection.execute(
+                """
+                SELECT * FROM operations
+                WHERE principal_ref = ? AND tool = 'patchbay_worker_start_batch'
+                  AND logical_target = ? AND idempotency_key = ?
+                """,
+                (principal, target, key),
+            ).fetchone()
+            parent_replay = parent is not None
+            if parent is not None:
+                if str(parent["semantic_payload_hash"]) != parent_hash:
+                    raise HubStoreV2Conflict("idempotency_payload_conflict")
+                parent_id = str(parent["operation_id"])
+            else:
+                parent_id = requested_parent_id
+                now = self._clock()
+                connection.execute(
+                    """
+                    INSERT INTO operations
+                        (operation_id, principal_ref, tool, logical_target,
+                         idempotency_key, semantic_payload_hash, state, revision,
+                         parent_operation_id, item_id, created_at, updated_at)
+                    VALUES (?, ?, 'patchbay_worker_start_batch', ?, ?, ?,
+                            'created', 1, NULL, '', ?, ?)
+                    """,
+                    (parent_id, principal, target, key, parent_hash, now, now),
+                )
+                self.store._append_event_in_transaction(
+                    connection,
+                    "operation.created",
+                    {"state": "created"},
+                    operation_id=parent_id,
+                )
+                parent = self._operation_row(connection, parent_id)
+
+            manifest_record = self._batch_manifest_record(parent_id, normalized_specs)
+            existing_item_ids = [
+                str(row["item_id"])
+                for row in connection.execute(
+                    """
+                    SELECT item_id FROM operations
+                    WHERE parent_operation_id = ? ORDER BY item_id, operation_id
+                    """,
+                    (parent_id,),
+                ).fetchall()
+            ]
+            expected_item_ids = [spec["item_id"] for spec in normalized_specs]
+            if len(existing_item_ids) != len(set(existing_item_ids)) or any(
+                item_id not in set(expected_item_ids) for item_id in existing_item_ids
+            ):
+                raise HubStoreV2Conflict("batch_existing_child_set_conflict")
+            manifest_row = connection.execute(
+                """
+                SELECT * FROM entity_records
+                WHERE entity_type = ? AND entity_id = ?
+                """,
+                (BATCH_CHILD_MANIFEST_ENTITY_TYPE, parent_id),
+            ).fetchone()
+            manifest_replay = manifest_row is not None
+            if parent_replay:
+                if manifest_row is None:
+                    raise HubStoreV2StateError(
+                        "legacy_batch_missing_manifest_recovery_required"
+                    )
+                existing_manifest = self.store._entity_from_row(manifest_row)["record"]
+                version = existing_manifest.get("version")
+                if version in {1, 2}:
+                    if existing_manifest.get("expected_item_ids") != [
+                        spec["item_id"] for spec in normalized_specs
+                    ]:
+                        raise HubStoreV2Conflict("batch_child_manifest_conflict")
+                elif existing_manifest != manifest_record:
+                    raise HubStoreV2Conflict("batch_child_manifest_conflict")
+                if len(existing_item_ids) != len(expected_item_ids) or set(
+                    existing_item_ids
+                ) != set(expected_item_ids):
+                    raise HubStoreV2StateError(
+                        "legacy_batch_incomplete_child_set_recovery_required"
+                    )
+            elif manifest_row is not None:
+                raise HubStoreV2Conflict("batch_child_manifest_conflict")
+            else:
+                saved_manifest = self.store._put_entity_in_transaction(
+                    connection,
+                    BATCH_CHILD_MANIFEST_ENTITY_TYPE,
+                    parent_id,
+                    manifest_record,
+                    expected_revision=0,
+                    legacy_classification="",
+                )
+                if saved_manifest is None:
+                    raise HubStoreV2Conflict("batch_child_manifest_conflict")
+                self.store._append_event_in_transaction(
+                    connection,
+                    "operation.batch_child_manifest_declared",
+                    {
+                        "expected_item_ids": manifest_record["expected_item_ids"],
+                        "expected_child_count": manifest_record["expected_child_count"],
+                        "manifest_hash": manifest_record["manifest_hash"],
+                        "version": 3,
+                    },
+                    operation_id=parent_id,
+                    entity_revision=int(parent["revision"]),
+                )
+
+            children: list[dict[str, Any]] = []
+            all_children_replayed = True
+            all_dispatches_replayed = True
+            existing_child_count = connection.execute(
+                "SELECT COUNT(*) FROM operations WHERE parent_operation_id = ?",
+                (parent_id,),
+            ).fetchone()[0]
+            if str(parent["state"]) in TERMINAL_OPERATION_STATES and int(
+                existing_child_count
+            ) != len(normalized_specs):
+                raise HubStoreV2StateError(
+                    "terminal_batch_has_incomplete_child_set_recovery_required"
+                )
+            for spec in normalized_specs:
+                child, replayed = self._create_batch_child_in_transaction(
+                    connection, parent_id=parent_id, principal=principal, spec=spec
+                )
+                children.append(child)
+                all_children_replayed = all_children_replayed and replayed
+                dispatch_spec = dispatches_by_item_id.get(str(spec["item_id"]))
+                if dispatch_spec is not None:
+                    dispatch_replayed = self._persist_batch_child_dispatch_in_transaction(
+                        connection,
+                        child=child,
+                        dispatch_spec=dispatch_spec,
+                        parent_replay=parent_replay,
+                    )
+                    all_dispatches_replayed = (
+                        all_dispatches_replayed and dispatch_replayed
+                    )
+
+            result = {
+                "parent": self._operation_from_row(
+                    self._operation_row(connection, parent_id)
+                ),
+                "manifest": manifest_record,
+                "children": children,
+                "idempotent_replay": (
+                    parent_replay
+                    and manifest_replay
+                    and all_children_replayed
+                    and all_dispatches_replayed
+                ),
+            }
+            result["parent"]["idempotent_replay"] = parent_replay
+            return result
+
+    def _normalize_batch_child_specs(
+        self, child_specs: list[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not child_specs:
+            raise ValueError("child_specs must not be empty")
+        normalized: list[dict[str, Any]] = []
+        for raw_spec in child_specs:
+            item_id = _clean(str(raw_spec.get("item_id") or ""), "child item_id")
+            tool = _clean(str(raw_spec.get("tool") or ""), "child tool")
+            logical_target = _clean(
+                str(raw_spec.get("logical_target") or ""), "child logical_target"
+            )
+            raw_payload = raw_spec.get("payload")
+            if not isinstance(raw_payload, Mapping):
+                raise ValueError(f"child payload must be an object: {item_id}")
+            child_payload = deepcopy(dict(raw_payload))
+            normalized.append(
+                {
+                    "item_id": item_id,
+                    "tool": tool,
+                    "logical_target": logical_target,
+                    "payload": child_payload,
+                    "semantic_payload_hash": semantic_payload_hash(child_payload),
+                }
+            )
+        item_ids = [spec["item_id"] for spec in normalized]
+        if len(set(item_ids)) != len(item_ids):
+            raise ValueError("child item_ids must be unique")
+        return normalized
+
+    def _normalize_batch_child_dispatch_specs(
+        self,
+        child_dispatch_specs: list[Mapping[str, Any]] | None,
+        child_specs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if child_dispatch_specs is None:
+            return []
+        child_specs_by_item_id = {spec["item_id"]: spec for spec in child_specs}
+        if len(child_dispatch_specs) != len(child_specs_by_item_id):
+            raise ValueError("child_dispatch_specs must cover every batch child")
+        normalized: list[dict[str, Any]] = []
+        for raw_spec in child_dispatch_specs:
+            item_id = _clean(
+                str(raw_spec.get("item_id") or ""), "dispatch child item_id"
+            )
+            child_spec = child_specs_by_item_id.get(item_id)
+            if child_spec is None:
+                raise ValueError(f"dispatch child is not declared in batch: {item_id}")
+            raw_payload = raw_spec.get("payload")
+            if not isinstance(raw_payload, Mapping):
+                raise ValueError(f"dispatch payload must be an object: {item_id}")
+            dispatch_payload = deepcopy(dict(raw_payload))
+            source_payload_hash = semantic_payload_hash(dispatch_payload)
+            if source_payload_hash != child_spec["semantic_payload_hash"]:
+                raise HubStoreV2Conflict("batch_child_dispatch_source_payload_conflict")
+            action = _clean(
+                str(raw_spec.get("action") or dispatch_payload.get("action") or ""),
+                "dispatch action",
+            )
+            normalized.append(
+                {
+                    "item_id": item_id,
+                    "action": action,
+                    "payload": dispatch_payload,
+                    "payload_hash": semantic_payload_hash(dispatch_payload),
+                    "source_payload_hash": source_payload_hash,
+                }
+            )
+        item_ids = [dispatch["item_id"] for dispatch in normalized]
+        if len(set(item_ids)) != len(item_ids) or set(item_ids) != set(
+            child_specs_by_item_id
+        ):
+            raise ValueError("child_dispatch_specs must uniquely cover every batch child")
+        return normalized
+
+    @staticmethod
+    def _batch_manifest_record(
+        parent_id: str, child_specs: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        child_hashes = [
+            {
+                "item_id": str(spec["item_id"]),
+                "semantic_hash": str(spec["semantic_payload_hash"]),
+            }
+            for spec in child_specs
+        ]
+        expected_item_ids = [child["item_id"] for child in child_hashes]
+        manifest_hash = semantic_payload_hash(
+            {
+                "expected_item_ids": expected_item_ids,
+                "child_hashes": child_hashes,
+            }
+        )
+        return {
+            "version": 3,
+            "operation_id": parent_id,
+            "expected_item_ids": expected_item_ids,
+            "expected_child_count": len(child_hashes),
+            "child_hashes": child_hashes,
+            "manifest_hash": manifest_hash,
+        }
+
+    def _create_batch_child_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        parent_id: str,
+        principal: str,
+        spec: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        item_id = str(spec["item_id"])
+        existing = connection.execute(
+            "SELECT * FROM operations WHERE parent_operation_id = ? AND item_id = ?",
+            (parent_id, item_id),
+        ).fetchone()
+        if existing is not None:
+            equivalent = (
+                str(existing["principal_ref"]) == principal
+                and str(existing["tool"]) == spec["tool"]
+                and str(existing["logical_target"]) == spec["logical_target"]
+                and str(existing["semantic_payload_hash"])
+                == spec["semantic_payload_hash"]
+            )
+            if not equivalent:
+                raise HubStoreV2Conflict("child_operation_payload_conflict")
+            child = self._operation_from_row(existing)
+            child["idempotent_replay"] = True
+            return child, True
+
+        child_id = f"op_{secrets.token_hex(16)}"
+        now = self._clock()
+        connection.execute(
+            """
+            INSERT INTO operations
+                (operation_id, principal_ref, tool, logical_target, idempotency_key,
+                 semantic_payload_hash, state, revision, parent_operation_id, item_id,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'created', 1, ?, ?, ?, ?)
+            """,
+            (
+                child_id,
+                principal,
+                spec["tool"],
+                spec["logical_target"],
+                self.child_idempotency_key(parent_id, item_id),
+                spec["semantic_payload_hash"],
+                parent_id,
+                item_id,
+                now,
+                now,
+            ),
+        )
+        self.store._append_event_in_transaction(
+            connection,
+            "operation.created",
+            {"state": "created", "parent_operation_id": parent_id, "item_id": item_id},
+            operation_id=child_id,
+        )
+        child = self._operation_from_row(self._operation_row(connection, child_id))
+        child["idempotent_replay"] = False
+        return child, False
+
+    def _persist_batch_child_dispatch_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        child: Mapping[str, Any],
+        dispatch_spec: Mapping[str, Any],
+        parent_replay: bool,
+    ) -> bool:
+        operation_id = str(child["operation_id"])
+        existing = connection.execute(
+            """
+            SELECT * FROM entity_records
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            (EDGE_DISPATCH_ENTITY_TYPE, operation_id),
+        ).fetchone()
+        if existing is not None:
+            record = self.store._entity_from_row(existing)["record"]
+            stored_payload = record.get("payload")
+            equivalent = (
+                record.get("operation_id") == operation_id
+                and record.get("action") == dispatch_spec["action"]
+                and isinstance(stored_payload, Mapping)
+                and semantic_payload_hash(stored_payload)
+                == dispatch_spec["payload_hash"]
+                and record.get("payload_hash") == dispatch_spec["payload_hash"]
+                and record.get("source_payload_hash")
+                == dispatch_spec["source_payload_hash"]
+            )
+            if not equivalent:
+                raise HubStoreV2Conflict("batch_child_dispatch_payload_conflict")
+            return True
+        if parent_replay:
+            raise HubStoreV2StateError(
+                "legacy_batch_missing_child_dispatch_recovery_required"
+            )
+        record = {
+            "operation_id": operation_id,
+            "action": dispatch_spec["action"],
+            "payload": deepcopy(dict(dispatch_spec["payload"])),
+            "payload_hash": dispatch_spec["payload_hash"],
+            "source_payload_hash": dispatch_spec["source_payload_hash"],
+            "status": "pending",
+            "created_at": child.get("created_at") or self._clock(),
+        }
+        saved = self.store._put_entity_in_transaction(
+            connection,
+            EDGE_DISPATCH_ENTITY_TYPE,
+            operation_id,
+            record,
+            expected_revision=0,
+            legacy_classification="",
+        )
+        if saved is None:
+            raise HubStoreV2Conflict("batch_child_dispatch_payload_conflict")
+        return False
+
+    def declare_child_manifest(
+        self,
+        parent_operation_id: str,
+        *,
+        expected_item_ids: list[str],
+        principal_ref: str = "",
+    ) -> dict[str, Any]:
+        """Persist one immutable expected-child manifest for a compound parent."""
+
+        parent_id = _clean(parent_operation_id, "parent_operation_id")
+        principal = principal_ref or self.store.principal_ref
+        normalized_item_ids = [
+            _clean(item_id, "expected child item_id") for item_id in expected_item_ids
+        ]
+        if not normalized_item_ids:
+            raise ValueError("expected_item_ids must not be empty")
+        if len(set(normalized_item_ids)) != len(normalized_item_ids):
+            raise ValueError("expected_item_ids must be unique")
+        manifest_hash = semantic_payload_hash(
+            {"expected_item_ids": normalized_item_ids}
+        )
+        record = {
+            "version": 1,
+            "operation_id": parent_id,
+            "expected_item_ids": normalized_item_ids,
+            "expected_child_count": len(normalized_item_ids),
+            "manifest_hash": manifest_hash,
+        }
+
+        with self.store.immediate_transaction() as connection:
+            parent = self._visible_operation_in_transaction(
+                connection, parent_id, principal
+            )
+            if str(parent["tool"]) != "patchbay_worker_start_batch":
+                raise HubStoreV2StateError(
+                    "Child manifests are only valid for batch worker starts"
+                )
+            existing = connection.execute(
+                """
+                SELECT * FROM entity_records
+                WHERE entity_type = ? AND entity_id = ?
+                """,
+                (BATCH_CHILD_MANIFEST_ENTITY_TYPE, parent_id),
+            ).fetchone()
+            if existing is not None:
+                saved = self.store._entity_from_row(existing)
+                if saved["record"] != record:
+                    raise HubStoreV2Conflict("batch_child_manifest_conflict")
+                saved["idempotent_replay"] = True
+                return saved
+            if str(parent["state"]) in TERMINAL_OPERATION_STATES:
+                raise HubStoreV2StateError(
+                    "Cannot declare children for a terminal operation"
+                )
+
+            saved = self.store._put_entity_in_transaction(
+                connection,
+                BATCH_CHILD_MANIFEST_ENTITY_TYPE,
+                parent_id,
+                record,
+                expected_revision=0,
+                legacy_classification="",
+            )
+            if saved is None:  # BEGIN IMMEDIATE makes this unreachable.
+                raise HubStoreV2Conflict("batch_child_manifest_conflict")
+            self.store._append_event_in_transaction(
+                connection,
+                "operation.batch_child_manifest_declared",
+                {
+                    "expected_item_ids": normalized_item_ids,
+                    "expected_child_count": len(normalized_item_ids),
+                    "manifest_hash": manifest_hash,
+                },
+                operation_id=parent_id,
+                entity_revision=int(parent["revision"]),
+            )
+            saved["idempotent_replay"] = False
+            return saved
 
     def list_child_operations(
         self, parent_operation_id: str, *, principal_ref: str = ""
@@ -607,7 +1099,41 @@ class OperationBroker:
                     replay = self._attempt_with_contract(active, contract)
                     replay["idempotent_replay"] = True
                     return replay
-                raise HubStoreV2Conflict("operation_attempt_already_active")
+                if (
+                    str(active["state"]) == "offered"
+                    and str(active["machine_id"]) == machine
+                    and int(active["edge_generation"]) == generation
+                ):
+                    # No Edge has claimed this attempt, so no effect can have
+                    # crossed the durable intent boundary. A rolling contract
+                    # change may therefore fence the stale offer and replace it
+                    # without manager intervention or duplicate execution.
+                    now = self._clock()
+                    connection.execute(
+                        """
+                        UPDATE attempts
+                        SET state = 'retryable', revision = revision + 1,
+                            lease_expires_at = NULL, updated_at = ?
+                        WHERE attempt_id = ? AND revision = ? AND state = 'offered'
+                        """,
+                        (now, active["attempt_id"], active["revision"]),
+                    )
+                    self.store._append_event_in_transaction(
+                        connection,
+                        "operation.attempt_unclaimed_contract_superseded",
+                        {
+                            "attempt_id": str(active["attempt_id"]),
+                            "previous_required_contract_hash": str(
+                                contract.get("required_contract_hash") or ""
+                            ),
+                            "successor_required_contract_hash": contract_hash,
+                            "fencing_token": int(active["fencing_token"]),
+                        },
+                        operation_id=operation_value,
+                        entity_revision=int(active["revision"]) + 1,
+                    )
+                else:
+                    raise HubStoreV2Conflict("operation_attempt_already_active")
 
             attempt_value = attempt_id or f"attempt_{secrets.token_hex(16)}"
             token = int(
@@ -1157,26 +1683,52 @@ class OperationBroker:
                 )
                 stored_hash = semantic_payload_hash(stored or {})
                 equivalent = stored is not None and stored_hash == normalized_hash
-                self.store._append_event_in_transaction(
-                    connection,
-                    (
-                        "operation.terminal_receipt_confirmed"
-                        if equivalent
-                        else "operation.terminal_receipt_conflict"
-                    ),
-                    {
-                        "attempt_id": str(attempt["attempt_id"]),
-                        "stored_result_hash": stored_hash,
-                        "received_result_hash": normalized_hash,
-                    },
-                    operation_id=str(operation["operation_id"]),
-                    entity_revision=int(operation["revision"]),
-                )
                 if equivalent:
+                    self.store._append_event_in_transaction(
+                        connection,
+                        "operation.terminal_receipt_confirmed",
+                        {
+                            "attempt_id": str(attempt["attempt_id"]),
+                            "stored_result_hash": stored_hash,
+                            "received_result_hash": normalized_hash,
+                        },
+                        operation_id=str(operation["operation_id"]),
+                        entity_revision=int(operation["revision"]),
+                    )
                     response = self._operation_from_row(operation)
                     response["idempotent_replay"] = True
                     response["receipt_duplicate"] = True
+                elif self._late_result_can_repair_manual_recovery(
+                    operation, attempt, target_state=target_state
+                ):
+                    if int(operation["revision"]) != operation_revision:
+                        return None
+                    if expected_attempt_revision is not None and int(
+                        attempt["revision"]
+                    ) != int(expected_attempt_revision):
+                        return None
+                    response = self._repair_manual_recovery_in_transaction(
+                        connection,
+                        operation,
+                        attempt,
+                        target_state=target_state,
+                        normalized=normalized,
+                        normalized_hash=normalized_hash,
+                        public_status=public_status,
+                        fencing_token=fencing_token,
+                    )
                 else:
+                    self.store._append_event_in_transaction(
+                        connection,
+                        "operation.terminal_receipt_conflict",
+                        {
+                            "attempt_id": str(attempt["attempt_id"]),
+                            "stored_result_hash": stored_hash,
+                            "received_result_hash": normalized_hash,
+                        },
+                        operation_id=str(operation["operation_id"]),
+                        entity_revision=int(operation["revision"]),
+                    )
                     conflict = "conflicting_terminal_receipt"
             elif int(operation["revision"]) != operation_revision:
                 return None
@@ -1314,6 +1866,116 @@ class OperationBroker:
             raise HubStoreV2Conflict(conflict)
         return response
 
+    @staticmethod
+    def _late_result_can_repair_manual_recovery(
+        operation: sqlite3.Row,
+        attempt: sqlite3.Row,
+        *,
+        target_state: str,
+    ) -> bool:
+        """Return whether an exact fenced receipt outranks an absence-based blocker."""
+
+        if (
+            str(operation["state"]) != "blocked"
+            or str(attempt["state"]) != "manual_recovery"
+            or target_state == "outcome_unknown"
+        ):
+            return False
+        normalized = _decode_optional_json(
+            operation["result_json"],
+            f"operation {operation['operation_id']} result",
+        )
+        result = normalized.get("result") if isinstance(normalized, Mapping) else None
+        reason = str(result.get("reason") or "") if isinstance(result, Mapping) else ""
+        return reason in _LATE_RESULT_REPAIRABLE_BLOCKERS
+
+    def _repair_manual_recovery_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        operation: sqlite3.Row,
+        attempt: sqlite3.Row,
+        *,
+        target_state: str,
+        normalized: Mapping[str, Any],
+        normalized_hash: str,
+        public_status: str,
+        fencing_token: int,
+    ) -> dict[str, Any]:
+        """Atomically replace an absence-based blocker with exact late evidence."""
+
+        now = self._clock()
+        encoded = _encode_json(normalized, "normalized result")
+        attempt_cursor = connection.execute(
+            """
+            UPDATE attempts
+            SET state = 'result_ready', revision = revision + 1,
+                result_json = ?, updated_at = ?
+            WHERE attempt_id = ? AND revision = ? AND fencing_token = ?
+              AND state = 'manual_recovery'
+            """,
+            (
+                encoded,
+                now,
+                attempt["attempt_id"],
+                attempt["revision"],
+                fencing_token,
+            ),
+        )
+        if attempt_cursor.rowcount != 1:
+            raise HubStoreV2Conflict("attempt_revision_conflict")
+        operation_cursor = connection.execute(
+            """
+            UPDATE operations
+            SET state = ?, revision = revision + 1, result_json = ?,
+                error_json = NULL, updated_at = ?
+            WHERE operation_id = ? AND revision = ? AND state = 'blocked'
+            """,
+            (
+                target_state,
+                encoded,
+                now,
+                operation["operation_id"],
+                operation["revision"],
+            ),
+        )
+        if operation_cursor.rowcount != 1:
+            raise HubStoreV2Conflict("operation_revision_conflict")
+        self.store._append_event_in_transaction(
+            connection,
+            "operation.attempt_state_changed",
+            {
+                "attempt_id": str(attempt["attempt_id"]),
+                "from": "manual_recovery",
+                "to": "result_ready",
+            },
+            operation_id=str(operation["operation_id"]),
+            entity_revision=int(attempt["revision"]) + 1,
+        )
+        self.store._append_event_in_transaction(
+            connection,
+            "operation.manual_recovery_late_result_accepted",
+            {
+                "attempt_id": str(attempt["attempt_id"]),
+                "fencing_token": int(fencing_token),
+                "public_status": public_status,
+                "result_hash": normalized_hash,
+            },
+            operation_id=str(operation["operation_id"]),
+            entity_revision=int(operation["revision"]) + 1,
+        )
+        saved = self._operation_row(connection, str(operation["operation_id"]))
+        if saved["parent_operation_id"]:
+            self._aggregate_parent_in_transaction(
+                connection,
+                str(saved["parent_operation_id"]),
+                allow_terminal_refresh=True,
+            )
+        response = self._operation_from_row(saved)
+        response["idempotent_replay"] = False
+        response["receipt_duplicate"] = False
+        response["manual_recovery_repaired"] = True
+        return response
+
     # ``finish`` is the concise Edge-facing spelling.
     finish = finish_operation
 
@@ -1369,7 +2031,17 @@ class OperationBroker:
                 """,
                 (parent_id,),
             ).fetchall()
-            response["children_terminal"] = bool(children) and all(
+            expected_item_ids = self._batch_manifest_item_ids_in_transaction(
+                connection, parent_id
+            )
+            actual_item_ids = [str(child["item_id"]) for child in children]
+            exact_child_set = (
+                bool(children)
+                if expected_item_ids is None
+                else len(actual_item_ids) == len(expected_item_ids)
+                and set(actual_item_ids) == set(expected_item_ids)
+            )
+            response["children_terminal"] = exact_child_set and all(
                 str(child["state"]) in TERMINAL_OPERATION_STATES for child in children
             )
             return response
@@ -1422,8 +2094,26 @@ class OperationBroker:
                 "not_found", result={"reason": "operation_not_found"}
             )
 
+        if (
+            operation["tool"] == "patchbay_worker_start_batch"
+            and operation["state"] not in TERMINAL_OPERATION_STATES
+        ):
+            aggregated = self.aggregate_parent(operation_value, principal_ref=principal)
+            if aggregated is not None:
+                operation = aggregated
+
+        batch_recovery = (
+            self._batch_recovery_required(operation_value)
+            if operation["tool"] == "patchbay_worker_start_batch"
+            else None
+        )
+
         latest_event = self._latest_event_revision(operation_value)
-        if wait_seconds and latest_event <= max(0, int(since_revision)):
+        if (
+            wait_seconds
+            and batch_recovery is None
+            and latest_event <= max(0, int(since_revision))
+        ):
             await self.wait_for_event_revision(
                 operation_value,
                 after_revision=since_revision,
@@ -1436,6 +2126,8 @@ class OperationBroker:
                     "not_found", result={"reason": "operation_not_found"}
                 )
             latest_event = self._latest_event_revision(operation_value)
+            if operation["tool"] == "patchbay_worker_start_batch":
+                batch_recovery = self._batch_recovery_required(operation_value)
 
         attempt_row = self.store.connection.execute(
             """
@@ -1465,14 +2157,28 @@ class OperationBroker:
         ]
         normalized = operation.get("result")
         public_status = self._public_status_for_operation(operation)
-        safe_next_action = self._safe_next_action(str(operation["state"]))
+        if batch_recovery is not None:
+            public_status = "blocked"
+        aggregate_pending = (
+            operation["tool"] == "patchbay_worker_start_batch"
+            and operation["state"] not in TERMINAL_OPERATION_STATES
+            and batch_recovery is None
+        )
+        safe_next_action = (
+            "inspect_and_replace_batch"
+            if batch_recovery is not None
+            else (
+                "wait_for_child_operations"
+                if aggregate_pending
+                else self._safe_next_action(str(operation["state"]))
+            )
+        )
         operation_summary = {
             "operation_id": operation_value,
-            "parent_operation_id": operation["parent_operation_id"],
+            "parent_operation_id": str(operation["parent_operation_id"] or ""),
             "item_id": operation["item_id"],
             "state": operation["state"],
             "revision": operation["revision"],
-            "event_revision": latest_event,
             "updated_at": operation["updated_at"],
         }
         receipt_state = "absent"
@@ -1485,7 +2191,15 @@ class OperationBroker:
             }.get(str(attempt["state"]), "pending")
         status_result: dict[str, Any] = {
             "dispatch": {
-                "state": self._dispatch_state(str(operation["state"])),
+                "state": (
+                    "recovery_required"
+                    if batch_recovery is not None
+                    else (
+                        "aggregate_running"
+                        if aggregate_pending
+                        else self._dispatch_state(str(operation["state"]))
+                    )
+                ),
                 "event_revision": latest_event,
             },
             "outcome": {
@@ -1502,15 +2216,55 @@ class OperationBroker:
             status_result["children"] = child_summaries
         warnings: list[Any] = []
         next_actions: list[Any] = []
+        stale_preview_recovery = self._integration_preview_recovery_action(
+            operation, normalized
+        )
         if isinstance(normalized, Mapping):
             if include_result:
-                status_result["domain_result"] = deepcopy(
-                    dict(normalized.get("result") or {})
-                )
-            warnings = deepcopy(list(normalized.get("warnings") or []))
-            next_actions = deepcopy(list(normalized.get("next_actions") or []))
-        if not next_actions and safe_next_action:
-            next_actions = [{"action": safe_next_action}]
+                domain_result = deepcopy(dict(normalized.get("result") or {}))
+                if stale_preview_recovery is not None:
+                    # Edge-local single-machine tool names are implementation
+                    # details. Hub callers receive only the exact public action.
+                    domain_result.pop("next_tool", None)
+                    domain_result.pop("next_arguments", None)
+                status_result["domain_result"] = domain_result
+            warnings = [
+                self._public_warning(warning)
+                for warning in list(normalized.get("warnings") or [])
+            ]
+            next_actions = [
+                self._public_next_action(action, operation_value)
+                for action in list(normalized.get("next_actions") or [])
+            ]
+        if stale_preview_recovery is not None:
+            next_actions = [stale_preview_recovery]
+        if batch_recovery is not None:
+            warnings.append(batch_recovery)
+            status_result["recovery"] = deepcopy(batch_recovery["details"])
+            next_actions = [
+                {
+                    "tool": "patchbay_operation_status",
+                    "arguments": {"operation_id": operation_value},
+                    "reason": (
+                        "This historical batch has incomplete atomic durable state and cannot be "
+                        "repaired from its minimized manifest. Inspect the recorded children, do "
+                        "not retry this idempotency key, and submit a replacement batch with a "
+                        "new idempotency key if the missing work is still required."
+                    ),
+                }
+            ]
+        if not next_actions and operation["state"] not in TERMINAL_OPERATION_STATES:
+            next_actions = [
+                {
+                    "tool": "patchbay_operation_status",
+                    "arguments": {
+                        "operation_id": operation_value,
+                        "wait_seconds": 20,
+                        "since_revision": latest_event,
+                    },
+                    "reason": safe_next_action,
+                }
+            ]
         return public_envelope(
             public_status,
             result=status_result,
@@ -1518,6 +2272,69 @@ class OperationBroker:
             warnings=warnings,
             next_actions=next_actions,
         )
+
+    def _integration_preview_recovery_action(
+        self,
+        operation: Mapping[str, Any],
+        normalized: Any,
+    ) -> dict[str, Any] | None:
+        """Translate one Edge-local stale-preview hint into a callable Hub action."""
+
+        if str(operation.get("tool") or "") != "patchbay_worker_integrate":
+            return None
+        if not isinstance(normalized, Mapping):
+            return None
+        domain = normalized.get("result")
+        if not isinstance(domain, Mapping) or str(domain.get("reason") or "") not in {
+            "stale_preview_token",
+            "preview_token_expired",
+        }:
+            return None
+        operation_id = str(operation.get("operation_id") or "")
+        row = self.store.connection.execute(
+            """
+            SELECT work_group_id
+            FROM operation_group_index
+            WHERE operation_id = ?
+            ORDER BY work_group_id
+            LIMIT 1
+            """,
+            (operation_id,),
+        ).fetchone()
+        work_group_id = str(row["work_group_id"]) if row is not None else ""
+        fleet_worker_ref = str(operation.get("logical_target") or "")
+        if work_group_id and fleet_worker_ref.startswith("fworker_"):
+            return {
+                "tool": "patchbay_worker_inspect",
+                "arguments": {
+                    "work_group_id": work_group_id,
+                    "fleet_worker_ref": fleet_worker_ref,
+                    "view": "integration_preview",
+                },
+                "reason": (
+                    "The signed preview became stale. Review the authoritative replacement "
+                    "preview, then submit a new integration mutation with its token and a fresh "
+                    "idempotency key."
+                ),
+            }
+        if work_group_id:
+            return {
+                "tool": "patchbay_work_group_status",
+                "arguments": {
+                    "work_group_id": work_group_id,
+                    "include_workers": True,
+                    "include_integrations": True,
+                },
+                "reason": (
+                    "The signed preview became stale and the worker selector could not be "
+                    "reconstructed. Inspect authoritative group integration state."
+                ),
+            }
+        return {
+            "tool": "patchbay_operation_status",
+            "arguments": {"operation_id": operation_id, "include_result": True},
+            "reason": "Inspect the stale integration result before selecting its worker again.",
+        }
 
     status = operation_status
 
@@ -1748,10 +2565,15 @@ class OperationBroker:
         return expires_at is not None and float(expires_at) <= float(now)
 
     def _aggregate_parent_in_transaction(
-        self, connection: sqlite3.Connection, parent_operation_id: str
+        self,
+        connection: sqlite3.Connection,
+        parent_operation_id: str,
+        *,
+        allow_terminal_refresh: bool = False,
     ) -> sqlite3.Row:
         parent = self._operation_row(connection, parent_operation_id)
-        if str(parent["state"]) in TERMINAL_OPERATION_STATES:
+        parent_was_terminal = str(parent["state"]) in TERMINAL_OPERATION_STATES
+        if parent_was_terminal and not allow_terminal_refresh:
             return parent
         children = connection.execute(
             """
@@ -1760,7 +2582,38 @@ class OperationBroker:
             """,
             (parent_operation_id,),
         ).fetchall()
-        if not children or any(
+        if not children:
+            return parent
+
+        expected_item_ids = self._batch_manifest_item_ids_in_transaction(
+            connection, parent_operation_id
+        )
+        if (
+            expected_item_ids is None
+            and str(parent["tool"]) == "patchbay_worker_start_batch"
+        ):
+            return parent
+        if expected_item_ids is not None:
+            children_by_item_id = {str(child["item_id"]): child for child in children}
+            if len(children) != len(expected_item_ids) or set(
+                children_by_item_id
+            ) != set(expected_item_ids):
+                return parent
+            children = [children_by_item_id[item_id] for item_id in expected_item_ids]
+
+        # Aggregate parents are Hub-owned lifecycle records. Advance them
+        # through the normal operation state machine without creating an Edge
+        # attempt, then let child completion drive the terminal transition.
+        while str(parent["state"]) in {"created", "payload_ready", "dispatchable"}:
+            next_state = {
+                "created": "payload_ready",
+                "payload_ready": "dispatchable",
+                "dispatchable": "running",
+            }[str(parent["state"])]
+            parent = self._transition_operation_in_transaction(
+                connection, parent, next_state
+            )
+        if any(
             str(child["state"]) not in TERMINAL_OPERATION_STATES for child in children
         ):
             return parent
@@ -1805,29 +2658,46 @@ class OperationBroker:
             "failed": "failed",
         }[aggregate_status]
 
-        while str(parent["state"]) in {"created", "payload_ready", "dispatchable"}:
-            next_state = {
-                "created": "payload_ready",
-                "payload_ready": "dispatchable",
-                "dispatchable": "running",
-            }[str(parent["state"])]
-            parent = self._transition_operation_in_transaction(
-                connection, parent, next_state
+        if parent_was_terminal:
+            encoded_parent = _encode_json(normalized_parent, "parent operation result")
+            cursor = connection.execute(
+                """
+                UPDATE operations
+                SET state = ?, revision = revision + 1, result_json = ?,
+                    error_json = NULL, updated_at = ?
+                WHERE operation_id = ? AND revision = ? AND state = ?
+                """,
+                (
+                    terminal_state,
+                    encoded_parent,
+                    self._clock(),
+                    parent["operation_id"],
+                    parent["revision"],
+                    parent["state"],
+                ),
             )
-        if str(parent["state"]) == "outcome_unknown":
+            if cursor.rowcount != 1:
+                raise HubStoreV2Conflict("operation_revision_conflict")
+            parent = self._operation_row(connection, parent_operation_id)
+            event_name = "operation.parent_reconciled"
+        elif str(parent["state"]) == "outcome_unknown":
             parent = self._transition_operation_in_transaction(
                 connection, parent, "reconciling"
             )
-        if str(parent["state"]) not in {"running", "reconciling"}:
-            raise HubStoreV2StateError(
-                f"Cannot aggregate parent in state {parent['state']}"
+            event_name = "operation.parent_aggregated"
+        else:
+            event_name = "operation.parent_aggregated"
+        if not parent_was_terminal:
+            if str(parent["state"]) not in {"running", "reconciling"}:
+                raise HubStoreV2StateError(
+                    f"Cannot aggregate parent in state {parent['state']}"
+                )
+            parent = self._transition_operation_in_transaction(
+                connection, parent, terminal_state, result=normalized_parent
             )
-        parent = self._transition_operation_in_transaction(
-            connection, parent, terminal_state, result=normalized_parent
-        )
         self.store._append_event_in_transaction(
             connection,
-            "operation.parent_aggregated",
+            event_name,
             {
                 "child_count": len(items),
                 "public_status": aggregate_status,
@@ -1836,7 +2706,213 @@ class OperationBroker:
             operation_id=parent_operation_id,
             entity_revision=int(parent["revision"]),
         )
+        if allow_terminal_refresh and parent["parent_operation_id"]:
+            self._aggregate_parent_in_transaction(
+                connection,
+                str(parent["parent_operation_id"]),
+                allow_terminal_refresh=True,
+            )
         return parent
+
+    def _batch_manifest_item_ids_in_transaction(
+        self, connection: sqlite3.Connection, parent_operation_id: str
+    ) -> list[str] | None:
+        row = connection.execute(
+            """
+            SELECT record_json FROM entity_records
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            (BATCH_CHILD_MANIFEST_ENTITY_TYPE, parent_operation_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            record = json.loads(str(row["record_json"]))
+            item_ids = record["expected_item_ids"]
+            normalized = [str(item_id) for item_id in item_ids]
+            version = record.get("version")
+            valid = (
+                isinstance(record, dict)
+                and version in {1, 2, 3}
+                and record.get("operation_id") == parent_operation_id
+                and isinstance(item_ids, list)
+                and bool(normalized)
+                and all(
+                    item_id and item_id == item_id.strip() for item_id in normalized
+                )
+                and len(set(normalized)) == len(normalized)
+                and record.get("expected_child_count") == len(normalized)
+            )
+            if valid and version == 1:
+                valid = record.get("manifest_hash") == semantic_payload_hash(
+                    {"expected_item_ids": normalized}
+                )
+            elif valid and version == 2:
+                child_specs = record.get("child_specs")
+                valid = (
+                    isinstance(child_specs, list)
+                    and len(child_specs) == len(normalized)
+                    and [spec.get("item_id") for spec in child_specs] == normalized
+                    and all(
+                        isinstance(spec, dict)
+                        and isinstance(spec.get("payload"), dict)
+                        and spec.get("semantic_payload_hash")
+                        == semantic_payload_hash(spec["payload"])
+                        for spec in child_specs
+                    )
+                    and record.get("manifest_hash")
+                    == semantic_payload_hash({"child_specs": child_specs})
+                )
+            elif valid and version == 3:
+                child_hashes = record.get("child_hashes")
+                valid = (
+                    isinstance(child_hashes, list)
+                    and len(child_hashes) == len(normalized)
+                    and all(
+                        isinstance(child, dict)
+                        and set(child) == {"item_id", "semantic_hash"}
+                        and child.get("item_id") == normalized[index]
+                        and isinstance(child.get("semantic_hash"), str)
+                        and bool(child["semantic_hash"])
+                        for index, child in enumerate(child_hashes)
+                    )
+                    and record.get("manifest_hash")
+                    == semantic_payload_hash(
+                        {
+                            "expected_item_ids": normalized,
+                            "child_hashes": child_hashes,
+                        }
+                    )
+                )
+        except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            valid = False
+            normalized = []
+        if not valid:
+            raise HubStoreV2Corrupt(
+                f"Invalid batch child manifest for operation {parent_operation_id}"
+            )
+        return normalized
+
+    def _batch_recovery_required(
+        self, parent_operation_id: str
+    ) -> dict[str, Any] | None:
+        connection = self.store.connection
+        manifest = connection.execute(
+            """
+            SELECT record_json FROM entity_records
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            (BATCH_CHILD_MANIFEST_ENTITY_TYPE, parent_operation_id),
+        ).fetchone()
+        child_rows = connection.execute(
+            """
+            SELECT operation_id, item_id FROM operations
+            WHERE parent_operation_id = ? ORDER BY item_id, operation_id
+            """,
+            (parent_operation_id,),
+        ).fetchall()
+        actual_item_ids = [str(row["item_id"]) for row in child_rows]
+        if manifest is None:
+            return {
+                "code": "batch_recovery_required",
+                "message": "The historical batch is missing its atomic child manifest.",
+                "details": {
+                    "reason": "missing_atomic_child_manifest",
+                    "actual_child_count": len(actual_item_ids),
+                },
+            }
+        expected_item_ids = self._batch_manifest_item_ids_in_transaction(
+            connection, parent_operation_id
+        )
+        exact_child_set = (
+            expected_item_ids is not None
+            and len(actual_item_ids) == len(expected_item_ids)
+            and set(actual_item_ids) == set(expected_item_ids)
+        )
+        if not exact_child_set:
+            return {
+                "code": "batch_recovery_required",
+                "message": "The historical batch has an incomplete durable child set.",
+                "details": {
+                    "reason": "incomplete_atomic_child_set",
+                    "expected_item_ids": expected_item_ids or [],
+                    "actual_item_ids": actual_item_ids,
+                    "missing_item_ids": [
+                        item_id
+                        for item_id in (expected_item_ids or [])
+                        if item_id not in set(actual_item_ids)
+                    ],
+                },
+            }
+
+        dispatched_item_ids = {
+            str(row["item_id"])
+            for row in connection.execute(
+                """
+                SELECT operations.item_id
+                FROM operations
+                JOIN entity_records
+                  ON entity_records.entity_id = operations.operation_id
+                 AND entity_records.entity_type = ?
+                WHERE operations.parent_operation_id = ?
+                """,
+                (EDGE_DISPATCH_ENTITY_TYPE, parent_operation_id),
+            ).fetchall()
+        }
+        missing_dispatch_item_ids = [
+            item_id
+            for item_id in (expected_item_ids or [])
+            if item_id not in dispatched_item_ids
+        ]
+        if missing_dispatch_item_ids:
+            return {
+                "code": "batch_recovery_required",
+                "message": (
+                    "The historical batch has children without durable Edge dispatch records."
+                ),
+                "details": {
+                    "reason": "incomplete_atomic_child_dispatch_set",
+                    "expected_item_ids": expected_item_ids or [],
+                    "actual_item_ids": actual_item_ids,
+                    "dispatched_item_ids": [
+                        item_id
+                        for item_id in (expected_item_ids or [])
+                        if item_id in dispatched_item_ids
+                    ],
+                    "missing_item_ids": missing_dispatch_item_ids,
+                },
+            }
+        return None
+
+    @staticmethod
+    def _public_warning(value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            code = str(value.get("code") or "operation_warning")
+            message = str(value.get("message") or code)
+            supplied_details = value.get("details")
+            details = {
+                str(key): deepcopy(item)
+                for key, item in value.items()
+                if key not in {"code", "message", "details"}
+            }
+            if isinstance(supplied_details, Mapping):
+                details = {**deepcopy(dict(supplied_details)), **details}
+            warning: dict[str, Any] = {"code": code, "message": message}
+            if details:
+                warning["details"] = details
+            return warning
+        return {"code": "operation_warning", "message": str(value)}
+
+    @staticmethod
+    def _public_next_action(value: Any, operation_id: str) -> dict[str, Any]:
+        normalized = normalize_hub_v2_next_action(value, operation_id=operation_id)
+        if isinstance(normalized, Mapping):
+            return deepcopy(dict(normalized))
+        return {
+            "tool": "patchbay_operation_status",
+            "arguments": {"operation_id": operation_id},
+            "reason": str(normalized),
+        }
 
     def _operation_visible(self, operation_id: str, principal_ref: str) -> bool:
         row = self.store.connection.execute(
@@ -2004,7 +3080,7 @@ class OperationBroker:
             "dispatchable": "wait_for_edge_claim",
             "running": "wait_for_edge_result",
             "outcome_unknown": "reconcile_before_retry",
-            "reconciling": "complete_reconciliation",
+            "reconciling": "wait_for_edge_reconciliation",
             "succeeded": "use_domain_result",
             "blocked": "resolve_blocker_before_retry",
             "failed": "inspect_failure",

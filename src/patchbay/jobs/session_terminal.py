@@ -29,6 +29,7 @@ class CodexSessionTerminalObserver:
         session_id: str,
         *,
         not_before: float,
+        initial_offset: int = 0,
         max_final_message_chars: int = 200_000,
     ) -> None:
         self.config = config
@@ -36,10 +37,26 @@ class CodexSessionTerminalObserver:
         self.not_before = float(not_before)
         self.max_final_message_chars = max(1, int(max_final_message_chars))
         self._source: Path | None = None
-        self._offset = 0
+        self._offset = max(0, int(initial_offset))
         self._pending = b""
         self._latest_agent_message = ""
         self._snapshot = SessionTerminalSnapshot()
+
+    def prime_to_end(self) -> int:
+        """Ignore existing records and observe only later appends for this session."""
+
+        if not self.session_id:
+            return 0
+        if self._source is None:
+            self._source = self._resolve_exact_session_file()
+        if self._source is None:
+            return 0
+        try:
+            self._offset = max(0, int(self._source.stat().st_size))
+        except OSError:
+            return self._offset
+        self._pending = b""
+        return self._offset
 
     def poll(self) -> SessionTerminalSnapshot:
         """Read newly appended records and return the latest terminal snapshot."""

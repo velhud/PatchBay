@@ -30,7 +30,6 @@ from patchbay.security import (
     internal_log_error,
     public_error_message,
     redact_sensitive_output,
-    validate_allowed_path,
 )
 from patchbay.workspace.context import WorkspaceContext
 from patchbay.workers.runtime import WorkerRuntime
@@ -107,7 +106,7 @@ class ToolHandler:
     ) -> Dict[str, Any]:
         """Route tool calls to appropriate handlers."""
         logger.info(f"Handling tool: {tool_name}")
-        self._reconcile_active_jobs()
+        await self._reconcile_active_jobs()
         
         handlers = {
             "codex_open_workspace": self._codex_open_workspace,
@@ -171,9 +170,9 @@ class ToolHandler:
         finally:
             _CURRENT_REQUEST_CONTEXT.reset(token)
 
-    def _reconcile_active_jobs(self) -> None:
+    async def _reconcile_active_jobs(self) -> None:
         try:
-            self.job_executor.reconcile_stale_running_jobs()
+            await self.worker_runtime.reconcile_active_jobs()
         except Exception as error:
             logger.warning("Failed to reconcile active jobs before tool call: %s", internal_log_error(error))
 
@@ -1268,7 +1267,6 @@ class ToolHandler:
     async def _codex_get_config(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return safe local Codex/PatchBay capability metadata without raw config values."""
         import shutil
-        from pathlib import Path
 
         security_config = self.config.get("security", {})
         app_config = self.config.get("app", {})

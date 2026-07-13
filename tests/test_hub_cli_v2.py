@@ -16,7 +16,7 @@ from patchbay.hub.cli_v2 import (
     v2_store_doctor,
     validate_backup_checksum,
 )
-from patchbay.hub.store_v2 import HubStoreV2
+from patchbay.hub.store_v2 import SCHEMA_VERSION, HubStoreV2
 from patchbay.hub.tool_surface import (
     HUB_V2_CONTRACT_HASH,
     HUB_V2_MANIFEST_HASH,
@@ -223,7 +223,7 @@ def test_store_doctor_is_read_only_and_rejects_schema_drift(tmp_path):
     healthy = v2_store_doctor(database)
 
     assert healthy["ready"] is True
-    assert healthy["schema_version"] == 1
+    assert healthy["schema_version"] == SCHEMA_VERSION
     assert healthy["integrity_check"] == ["ok"]
     assert database.stat().st_mtime_ns == before
 

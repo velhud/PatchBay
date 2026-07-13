@@ -1,8 +1,8 @@
-"""Internal Hub V2 manager-tool contract registry.
+"""Implemented Hub V2 manager-tool contract registry.
 
-This module is intentionally not imported by :mod:`patchbay.hub.protocol` yet.
-It describes the atomic 31-tool V2 catalog and its routing contracts without
-claiming that handlers exist.  The public cutover belongs to WP-11.
+The production Hub protocol imports this exact 31-tool catalog.  The registry
+is the public descriptor, schema, annotation, authentication-metadata, and
+routing contract for every manager action exposed by Hub V2.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from patchbay.workers.tool_surface import (
 HUB_V2_CONTRACT_VERSION = "HUB-MANAGER-CONTROL-PLANE-V2"
 HUB_V2_ACTION_CAPABILITY_VERSION = "2"
 HUB_V2_EXPECTED_TOOL_COUNT = 31
+HUB_V2_SECURITY_SCHEMES: list[dict[str, str]] = [{"type": "noauth"}]
 
 HUB_V2_PUBLIC_STATUSES = (
     "ok",
@@ -67,6 +68,14 @@ HUB_V2_TOOL_NAMES = (
     "patchbay_pro_request_dispatch",
     "patchbay_pro_request_close",
     "patchbay_operation_status",
+)
+HUB_V2_TOOL_NAME_SET = frozenset(HUB_V2_TOOL_NAMES)
+
+# These inputs describe single-machine history or refresh behavior that the Hub
+# projection surface does not implement. The Hub contract is intentionally
+# group-scoped instead of accepting filters that would silently do nothing.
+HUB_V2_UNSUPPORTED_WORKER_COLLECTION_FIELDS = frozenset(
+    {"repo_path", "scope", "owned_only", "created_after", "force_refresh"}
 )
 
 HUB_V2_TOOL_FAMILIES: dict[str, tuple[str, ...]] = {
@@ -255,6 +264,30 @@ _worker_result_properties.update(
     }
 )
 
+_COMPLETION_RECOMMENDATION_SCHEMA: dict[str, Any] = {
+    "oneOf": [
+        {
+            "type": "string",
+            "description": (
+                "Natural-language manager guidance when PatchBay cannot truthfully infer "
+                "the judgment, brief, selector, dispositions, or idempotency keys required "
+                "for a valid tool call."
+            ),
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "tool": _string(enum=HUB_V2_TOOL_NAMES),
+                "reason": {"type": "string"},
+                "arguments": {"type": "object", "additionalProperties": True},
+            },
+            "required": ["tool", "reason", "arguments"],
+        },
+    ]
+}
+
+
 HUB_V2_COMPLETION_CONTRACT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -270,7 +303,7 @@ HUB_V2_COMPLETION_CONTRACT_SCHEMA: dict[str, Any] = {
         "reason": {"type": "string"},
         "activity": {"type": "string"},
         "activity_counts": {"type": "object", "additionalProperties": True},
-        "recommended_next_action": {"type": "object", "additionalProperties": True},
+        "recommended_next_action": deepcopy(_COMPLETION_RECOMMENDATION_SCHEMA),
     },
 }
 
@@ -366,7 +399,7 @@ HUB_V2_OPERATION_SCHEMA: dict[str, Any] = {
         },
         "machine_id": {"type": "string"},
         "edge_generation": {"type": "string"},
-        "fencing_token": {"type": "string"},
+        "fencing_token": {"type": "integer"},
         "idempotency_key": {"type": "string"},
         "semantic_payload_hash": {"type": "string"},
         "revision": {"type": "integer"},
@@ -404,7 +437,7 @@ _NEXT_ACTION_ITEM_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "tool": {"type": "string"},
+                "tool": _string(enum=HUB_V2_TOOL_NAMES),
                 "reason": {"type": "string"},
                 "arguments": {"type": "object", "additionalProperties": True},
             },
@@ -412,6 +445,73 @@ _NEXT_ACTION_ITEM_SCHEMA: dict[str, Any] = {
         },
     ]
 }
+
+
+def normalize_hub_v2_next_action(value: Any, *, operation_id: str = "") -> dict[str, Any] | str:
+    """Return one public manager action without exposing internal transitions.
+
+    Stored Edge results can outlive a contract upgrade. Unknown action names must
+    therefore be converted at the public boundary rather than merely rejected by
+    output validation after they have already reached the MCP response path.
+    """
+
+    fallback: dict[str, Any] | str
+    if operation_id:
+        fallback = {
+            "tool": "patchbay_operation_status",
+            "arguments": {"operation_id": operation_id},
+            "reason": "Inspect this operation through Hub's public recovery tool.",
+        }
+    else:
+        fallback = "Inspect the current manager-visible operation or work-group state before continuing."
+
+    if isinstance(value, Mapping):
+        tool = str(value.get("tool") or "").strip()
+        if tool not in HUB_V2_TOOL_NAME_SET:
+            return fallback
+        supplied_arguments = value.get("arguments")
+        if supplied_arguments is None:
+            arguments: dict[str, Any] = {}
+        elif isinstance(supplied_arguments, Mapping):
+            arguments = deepcopy(dict(supplied_arguments))
+        else:
+            return fallback
+        # Import lazily to keep the descriptor module importable by the protocol
+        # validator while reusing its complete Hub V2 schema implementation.
+        from patchbay.hub.protocol_v2 import validate_hub_v2_tool_arguments
+
+        try:
+            validate_hub_v2_tool_arguments(tool, arguments)
+        except ValueError:
+            return fallback
+        action: dict[str, Any] = {"tool": tool}
+        if supplied_arguments is not None:
+            action["arguments"] = arguments
+        reason = value.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            action["reason"] = reason.strip()
+        return action
+
+    if isinstance(value, str):
+        guidance = value.strip()
+        if (
+            guidance
+            and "_" in guidance
+            and all(character.isalnum() or character in "_-" for character in guidance)
+        ):
+            return fallback
+        return guidance or fallback
+    return fallback
+
+
+def normalize_hub_v2_next_actions(
+    values: Any, *, operation_id: str = ""
+) -> list[dict[str, Any] | str]:
+    """Normalize a public next-action list against the exact Hub V2 registry."""
+
+    if not isinstance(values, list):
+        return []
+    return [normalize_hub_v2_next_action(value, operation_id=operation_id) for value in values]
 
 
 def output_envelope_schema(result_schema: Mapping[str, Any]) -> dict[str, Any]:
@@ -496,6 +596,8 @@ def _descriptor(
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     descriptor = deepcopy(dict(source or {}))
+    meta = deepcopy(dict(descriptor.get("_meta") or {}))
+    meta["securitySchemes"] = deepcopy(HUB_V2_SECURITY_SCHEMES)
     descriptor.update(
         {
             "name": name,
@@ -505,6 +607,8 @@ def _descriptor(
             "outputSchema": output_envelope_schema(result_schema),
             "readOnlyHint": name not in HUB_V2_MUTATING_TOOL_NAMES,
             "annotations": _annotations(name),
+            "securitySchemes": deepcopy(HUB_V2_SECURITY_SCHEMES),
+            "_meta": meta,
         }
     )
     return descriptor
@@ -649,6 +753,20 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
         },
         "required": ["disposition"],
         "anyOf": [{"required": ["worker"]}, {"required": ["fleet_worker_ref"]}],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"disposition": {"const": "discarded"}},
+                    "required": ["disposition"],
+                },
+                "then": {
+                    "properties": {
+                        "discard_unintegrated_changes": {"const": True},
+                    },
+                    "required": ["discard_unintegrated_changes"],
+                },
+            }
+        ],
     }
     group_result = _result_schema(
         {
@@ -733,6 +851,30 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
                     "include_workers": _boolean("Include compact worker projections."),
                     "include_operations": _boolean("Include compact operation projections."),
                     "include_integrations": _boolean("Include integration/disposition projections."),
+                    "worker_cursor": _string(
+                        "Opaque worker-page cursor returned by the previous group status response."
+                    ),
+                    "worker_limit": _integer(
+                        "Maximum compact worker projections returned in this page.",
+                        minimum=1,
+                        maximum=100,
+                    ),
+                    "operation_cursor": _string(
+                        "Opaque operation-page cursor returned by the previous group status response."
+                    ),
+                    "operation_limit": _integer(
+                        "Maximum compact operation projections returned in this page.",
+                        minimum=1,
+                        maximum=100,
+                    ),
+                    "integration_cursor": _string(
+                        "Opaque integration-page cursor returned by the previous group status response."
+                    ),
+                    "integration_limit": _integer(
+                        "Maximum integration/disposition projections returned in this page.",
+                        minimum=1,
+                        maximum=100,
+                    ),
                 }
             ),
             group_result,
@@ -773,17 +915,12 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
         ),
         _descriptor(
             "patchbay_work_group_close",
-            "Freeze one group's manager decision fields with an explicit outcome, summary, active-work policy, and disposition for every worker. Complete refuses active, uncertain, unreviewed, or unintegrated work.",
+            "Record one group's final manager decision with an explicit outcome, summary, and disposition for every worker. This tool never stops workers or cleans workspaces: explicitly stop active workers and complete any workspace disposal with worker-specific controls before close. Complete refuses active, uncertain, unreviewed, or unintegrated work.",
             _input_schema(
                 {
                     "work_group_id": deepcopy(GROUP_ROUTE_PROPERTIES["work_group_id"]),
                     "outcome": _string("Final manager outcome.", enum=("complete", "partial", "abandoned", "failed")),
                     "summary": _string("Durable manager closure summary."),
-                    "active_work_disposition": _string(
-                        "How to handle active work. leave_running cannot produce complete.",
-                        enum=("refuse", "stop", "leave_running"),
-                    ),
-                    "cleanup_completed_workspaces": _boolean("Request cleanup only for explicitly disposed completed workspaces."),
                     "worker_dispositions": {"type": "array", "items": disposition_schema},
                     "idempotency_key": deepcopy(IDEMPOTENCY_KEY_SCHEMA),
                 },
@@ -936,6 +1073,8 @@ def _worker_message_descriptor() -> dict[str, Any]:
 def _worker_collection_descriptor(canonical_name: str, target_name: str) -> dict[str, Any]:
     source = _WORKER_SOURCES[canonical_name]
     properties = _canonical_properties(source)
+    for field in HUB_V2_UNSUPPORTED_WORKER_COLLECTION_FIELDS:
+        properties.pop(field, None)
     properties.update(
         {
             "work_group_id": deepcopy(GROUP_ROUTE_PROPERTIES["work_group_id"]),
@@ -952,9 +1091,9 @@ def _worker_collection_descriptor(canonical_name: str, target_name: str) -> dict
         else _worker_status_result_schema()
     )
     descriptions = {
-        "patchbay_worker_list": "Use this to list the named workers in one group or lane before choosing a management action. It returns compact authoritative projections, not raw transcripts.",
-        "patchbay_worker_status": "Use this for a compact authoritative group-worker status check. Follow completion_contract and recommended_next_action; active or quiet workers are not failures.",
-        "patchbay_worker_wait": "Use this when workers are active or quiet and the manager's correct action is patience. It waits for a worker projection change or a bounded timeout, defaults to 30 seconds, does not interrupt workers, and returns the next management action. A timeout is not completion or failure.",
+        "patchbay_worker_list": "Use this to list the named workers in one required work group or lane before choosing a management action. It returns compact authoritative projections, not raw transcripts; Hub has no current/history or machine-wide worker scope for this tool. Normal Hub monitoring has a 20-second minimum and 30-second recommended cadence; an earlier repeat returns cached poll_too_early guidance scoped to this manager and group.",
+        "patchbay_worker_status": "Use this for a compact authoritative status check for one required work group or lane. Follow completion_contract and recommended_next_action; active or quiet workers are not failures. Hub has no current/history or machine-wide worker scope for this tool. Normal Hub monitoring has a 20-second minimum and 30-second recommended cadence; an earlier repeat returns cached poll_too_early guidance scoped to this manager and group.",
+        "patchbay_worker_wait": "Use this when workers in one required work group or lane are active or quiet and the manager's correct action is patience. It waits for a worker projection change or a bounded timeout, uses a 30-second default, clamps smaller waits to the 20-second minimum, does not interrupt workers, and returns the next management action. Hub has no current/history or machine-wide worker scope for this tool. A timeout is not completion or failure.",
     }
     return _descriptor(
         target_name,
@@ -1452,11 +1591,22 @@ def validate_hub_v2_registry(registry: Sequence[Mapping[str, Any]] | None = None
             raise ValueError(f"{name} output envelope fields drifted")
         if tuple(output_properties["status"].get("enum", ())) != HUB_V2_PUBLIC_STATUSES:
             raise ValueError(f"{name} uses noncanonical public statuses")
+        next_action_items = output_properties["next_actions"].get("items", {})
+        action_branches = next_action_items.get("oneOf", []) if isinstance(next_action_items, Mapping) else []
+        action_schema = action_branches[1] if len(action_branches) == 2 else {}
+        action_tool = action_schema.get("properties", {}).get("tool", {}) if isinstance(action_schema, Mapping) else {}
+        if tuple(action_tool.get("enum", ())) != HUB_V2_TOOL_NAMES:
+            raise ValueError(f"{name} next actions are not bound to the exact Hub V2 tool registry")
         annotations = tool.get("annotations")
         if annotations != _annotations(name):
             raise ValueError(f"{name} annotations are not truthful for the frozen contract")
         if tool.get("readOnlyHint") is not annotations["readOnlyHint"]:
             raise ValueError(f"{name} legacy readOnlyHint disagrees with annotations")
+        if tool.get("securitySchemes") != HUB_V2_SECURITY_SCHEMES:
+            raise ValueError(f"{name} lacks the canonical top-level securitySchemes")
+        meta = tool.get("_meta")
+        if not isinstance(meta, Mapping) or meta.get("securitySchemes") != HUB_V2_SECURITY_SCHEMES:
+            raise ValueError(f"{name} lacks the canonical _meta.securitySchemes")
         if name in HUB_V2_MUTATING_TOOL_NAMES and "idempotency_key" not in input_schema.get("properties", {}):
             raise ValueError(f"{name} mutation lacks idempotency_key")
         if "handler" in tool:
@@ -1496,9 +1646,11 @@ __all__ = [
     "HUB_V2_OPERATION_SCHEMA",
     "HUB_V2_PUBLIC_STATUSES",
     "HUB_V2_SCHEMA_HASH",
+    "HUB_V2_SECURITY_SCHEMES",
     "HUB_V2_TOOLS",
     "HUB_V2_TOOLS_BY_NAME",
     "HUB_V2_TOOL_NAMES",
+    "HUB_V2_TOOL_NAME_SET",
     "HUB_V2_TOOL_DESCRIPTORS",
     "HUB_V2_TOOL_FAMILIES",
     "HUB_V2_TOOL_MANIFEST_HASH",
@@ -1506,6 +1658,7 @@ __all__ = [
     "HUB_V2_TOOL_SCHEMA_HASH",
     "HUB_V2_WORKSPACE_CHANGES_ACTION_MAP",
     "HUB_V2_WORKER_RESULT_SCHEMA",
+    "HUB_V2_UNSUPPORTED_WORKER_COLLECTION_FIELDS",
     "REMOVED_HUB_V1_TOOL_NAMES",
     "TARGET_HUB_V2_TOOL_NAMES",
     "compute_hub_v2_contract_hash",
@@ -1516,6 +1669,8 @@ __all__ = [
     "get_hub_v2_tool",
     "get_hub_v2_tools",
     "hub_v2_contract_manifest",
+    "normalize_hub_v2_next_action",
+    "normalize_hub_v2_next_actions",
     "hub_v2_manifest",
     "hub_v2_schema_manifest",
     "output_envelope_schema",

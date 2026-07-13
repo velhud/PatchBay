@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 
 import pytest
 
 from patchbay.hub.broker import OperationBroker
-from patchbay.hub.store_v2 import HubStoreV2, HubStoreV2Conflict, HubStoreV2StateError
+from patchbay.hub.store_v2 import (
+    HubStoreV2,
+    HubStoreV2Conflict,
+    HubStoreV2StateError,
+    semantic_payload_hash,
+)
 
 
 CONTRACT_HASH = "contract-v2-sha256"
@@ -88,6 +94,44 @@ def _finish(
     )
 
 
+def test_unclaimed_offer_and_claim_are_ordinary_active_execution(tmp_path):
+    store = HubStoreV2(tmp_path / "healthy-claim.sqlite3")
+    broker = OperationBroker(store)
+    operation = _create_dispatchable(broker, key="healthy-claim")
+
+    offered = broker.offer_attempt(
+        operation["operation_id"],
+        machine_id="edge-a",
+        edge_generation=4,
+        required_contract_hash=CONTRACT_HASH,
+    )
+
+    assert offered["state"] == "offered"
+    assert store.get_operation(operation["operation_id"])["state"] == "dispatchable"
+
+    claimed = broker.claim_attempt(
+        operation["operation_id"],
+        offered["attempt_id"],
+        machine_id="edge-a",
+        edge_generation=4,
+        contract_hash=CONTRACT_HASH,
+        fencing_token=offered["fencing_token"],
+    )
+    executing = broker.mark_attempt_executing(
+        operation["operation_id"],
+        claimed["attempt_id"],
+        expected_revision=claimed["revision"],
+        machine_id="edge-a",
+        edge_generation=4,
+        contract_hash=CONTRACT_HASH,
+        fencing_token=claimed["fencing_token"],
+    )
+
+    assert executing["state"] == "executing"
+    assert store.get_operation(operation["operation_id"])["state"] == "running"
+    store.close()
+
+
 def test_create_requires_stable_idempotency_and_rejects_semantic_conflict(tmp_path):
     store = HubStoreV2(tmp_path / "hub.sqlite3")
     broker = OperationBroker(store)
@@ -155,19 +199,27 @@ def test_operation_group_association_is_idempotent_and_conflict_checked(tmp_path
 def test_child_identity_is_stable_and_parent_aggregates_mixed_results(tmp_path):
     store = HubStoreV2(tmp_path / "hub.sqlite3")
     broker = OperationBroker(store)
-    parent = broker.create_operation(
-        tool="patchbay_worker_start_batch",
+    batch = broker.create_batch_operation(
         logical_target="group-a",
         idempotency_key="batch-key",
         payload={"items": ["reader", "writer"]},
+        child_specs=[
+            {
+                "item_id": "reader",
+                "tool": "patchbay_worker_start",
+                "logical_target": "group-a/reader",
+                "payload": {"name": "Reader"},
+            },
+            {
+                "item_id": "writer",
+                "tool": "patchbay_worker_start",
+                "logical_target": "group-a/writer",
+                "payload": {"name": "Writer"},
+            },
+        ],
     )
-    reader = broker.create_child_operation(
-        parent["operation_id"],
-        item_id="reader",
-        tool="patchbay_worker_start",
-        logical_target="group-a/reader",
-        payload={"name": "Reader"},
-    )
+    parent = batch["parent"]
+    reader, writer = batch["children"]
     reader_replay = broker.create_child_operation(
         parent["operation_id"],
         item_id="reader",
@@ -175,12 +227,11 @@ def test_child_identity_is_stable_and_parent_aggregates_mixed_results(tmp_path):
         logical_target="group-a/reader",
         payload={"name": "Reader"},
     )
-    writer = broker.create_child_operation(
-        parent["operation_id"],
-        item_id="writer",
-        tool="patchbay_worker_start",
-        logical_target="group-a/writer",
-        payload={"name": "Writer"},
+    assert (
+        store.get_entity("hub.operation_batch_child_manifest", parent["operation_id"])[
+            "record"
+        ]["version"]
+        == 3
     )
 
     assert reader_replay["operation_id"] == reader["operation_id"]
@@ -217,6 +268,656 @@ def test_child_identity_is_stable_and_parent_aggregates_mixed_results(tmp_path):
         "blocked",
     ]
     assert len(broker.list_child_operations(parent["operation_id"])) == 2
+
+
+def test_batch_manifest_is_immutable_and_rejects_undeclared_children(tmp_path):
+    store = HubStoreV2(tmp_path / "hub.sqlite3")
+    broker = OperationBroker(store)
+    parent = broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-a",
+        idempotency_key="manifest-key",
+        payload={"items": ["reader", "writer"]},
+    )
+
+    manifest = broker.declare_child_manifest(
+        parent["operation_id"], expected_item_ids=["reader", "writer"]
+    )
+    replay = broker.declare_child_manifest(
+        parent["operation_id"], expected_item_ids=["reader", "writer"]
+    )
+
+    assert manifest["idempotent_replay"] is False
+    assert replay["idempotent_replay"] is True
+    assert replay["record"]["expected_item_ids"] == ["reader", "writer"]
+    with pytest.raises(HubStoreV2Conflict, match="batch_child_manifest_conflict"):
+        broker.declare_child_manifest(
+            parent["operation_id"], expected_item_ids=["reader", "reviewer"]
+        )
+    with pytest.raises(
+        HubStoreV2Conflict, match="child_operation_not_declared_in_manifest"
+    ):
+        broker.create_child_operation(
+            parent["operation_id"],
+            item_id="reviewer",
+            tool="patchbay_worker_start",
+            logical_target="group-a/reviewer",
+            payload={"name": "Reviewer"},
+        )
+
+
+def test_atomic_batch_rolls_back_parent_manifest_and_every_child_on_failure(
+    tmp_path, monkeypatch
+):
+    store = HubStoreV2(tmp_path / "hub.sqlite3")
+    broker = OperationBroker(store)
+    append_event = store._append_event_in_transaction
+    event_count = 0
+    child_specs = [
+        {
+            "item_id": item_id,
+            "tool": "patchbay_worker_start",
+            "logical_target": f"group-a/{item_id}",
+            "payload": {
+                "arguments": {
+                    "name": item_id.title(),
+                    "brief": f"Private rollback brief for {item_id}",
+                    "repo_path": "/private/rollback/repo",
+                },
+                "context": {"machine_id": "private-rollback-machine"},
+            },
+        }
+        for item_id in ("reader", "writer")
+    ]
+
+    def fail_during_second_child(connection, event_type, data, **kwargs):
+        nonlocal event_count
+        event_count += 1
+        if event_count == 4:
+            raise RuntimeError("simulated process boundary")
+        return append_event(connection, event_type, data, **kwargs)
+
+    monkeypatch.setattr(store, "_append_event_in_transaction", fail_during_second_child)
+
+    with pytest.raises(RuntimeError, match="simulated process boundary"):
+        broker.create_batch_operation(
+            logical_target="group-a",
+            idempotency_key="atomic-failure",
+            payload={"items": ["reader", "writer"]},
+            child_specs=child_specs,
+        )
+
+    assert (
+        store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+    )
+    assert store.list_entities("hub.operation_batch_child_manifest") == []
+    assert store.connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+    monkeypatch.setattr(store, "_append_event_in_transaction", append_event)
+    recovered = broker.create_batch_operation(
+        logical_target="group-a",
+        idempotency_key="atomic-failure",
+        payload={"items": ["reader", "writer"]},
+        child_specs=child_specs,
+    )
+    durable_manifest = store.get_entity(
+        "hub.operation_batch_child_manifest", recovered["parent"]["operation_id"]
+    )["record"]
+    assert set(durable_manifest) == {
+        "version",
+        "operation_id",
+        "expected_item_ids",
+        "expected_child_count",
+        "child_hashes",
+        "manifest_hash",
+    }
+    serialized_manifest = str(durable_manifest).lower()
+    for forbidden in (
+        "payload",
+        "brief",
+        "arguments",
+        "context",
+        "repo_path",
+        "private-rollback-machine",
+        "/private/rollback/repo",
+    ):
+        assert forbidden not in serialized_manifest
+
+
+def test_atomic_batch_replay_is_idempotent_and_rejects_payload_conflicts(tmp_path):
+    store = HubStoreV2(tmp_path / "hub.sqlite3")
+    broker = OperationBroker(store)
+    child_specs = [
+        {
+            "item_id": item_id,
+            "tool": "patchbay_worker_start",
+            "logical_target": f"group-a/{item_id}",
+            "payload": {
+                "action": "codex_worker_start",
+                "arguments": {
+                    "name": item_id.title(),
+                    "brief": f"Private natural-language brief for {item_id}",
+                    "repo_path": "/private/workspaces/patchbay",
+                },
+                "context": {"work_group_id": "group-a", "lane_id": item_id},
+                "target": {"machine_id": "machine-private"},
+            },
+        }
+        for item_id in ("reader", "writer")
+    ]
+
+    first = broker.create_batch_operation(
+        logical_target="group-a",
+        idempotency_key="atomic-replay",
+        payload={"items": ["reader", "writer"]},
+        child_specs=child_specs,
+    )
+    replay = broker.create_batch_operation(
+        logical_target="group-a",
+        idempotency_key="atomic-replay",
+        payload={"items": ["reader", "writer"]},
+        child_specs=child_specs,
+    )
+
+    assert replay["idempotent_replay"] is True
+    assert replay["parent"]["operation_id"] == first["parent"]["operation_id"]
+    assert [child["operation_id"] for child in replay["children"]] == [
+        child["operation_id"] for child in first["children"]
+    ]
+    child_hashes = [
+        {
+            "item_id": spec["item_id"],
+            "semantic_hash": semantic_payload_hash(spec["payload"]),
+        }
+        for spec in child_specs
+    ]
+    expected_item_ids = [spec["item_id"] for spec in child_specs]
+    durable_manifest = store.get_entity(
+        "hub.operation_batch_child_manifest", first["parent"]["operation_id"]
+    )["record"]
+    assert durable_manifest == {
+        "version": 3,
+        "operation_id": first["parent"]["operation_id"],
+        "expected_item_ids": expected_item_ids,
+        "expected_child_count": 2,
+        "child_hashes": child_hashes,
+        "manifest_hash": semantic_payload_hash(
+            {
+                "expected_item_ids": expected_item_ids,
+                "child_hashes": child_hashes,
+            }
+        ),
+    }
+    serialized_manifest = str(durable_manifest).lower()
+    for forbidden in (
+        "payload",
+        "brief",
+        "arguments",
+        "context",
+        "repo_path",
+        "machine-private",
+        "/private/workspaces/patchbay",
+    ):
+        assert forbidden not in serialized_manifest
+    assert (
+        store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 3
+    )
+    with pytest.raises(HubStoreV2Conflict, match="idempotency_payload_conflict"):
+        broker.create_batch_operation(
+            logical_target="group-a",
+            idempotency_key="atomic-replay",
+            payload={"items": ["reader", "reviewer"]},
+            child_specs=child_specs,
+        )
+    conflicting_specs = [dict(spec) for spec in child_specs]
+    conflicting_specs[1] = {
+        **conflicting_specs[1],
+        "payload": {"name": "Changed Writer"},
+    }
+    with pytest.raises(HubStoreV2Conflict, match="batch_child_manifest_conflict"):
+        broker.create_batch_operation(
+            logical_target="group-a",
+            idempotency_key="atomic-replay",
+            payload={"items": ["reader", "writer"]},
+            child_specs=conflicting_specs,
+        )
+
+
+def test_atomic_batch_includes_dispatch_records_and_rolls_everything_back(
+    tmp_path, monkeypatch
+):
+    store = HubStoreV2(tmp_path / "hub.sqlite3")
+    broker = OperationBroker(store)
+    child_specs = [
+        {
+            "item_id": item_id,
+            "tool": "patchbay_worker_start",
+            "logical_target": f"group-a/{item_id}",
+            "payload": {
+                "action": "codex_worker_start",
+                "arguments": {"name": item_id.title(), "brief": f"Private {item_id}"},
+            },
+        }
+        for item_id in ("reader", "writer")
+    ]
+    dispatch_specs = [
+        {
+            "item_id": spec["item_id"],
+            "action": spec["payload"]["action"],
+            "payload": spec["payload"],
+        }
+        for spec in child_specs
+    ]
+    put_entity = store._put_entity_in_transaction
+    dispatch_count = 0
+
+    def fail_second_dispatch(connection, entity_type, entity_id, record, **kwargs):
+        nonlocal dispatch_count
+        if entity_type == "hub.edge_dispatch":
+            dispatch_count += 1
+            if dispatch_count == 2:
+                raise RuntimeError("simulated dispatch persistence crash")
+        return put_entity(connection, entity_type, entity_id, record, **kwargs)
+
+    monkeypatch.setattr(store, "_put_entity_in_transaction", fail_second_dispatch)
+    with pytest.raises(RuntimeError, match="simulated dispatch persistence crash"):
+        broker.create_batch_operation(
+            logical_target="group-a",
+            idempotency_key="dispatch-rollback",
+            payload={"items": ["reader", "writer"]},
+            child_specs=child_specs,
+            child_dispatch_specs=dispatch_specs,
+        )
+
+    assert store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+    assert store.connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    assert store.list_entities("hub.operation_batch_child_manifest") == []
+    assert store.list_entities("hub.edge_dispatch") == []
+
+
+def test_atomic_batch_dispatch_replay_verifies_private_payload_hashes(tmp_path):
+    store = HubStoreV2(tmp_path / "hub.sqlite3")
+    broker = OperationBroker(store)
+    child_specs = [
+        {
+            "item_id": "reader",
+            "tool": "patchbay_worker_start",
+            "logical_target": "group-a/reader",
+            "payload": {
+                "action": "codex_worker_start",
+                "arguments": {"name": "Reader", "brief": "Private reader brief"},
+            },
+        }
+    ]
+    dispatch_specs = [
+        {
+            "item_id": "reader",
+            "action": "codex_worker_start",
+            "payload": child_specs[0]["payload"],
+        }
+    ]
+    first = broker.create_batch_operation(
+        logical_target="group-a",
+        idempotency_key="dispatch-replay",
+        payload={"items": ["reader"]},
+        child_specs=child_specs,
+        child_dispatch_specs=dispatch_specs,
+    )
+    replay = broker.create_batch_operation(
+        logical_target="group-a",
+        idempotency_key="dispatch-replay",
+        payload={"items": ["reader"]},
+        child_specs=child_specs,
+        child_dispatch_specs=dispatch_specs,
+    )
+
+    assert replay["idempotent_replay"] is True
+    dispatch = store.get_entity("hub.edge_dispatch", first["children"][0]["operation_id"])
+    assert dispatch is not None
+    assert dispatch["record"]["payload"] == child_specs[0]["payload"]
+    assert "brief" not in str(first["manifest"])
+
+    corrupted = deepcopy(dispatch["record"])
+    corrupted["payload"]["arguments"]["brief"] = "Tampered private brief"
+    store.put_entity(
+        "hub.edge_dispatch",
+        dispatch["entity_id"],
+        corrupted,
+        expected_revision=dispatch["revision"],
+    )
+    with pytest.raises(HubStoreV2Conflict, match="batch_child_dispatch_payload_conflict"):
+        broker.create_batch_operation(
+            logical_target="group-a",
+            idempotency_key="dispatch-replay",
+            payload={"items": ["reader"]},
+            child_specs=child_specs,
+            child_dispatch_specs=dispatch_specs,
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_terminal_parent_cannot_hide_incomplete_manifest(tmp_path):
+    store = HubStoreV2(tmp_path / "hub.sqlite3")
+    broker = OperationBroker(store)
+    parent = broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-legacy",
+        idempotency_key="legacy-terminal-partial",
+        payload={"items": ["reader", "writer"]},
+    )
+    broker.declare_child_manifest(
+        parent["operation_id"], expected_item_ids=["reader", "writer"]
+    )
+    broker.create_child_operation(
+        parent["operation_id"],
+        item_id="reader",
+        tool="patchbay_worker_start",
+        logical_target="group-legacy/reader",
+        payload={"name": "Reader"},
+    )
+    parent = broker.prepare_operation(
+        parent["operation_id"], expected_revision=parent["revision"]
+    )
+    parent = broker.make_dispatchable(
+        parent["operation_id"], expected_revision=parent["revision"]
+    )
+    parent = broker.transition_operation(
+        parent["operation_id"], expected_revision=parent["revision"], state="running"
+    )
+    broker.transition_operation(
+        parent["operation_id"],
+        expected_revision=parent["revision"],
+        state="succeeded",
+        result={"status": "ok", "result": {"items": [{"item_id": "reader"}]}},
+    )
+
+    status = await broker.operation_status(parent["operation_id"], include_result=True)
+
+    assert status["status"] == "blocked"
+    assert status["result"]["dispatch"]["state"] == "recovery_required"
+    assert status["result"]["outcome"]["terminal"] is True
+    assert status["warnings"][0]["details"]["reason"] == "incomplete_atomic_child_set"
+
+
+def test_legacy_partial_batch_stays_blocked_and_atomic_retry_cannot_fill_it(tmp_path):
+    database_path = tmp_path / "hub.sqlite3"
+    parent_payload = {"items": ["reader", "writer"]}
+    store = HubStoreV2(database_path)
+    broker = OperationBroker(store)
+    parent = broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-a",
+        idempotency_key="crash-safe-batch",
+        payload=parent_payload,
+    )
+    broker.declare_child_manifest(
+        parent["operation_id"], expected_item_ids=["reader", "writer"]
+    )
+    parent = broker.prepare_operation(
+        parent["operation_id"], expected_revision=parent["revision"]
+    )
+    parent = broker.make_dispatchable(
+        parent["operation_id"], expected_revision=parent["revision"]
+    )
+    reader = broker.create_child_operation(
+        parent["operation_id"],
+        item_id="reader",
+        tool="patchbay_worker_start",
+        logical_target="group-a/reader",
+        payload={"name": "Reader"},
+    )
+    reader = broker.prepare_operation(
+        reader["operation_id"], expected_revision=reader["revision"]
+    )
+    reader = broker.make_dispatchable(
+        reader["operation_id"], expected_revision=reader["revision"]
+    )
+    reader_attempt = _offer_claim_execute(broker, reader)
+    _finish(
+        broker,
+        store,
+        reader["operation_id"],
+        reader_attempt,
+        {"accepted": True, "worker_id": "worker-reader"},
+    )
+
+    incomplete = broker.aggregate_parent(parent["operation_id"])
+    assert incomplete["state"] == "dispatchable"
+    assert incomplete["children_terminal"] is False
+    status = asyncio.run(broker.operation_status(parent["operation_id"]))
+    assert status["status"] == "blocked"
+    assert status["result"]["dispatch"]["state"] == "recovery_required"
+    assert status["result"]["safe_next_action"] == "inspect_and_replace_batch"
+    assert status["next_actions"][0]["tool"] == "patchbay_operation_status"
+    store.close()
+
+    restarted_store = HubStoreV2(database_path)
+    restarted_broker = OperationBroker(restarted_store)
+    parent_replay = restarted_broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-a",
+        idempotency_key="crash-safe-batch",
+        payload=parent_payload,
+    )
+    assert parent_replay["idempotent_replay"] is True
+    with pytest.raises(
+        HubStoreV2StateError,
+        match="legacy_batch_incomplete_child_set_recovery_required",
+    ):
+        restarted_broker.create_batch_operation(
+            logical_target="group-a",
+            idempotency_key="crash-safe-batch",
+            payload=parent_payload,
+            child_specs=[
+                {
+                    "item_id": "reader",
+                    "tool": "patchbay_worker_start",
+                    "logical_target": "group-a/reader",
+                    "payload": {"name": "Reader"},
+                },
+                {
+                    "item_id": "writer",
+                    "tool": "patchbay_worker_start",
+                    "logical_target": "group-a/writer",
+                    "payload": {"name": "Writer"},
+                },
+            ],
+        )
+    assert (
+        len(restarted_broker.list_child_operations(parent_replay["operation_id"])) == 1
+    )
+    assert (
+        restarted_store.connection.execute(
+            """
+            SELECT COUNT(*) FROM events
+            WHERE operation_id = ?
+              AND event_type = 'operation.batch_child_manifest_declared'
+            """,
+            (parent_replay["operation_id"],),
+        ).fetchone()[0]
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_v2_payload_manifest_partial_batch_stays_blocked(tmp_path):
+    store = HubStoreV2(tmp_path / "legacy-v2-partial.sqlite3")
+    broker = OperationBroker(store)
+    parent_payload = {"items": ["reader", "writer"]}
+    parent = broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-legacy-v2",
+        idempotency_key="legacy-v2-partial",
+        payload=parent_payload,
+    )
+    reader_payload = {"brief": "legacy private brief", "repo_path": "/legacy/private"}
+    broker.create_child_operation(
+        parent["operation_id"],
+        item_id="reader",
+        tool="patchbay_worker_start",
+        logical_target="group-legacy-v2/reader",
+        payload=reader_payload,
+    )
+    legacy_child_specs = [
+        {
+            "item_id": item_id,
+            "tool": "patchbay_worker_start",
+            "logical_target": f"group-legacy-v2/{item_id}",
+            "payload": payload,
+            "semantic_payload_hash": semantic_payload_hash(payload),
+        }
+        for item_id, payload in (
+            ("reader", reader_payload),
+            ("writer", {"brief": "missing legacy writer"}),
+        )
+    ]
+    store.put_entity(
+        "hub.operation_batch_child_manifest",
+        parent["operation_id"],
+        {
+            "version": 2,
+            "operation_id": parent["operation_id"],
+            "expected_item_ids": ["reader", "writer"],
+            "expected_child_count": 2,
+            "child_specs": legacy_child_specs,
+            "manifest_hash": semantic_payload_hash({"child_specs": legacy_child_specs}),
+        },
+        expected_revision=0,
+    )
+
+    status = await broker.operation_status(parent["operation_id"])
+
+    assert status["status"] == "blocked"
+    assert status["warnings"][0]["details"]["missing_item_ids"] == ["writer"]
+    with pytest.raises(
+        HubStoreV2StateError,
+        match="legacy_batch_incomplete_child_set_recovery_required",
+    ):
+        broker.create_batch_operation(
+            logical_target="group-legacy-v2",
+            idempotency_key="legacy-v2-partial",
+            payload=parent_payload,
+            child_specs=[
+                {
+                    "item_id": spec["item_id"],
+                    "tool": spec["tool"],
+                    "logical_target": spec["logical_target"],
+                    "payload": spec["payload"],
+                }
+                for spec in legacy_child_specs
+            ],
+        )
+    assert len(broker.list_child_operations(parent["operation_id"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_parent_status_tracks_children_without_edge_claim_semantics(
+    tmp_path,
+):
+    store = HubStoreV2(tmp_path / "hub.sqlite3")
+    broker = OperationBroker(store)
+    child_specs = [
+        {
+            "item_id": item_id,
+            "tool": "patchbay_worker_start",
+            "logical_target": f"group-a/{item_id}",
+            "payload": {
+                "action": "codex_worker_start",
+                "arguments": {"name": item_id.title()},
+            },
+        }
+        for item_id in ("reader", "writer")
+    ]
+    batch = broker.create_batch_operation(
+        logical_target="group-a",
+        idempotency_key="aggregate-status",
+        payload={"items": ["reader", "writer"]},
+        child_specs=child_specs,
+        child_dispatch_specs=[
+            {
+                "item_id": spec["item_id"],
+                "action": spec["payload"]["action"],
+                "payload": spec["payload"],
+            }
+            for spec in child_specs
+        ],
+    )
+    parent = batch["parent"]
+    children = batch["children"]
+    dispatchable_children = []
+    for child in children:
+        child = broker.prepare_operation(
+            child["operation_id"], expected_revision=child["revision"]
+        )
+        dispatchable_children.append(
+            broker.make_dispatchable(
+                child["operation_id"], expected_revision=child["revision"]
+            )
+        )
+
+    active = await broker.operation_status(parent["operation_id"])
+
+    assert active["status"] == "pending"
+    assert active["operation"]["state"] == "running"
+    assert active["result"]["dispatch"]["state"] == "aggregate_running"
+    assert active["result"]["safe_next_action"] == "wait_for_child_operations"
+    assert active["next_actions"] == [
+        {
+            "tool": "patchbay_operation_status",
+            "arguments": {
+                "operation_id": parent["operation_id"],
+                "wait_seconds": 20,
+                "since_revision": active["result"]["dispatch"]["event_revision"],
+            },
+            "reason": "wait_for_child_operations",
+        }
+    ]
+    assert active["result"]["attempt"] == {}
+    assert all(child["status"] == "pending" for child in active["result"]["children"])
+
+    attempts = [_offer_claim_execute(broker, child) for child in dispatchable_children]
+    _finish(
+        broker,
+        store,
+        dispatchable_children[0]["operation_id"],
+        attempts[0],
+        {"accepted": True, "worker_id": "worker-reader"},
+    )
+    partly_complete = await broker.operation_status(parent["operation_id"])
+    assert partly_complete["result"]["dispatch"]["state"] == "aggregate_running"
+    assert partly_complete["result"]["safe_next_action"] == "wait_for_child_operations"
+
+    _finish(
+        broker,
+        store,
+        dispatchable_children[1]["operation_id"],
+        attempts[1],
+        {"accepted": False, "reason": "capacity_blocked"},
+    )
+    complete = await broker.operation_status(
+        parent["operation_id"], include_result=True
+    )
+
+    assert complete["status"] == "partial"
+    assert complete["operation"]["state"] == "succeeded"
+    assert complete["result"]["dispatch"]["state"] == "complete"
+    assert complete["result"]["safe_next_action"] == "use_domain_result"
+    for snapshot in (active, partly_complete, complete):
+        assert snapshot["result"]["dispatch"]["state"] != "offered"
+        assert snapshot["result"]["safe_next_action"] != "wait_for_edge_claim"
+    assert [
+        item["status"] for item in complete["result"]["domain_result"]["items"]
+    ] == [
+        "ok",
+        "blocked",
+    ]
+    assert (
+        store.connection.execute(
+            "SELECT COUNT(*) FROM attempts WHERE operation_id = ?",
+            (parent["operation_id"],),
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_offer_and_claim_require_generation_contract_and_immutable_fence(tmp_path):
@@ -750,3 +1451,164 @@ def test_invalid_operation_and_attempt_transitions_are_rejected(tmp_path):
             fencing_token=attempt["fencing_token"],
             state="effect_recorded",
         )
+
+
+@pytest.mark.asyncio
+async def test_persisted_internal_next_action_is_replaced_with_public_operation_status(tmp_path):
+    store = HubStoreV2(tmp_path / "persisted-next-action.sqlite3")
+    broker = OperationBroker(store)
+    operation = broker.create_operation(
+        tool="patchbay_worker_start",
+        logical_target="group-persisted-action",
+        idempotency_key="persisted-next-action",
+        payload={"name": "Builder"},
+    )
+    operation = broker.prepare_operation(
+        operation["operation_id"], expected_revision=operation["revision"]
+    )
+    operation = broker.make_dispatchable(
+        operation["operation_id"], expected_revision=operation["revision"]
+    )
+    operation = broker.transition_operation(
+        operation["operation_id"], expected_revision=operation["revision"], state="running"
+    )
+    assert operation is not None
+    completed = broker.transition_operation(
+        operation["operation_id"],
+        expected_revision=operation["revision"],
+        state="succeeded",
+        result={
+            "status": "ok",
+            "result": {"worker": {"name": "Builder"}},
+            "operation": {},
+            "warnings": [],
+            "next_actions": [
+                {
+                    "tool": "complete_reconciliation",
+                    "arguments": {"attempt_id": "untrusted"},
+                    "reason": "Invoke the internal transition.",
+                }
+            ],
+        },
+    )
+    assert completed is not None
+
+    result = await broker.operation_status(operation["operation_id"], include_result=True)
+
+    assert result["next_actions"] == [
+        {
+            "tool": "patchbay_operation_status",
+            "arguments": {"operation_id": operation["operation_id"]},
+            "reason": "Inspect this operation through Hub's public recovery tool.",
+        }
+    ]
+    assert "complete_reconciliation" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_persisted_known_tool_with_invalid_arguments_uses_safe_public_fallback(tmp_path):
+    store = HubStoreV2(tmp_path / "persisted-invalid-known-action.sqlite3")
+    broker = OperationBroker(store)
+    operation = broker.create_operation(
+        tool="patchbay_worker_start",
+        logical_target="group-invalid-known-action",
+        idempotency_key="persisted-invalid-known-action",
+        payload={"name": "Builder"},
+    )
+    operation = broker.prepare_operation(
+        operation["operation_id"], expected_revision=operation["revision"]
+    )
+    operation = broker.make_dispatchable(
+        operation["operation_id"], expected_revision=operation["revision"]
+    )
+    operation = broker.transition_operation(
+        operation["operation_id"],
+        expected_revision=operation["revision"],
+        state="running",
+    )
+    assert operation is not None
+    completed = broker.transition_operation(
+        operation["operation_id"],
+        expected_revision=operation["revision"],
+        state="succeeded",
+        result={
+            "status": "ok",
+            "result": {"worker": {"name": "Builder"}},
+            "operation": {},
+            "warnings": [],
+            "next_actions": [{"tool": "patchbay_worker_wait"}],
+        },
+    )
+    assert completed is not None
+
+    result = await broker.operation_status(operation["operation_id"], include_result=True)
+
+    assert result["next_actions"] == [
+        {
+            "tool": "patchbay_operation_status",
+            "arguments": {"operation_id": operation["operation_id"]},
+            "reason": "Inspect this operation through Hub's public recovery tool.",
+        }
+    ]
+    assert "patchbay_worker_wait" not in str(result["next_actions"])
+
+
+@pytest.mark.asyncio
+async def test_stale_integration_preview_returns_complete_public_review_action(tmp_path):
+    store = HubStoreV2(tmp_path / "stale-integration-preview.sqlite3")
+    broker = OperationBroker(store)
+    operation = broker.create_operation(
+        tool="patchbay_worker_integrate",
+        logical_target="fworker_writer_1",
+        idempotency_key="stale-preview-integrate",
+        payload={"preview_token": "old-token"},
+    )
+    broker.associate_operation(
+        operation["operation_id"], work_group_id="group_integration"
+    )
+    operation = broker.prepare_operation(
+        operation["operation_id"], expected_revision=operation["revision"]
+    )
+    operation = broker.make_dispatchable(
+        operation["operation_id"], expected_revision=operation["revision"]
+    )
+    attempt = _offer_claim_execute(broker, operation)
+    _finish(
+        broker,
+        store,
+        operation["operation_id"],
+        attempt,
+        {
+            "applied": False,
+            "can_apply": False,
+            "reason": "stale_preview_token",
+            "fresh_preview": {"preview_token": "pit2.replacement", "can_apply": True},
+            "recommended_next_action": "review_fresh_integration_preview",
+            "next_tool": "codex_worker_integrate",
+            "next_arguments": {"preview_token": "pit2.replacement"},
+        },
+    )
+
+    result = await broker.operation_status(
+        operation["operation_id"], include_result=True
+    )
+
+    assert result["status"] == "blocked"
+    assert result["result"]["domain_result"]["reason"] == "stale_preview_token"
+    assert "next_tool" not in result["result"]["domain_result"]
+    assert "next_arguments" not in result["result"]["domain_result"]
+    assert result["next_actions"] == [
+        {
+            "tool": "patchbay_worker_inspect",
+            "arguments": {
+                "work_group_id": "group_integration",
+                "fleet_worker_ref": "fworker_writer_1",
+                "view": "integration_preview",
+            },
+            "reason": (
+                "The signed preview became stale. Review the authoritative replacement "
+                "preview, then submit a new integration mutation with its token and a fresh "
+                "idempotency key."
+            ),
+        }
+    ]

@@ -12,26 +12,38 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import secrets
 import socket
 import time
 import urllib.error
 import urllib.request
-from collections import deque
+from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
+try:  # pragma: no cover - supported PatchBay Edge hosts are Unix-like.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
 from patchbay.hub.edge import (
+    EDGE_PROFILE_VERSION,
     build_capabilities,
     build_resource_status,
     build_workspaces,
+    edge_profile_path,
     load_edge_profile,
     normalize_hub_url,
     save_edge_profile,
 )
 from patchbay.hub.edge_journal import (
+    EdgeJournalError,
+    MAX_OUTBOX_CONFIRMATION_BATCH_SIZE,
     RECOVERY_EXECUTE_INTENT,
     RECOVERY_UPLOAD_RESULT,
+    edge_transport_for_attempt,
 )
 from patchbay.hub.edge_v2 import EdgeAttemptFenceError, EdgeExecutionService
 
@@ -48,6 +60,10 @@ DEFAULT_MAX_CONCURRENT_TASKS = 4
 logger = logging.getLogger(__name__)
 MAX_CONCURRENT_TASKS = 64
 DEFAULT_OUTBOX_BATCH_SIZE = 32
+MAX_ERROR_LOG_KEYS = 128
+MAX_REPORTED_RECOVERY_IDENTITIES = 4096
+MIN_HOT_QUEUE_IDENTITIES = 128
+MAX_HOT_QUEUE_IDENTITIES = 4096
 
 
 def create_edge_v2_runner(
@@ -64,8 +80,11 @@ def create_edge_v2_runner(
     from patchbay.tools.handler import ToolHandler
 
     config_value = dict(config)
-    source = profile or load_edge_profile()
-    normalized = source if isinstance(source, EdgeV2Profile) else EdgeV2Profile.from_mapping(source)
+    normalized = (
+        profile
+        if isinstance(profile, EdgeV2Profile)
+        else normalize_edge_v2_profile(profile, persist_upgrade=True)
+    )
     hub = config_value.get("hub") if isinstance(config_value.get("hub"), Mapping) else {}
     edge = hub.get("edge") if isinstance(hub.get("edge"), Mapping) else {}
     journal_path = resolve_runtime_path(
@@ -73,10 +92,19 @@ def create_edge_v2_runner(
         "hub",
         f"edge-v2-journal-{normalized.edge_generation}.sqlite3",
     )
+    if bool(edge.get("require_existing_journal", False)) and not journal_path.is_file():
+        raise RuntimeError(
+            f"Configured Edge journal is missing for generation "
+            f"{normalized.edge_generation!r}: {journal_path}"
+        )
     manager = JobManager(config_value)
     executor = JobExecutor(config_value, manager)
     handler = ToolHandler(config_value, manager, executor)
-    journal = EdgeJournal(journal_path, edge_generation=normalized.edge_generation)
+    journal = EdgeJournal(
+        journal_path,
+        edge_generation=normalized.edge_generation,
+        pre_migration_backup_marker=edge.get("pre_migration_backup_marker"),
+    )
     execution = EdgeExecutionService(
         handler,
         journal,
@@ -306,10 +334,107 @@ def normalize_edge_v2_profile(
         source.get("edge_generation") != normalized.edge_generation
         or source.get("node_token") != normalized.node_token
     ):
-        upgraded = dict(source)
-        upgraded.update(normalized.as_mapping())
-        save_edge_profile(upgraded)
+        normalized = _persist_edge_profile_upgrade(source, normalized)
     return normalized
+
+
+def _persist_edge_profile_upgrade(
+    source: Mapping[str, Any],
+    normalized: EdgeV2Profile,
+) -> EdgeV2Profile:
+    """Atomically publish a generated generation before journal selection."""
+
+    path = edge_profile_path()
+    lock_path = path.with_name(f".{path.name}.lock")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if fcntl is None:
+        raise RuntimeError(
+            "Atomic Edge profile generation upgrade requires host file locking; "
+            "refusing to select or open an Edge journal"
+        )
+    try:
+        os.chmod(path.parent, 0o700)
+        with lock_path.open("a+b") as lock_file:
+            os.chmod(lock_path, 0o600)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                current = load_edge_profile()
+                if current:
+                    current_profile = EdgeV2Profile.from_mapping(current)
+                    if _edge_profile_authority(current_profile) != _edge_profile_authority(
+                        normalized
+                    ):
+                        raise RuntimeError(
+                            "Edge profile changed while its generation was being upgraded; "
+                            "refusing to select or open an Edge journal"
+                        )
+                    if _edge_generation_from_mapping(current):
+                        return current_profile
+
+                upgraded = dict(current or source)
+                upgraded.update(normalized.as_mapping())
+                _atomic_write_edge_profile(path, upgraded)
+                persisted = EdgeV2Profile.from_mapping(load_edge_profile())
+                if (
+                    persisted.edge_generation != normalized.edge_generation
+                    or _edge_profile_authority(persisted)
+                    != _edge_profile_authority(normalized)
+                ):
+                    raise RuntimeError(
+                        "Atomic Edge profile generation upgrade could not be verified; "
+                        "refusing to select or open an Edge journal"
+                    )
+                return persisted
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except (OSError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Could not atomically persist the generated Edge generation to {path}; "
+            "refusing to select or open an Edge journal"
+        ) from exc
+
+
+def _atomic_write_edge_profile(path: Path, profile: Mapping[str, Any]) -> None:
+    payload = dict(profile)
+    payload["version"] = EDGE_PROFILE_VERSION
+    payload["updated_at"] = time.time()
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    )
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _edge_profile_authority(profile: EdgeV2Profile) -> tuple[str, str, str]:
+    return (profile.hub_url, profile.machine_id, profile.node_token)
+
+
+def _edge_generation_from_mapping(source: Mapping[str, Any]) -> str:
+    profile = source.get("profile") if isinstance(source.get("profile"), Mapping) else {}
+    machine = source.get("machine") if isinstance(source.get("machine"), Mapping) else {}
+    return str(
+        profile.get("edge_generation")
+        or machine.get("edge_generation")
+        or source.get("edge_generation")
+        or ""
+    ).strip()
 
 
 def edge_contract_metadata(
@@ -509,6 +634,14 @@ class EdgeV2Runner:
             "outbox_batch_size",
             maximum=10_000,
         )
+        self.outbox_confirmation_batch_size = min(
+            self.outbox_batch_size,
+            MAX_OUTBOX_CONFIRMATION_BATCH_SIZE,
+        )
+        self.hot_queue_identity_limit = min(
+            MAX_HOT_QUEUE_IDENTITIES,
+            max(MIN_HOT_QUEUE_IDENTITIES, self.outbox_batch_size * 4),
+        )
         self.acknowledged_retention_seconds = _non_negative_float(
             acknowledged_retention_seconds,
             "acknowledged_retention_seconds",
@@ -522,14 +655,32 @@ class EdgeV2Runner:
 
         self._stop_event = asyncio.Event()
         self._closed_event = asyncio.Event()
+        self._heartbeat_event = asyncio.Event()
         self._outbox_event = asyncio.Event()
         self._reconciliation_event = asyncio.Event()
         self._control_tasks: set[asyncio.Task[Any]] = set()
         self._execution_tasks: dict[str, asyncio.Task[Any]] = {}
         self._lease_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._recovery_queue: deque[dict[str, Any]] = deque()
-        self._reconciliation_queue: deque[dict[str, Any]] = deque()
-        self._reported_recovery: set[tuple[str, str, str, int]] = set()
+        self._recovery_queue: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._reconciliation_queue: OrderedDict[
+            tuple[str, str, int], dict[str, Any]
+        ] = OrderedDict()
+        self._reported_recovery: OrderedDict[
+            tuple[str, str, int], None
+        ] = OrderedDict()
+        self._recovery_cursor: tuple[float, str] | None = None
+        self._reconciliation_cursor: tuple[float, str] | None = None
+        self._reconciliation_queue_first = True
+        self._outbox_cursor: tuple[float, str] | None = None
+        self._outbox_retry_state: OrderedDict[
+            str, dict[str, float | int]
+        ] = OrderedDict()
+        self._reconciliation_retry_state: OrderedDict[
+            tuple[str, str, int], dict[str, float | int]
+        ] = OrderedDict()
+        self._error_log_state: OrderedDict[
+            tuple[str, str, str], dict[str, float | int]
+        ] = OrderedDict()
         self._background_errors: list[str] = []
         self._latest_projection: dict[str, Any] = {}
         self._projection_error = ""
@@ -582,6 +733,7 @@ class EdgeV2Runner:
             "machine_id": self.machine_id,
             "edge_generation": self.edge_generation,
             **self.contract_metadata,
+            "session_contract_hash": self.contract_metadata["contract_hash"],
             "contract": dict(self.contract_metadata),
         }
 
@@ -608,7 +760,12 @@ class EdgeV2Runner:
         acknowledgements = _receipt_acknowledgements(response)
         if not acknowledgements:
             return []
-        return self.execution.acknowledge_receipts(acknowledgements)
+        saved = self.execution.acknowledge_receipts(acknowledgements)
+        for receipt in saved:
+            identity = _pending_reconciliation_key(receipt)
+            self._reconciliation_queue.pop(identity, None)
+            self._reconciliation_retry_state.pop(identity, None)
+        return saved
 
     async def heartbeat_once(self) -> dict[str, Any]:
         loop_health = self.execution.journal.control_loop_health()
@@ -644,7 +801,7 @@ class EdgeV2Runner:
         """Build and publish one full, monotonically revisioned projection."""
 
         try:
-            projection = self.execution.projection_snapshot()
+            projection = await self.execution.projection_snapshot_async()
         except Exception as error:
             self._projection_error = str(error)
             raise
@@ -659,6 +816,7 @@ class EdgeV2Runner:
             },
         )
         self._queue_response_work(response)
+        self._heartbeat_event.set()
         return response
 
     async def claim_once(self) -> dict[str, Any]:
@@ -719,22 +877,50 @@ class EdgeV2Runner:
         return response
 
     async def upload_outbox_once(self) -> dict[str, Any]:
-        pending = self.execution.pending_results(limit=self.outbox_batch_size)
+        retry_receipts = self._due_outbox_retry_receipts(
+            limit=max(1, min(self.outbox_batch_size, 32))
+        )
+        retry_ids = {str(receipt["receipt_id"]) for receipt in retry_receipts}
+        forward = self.execution.pending_results(
+            limit=self.outbox_batch_size,
+            after=self._outbox_cursor,
+        )
+        if not forward and self._outbox_cursor is not None:
+            self._outbox_cursor = None
+            forward = self.execution.pending_results(limit=self.outbox_batch_size)
+        pending = retry_receipts + [
+            receipt
+            for receipt in forward
+            if str(receipt.get("receipt_id") or "") not in retry_ids
+        ]
         uploaded = 0
         acknowledged = 0
         failures = 0
+        deferred = 0
         for receipt in pending:
+            receipt_id = str(receipt.get("receipt_id") or "")
+            if self._retry_is_deferred(self._outbox_retry_state, receipt_id):
+                deferred += 1
+                continue
             try:
+                receipt_contract_hash = str(
+                    receipt.get("contract_hash")
+                    or self.contract_metadata["contract_hash"]
+                )
                 wire_receipt = {
                     **dict(receipt),
                     "machine_id": self.machine_id,
-                    "contract_hash": self.contract_metadata["contract_hash"],
+                    "contract_hash": receipt_contract_hash,
                 }
                 response = await self._request(
                     self.endpoints.result,
                     {
                         **self._base_payload(),
                         **wire_receipt,
+                        # Authenticate this request with the Edge's current
+                        # transport contract.  The nested receipt retains the
+                        # immutable contract used by the original attempt.
+                        "contract_hash": self.contract_metadata["contract_hash"],
                         "receipt": wire_receipt,
                     },
                 )
@@ -743,13 +929,25 @@ class EdgeV2Runner:
                     if self.execution.journal.get_outbox(str(receipt["receipt_id"])):
                         self.execution.acknowledge_receipt(receipt)
                     acknowledged += 1
-                elif self.execution.journal.get_outbox(str(receipt["receipt_id"])) is not None:
+                    self._outbox_retry_state.pop(receipt_id, None)
+                else:
                     saved = self.execution.journal.get_outbox(str(receipt["receipt_id"]))
                     if saved and saved.get("acknowledged_at") is not None:
                         acknowledged += 1
+                        self._outbox_retry_state.pop(receipt_id, None)
+                    else:
+                        failures += 1
+                        self._defer_retry(self._outbox_retry_state, receipt_id)
             except Exception as error:
                 failures += 1
+                self._defer_retry(self._outbox_retry_state, receipt_id)
                 self._record_background_error("result_upload", error)
+        if forward:
+            last = forward[-1]
+            self._outbox_cursor = (
+                float(last.get("created_at") or 0.0),
+                str(last.get("receipt_id") or ""),
+            )
         confirmed = await self._confirm_outbox_acknowledgements()
         return {
             "pending": len(pending),
@@ -757,12 +955,39 @@ class EdgeV2Runner:
             "acknowledged": acknowledged,
             "confirmed": confirmed,
             "failures": failures,
+            "deferred": deferred,
+            "retry_candidates": len(retry_receipts),
+            "forward_candidates": len(forward),
         }
 
+    def _due_outbox_retry_receipts(self, *, limit: int) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        due = sorted(
+            (
+                (float(retry.get("next_retry_at") or 0.0), receipt_id)
+                for receipt_id, retry in self._outbox_retry_state.items()
+                if float(retry.get("next_retry_at") or 0.0) <= now
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        receipts: list[dict[str, Any]] = []
+        for _, receipt_id in due:
+            saved = self.execution.journal.get_outbox(receipt_id)
+            if saved is None or saved.get("acknowledged_at") is not None:
+                self._outbox_retry_state.pop(receipt_id, None)
+                continue
+            receipts.append(saved)
+            if len(receipts) >= limit:
+                break
+        return receipts
+
     async def _confirm_outbox_acknowledgements(self) -> int:
-        receipt_ids = self._acknowledged_receipt_ids()
-        if not receipt_ids:
+        receipts = self.execution.journal.list_outbox_pending_confirmation(
+            limit=self.outbox_confirmation_batch_size
+        )
+        if not receipts:
             return 0
+        receipt_ids = [str(receipt["receipt_id"]) for receipt in receipts]
         try:
             response = await self._request(
                 self.endpoints.outbox_ack,
@@ -780,59 +1005,118 @@ class EdgeV2Runner:
         }
         if not confirmed and response.get("accepted") is True:
             confirmed = set(receipt_ids)
-        if not set(receipt_ids).issubset(confirmed):
+        confirmed.intersection_update(receipt_ids)
+        if not confirmed:
             return 0
+        persisted = self.execution.journal.confirm_outbox_deliveries(
+            [receipt_id for receipt_id in receipt_ids if receipt_id in confirmed]
+        )
         self.execution.journal.prune_acknowledged(
             retention_seconds=self.acknowledged_retention_seconds
         )
-        return len(receipt_ids)
-
-    def _acknowledged_receipt_ids(self) -> list[str]:
-        rows = self.execution.journal.connection.execute(
-            """
-            SELECT receipt_id FROM result_outbox
-            WHERE acknowledged_at IS NOT NULL AND uncertain = 0
-            ORDER BY acknowledged_at, receipt_id
-            """
-        ).fetchall()
-        return [str(row["receipt_id"]) for row in rows]
+        return persisted
 
     async def reconcile_once(self) -> dict[str, Any]:
         records = self._reconciliation_records()
         if not records:
             return {"accepted": True, "reported_records": 0, "responses": []}
         responses: list[dict[str, Any]] = []
-        accepted: set[tuple[str, str, str, int]] = set()
+        accepted: set[tuple[str, str, int]] = set()
+        failures = 0
+        deferred = 0
         for record in records:
             fences = _attempt_fences(record, allow_missing=True)
             if not fences.get("operation_id") or not fences.get("attempt_id"):
                 continue
-            response = await self._request(
-                self.endpoints.reconcile,
-                {
-                    **self._base_payload(),
-                    **fences,
-                    "projection_revision": self.execution.journal.projection_revision,
-                    "local_recovery": dict(record),
-                },
-            )
+            identity = _pending_reconciliation_key(record)
+            if self._retry_is_deferred(self._reconciliation_retry_state, identity):
+                deferred += 1
+                continue
+            try:
+                response = await self._request(
+                    self.endpoints.reconcile,
+                    {
+                        **self._base_payload(),
+                        **fences,
+                        "projection_revision": self.execution.journal.projection_revision,
+                        "local_recovery": dict(record),
+                    },
+                )
+            except Exception as error:
+                failures += 1
+                self._defer_retry(self._reconciliation_retry_state, identity)
+                self._record_background_error("reconciliation_record", error)
+                continue
             responses.append(response)
             self._queue_response_work(response)
-            if _response_accepted(response):
-                identity = _recovery_identity(record)
+            if self._reconciliation_response_progressed(record, response):
                 accepted.add(identity)
-                self._reported_recovery.add(identity)
+                self._record_reported_recovery(identity)
+                self._reconciliation_retry_state.pop(identity, None)
+            else:
+                failures += 1
+                self._defer_retry(self._reconciliation_retry_state, identity)
         if accepted:
-            self._reconciliation_queue = deque(
-                record
-                for record in self._reconciliation_queue
-                if _recovery_identity(record) not in accepted
-            )
+            for identity in accepted:
+                self._reconciliation_queue.pop(identity, None)
         return {
-            "accepted": len(accepted) == len(records),
+            "accepted": failures == 0 and deferred == 0,
             "reported_records": len(accepted),
+            "failed_records": failures,
+            "deferred_records": deferred,
             "responses": responses,
         }
+
+    def _reconciliation_response_progressed(
+        self,
+        record: Mapping[str, Any],
+        response: Mapping[str, Any],
+    ) -> bool:
+        if not _response_accepted(response):
+            return False
+        disposition = str(response.get("disposition") or "")
+        if disposition == "manual_recovery":
+            response_attempt = response.get("attempt")
+            operation = response.get("operation")
+            if not (
+                isinstance(response_attempt, Mapping)
+                and str(response_attempt.get("state") or "") == "manual_recovery"
+                and isinstance(operation, Mapping)
+                and str(operation.get("state") or "") == "blocked"
+            ):
+                return False
+            attempt_id = str(record.get("attempt_id") or "")
+            local_attempt = self.execution.journal.get_attempt(attempt_id)
+            if local_attempt is not None and str(local_attempt.get("state") or "") in {
+                "executing",
+                "effect_recorded",
+                "outcome_unknown",
+                "manual_recovery",
+            }:
+                self.execution.journal.mark_manual_recovery(
+                    str(local_attempt["operation_id"]),
+                    attempt_id,
+                    int(local_attempt["fencing_token"]),
+                    edge_generation=str(local_attempt["edge_generation"]),
+                )
+            return True
+        if disposition == "retryable":
+            operation = response.get("operation")
+            return bool(
+                response.get("retry_attempts")
+                or response.get("resume_attempts")
+                or (
+                    isinstance(operation, Mapping)
+                    and str(operation.get("state") or "")
+                    in {"succeeded", "blocked", "failed", "cancelled"}
+                )
+            )
+        receipt = record.get("receipt")
+        return bool(
+            isinstance(receipt, Mapping)
+            and receipt.get("receipt_id")
+            and _response_acknowledges_receipt(response, receipt)
+        )
 
     async def _schedule_attempt(self, attempt: Mapping[str, Any]) -> str:
         attempt_id = str(attempt.get("attempt_id") or "").strip()
@@ -864,8 +1148,10 @@ class EdgeV2Runner:
         existing = self.execution.journal.get_attempt(attempt_id)
         if existing is not None:
             attempt["correlation"] = dict(existing.get("correlation") or {})
-            transport_correlation = attempt["correlation"].get("edge_transport")
-            if isinstance(transport_correlation, Mapping):
+            transport_correlation = edge_transport_for_attempt(
+                attempt["correlation"], attempt_id
+            )
+            if transport_correlation:
                 if transport_correlation.get("attempt_revision") not in (None, ""):
                     attempt["revision"] = transport_correlation["attempt_revision"]
                 if transport_correlation.get("contract_hash"):
@@ -877,13 +1163,13 @@ class EdgeV2Runner:
                 try:
                     result = await self.execution.execute_attempt(attempt)
                     if result.get("needs_reconciliation") and not result.get("receipt_id"):
-                        self._reconciliation_queue.append(dict(result))
+                        self._enqueue_reconciliation(result)
                         self._reconciliation_event.set()
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
                     self._record_background_error("execution", error)
-                    self._reconciliation_queue.append(
+                    self._enqueue_reconciliation(
                         self.execution.reconciliation_lookup(attempt_id=attempt_id)
                     )
                     self._reconciliation_event.set()
@@ -897,10 +1183,12 @@ class EdgeV2Runner:
             await self.renew_lease_once(attempt)
         except Exception as error:
             self._record_background_error("initial_lease", error)
-            self._reconciliation_queue.append(
+            self._enqueue_reconciliation(
                 {
                     **_attempt_fences(attempt, allow_missing=True),
                     "recovery_action": "lease_reconciliation",
+                    "found": False,
+                    "effect_started": False,
                     "reason": "lease_not_confirmed",
                     "detail": str(error),
                 }
@@ -931,14 +1219,14 @@ class EdgeV2Runner:
         try:
             result = await self.execution.execute_attempt(attempt)
             if result.get("needs_reconciliation") and not result.get("receipt_id"):
-                self._reconciliation_queue.append(dict(result))
+                self._enqueue_reconciliation(result)
                 self._reconciliation_event.set()
         except asyncio.CancelledError:
             raise
         except Exception as error:
             self._record_background_error("execution", error)
             lookup = self.execution.reconciliation_lookup(attempt_id=attempt_id)
-            self._reconciliation_queue.append(lookup)
+            self._enqueue_reconciliation(lookup)
             self._reconciliation_event.set()
         finally:
             lease_stop.set()
@@ -990,7 +1278,7 @@ class EdgeV2Runner:
             "reason": reason,
             "detail": str(error),
         }
-        self._reconciliation_queue.append(record)
+        self._enqueue_reconciliation(record)
         self._reconciliation_event.set()
         try:
             await self.reconcile_once()
@@ -1003,42 +1291,73 @@ class EdgeV2Runner:
             if isinstance(attempts, list):
                 for attempt in attempts:
                     if isinstance(attempt, Mapping) and attempt.get("attempt_id"):
-                        self._recovery_queue.append(dict(attempt))
+                        self._enqueue_recovery_attempt(attempt)
         requests = response.get("reconciliation_requests")
         if isinstance(requests, list):
             for request in requests:
                 if not isinstance(request, Mapping):
                     continue
-                lookup = self.execution.reconciliation_lookup(
-                    operation_id=str(request.get("operation_id") or ""),
-                    attempt_id=str(request.get("attempt_id") or ""),
-                )
-                self._reconciliation_queue.append(lookup)
+                self._enqueue_reconciliation(request)
             self._reconciliation_event.set()
 
     async def _recover_startup(self) -> None:
-        for record in self.execution.journal.list_restart_recovery():
-            action = str(record.get("recovery_action") or "")
-            if action == RECOVERY_EXECUTE_INTENT:
-                self._recovery_queue.append(self._attempt_from_recovery(record))
-            elif action != RECOVERY_UPLOAD_RESULT:
-                self._reconciliation_queue.append(dict(record))
-        if self.execution.pending_results():
+        self._fill_recovery_queue_from_journal()
+        if self.execution.pending_results(limit=1):
             self._outbox_event.set()
-        if self._reconciliation_queue:
+        if self._reconciliation_queue or self.execution.journal.list_restart_recovery_references(
+            limit=1
+        ):
             self._reconciliation_event.set()
         await self._schedule_recovery_queue()
 
     async def _schedule_recovery_queue(self) -> None:
+        self._fill_recovery_queue_from_journal()
         attempts = len(self._recovery_queue)
         for _ in range(attempts):
             if self.active_task_count >= self.max_concurrent_tasks:
                 return
-            attempt = self._recovery_queue.popleft()
+            attempt_id, attempt = self._recovery_queue.popitem(last=False)
             outcome = await self._schedule_attempt(attempt)
             if outcome == "capacity":
-                self._recovery_queue.appendleft(attempt)
+                self._recovery_queue[attempt_id] = attempt
+                self._recovery_queue.move_to_end(attempt_id, last=False)
                 return
+
+    def _fill_recovery_queue_from_journal(self) -> int:
+        """Hydrate one bounded fair page of restart-safe intents."""
+
+        available = self.hot_queue_identity_limit - len(self._recovery_queue)
+        if available <= 0:
+            return 0
+        page_limit = max(1, min(self.outbox_batch_size, available))
+        references = self.execution.journal.list_restart_recovery_references(
+            limit=page_limit,
+            after=self._recovery_cursor,
+        )
+        if not references and self._recovery_cursor is not None:
+            self._recovery_cursor = None
+            references = self.execution.journal.list_restart_recovery_references(
+                limit=page_limit
+            )
+        added = 0
+        last_examined: Mapping[str, Any] | None = None
+        for reference in references:
+            last_examined = reference
+            record = self.execution.journal.get_restart_recovery(
+                str(reference["attempt_id"])
+            )
+            if record is None:
+                continue
+            if str(record.get("recovery_action") or "") != RECOVERY_EXECUTE_INTENT:
+                continue
+            if self._enqueue_recovery_attempt(self._attempt_from_recovery(record)):
+                added += 1
+        if last_examined is not None:
+            self._recovery_cursor = (
+                float(last_examined["updated_at"]),
+                str(last_examined["attempt_id"]),
+            )
+        return added
 
     def _attempt_from_recovery(self, record: Mapping[str, Any]) -> dict[str, Any]:
         action = _required_text(record.get("action"), "action")
@@ -1074,8 +1393,10 @@ class EdgeV2Runner:
             "required_action_capability_version": action_version,
             "requirements": dict(self.contract_metadata),
         }
-        transport_correlation = correlation.get("edge_transport")
-        if isinstance(transport_correlation, Mapping):
+        transport_correlation = edge_transport_for_attempt(
+            correlation, str(record["attempt_id"])
+        )
+        if transport_correlation:
             if transport_correlation.get("attempt_revision") not in (None, ""):
                 recovered["revision"] = transport_correlation["attempt_revision"]
             if transport_correlation.get("lease_expires_at") not in (None, ""):
@@ -1095,23 +1416,124 @@ class EdgeV2Runner:
         return recovered
 
     def _reconciliation_records(self) -> list[dict[str, Any]]:
-        records = list(self._reconciliation_queue)
-        for record in self.execution.journal.list_restart_recovery():
+        active_attempt_ids = set(self._execution_tasks)
+        records: list[dict[str, Any]] = []
+        selected: set[tuple[str, str, int]] = set()
+        if self.outbox_batch_size == 1:
+            queue_budget = 1 if self._reconciliation_queue_first else 0
+            self._reconciliation_queue_first = not self._reconciliation_queue_first
+        else:
+            queue_budget = max(1, self.outbox_batch_size // 2)
+
+        def append_queued(limit: int) -> None:
+            if limit <= 0:
+                return
+            for identity, compact in self._reconciliation_queue.items():
+                if len(records) >= limit:
+                    break
+                if identity in selected:
+                    continue
+                if str(compact.get("attempt_id") or "") in active_attempt_ids:
+                    continue
+                if self._retry_is_deferred(self._reconciliation_retry_state, identity):
+                    continue
+                records.append(self._hydrate_reconciliation_record(compact))
+                selected.add(identity)
+
+        append_queued(queue_budget)
+        remaining = self.outbox_batch_size - len(records)
+        if remaining <= 0:
+            return records
+        references = self.execution.journal.list_restart_recovery_references(
+            limit=max(remaining * 2, remaining),
+            after=self._reconciliation_cursor,
+        )
+        if not references and self._reconciliation_cursor is not None:
+            self._reconciliation_cursor = None
+            references = self.execution.journal.list_restart_recovery_references(
+                limit=max(remaining * 2, remaining)
+            )
+        last_examined: Mapping[str, Any] | None = None
+        for reference in references:
+            if len(records) >= self.outbox_batch_size:
+                break
+            last_examined = reference
+            if str(reference.get("attempt_id") or "") in active_attempt_ids:
+                continue
+            identity = _pending_reconciliation_key(reference)
+            if identity in selected or identity in self._reported_recovery:
+                continue
+            if self._retry_is_deferred(self._reconciliation_retry_state, identity):
+                continue
+            record = self._hydrate_reconciliation_record(reference)
             if str(record.get("recovery_action") or "") in {
                 RECOVERY_EXECUTE_INTENT,
                 RECOVERY_UPLOAD_RESULT,
             }:
                 continue
-            if _recovery_identity(record) not in self._reported_recovery:
-                records.append(dict(record))
-        unique: dict[tuple[str, str, str, int], dict[str, Any]] = {}
-        for record in records:
-            unique[_recovery_identity(record)] = dict(record)
-        return list(unique.values())
+            records.append(record)
+            selected.add(identity)
+        if last_examined is not None:
+            self._reconciliation_cursor = (
+                float(last_examined["updated_at"]),
+                str(last_examined["attempt_id"]),
+            )
+        append_queued(self.outbox_batch_size)
+        return records
+
+    def _enqueue_recovery_attempt(self, attempt: Mapping[str, Any]) -> bool:
+        attempt_id = str(attempt.get("attempt_id") or "").strip()
+        if not attempt_id:
+            return False
+        if attempt_id in self._recovery_queue or attempt_id in self._execution_tasks:
+            return False
+        if len(self._recovery_queue) >= self.hot_queue_identity_limit:
+            return False
+        self._recovery_queue[attempt_id] = dict(attempt)
+        return True
+
+    def _enqueue_reconciliation(self, record: Mapping[str, Any]) -> bool:
+        compact = _compact_reconciliation_record(record)
+        identity = _pending_reconciliation_key(compact)
+        if not identity[0] or not identity[1]:
+            return False
+        if identity in self._reported_recovery:
+            return False
+        existing = self._reconciliation_queue.get(identity)
+        if existing is None:
+            if len(self._reconciliation_queue) >= self.hot_queue_identity_limit:
+                return False
+            self._reconciliation_queue[identity] = compact
+            return True
+        else:
+            existing.update(compact)
+            return False
+
+    def _hydrate_reconciliation_record(
+        self, compact: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        lookup = self.execution.reconciliation_lookup(
+            operation_id=str(compact.get("operation_id") or ""),
+            attempt_id=str(compact.get("attempt_id") or ""),
+        )
+        if lookup.get("found") is False:
+            return {**dict(compact), "found": False}
+        return {**dict(compact), **dict(lookup)}
+
+    def _record_reported_recovery(
+        self, identity: tuple[str, str, int]
+    ) -> None:
+        self._reported_recovery[identity] = None
+        self._reported_recovery.move_to_end(identity)
+        while len(self._reported_recovery) > MAX_REPORTED_RECOVERY_IDENTITIES:
+            self._reported_recovery.popitem(last=False)
 
     async def _heartbeat_loop(self) -> None:
         await self._periodic_loop(
-            "heartbeat", self.heartbeat_once, self.heartbeat_interval_seconds
+            "heartbeat",
+            self.heartbeat_once,
+            self.heartbeat_interval_seconds,
+            wake_event=self._heartbeat_event,
         )
 
     async def _projection_loop(self) -> None:
@@ -1153,8 +1575,12 @@ class EdgeV2Runner:
         name: str,
         operation: Callable[[], Awaitable[Any]],
         interval: float,
+        *,
+        wake_event: asyncio.Event | None = None,
     ) -> None:
         while not self._stop_event.is_set():
+            if wake_event is not None:
+                wake_event.clear()
             started = time.monotonic()
             attempted_at = time.time()
             self.execution.journal.record_control_loop_health(
@@ -1182,16 +1608,93 @@ class EdgeV2Runner:
                 )
             remaining = max(0.0, interval - (time.monotonic() - started))
             if remaining:
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    pass
+                if wake_event is None:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(), timeout=remaining
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await _wait_for_event_or_stop(
+                        wake_event,
+                        self._stop_event,
+                        remaining,
+                    )
 
     def _record_background_error(self, source: str, error: BaseException) -> None:
-        self._background_errors.append(f"{source}: {error}")
-        logger.exception("Edge control failure in %s", source, exc_info=error)
+        category = type(error).__name__
+        status = (
+            f"http_{error.status_code}"
+            if isinstance(error, EdgeV2HttpError) and error.status_code is not None
+            else "runtime"
+        )
+        # Journal exceptions contain stable protocol reason codes, not user
+        # content.  Retaining that code makes production reconciliation faults
+        # diagnosable without exposing command output or payloads.
+        reason = str(error) if isinstance(error, EdgeJournalError) else ""
+        diagnostic = f"{source}: {category}:{status}"
+        if reason:
+            diagnostic = f"{diagnostic}:{reason}"
+        self._background_errors.append(diagnostic)
+        key = (source, category, status)
+        now = time.monotonic()
+        state = self._error_log_state.get(key)
+        if state is None:
+            state = {"last_logged_at": 0.0, "suppressed": 0}
+            self._error_log_state[key] = state
+            while len(self._error_log_state) > MAX_ERROR_LOG_KEYS:
+                self._error_log_state.popitem(last=False)
+        else:
+            self._error_log_state.move_to_end(key)
+        last_logged = float(state["last_logged_at"])
+        if not last_logged or now - last_logged >= 60.0:
+            suppressed = int(state["suppressed"])
+            if suppressed:
+                logger.warning(
+                    "Edge control failure in %s repeated %d additional times",
+                    source,
+                    suppressed,
+                )
+            logger.error(
+                "Edge control failure in %s: category=%s status=%s reason=%s",
+                source,
+                category,
+                status,
+                reason or "none",
+            )
+            state["last_logged_at"] = now
+            state["suppressed"] = 0
+        else:
+            state["suppressed"] = int(state["suppressed"]) + 1
         if len(self._background_errors) > 256:
             del self._background_errors[:-256]
+
+    @staticmethod
+    def _retry_is_deferred(
+        state: Mapping[Any, Mapping[str, float | int]], key: Any
+    ) -> bool:
+        retry = state.get(key)
+        return bool(
+            retry
+            and float(retry.get("next_retry_at") or 0.0) > time.monotonic()
+        )
+
+    def _defer_retry(
+        self,
+        state: OrderedDict[Any, dict[str, float | int]],
+        key: Any,
+    ) -> None:
+        previous = state.get(key) or {}
+        failures = int(previous.get("failures") or 0) + 1
+        delay = min(60.0, float(2 ** min(failures - 1, 6)))
+        state[key] = {
+            "failures": failures,
+            "next_retry_at": time.monotonic() + delay,
+        }
+        state.move_to_end(key)
+        while len(state) > self.hot_queue_identity_limit:
+            state.popitem(last=False)
 
     def start(self) -> asyncio.Task[None]:
         """Start the runner in the current event loop."""
@@ -1503,12 +2006,11 @@ def _attempt_fences(
     if "contract_hash" not in result and attempt.get("required_contract_hash"):
         result["contract_hash"] = attempt["required_contract_hash"]
     correlation = attempt.get("correlation")
-    transport = (
-        correlation.get("edge_transport")
-        if isinstance(correlation, Mapping)
-        else None
+    transport = edge_transport_for_attempt(
+        correlation if isinstance(correlation, Mapping) else {},
+        str(attempt.get("attempt_id") or ""),
     )
-    if isinstance(transport, Mapping) and transport.get("contract_hash"):
+    if transport.get("contract_hash"):
         result["contract_hash"] = transport["contract_hash"]
     return result
 
@@ -1534,7 +2036,9 @@ def _lease_delay(attempt: Mapping[str, Any], configured: float) -> float:
     return max(0.01, configured)
 
 
-def _recovery_identity(record: Mapping[str, Any]) -> tuple[str, str, str, int]:
+def _pending_reconciliation_key(
+    record: Mapping[str, Any],
+) -> tuple[str, str, int]:
     try:
         fencing_token = int(record.get("fencing_token") or 0)
     except (TypeError, ValueError):
@@ -1542,9 +2046,36 @@ def _recovery_identity(record: Mapping[str, Any]) -> tuple[str, str, str, int]:
     return (
         str(record.get("operation_id") or ""),
         str(record.get("attempt_id") or ""),
-        str(record.get("recovery_action") or record.get("reason") or ""),
         fencing_token,
     )
+
+
+def _compact_reconciliation_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain fences and disposition facts, never result/report object graphs."""
+
+    fields = (
+        "operation_id",
+        "attempt_id",
+        "machine_id",
+        "edge_generation",
+        "fencing_token",
+        "current_fencing_token",
+        "state",
+        "revision",
+        "expected_revision",
+        "contract_hash",
+        "required_contract_hash",
+        "recovery_action",
+        "found",
+        "effect_started",
+        "needs_reconciliation",
+        "reason",
+    )
+    return {
+        key: record[key]
+        for key in fields
+        if key in record and record[key] not in (None, "")
+    }
 
 
 async def _wait_for_event_or_stop(

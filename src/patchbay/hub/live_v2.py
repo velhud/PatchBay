@@ -1,13 +1,14 @@
 """Consequential local live evaluator for the production-shaped Hub V2 stack.
 
-The evaluator is intentionally library-only.  It composes the opt-in Hub V2
-ASGI server with two in-process Edge V2 runners, while every Edge result reaches
-the Hub through the real durable result outbox and pull-transport endpoints.
+The evaluator runs the exact Hub ASGI application behind a loopback TCP socket.
+Both manager MCP clients and both Edge runners cross that socket, while worker
+execution remains deterministic at the external Codex process boundary.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import socket
 import shutil
 import subprocess
 import tempfile
@@ -15,7 +16,7 @@ import time
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from patchbay.hub.app_v2 import HubAppV2
 from patchbay.hub.edge import build_capabilities, build_workspaces, edge_preflight
@@ -27,6 +28,7 @@ from patchbay.hub.edge_client_v2 import (
 )
 from patchbay.hub.edge_journal import EdgeJournal
 from patchbay.hub.edge_v2 import EdgeExecutionService
+from patchbay.hub.runtime_v2 import WORK_GROUP_ENTITY
 from patchbay.hub.server_v2 import create_hub_v2_server
 from patchbay.hub.transport_v2 import HubPullTransportBridgeV2
 from patchbay.hub.tool_surface import (
@@ -46,6 +48,10 @@ _MCP_METADATA = {
     "openai/session": "patchbay-live-v2-eval-conversation",
     "openai/subject": "patchbay-live-v2-eval-subject",
 }
+_TCP_REQUEST_TIMEOUT_SECONDS = 20.0
+_TCP_LIFECYCLE_TIMEOUT_SECONDS = 20.0
+_EDGE_PROGRESS_TIMEOUT_SECONDS = 45.0
+_OPERATION_PROGRESS_TIMEOUT_SECONDS = 30.0
 
 
 class LiveHubV2EvalError(RuntimeError):
@@ -166,24 +172,44 @@ class _LiveEdgeHandler:
 
 
 class _FakeNetworkTransport:
-    """In-process HTTP-shaped network used by one real Edge V2 runner."""
+    """Instrumented HTTP transport used by a real Edge V2 runner."""
 
-    def __init__(self, server: Any, *, machine_id: str):
+    def __init__(
+        self,
+        server: Any | None = None,
+        *,
+        machine_id: str,
+        base_url: str = "",
+    ):
         try:
             import httpx
         except ImportError as error:  # pragma: no cover - test extra supplies it.
             raise RuntimeError("The Hub V2 live evaluator requires the test extra (httpx)") from error
         self.machine_id = machine_id
-        self._client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=server),
-            base_url="http://patchbay-live-v2.local",
-        )
+        self._timeout_exception = httpx.TimeoutException
+        if base_url:
+            self._client = httpx.AsyncClient(
+                base_url=base_url,
+                timeout=_TCP_REQUEST_TIMEOUT_SECONDS,
+            )
+            self.transport_kind = "tcp"
+        elif server is not None:
+            self._client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=server),
+                base_url="http://patchbay-live-v2.local",
+            )
+            self.transport_kind = "asgi"
+        else:
+            raise TypeError("_FakeNetworkTransport requires server or base_url")
         self.calls: dict[str, int] = defaultdict(int)
         self.claimed_attempt_ids: list[str] = []
         self.lose_and_hold_next_result = False
         self.result_delivery_held = False
         self.lost_result_responses = 0
         self.blocked_result_retries = 0
+        self.poison_next_result = False
+        self.poison_receipt_id = ""
+        self.poison_failures = 0
 
     async def post_json(
         self,
@@ -193,14 +219,43 @@ class _FakeNetworkTransport:
         token: str = "",
         timeout_seconds: float | None = None,
     ) -> Mapping[str, Any]:
-        del timeout_seconds
+        request_timeout = timeout_seconds or _TCP_REQUEST_TIMEOUT_SECONDS
         self.calls[path] += 1
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         if self.result_delivery_held:
             self.blocked_result_retries += 1
             raise OSError("simulated Edge network outage after Hub accepted the result")
 
-        response = await self._client.post(path, json=dict(payload), headers=headers)
+        if path == DEFAULT_ENDPOINTS.result:
+            receipt_value = payload.get("receipt")
+            receipt = receipt_value if isinstance(receipt_value, Mapping) else payload
+            receipt_id = str(receipt.get("receipt_id") or "")
+            if self.poison_next_result and not self.poison_receipt_id:
+                self.poison_next_result = False
+                self.poison_receipt_id = receipt_id
+            if receipt_id and receipt_id == self.poison_receipt_id:
+                self.poison_failures += 1
+                raise OSError("simulated isolated poisoned receipt")
+
+        try:
+            response = await self._client.post(
+                path,
+                json=dict(payload),
+                headers=headers,
+                timeout=request_timeout,
+            )
+        except self._timeout_exception as error:
+            raise LiveHubV2EvalError(
+                f"Edge TCP phase '{path}' timed out for {self.machine_id} "
+                f"after {request_timeout:.1f}s"
+            ) from error
+        # A request may already be in flight when the simulated result response
+        # turns into a network outage. Drop that late response too; otherwise a
+        # concurrent heartbeat can carry the Hub's receipt acknowledgement and
+        # erase the pending-outbox state this restart scenario is meant to test.
+        if self.result_delivery_held:
+            self.blocked_result_retries += 1
+            raise OSError("simulated Edge network outage after Hub accepted the result")
         if response.status_code >= 400:
             raise EdgeV2HttpError(
                 f"Hub V2 fake-network request failed: {response.status_code} {response.text}",
@@ -229,18 +284,107 @@ class _FakeNetworkTransport:
         await self._client.aclose()
 
 
-class _McpClient:
-    """Small JSON-RPC client for the evaluator's real ASGI MCP route."""
+class _TcpHubServer:
+    """Run the exact Hub ASGI app behind a real loopback TCP socket."""
 
-    def __init__(self, server: Any):
+    def __init__(self, app: Any):
+        import uvicorn
+
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind(("127.0.0.1", 0))
+        self.socket.listen(256)
+        host, port = self.socket.getsockname()[:2]
+        self.base_url = f"http://{host}:{port}"
+        config = uvicorn.Config(
+            app,
+            host=str(host),
+            port=int(port),
+            log_level="error",
+            access_log=False,
+            lifespan="on",
+        )
+        self.server = uvicorn.Server(config)
+        self.server.install_signal_handlers = lambda: None
+        self.task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        self.task = asyncio.create_task(
+            self.server.serve(sockets=[self.socket]),
+            name="patchbay-live-v2-tcp-hub",
+        )
+        await _wait_until(
+            lambda: self.server.started or bool(self.task and self.task.done()),
+            phase="tcp_hub_startup",
+            timeout_seconds=_TCP_LIFECYCLE_TIMEOUT_SECONDS,
+            diagnostics=lambda: {
+                "server_started": self.server.started,
+                "server_task_done": bool(self.task and self.task.done()),
+            },
+        )
+        if not self.server.started:
+            assert self.task is not None
+            await self.task
+            raise LiveHubV2EvalError("Loopback Hub server exited before startup")
+
+    async def stop(self) -> None:
+        if self.task is None:
+            self.socket.close()
+            return
+        self.server.should_exit = True
+        try:
+            await asyncio.wait_for(
+                self.task,
+                timeout=_TCP_LIFECYCLE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            self.server.force_exit = True
+            try:
+                await asyncio.wait_for(self.task, timeout=5.0)
+            except TimeoutError as error:
+                raise LiveHubV2EvalError(
+                    "Live Hub V2 phase 'tcp_hub_shutdown' timed out after "
+                    f"{_TCP_LIFECYCLE_TIMEOUT_SECONDS + 5.0:.1f}s; "
+                    f"diagnostics={{'server_started': {self.server.started!r}, "
+                    f"'should_exit': {self.server.should_exit!r}, "
+                    f"'force_exit': {self.server.force_exit!r}}}"
+                ) from error
+        finally:
+            self.socket.close()
+            self.task = None
+
+
+class _McpClient:
+    """Small JSON-RPC client for either ASGI or real TCP MCP transport."""
+
+    def __init__(
+        self,
+        server: Any | None = None,
+        *,
+        base_url: str = "",
+        metadata: Mapping[str, str] | None = None,
+    ):
         import httpx
 
-        self._client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=server),
-            base_url="http://patchbay-live-v2.local",
-        )
+        self._timeout_exception = httpx.TimeoutException
+        if base_url:
+            self._client = httpx.AsyncClient(
+                base_url=base_url,
+                timeout=_TCP_REQUEST_TIMEOUT_SECONDS,
+            )
+            self.transport = "tcp"
+        elif server is not None:
+            self._client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=server),
+                base_url="http://patchbay-live-v2.local",
+            )
+            self.transport = "asgi"
+        else:
+            raise TypeError("_McpClient requires server or base_url")
         self.session_id = ""
         self.request_id = 0
+        self.metadata = dict(metadata or _MCP_METADATA)
+        self.last_text_by_tool: dict[str, str] = {}
 
     async def initialize(self) -> dict[str, Any]:
         result = await self._rpc(
@@ -249,7 +393,7 @@ class _McpClient:
                 "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {"name": "patchbay-live-hub-v2-eval", "version": "1"},
-                "_meta": dict(_MCP_METADATA),
+                "_meta": dict(self.metadata),
             },
         )
         return result
@@ -260,26 +404,46 @@ class _McpClient:
     async def call(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         result = await self._rpc(
             "tools/call",
-            {"name": name, "arguments": deepcopy(dict(arguments)), "_meta": dict(_MCP_METADATA)},
+            {"name": name, "arguments": deepcopy(dict(arguments)), "_meta": dict(self.metadata)},
         )
         structured = result.get("structuredContent")
         if not isinstance(structured, Mapping):
             raise LiveHubV2EvalError(f"{name} returned no structuredContent")
+        content = result.get("content")
+        text_items = [
+            str(item.get("text") or "")
+            for item in content or []
+            if isinstance(item, Mapping) and item.get("type") == "text"
+        ]
+        if not (
+            isinstance(content, list)
+            and any(text.strip() for text in text_items)
+        ):
+            raise LiveHubV2EvalError(f"{name} returned no inspectable text fallback")
+        self.last_text_by_tool[name] = "\n".join(text_items)
         return deepcopy(dict(structured))
 
     async def _rpc(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         self.request_id += 1
         headers = {"Mcp-Session-Id": self.session_id} if self.session_id else {}
-        response = await self._client.post(
-            "/mcp",
-            headers=headers,
-            json={
-                "jsonrpc": "2.0",
-                "id": self.request_id,
-                "method": method,
-                "params": dict(params),
-            },
-        )
+        try:
+            response = await self._client.post(
+                "/mcp",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self.request_id,
+                    "method": method,
+                    "params": dict(params),
+                },
+            )
+        except self._timeout_exception as error:
+            raise LiveHubV2EvalError(
+                f"Live Hub V2 TCP phase 'mcp_{method}' timed out after "
+                f"{_TCP_REQUEST_TIMEOUT_SECONDS:.1f}s; "
+                f"diagnostics={{'request_id': {self.request_id}, "
+                f"'session_established': {bool(self.session_id)!r}}}"
+            ) from error
         if not self.session_id:
             self.session_id = str(response.headers.get("Mcp-Session-Id") or "")
         if response.status_code >= 400:
@@ -306,7 +470,8 @@ class _EdgeStack:
         config: dict[str, Any],
         profile: EdgeV2Profile,
         journal_path: Path,
-        server: Any,
+        server: Any | None = None,
+        base_url: str = "",
     ):
         self.name = name
         self.machine_id = machine_id
@@ -323,20 +488,24 @@ class _EdgeStack:
             machine_id=machine_id,
             capabilities=build_capabilities(config),
         )
-        self.transport = _FakeNetworkTransport(server, machine_id=machine_id)
+        self.transport = _FakeNetworkTransport(
+            server,
+            machine_id=machine_id,
+            base_url=base_url,
+        )
         self.profile = profile
         self.runner = EdgeV2Runner(
             self.execution,
             config=config,
             profile=profile,
             transport=self.transport,
-            heartbeat_interval_seconds=0.05,
+            heartbeat_interval_seconds=0.5,
             claim_interval_seconds=0.01,
             result_retry_seconds=0.01,
             reconciliation_interval_seconds=0.05,
             lease_renewal_seconds=0.05,
-            shutdown_timeout_seconds=2.0,
-            request_timeout_seconds=2.0,
+            shutdown_timeout_seconds=10.0,
+            request_timeout_seconds=10.0,
             max_concurrent_tasks=4,
             outbox_batch_size=32,
         )
@@ -347,7 +516,7 @@ class _EdgeStack:
         self.run_task = self.runner.start()
 
     async def stop(self) -> None:
-        await self.runner.shutdown(timeout_seconds=2.0)
+        await self.runner.shutdown(timeout_seconds=10.0)
         if self.run_task is not None:
             await asyncio.gather(self.run_task, return_exceptions=True)
         if not self.journal.closed:
@@ -450,14 +619,19 @@ def _create_hub(state_path: Path) -> tuple[HubAppV2, HubPullTransportBridgeV2, A
 
 async def _enroll_edge(
     app: HubAppV2,
-    server: Any,
+    server: Any | None = None,
     *,
+    base_url: str = "",
     config: dict[str, Any],
     machine_id: str,
     edge_generation: str,
     display_name: str,
 ) -> EdgeV2Profile:
-    transport = _FakeNetworkTransport(server, machine_id=machine_id)
+    transport = _FakeNetworkTransport(
+        server,
+        machine_id=machine_id,
+        base_url=base_url,
+    )
     try:
         code = app.runtime.create_enrollment_code(name=display_name, tags=["live-v2"])["code"]
         enrolled = await transport.post_json(
@@ -475,7 +649,7 @@ async def _enroll_edge(
     finally:
         await transport.close()
     return EdgeV2Profile(
-        hub_url="http://patchbay-live-v2.local",
+        hub_url=base_url or "http://patchbay-live-v2.local",
         machine_id=machine_id,
         node_token=str(enrolled["node_token"]),
         edge_generation=str(enrolled["edge_generation"]),
@@ -484,14 +658,29 @@ async def _enroll_edge(
     )
 
 
-async def _wait_until(predicate: Any, *, timeout_seconds: float = 30.0) -> None:
+async def _wait_until(
+    predicate: Callable[[], Any],
+    *,
+    phase: str,
+    timeout_seconds: float,
+    diagnostics: Callable[[], Any] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         value = predicate()
         if value:
             return
         await asyncio.sleep(0.01)
-    raise TimeoutError("Timed out waiting for live Hub V2 state")
+    observed: Any = None
+    if diagnostics is not None:
+        try:
+            observed = diagnostics()
+        except Exception as error:  # pragma: no cover - diagnostics must not hide the phase timeout.
+            observed = {"diagnostics_error": f"{type(error).__name__}: {error}"}
+    raise TimeoutError(
+        f"Live Hub V2 phase '{phase}' timed out after {timeout_seconds:.1f}s; "
+        f"diagnostics={observed!r}"
+    )
 
 
 def _check(
@@ -510,6 +699,21 @@ def _check(
 
 def _workers(app: HubAppV2, group_id: str) -> list[dict[str, Any]]:
     return app.runtime._workers_for_group(group_id)
+
+
+def _worker_progress(app: HubAppV2, group_id: str) -> dict[str, Any]:
+    return {
+        "work_group_id": group_id,
+        "workers": [
+            {
+                "name": worker.get("name"),
+                "turn_count": worker.get("turn_count"),
+                "turn_state": worker.get("turn_state"),
+                "integration_state": worker.get("integration_state"),
+            }
+            for worker in _workers(app, group_id)
+        ],
+    }
 
 
 def _dispositions(workers: list[Mapping[str, Any]]) -> list[dict[str, str]]:
@@ -543,10 +747,13 @@ async def run_live_hub_v2_eval(
         "result_posts_are_edge_generated": True,
     }
     app: HubAppV2 | None = None
+    tcp_server: _TcpHubServer | None = None
     mcp: _McpClient | None = None
+    second_mcp: _McpClient | None = None
     edges: list[_EdgeStack] = []
     restarted_edges: list[_EdgeStack] = []
     restarted_app: HubAppV2 | None = None
+    restarted_tcp_server: _TcpHubServer | None = None
     restarted_mcp: _McpClient | None = None
 
     try:
@@ -559,6 +766,8 @@ async def run_live_hub_v2_eval(
         beta_journal = work_root / "beta-edge" / "edge-journal.sqlite3"
 
         app, delivery, server = _create_hub(state_path)
+        tcp_server = _TcpHubServer(server)
+        await tcp_server.start()
         _check(
             report,
             "server_started",
@@ -567,7 +776,7 @@ async def run_live_hub_v2_eval(
 
         alpha_profile = await _enroll_edge(
             app,
-            server,
+            base_url=tcp_server.base_url,
             config=alpha_config,
             machine_id="machine_alpha",
             edge_generation="edgegen_alpha_live",
@@ -575,7 +784,7 @@ async def run_live_hub_v2_eval(
         )
         beta_profile = await _enroll_edge(
             app,
-            server,
+            base_url=tcp_server.base_url,
             config=beta_config,
             machine_id="machine_beta",
             edge_generation="edgegen_beta_live",
@@ -589,7 +798,7 @@ async def run_live_hub_v2_eval(
                 config=alpha_config,
                 profile=alpha_profile,
                 journal_path=alpha_journal,
-                server=server,
+                base_url=tcp_server.base_url,
             ),
             _EdgeStack(
                 name="beta",
@@ -598,29 +807,42 @@ async def run_live_hub_v2_eval(
                 config=beta_config,
                 profile=beta_profile,
                 journal_path=beta_journal,
-                server=server,
+                base_url=tcp_server.base_url,
             ),
         ]
         for edge in edges:
             await edge.start()
         await _wait_until(
-            lambda: app.runtime.fleet_status(include_workspaces=True)["result"]["counts"]["online"] == 2
+            lambda: app.runtime.fleet_status(include_workspaces=True)["result"]["counts"]["online"] == 2,
+            phase="edge_fleet_online",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: app.runtime.fleet_status(include_workspaces=True)["result"],
         )
         _check(
             report,
             "two_real_edges_online",
             all(isinstance(edge.execution, EdgeExecutionService) for edge in edges)
-            and all(isinstance(edge.tool_handler, ToolHandler) for edge in edges),
-            {"machines": [edge.machine_id for edge in edges]},
+            and all(isinstance(edge.tool_handler, ToolHandler) for edge in edges)
+            and all(edge.transport.transport_kind == "tcp" for edge in edges),
+            {
+                "machines": [edge.machine_id for edge in edges],
+                "transports": [edge.transport.transport_kind for edge in edges],
+            },
         )
 
-        mcp = _McpClient(server)
+        mcp = _McpClient(base_url=tcp_server.base_url)
         initialized = await mcp.initialize()
         _check(
             report,
             "mcp_initialize",
             initialized["serverInfo"]["name"] == "patchbay-hub"
             and bool(initialized.get("instructions")),
+        )
+        _check(
+            report,
+            "mcp_real_tcp_boundary",
+            mcp.transport == "tcp" and tcp_server.server.started,
+            {"transport": mcp.transport},
         )
         tools = await mcp.list_tools()
         tool_names = tuple(tool["name"] for tool in tools)
@@ -633,6 +855,12 @@ async def run_live_hub_v2_eval(
             and len(tool_names) == HUB_V2_EXPECTED_TOOL_COUNT == 31,
         )
 
+        fleet = await mcp.call("patchbay_fleet_status", {"include_workspaces": True})
+        groups_before = await mcp.call("patchbay_work_group_list", {"scope": "owned"})
+        options = await mcp.call(
+            "patchbay_worker_options",
+            {"machine_id": "machine_alpha", "max_models": 6},
+        )
         workspaces = await mcp.call("patchbay_workspace_list", {"query": "live-repo"})
         workspace_items = list(workspaces["result"].get("workspaces") or [])
         _check(
@@ -642,21 +870,45 @@ async def run_live_hub_v2_eval(
             and len(workspace_items) == 1
             and len(workspace_items[0].get("projections") or []) == 2,
         )
-
-        created = await mcp.call(
-            "patchbay_work_group_create",
+        startup_text = "\n".join(
+            mcp.last_text_by_tool[name]
+            for name in (
+                "patchbay_fleet_status",
+                "patchbay_workspace_list",
+                "patchbay_work_group_list",
+                "patchbay_worker_options",
+            )
+        )
+        _check(
+            report,
+            "startup_fallbacks_are_identifier_rich",
+            fleet["status"] == "ok"
+            and groups_before["status"] == "ok"
+            and options["status"] == "ok"
+            and "machine_alpha" in startup_text
+            and "machine_beta" in startup_text
+            and "live-repo" in startup_text,
             {
-                "title": "Live V2 evaluator",
-                "goal": "Exercise real pull-routed worker and integration behavior.",
-                "execution_mode": "end_to_end",
-                "definition_of_done": "Workers finish, accepted changes integrate, state survives restart, and the group closes.",
-                "repo_path": "live-repo",
-                "lanes": [
-                    {"lane": "research", "title": "Research", "role": "Inspect"},
-                    {"lane": "writing", "title": "Writing", "role": "Implement"},
-                ],
-                "idempotency_key": "live-v2-group-create",
+                "contains_machine_alpha": "machine_alpha" in startup_text,
+                "contains_machine_beta": "machine_beta" in startup_text,
+                "contains_workspace": "live-repo" in startup_text,
             },
+        )
+
+        group_create_arguments = {
+            "title": "Live V2 evaluator",
+            "goal": "Exercise real pull-routed worker and integration behavior.",
+            "execution_mode": "end_to_end",
+            "definition_of_done": "Workers finish, accepted changes integrate, state survives restart, and the group closes.",
+            "repo_path": "live-repo",
+            "lanes": [
+                {"lane": "research", "title": "Research", "role": "Inspect"},
+                {"lane": "writing", "title": "Writing", "role": "Implement"},
+            ],
+            "idempotency_key": "live-v2-group-create",
+        }
+        created = await mcp.call(
+            "patchbay_work_group_create", group_create_arguments
         )
         group = dict(created["result"]["work_group"])
         initial_contract = dict(created["result"]["completion_contract"])
@@ -670,11 +922,42 @@ async def run_live_hub_v2_eval(
                 work_group_id=group_id,
                 context=None,
             )["result"]["readiness"]["status"]
-            == "ready"
+            == "ready",
+            phase="primary_group_preflight",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: app.runtime.work_group_status(
+                work_group_id=group_id,
+                context=None,
+            )["result"].get("readiness"),
         )
         ready_group = await mcp.call(
             "patchbay_work_group_status",
             {"work_group_id": group_id},
+        )
+        preflight_effects_before_replay = pinned_edge.handler.calls.count(
+            "codex_open_workspace"
+        )
+        replayed_group = await mcp.call(
+            "patchbay_work_group_create", group_create_arguments
+        )
+        _check(
+            report,
+            "group_create_exact_replay_is_one_task_object",
+            replayed_group["result"]["work_group"]["work_group_id"] == group_id
+            and len(app.store.list_entities(WORK_GROUP_ENTITY)) == 1
+            and pinned_edge.handler.calls.count("codex_open_workspace")
+            == preflight_effects_before_replay,
+            {
+                "original_group_id": group_id,
+                "replayed_group_id": replayed_group["result"]["work_group"][
+                    "work_group_id"
+                ],
+                "group_count": len(app.store.list_entities(WORK_GROUP_ENTITY)),
+                "preflight_effects_before": preflight_effects_before_replay,
+                "preflight_effects_after": pinned_edge.handler.calls.count(
+                    "codex_open_workspace"
+                ),
+            },
         )
         _check(
             report,
@@ -703,6 +986,53 @@ async def run_live_hub_v2_eval(
             {"completion_contract": initial_contract},
         )
 
+        second_mcp = _McpClient(
+            base_url=tcp_server.base_url,
+            metadata={
+                "openai/session": "patchbay-live-v2-second-conversation",
+                "openai/subject": "patchbay-live-v2-second-subject",
+            },
+        )
+        await second_mcp.initialize()
+        second_created = await second_mcp.call(
+            "patchbay_work_group_create",
+            {
+                "title": "Independent live V2 conversation",
+                "goal": "Prove that a second manager task remains isolated.",
+                "execution_mode": "end_to_end",
+                "definition_of_done": "One independent worker reports without leaking into the first group.",
+                "repo_path": "live-repo",
+                "machine_id": other_edge.machine_id,
+                "lanes": [{"lane": "independent", "title": "Independent", "role": "Inspect"}],
+                "idempotency_key": "live-v2-second-group-create",
+            },
+        )
+        second_group_id = str(second_created["result"]["work_group"]["work_group_id"])
+        await _wait_until(
+            lambda: app.runtime.work_group_status(
+                work_group_id=second_group_id,
+                context=None,
+            )["result"]["readiness"]["status"]
+            == "ready",
+            phase="second_group_preflight",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: app.runtime.work_group_status(
+                work_group_id=second_group_id,
+                context=None,
+            )["result"].get("readiness"),
+        )
+        second_started = await second_mcp.call(
+            "patchbay_worker_start",
+            {
+                "work_group_id": second_group_id,
+                "lane": "independent",
+                "name": "Independent Reader",
+                "brief": "Inspect only this group's disposable repository and return one report.",
+                "workspace_mode": "read_only",
+                "idempotency_key": "live-v2-second-reader-start",
+            },
+        )
+
         started = await mcp.call(
             "patchbay_worker_start_batch",
             {
@@ -727,9 +1057,66 @@ async def run_live_hub_v2_eval(
                 "idempotency_key": "live-v2-batch-start",
             },
         )
+        batch_operation_id = str(started.get("operation", {}).get("operation_id") or "")
+        batch_initial_status = await mcp.call(
+            "patchbay_operation_status",
+            {"operation_id": batch_operation_id, "include_result": True},
+        )
         await _wait_until(
             lambda: len(_workers(app, group_id)) == 2
-            and all(worker.get("turn_state") == "completed" for worker in _workers(app, group_id))
+            and all(worker.get("turn_state") == "completed" for worker in _workers(app, group_id)),
+            phase="primary_batch_completion",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: {
+                **_worker_progress(app, group_id),
+                "batch_operation": app.store.get_operation(batch_operation_id),
+                "edge_runner_errors": {
+                    edge.machine_id: list(edge.runner.background_errors)[-8:]
+                    for edge in edges
+                },
+            },
+        )
+        await _wait_until(
+            lambda: len(_workers(app, second_group_id)) == 1
+            and _workers(app, second_group_id)[0].get("turn_state") == "completed",
+            phase="second_manager_worker_completion",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: _worker_progress(app, second_group_id),
+        )
+        batch_terminal_status = await mcp.call(
+            "patchbay_operation_status",
+            {"operation_id": batch_operation_id, "include_result": True},
+        )
+        first_group_names = {worker["name"] for worker in _workers(app, group_id)}
+        second_group_names = {worker["name"] for worker in _workers(app, second_group_id)}
+        _check(
+            report,
+            "concurrent_manager_groups_do_not_cross_contaminate",
+            second_started["status"] in {"ok", "pending"}
+            and first_group_names == {"Reader", "Writer"}
+            and second_group_names == {"Independent Reader"}
+            and other_edge.transport.claimed_attempt_ids,
+            {
+                "first_group_workers": sorted(first_group_names),
+                "second_group_workers": sorted(second_group_names),
+                "second_group_machine": other_edge.machine_id,
+            },
+        )
+        second_closed = await second_mcp.call(
+            "patchbay_work_group_close",
+            {
+                "work_group_id": second_group_id,
+                "outcome": "complete",
+                "summary": "The independent read-only worker completed without group leakage.",
+                "worker_dispositions": _dispositions(_workers(app, second_group_id)),
+                "idempotency_key": "live-v2-second-group-close",
+            },
+        )
+        _check(
+            report,
+            "second_manager_group_closes_independently",
+            second_closed["status"] == "ok"
+            and second_closed["result"]["work_group"]["status"] == "closed",
         )
         waited = await mcp.call(
             "patchbay_worker_wait",
@@ -745,6 +1132,26 @@ async def run_live_hub_v2_eval(
         )
         _check(
             report,
+            "batch_parent_is_truthful_aggregate_work",
+            batch_terminal_status["status"] == "ok"
+            and batch_terminal_status.get("operation", {}).get("state") == "succeeded"
+            and batch_terminal_status["result"].get("dispatch", {}).get("state")
+            == "complete"
+            and batch_terminal_status["result"].get("outcome", {}).get("terminal")
+            is True
+            and batch_terminal_status["result"].get("safe_next_action")
+            == "use_domain_result",
+            {
+                "initial_parent_state": batch_initial_status.get("operation", {}).get("state"),
+                "initial_dispatch": batch_initial_status.get("result", {}).get("dispatch", {}),
+                "terminal_parent_state": batch_terminal_status.get("operation", {}).get("state"),
+                "terminal_dispatch": batch_terminal_status.get("result", {}).get("dispatch", {}),
+                "terminal_outcome": batch_terminal_status.get("result", {}).get("outcome", {}),
+                "safe_next_action": batch_terminal_status.get("result", {}).get("safe_next_action"),
+            },
+        )
+        _check(
+            report,
             "completed_workers_still_require_integration_and_closure",
             waited["result"]["completion_contract"].get("manager_must_continue") is True
             and waited["result"]["completion_contract"].get("final_response_allowed") is False,
@@ -755,6 +1162,8 @@ async def run_live_hub_v2_eval(
             entity["record"]
             for entity in app.store.list_entities(_EDGE_DISPATCH_ENTITY)
             if entity["record"].get("action") in {"patchbay_edge_preflight", "codex_worker_start"}
+            and str(entity["record"].get("payload", {}).get("work_group_id") or "")
+            == group_id
         ]
         _check(
             report,
@@ -763,11 +1172,14 @@ async def run_live_hub_v2_eval(
                 str(record.get("payload", {}).get("machine_id") or "") == pinned_machine
                 for record in dispatches
             )
-            and not other_edge.transport.claimed_attempt_ids,
+            and all(
+                str(worker.get("machine_id") or "") == pinned_machine
+                for worker in _workers(app, group_id)
+            ),
             {
                 "pinned_machine_id": pinned_machine,
                 "other_machine_id": other_edge.machine_id,
-                "other_edge_claimed_attempts": len(other_edge.transport.claimed_attempt_ids),
+                "group_dispatch_count": len(dispatches),
             },
         )
 
@@ -819,7 +1231,10 @@ async def run_live_hub_v2_eval(
             and next(worker for worker in _workers(app, group_id) if worker["name"] == "Reader").get(
                 "turn_state"
             )
-            == "completed"
+            == "completed",
+            phase="reader_follow_up_completion",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: _worker_progress(app, group_id),
         )
         reader_jobs = [
             job
@@ -835,18 +1250,101 @@ async def run_live_hub_v2_eval(
             and reader_jobs[-1].mode == "resume",
         )
 
+        pinned_edge.transport.poison_next_result = True
+        fairness_batch = await mcp.call(
+            "patchbay_worker_start_batch",
+            {
+                "work_group_id": group_id,
+                "shared_brief": "Return a bounded fairness checkpoint without changing files.",
+                "workers": [
+                    {
+                        "item_id": f"fairness-{index}",
+                        "idempotency_key": f"live-v2-fairness-{index}",
+                        "name": f"Fairness {index}",
+                        "lane": "research",
+                        "mission": "Return the deterministic checkpoint.",
+                    }
+                    for index in range(1, 4)
+                ],
+                "idempotency_key": "live-v2-fairness-batch",
+            },
+        )
+        await _wait_until(
+            lambda: bool(pinned_edge.transport.poison_receipt_id)
+            and len(_workers(app, group_id)) == 5
+            and sum(
+                worker.get("turn_state") == "completed"
+                for worker in _workers(app, group_id)
+                if str(worker.get("name") or "").startswith("Fairness ")
+            )
+            >= 2,
+            phase="poisoned_receipt_fairness",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: {
+                **_worker_progress(app, group_id),
+                "poison_receipt_id": pinned_edge.transport.poison_receipt_id,
+                "poison_failures": pinned_edge.transport.poison_failures,
+                "pending_receipts": len(pinned_edge.journal.list_pending_outbox()),
+                "runner_errors": list(pinned_edge.runner.background_errors)[-8:],
+            },
+        )
+        pending_during_poison = pinned_edge.journal.list_pending_outbox()
+        _check(
+            report,
+            "poisoned_receipt_does_not_starve_newer_results",
+            fairness_batch["status"] in {"ok", "pending"}
+            and pinned_edge.transport.poison_failures >= 1
+            and len(pending_during_poison) == 1,
+            {
+                "poison_failures": pinned_edge.transport.poison_failures,
+                "pending_receipts": len(pending_during_poison),
+                "later_workers_completed": 2,
+            },
+        )
+        poisoned_receipt_id = pinned_edge.transport.poison_receipt_id
+        pinned_edge.transport.poison_receipt_id = ""
+        retry_state = pinned_edge.runner._outbox_retry_state.get(poisoned_receipt_id)
+        if retry_state is not None:
+            retry_state["next_retry_at"] = 0.0
+        pinned_edge.runner._outbox_event.set()
+        await _wait_until(
+            lambda: all(
+                worker.get("turn_state") == "completed"
+                for worker in _workers(app, group_id)
+            )
+            and not pinned_edge.journal.list_pending_outbox(),
+            phase="poisoned_receipt_recovery",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: {
+                **_worker_progress(app, group_id),
+                "pending_receipts": len(pinned_edge.journal.list_pending_outbox()),
+                "runner_errors": list(pinned_edge.runner.background_errors)[-8:],
+            },
+        )
+        _check(
+            report,
+            "poisoned_receipt_recovers_without_duplicate_execution",
+            len(_workers(app, group_id)) == 5
+            and len(pinned_edge.executor.effects) == 6,
+            {
+                "workers": len(_workers(app, group_id)),
+                "effects": len(pinned_edge.executor.effects),
+            },
+        )
+
         writer_job = next(
             job
             for job in pinned_edge.manager.jobs.values()
             if str((job.options or {}).get("_worker_name") or "") == "Writer"
         )
         writer_worktree = Path(str(writer_job.worktree_path))
+        base_repo = alpha_repo if pinned_machine == "machine_alpha" else beta_repo
         _check(
             report,
             "isolated_worktree_write",
-            writer_worktree != alpha_repo
+            writer_worktree != base_repo
             and (writer_worktree / _WORKER_FILE).is_file()
-            and not (alpha_repo / _WORKER_FILE).exists(),
+            and not (base_repo / _WORKER_FILE).exists(),
         )
 
         preview = await mcp.call(
@@ -869,14 +1367,69 @@ async def run_live_hub_v2_eval(
             },
         )
 
-        base_repo = alpha_repo if pinned_machine == "machine_alpha" else beta_repo
+        base_refresh_file = base_repo / "live-v2-base-refresh.txt"
+        base_refresh_file.write_text("invalidate the first signed preview\n", encoding="utf-8")
+        _git(base_repo, "add", base_refresh_file.name)
+        _git(
+            base_repo,
+            "-c",
+            "user.name=PatchBay Live Eval",
+            "-c",
+            "user.email=live-v2@example.invalid",
+            "commit",
+            "-m",
+            "invalidate initial integration preview",
+        )
+        stale_integrated = await mcp.call(
+            "patchbay_worker_integrate",
+            {
+                "work_group_id": group_id,
+                "worker": "Writer",
+                "preview_token": preview_token,
+                "idempotency_key": "live-v2-writer-integrate-stale",
+            },
+        )
+        stale_operation_id = str(stale_integrated["operation"]["operation_id"])
+        await _wait_until(
+            lambda: str(
+                (app.store.get_operation(stale_operation_id) or {}).get("state") or ""
+            )
+            in _TERMINAL_OPERATIONS,
+            phase="stale_preview_operation_terminal",
+            timeout_seconds=_OPERATION_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: app.store.get_operation(stale_operation_id),
+        )
+        stale_outcome = await mcp.call(
+            "patchbay_operation_status",
+            {"operation_id": stale_operation_id, "include_result": True},
+        )
+        stale_domain = stale_outcome["result"].get("domain_result") or {}
+        fresh_preview = stale_domain.get("fresh_preview") or {}
+        fresh_preview_token = str(fresh_preview.get("preview_token") or "")
+        _check(
+            report,
+            "stale_preview_returns_replacement_token",
+            stale_outcome["status"] == "blocked"
+            and stale_domain.get("reason") == "stale_preview_token"
+            and stale_domain.get("recommended_next_action")
+            == "review_fresh_integration_preview"
+            and fresh_preview.get("can_apply") is True
+            and fresh_preview_token.startswith("pit2."),
+            {
+                "status": stale_outcome.get("status"),
+                "reason": stale_domain.get("reason"),
+                "recommended_next_action": stale_domain.get("recommended_next_action"),
+                "has_replacement_token": bool(fresh_preview_token),
+            },
+        )
+
         base_head_before = _git(base_repo, "rev-parse", "HEAD")
         integrated = await mcp.call(
             "patchbay_worker_integrate",
             {
                 "work_group_id": group_id,
                 "worker": "Writer",
-                "preview_token": preview_token,
+                "preview_token": fresh_preview_token,
                 "idempotency_key": "live-v2-writer-integrate",
             },
         )
@@ -886,7 +1439,10 @@ async def run_live_hub_v2_eval(
                 (app.store.get_operation(integration_operation_id) or {}).get("state")
                 or ""
             )
-            in _TERMINAL_OPERATIONS
+            in _TERMINAL_OPERATIONS,
+            phase="integration_operation_terminal",
+            timeout_seconds=_OPERATION_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: app.store.get_operation(integration_operation_id),
         )
         integration_outcome = await mcp.call(
             "patchbay_operation_status",
@@ -936,7 +1492,10 @@ async def run_live_hub_v2_eval(
             lambda: next(worker for worker in _workers(app, group_id) if worker["name"] == "Writer").get(
                 "integration_state"
             )
-            == "applied_to_checkout"
+            == "applied_to_checkout",
+            phase="integration_projection",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: _worker_progress(app, group_id),
         )
         pinned_edge.transport.lose_and_hold_next_result = True
         jobs_before_lost_result = len(pinned_edge.manager.jobs)
@@ -952,7 +1511,14 @@ async def run_live_hub_v2_eval(
         )
         await _wait_until(
             lambda: pinned_edge.transport.lost_result_responses == 1
-            and bool(pinned_edge.journal.list_pending_outbox())
+            and bool(pinned_edge.journal.list_pending_outbox()),
+            phase="lost_result_receipt_persisted",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: {
+                "lost_result_responses": pinned_edge.transport.lost_result_responses,
+                "pending_receipts": len(pinned_edge.journal.list_pending_outbox()),
+                "runner_errors": list(pinned_edge.runner.background_errors)[-8:],
+            },
         )
         await _wait_until(
             lambda: len(
@@ -970,7 +1536,14 @@ async def run_live_hub_v2_eval(
                 if str((job.options or {}).get("_worker_id") or "")
                 == reader_before["edge_worker_id"]
             ][-1].state
-            == JobState.COMPLETED
+            == JobState.COMPLETED,
+            phase="lost_result_worker_execution",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: {
+                **_worker_progress(app, group_id),
+                "job_states": [job.state.value for job in pinned_edge.manager.jobs.values()],
+                "pending_receipts": len(pinned_edge.journal.list_pending_outbox()),
+            },
         )
         pending_receipts_before_restart = [
             receipt["receipt_id"] for receipt in pinned_edge.journal.list_pending_outbox()
@@ -997,20 +1570,32 @@ async def run_live_hub_v2_eval(
             },
         )
 
-        final_workers = _workers(app, group_id)
-
         worker_job_count_before_restart = len(pinned_edge.manager.jobs)
+        reader_jobs_before_restart = [
+            job
+            for job in pinned_edge.manager.jobs.values()
+            if str((job.options or {}).get("_worker_id") or "")
+            == reader_before["edge_worker_id"]
+        ]
+        reader_session_before_restart = str(reader_jobs_before_restart[-1].session_id or "")
+        reader_workspace_before_restart = str(reader_jobs_before_restart[-1].worktree_path or "")
         initial_effect_count = sum(len(edge.executor.effects) for edge in edges)
         profiles = {edge.machine_id: edge.profile for edge in edges}
         for edge in edges:
             await edge.stop()
         edges = []
+        await second_mcp.close()
+        second_mcp = None
         await mcp.close()
         mcp = None
+        await tcp_server.stop()
+        tcp_server = None
         app.close()
         app = None
 
         restarted_app, _, restarted_server = _create_hub(state_path)
+        restarted_tcp_server = _TcpHubServer(restarted_server)
+        await restarted_tcp_server.start()
         restarted_edges = [
             _EdgeStack(
                 name="alpha-restarted",
@@ -1019,7 +1604,7 @@ async def run_live_hub_v2_eval(
                 config=alpha_config,
                 profile=profiles["machine_alpha"],
                 journal_path=alpha_journal,
-                server=restarted_server,
+                base_url=restarted_tcp_server.base_url,
             ),
             _EdgeStack(
                 name="beta-restarted",
@@ -1028,7 +1613,7 @@ async def run_live_hub_v2_eval(
                 config=beta_config,
                 profile=profiles["machine_beta"],
                 journal_path=beta_journal,
-                server=restarted_server,
+                base_url=restarted_tcp_server.base_url,
             ),
         ]
         restarted_pinned = next(edge for edge in restarted_edges if edge.machine_id == pinned_machine)
@@ -1053,15 +1638,74 @@ async def run_live_hub_v2_eval(
             },
         )
 
-        restarted_mcp = _McpClient(restarted_server)
+        restarted_mcp = _McpClient(base_url=restarted_tcp_server.base_url)
         await restarted_mcp.initialize()
+        for edge in restarted_edges:
+            await edge.start()
+        restart_message = await restarted_mcp.call(
+            "patchbay_worker_message",
+            {
+                "work_group_id": group_id,
+                "fleet_worker_ref": reader_before["fleet_worker_ref"],
+                "message": "Confirm the same durable session and workspace after Hub and Edge restart.",
+                "idempotency_key": "live-v2-reader-post-restart-message",
+            },
+        )
+        await _wait_until(
+            lambda: next(
+                worker
+                for worker in _workers(restarted_app, group_id)
+                if worker["name"] == "Reader"
+            ).get("turn_count")
+            == 4
+            and next(
+                worker
+                for worker in _workers(restarted_app, group_id)
+                if worker["name"] == "Reader"
+            ).get("turn_state")
+            == "completed",
+            phase="post_restart_same_worker_follow_up",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: _worker_progress(restarted_app, group_id),
+        )
+        reader_jobs_after_restart = [
+            job
+            for job in restarted_pinned.manager.jobs.values()
+            if str((job.options or {}).get("_worker_id") or "")
+            == reader_before["edge_worker_id"]
+        ]
+        _check(
+            report,
+            "same_worker_continues_after_hub_edge_restart",
+            restart_message["status"] in {"ok", "pending"}
+            and len(reader_jobs_after_restart) == len(reader_jobs_before_restart) + 1
+            and reader_jobs_after_restart[-1].mode == "resume"
+            and str(reader_jobs_after_restart[-1].session_id or "")
+            == reader_session_before_restart
+            and str(reader_jobs_after_restart[-1].worktree_path or "")
+            == reader_workspace_before_restart
+            and sum(len(edge.executor.effects) for edge in restarted_edges) == 1,
+            {
+                "jobs_before": len(reader_jobs_before_restart),
+                "jobs_after": len(reader_jobs_after_restart),
+                "mode": str(reader_jobs_after_restart[-1].mode),
+                "session_preserved": str(reader_jobs_after_restart[-1].session_id or "")
+                == reader_session_before_restart,
+                "workspace_preserved": str(reader_jobs_after_restart[-1].worktree_path or "")
+                == reader_workspace_before_restart,
+                "authorized_followup_effects": sum(
+                    len(edge.executor.effects) for edge in restarted_edges
+                ),
+            },
+        )
+        post_restart_workers = _workers(restarted_app, group_id)
         closed = await restarted_mcp.call(
             "patchbay_work_group_close",
             {
                 "work_group_id": group_id,
                 "outcome": "complete",
                 "summary": "Two workers completed, the accepted patch was integrated without commit.",
-                "worker_dispositions": _dispositions(final_workers),
+                "worker_dispositions": _dispositions(post_restart_workers),
                 "idempotency_key": "live-v2-group-close",
             },
         )
@@ -1093,7 +1737,7 @@ async def run_live_hub_v2_eval(
             historical_group["status"] == "closed"
             and historical_group["pinned_machine_id"] == pinned_machine
             and {worker["name"] for worker in history_workers["result"]["workers"]}
-            == {"Reader", "Writer"}
+            == {"Reader", "Writer", "Fairness 1", "Fairness 2", "Fairness 3"}
             and (base_repo / _WORKER_FILE).is_file(),
         )
 
@@ -1107,9 +1751,9 @@ async def run_live_hub_v2_eval(
                     "pinned_edge_generation": pinned_generation,
                 },
                 "workers": {
-                    "count": 2,
-                    "names": ["Reader", "Writer"],
-                    "same_worker_turns": 3,
+                    "count": 5,
+                    "names": ["Reader", "Writer", "Fairness 1", "Fairness 2", "Fairness 3"],
+                    "same_worker_turns": 4,
                 },
                 "integration": {
                     "base_changed": True,
@@ -1120,6 +1764,7 @@ async def run_live_hub_v2_eval(
                 "failure_scenarios": {
                     "machine_pin": "passed",
                     "lost_result_response": "passed",
+                    "poisoned_receipt_fairness": "passed",
                     "pending_receipts_before_restart": len(pending_receipts_before_restart),
                     "new_effects_after_restart": 0,
                 },
@@ -1127,6 +1772,9 @@ async def run_live_hub_v2_eval(
                     "hub_history_restored": True,
                     "edge_history_restored": True,
                     "initial_executor_effects": initial_effect_count,
+                    "same_worker_session_preserved": True,
+                    "same_worker_workspace_preserved": True,
+                    "authorized_followup_effects": 1,
                 },
             }
         )
@@ -1135,6 +1783,8 @@ async def run_live_hub_v2_eval(
     finally:
         if restarted_mcp is not None:
             await restarted_mcp.close()
+        if restarted_tcp_server is not None:
+            await restarted_tcp_server.stop()
         for edge in restarted_edges:
             try:
                 await edge.stop()
@@ -1144,6 +1794,10 @@ async def run_live_hub_v2_eval(
             restarted_app.close()
         if mcp is not None:
             await mcp.close()
+        if second_mcp is not None:
+            await second_mcp.close()
+        if tcp_server is not None:
+            await tcp_server.stop()
         for edge in edges:
             try:
                 await edge.stop()

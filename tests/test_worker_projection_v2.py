@@ -1,4 +1,6 @@
+import asyncio
 import subprocess
+import threading
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -77,6 +79,9 @@ class ProjectionExecutor:
     def reconcile_stale_running_jobs(self):
         self.reconcile_calls += 1
         return {"checked": 0, "reconciled": 0, "recovered_completed": 0}
+
+    async def reconcile_stale_running_jobs_async(self):
+        return await asyncio.to_thread(self.reconcile_stale_running_jobs)
 
 
 def add_worker(
@@ -262,6 +267,79 @@ def test_projection_snapshot_reconciles_untracked_durable_running_job(tmp_path):
     assert worker["liveness"] == "terminal"
 
 
+@pytest.mark.asyncio
+async def test_projection_snapshot_async_schedules_terminal_cleanup_on_owner_loop(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    job_id = add_worker(
+        manager,
+        executor,
+        worker_id="wrk-cleanup-pending",
+        name="Cleanup Pending",
+        state=JobState.COMPLETED,
+        result={"summary": "Semantic work completed."},
+    )
+    manager.update_job_state(
+        job_id,
+        JobState.COMPLETED,
+        wrapper_cleanup_outcome="cleanup_pending",
+    )
+
+    class TrackedProcess:
+        returncode = None
+
+    process = TrackedProcess()
+    executor.processes[job_id] = process
+    monkeypatch.setattr(executor, "_terminal_cleanup_has_active_owner", lambda _: False)
+
+    owner_loop = asyncio.get_running_loop()
+    cleanup_scheduled = asyncio.Event()
+    cleanup_loop: list[asyncio.AbstractEventLoop] = []
+
+    async def record_cleanup(cleanup_job_id, cleanup_process):
+        assert cleanup_job_id == job_id
+        assert cleanup_process is process
+        cleanup_loop.append(asyncio.get_running_loop())
+        cleanup_scheduled.set()
+
+    monkeypatch.setattr(executor, "_terminal_cleanup_loop", record_cleanup)
+    reconcile_started = threading.Event()
+    release_reconcile = threading.Event()
+    reconcile_calls = 0
+    reconcile = executor.reconcile_stale_running_jobs
+
+    def blocking_reconcile(*, grace_seconds=None, now=None, event_loop=None):
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+        assert event_loop is owner_loop
+        reconcile_started.set()
+        assert release_reconcile.wait(timeout=1)
+        return reconcile(
+            grace_seconds=grace_seconds,
+            now=now,
+            event_loop=event_loop,
+        )
+
+    monkeypatch.setattr(executor, "reconcile_stale_running_jobs", blocking_reconcile)
+    projection_task = asyncio.create_task(runtime.projection_snapshot_async())
+
+    assert await asyncio.to_thread(reconcile_started.wait, 0.5)
+    await asyncio.wait_for(asyncio.sleep(0.01), timeout=0.2)
+    assert not projection_task.done()
+    release_reconcile.set()
+
+    snapshot = await asyncio.wait_for(projection_task, timeout=1)
+    await asyncio.wait_for(cleanup_scheduled.wait(), timeout=1)
+
+    assert snapshot["workers"][0]["cleanup_pending"] is True
+    assert reconcile_calls == 1
+    assert cleanup_loop == [owner_loop]
+
+
 def test_projection_snapshot_reports_changes_and_deterministic_content_revisions(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
@@ -278,14 +356,31 @@ def test_projection_snapshot_reports_changes_and_deterministic_content_revisions
     )
     worktree = Path(manager.jobs[job_id].worktree_path)
     (worktree / "projection.txt").write_text("projection evidence\n", encoding="utf-8")
+    changed_files = runtime._changed_files
+    change_scans = 0
+
+    def counted_changed_files(jobs):
+        nonlocal change_scans
+        change_scans += 1
+        return changed_files(jobs)
+
+    runtime._changed_files = counted_changed_files
 
     first = runtime.projection_snapshot()
     second = runtime.projection_snapshot()
+    (worktree / "post-snapshot.txt").write_text("new evidence\n", encoding="utf-8")
+    mutated = runtime.projection_snapshot()
     worker = first["workers"][0]
 
     assert first["content_revision"] == f"sha256:{first['content_sha256']}"
     assert first["content_revision"] == second["content_revision"]
     assert first["content_sha256"] == second["content_sha256"]
+    assert change_scans == 3
+    assert mutated["content_revision"] != second["content_revision"]
+    assert mutated["workers"][0]["change_summary"]["changed_files"] == [
+        "post-snapshot.txt",
+        "projection.txt",
+    ]
     assert worker["content_revision"] == f"sha256:{worker['content_sha256']}"
     assert worker["report_summary"] == "Created the projection evidence."
     assert worker["change_summary"] == {
@@ -303,6 +398,7 @@ def test_projection_snapshot_reports_changes_and_deterministic_content_revisions
     integrated = runtime.projection_snapshot()
 
     assert integrated["content_revision"] != first["content_revision"]
+    assert change_scans == 4
     assert integrated["workers"][0]["integration_state"] == "applied_to_checkout"
     assert integrated["workers"][0]["review_disposition"] == "accepted"
 
@@ -334,3 +430,88 @@ def test_projection_snapshot_does_not_read_or_mutate_manager_poll_delta_caches(t
     assert snapshot["present_edge_worker_ids"] == ["wrk-cache"]
     assert runtime._status_poll_snapshots == poll_snapshots_before
     assert runtime._status_poll_responses == poll_responses_before
+
+
+def test_projection_snapshot_retries_when_job_is_added_during_collection(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = ProjectionExecutor()
+    runtime = WorkerRuntime(config, manager, executor)
+    add_worker(
+        manager,
+        executor,
+        worker_id="wrk-first",
+        name="First",
+        state=JobState.COMPLETED,
+        result={"summary": "First complete"},
+    )
+    second_job_id = add_worker(
+        manager,
+        executor,
+        worker_id="wrk-concurrent",
+        name="Concurrent",
+        state=JobState.COMPLETED,
+        result={"summary": "Concurrent complete"},
+    )
+    second_job = manager.jobs.pop(second_job_id)
+
+    class ConcurrentAdditionJobs(dict):
+        added = False
+
+        def values(self):
+            iterator = super().values()
+            for job in iterator:
+                yield job
+                if not self.added:
+                    self.added = True
+                    self[second_job.job_id] = second_job
+
+    manager.jobs = ConcurrentAdditionJobs(manager.jobs)
+
+    snapshot = runtime.projection_snapshot()
+
+    assert snapshot["present_edge_worker_ids"] == ["wrk-concurrent", "wrk-first"]
+
+
+def test_projection_snapshot_isolates_malformed_worker_projection(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = ProjectionExecutor()
+    runtime = WorkerRuntime(config, manager, executor)
+    add_worker(
+        manager,
+        executor,
+        worker_id="wrk-valid",
+        name="Valid",
+        state=JobState.COMPLETED,
+        result={"summary": "Valid report"},
+    )
+    add_worker(
+        manager,
+        executor,
+        worker_id="wrk-malformed",
+        name="Malformed",
+        state=JobState.COMPLETED,
+        result={"summary": "Malformed report"},
+    )
+    project = runtime._worker_projection
+
+    def malformed_projection(jobs):
+        if runtime._worker_identity(jobs)[0] == "wrk-malformed":
+            raise ValueError("private projection detail /secret/worktree")
+        return project(jobs)
+
+    monkeypatch.setattr(runtime, "_worker_projection", malformed_projection)
+
+    snapshot = runtime.projection_snapshot()
+    workers = {worker["edge_worker_id"]: worker for worker in snapshot["workers"]}
+
+    assert workers["wrk-valid"]["report_summary"] == "Valid report"
+    malformed = workers["wrk-malformed"]
+    assert malformed["name"] == "Malformed"
+    assert malformed["work_group_id"] == "grp-projection"
+    assert malformed["lane_id"] == "lane-malformed"
+    assert malformed["worker_state"] == "projection_error"
+    assert malformed["projection_error_category"] == "invalid_worker_projection"
+    assert malformed["can_message"] is False
+    assert "/secret/worktree" not in str(snapshot)

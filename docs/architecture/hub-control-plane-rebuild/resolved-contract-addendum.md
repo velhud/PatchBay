@@ -237,14 +237,22 @@ applies twice.
 - `cleanup_workspace=true` is not sufficient to discard unintegrated changes.
   The call must also carry explicit `discard_unintegrated_changes=true`.
 - Group closure freezes title, goal, placement, outcome, summary, and closure
-  disposition. Attached operation/worker projections may continue to reconcile.
-- `leave_running` closes managerial planning while retaining attached workers;
-  those workers remain controllable by immutable fleet ref without reopening or
-  mutating the closed group's frozen fields.
+  disposition. It does not stop workers, clean workspaces, or dispose worktrees;
+  attached operation/worker projections may continue to reconcile.
+- Call `patchbay_worker_stop` explicitly before closing any worker that should
+  stop, and complete any requested workspace disposal through that worker-level
+  operation before close. Group close records the result; it does not perform
+  those side effects.
+- `leave_running` records an exceptional retained worker without stopping or
+  cleaning it; it cannot support a `complete` outcome. The retained worker stays
+  controllable by immutable fleet ref without reopening or mutating the closed
+  group's frozen fields.
 - Reassignment creates a successor group. It never changes the predecessor's
   pinned machine or worker routes.
-- Close requires a disposition for every worker: integrated, no changes,
-  reviewed failure, stopped/preserved, discarded explicitly, or leave running.
+- Close requires a disposition for every worker: `integrated`, `no_changes`,
+  `reviewed_failure`, `stopped_preserved`, `discarded`, or `leave_running`.
+  `discarded` requires that worker's explicit
+  `discard_unintegrated_changes=true` consent.
 
 ## 14. Artifact And Pro Request Visibility
 

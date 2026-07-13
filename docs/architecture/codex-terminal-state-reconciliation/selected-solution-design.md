@@ -33,18 +33,28 @@ Supported semantic sources are stdout `turn.completed`, a structured Codex
 result event where contractually terminal, and exact-session `task_complete`.
 Process exit remains recorded separately.
 
+Stdout completion is a two-phase contract. PatchBay first persists a redacted,
+size-bounded evidence envelope while the job remains `running`; `terminal_source`
+is still unset. The exact session observer receives one final bounded chance to
+provide `task_complete`. Only then may PatchBay promote stdout evidence into the
+first terminal transition. This makes the evidence crash-safe without allowing
+a weaker source to overwrite an exact session report.
+
 ## 3. Separate Completion From Cleanup
 
 During `_communicate_with_progress()`:
 
 1. keep consuming stdout/stderr normally;
 2. once the session ID is known, start the exact session observer;
-3. when terminal evidence appears, stop waiting indefinitely for wrapper exit;
-4. capture all currently available pipe output and the final session message;
-5. allow a short configurable **post-completion wrapper-exit grace**;
-6. terminate then kill only the lingering wrapper/process tree if required;
-7. parse and persist the final report;
-8. release locks and publish completed state.
+3. retain the latest full agent-message candidate in memory and atomically
+   persist a bounded/redacted copy when stdout emits `turn.completed`;
+4. poll the exact session once more and prefer its `task_complete` report;
+5. atomically persist the chosen terminal state and result before cleanup;
+6. allow a short configurable **post-completion wrapper-exit grace**;
+7. terminate then kill only process ownership PatchBay can prove; fail closed
+   and retain the repository barrier when ownership is uncertain;
+8. write the result artifact atomically as a secondary copy;
+9. release locks only after cleanup absence is proven.
 
 The grace applies only after semantic completion. It is not a worker timeout.
 
@@ -71,8 +81,13 @@ Before failing a durable running job as tracking-lost, reconciliation checks:
 - strict `task_complete` evidence exists;
 - a bounded final report can be recovered.
 
-If so, PatchBay performs safe wrapper cleanup when still possible and completes
-the job. It must not scan or attach another worker's session.
+If exact session completion is unavailable, reconciliation validates the
+persisted stdout completion-evidence version, source, timestamp, result status,
+session reference, and bounded report. Valid evidence completes the job with an
+explicit structured/text/checkpoint/missing/malformed/truncated provenance; an
+unknown or malformed evidence envelope does not. PatchBay then performs safe
+wrapper cleanup when possible. It must not scan or attach another worker's
+session.
 
 ## 6. Preserve Existing Result Semantics
 
@@ -87,4 +102,3 @@ Expose only compact provenance fields such as `result_source` and
 No Hub-side session parser is added. Correct Edge job state flows through the
 existing worker projection into group status, wait, inspect, and close. This
 keeps one lifecycle authority and avoids divergent inference.
-

@@ -22,13 +22,20 @@ from patchbay.hub.adapters.pro_requests import (
 )
 from patchbay.hub.adapters.worker import HubWorkerAdapterV2, WorkerRoute
 from patchbay.hub.adapters.workspace import WorkspaceAdapter
-from patchbay.hub.broker import OperationBroker
+from patchbay.hub.backup_v2 import (
+    AdmissionFreezeController,
+    AdmissionFreezeGate,
+    AdmissionFrozenError,
+    admission_coordination_path,
+)
+from patchbay.hub.broker import EDGE_DISPATCH_ENTITY_TYPE, OperationBroker
 from patchbay.hub.groups_v2 import derive_completion_contract
 from patchbay.hub.identity import ManagerIdentity
 from patchbay.hub.operations import PUBLIC_STATUSES, normalize_domain_result, public_envelope
 from patchbay.hub.protocol_v2 import HubProtocolV2
 from patchbay.hub.runtime_v2 import (
     ACTIVE_TURN_STATES,
+    FLEET_WORKER_ENTITY,
     MACHINE_ENTITY,
     WORKER_PROJECTION_ENTITY,
     WORKSPACE_PROJECTION_ENTITY,
@@ -36,11 +43,16 @@ from patchbay.hub.runtime_v2 import (
     HubRuntimeV2,
 )
 from patchbay.hub.store_v2 import HubStoreV2, semantic_payload_hash
-from patchbay.hub.tool_surface import HUB_V2_TOOL_FAMILIES, HUB_V2_TOOL_NAMES
+from patchbay.hub.tool_surface import (
+    HUB_V2_TOOL_FAMILIES,
+    HUB_V2_MUTATING_TOOL_NAMES,
+    HUB_V2_TOOL_NAMES,
+    normalize_hub_v2_next_actions,
+)
 from patchbay.protocol.context import RequestContext
 
 
-EDGE_DISPATCH_ENTITY = "hub.edge_dispatch"
+EDGE_DISPATCH_ENTITY = EDGE_DISPATCH_ENTITY_TYPE
 _TRANSIENT_PAYLOAD_KEY = "transient_payload"
 _ARTIFACT_URL_PAYLOAD_KIND = "artifact_download_url"
 _TERMINAL_OPERATION_STATES = frozenset({"succeeded", "blocked", "failed", "cancelled"})
@@ -60,6 +72,13 @@ _WORKER_SPECIFIC_TOOLS = frozenset(
         "patchbay_worker_inspect",
         "patchbay_worker_integrate",
         "patchbay_worker_stop",
+    }
+)
+_WORKER_PROJECTION_TOOLS = frozenset(
+    {
+        "patchbay_worker_list",
+        "patchbay_worker_status",
+        "patchbay_worker_wait",
     }
 )
 _WORKER_EDGE_ACTIONS = frozenset(
@@ -120,14 +139,18 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 def _canonical_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
     if str(value.get("status") or "") in PUBLIC_STATUSES and isinstance(value.get("result"), Mapping):
+        operation = value.get("operation") if isinstance(value.get("operation"), Mapping) else {}
+        operation_id = str(operation.get("operation_id") or "")
         return public_envelope(
             str(value["status"]),
             result=value.get("result"),
-            operation=value.get("operation") if isinstance(value.get("operation"), Mapping) else {},
+            operation=operation,
             warnings=list(value.get("warnings") or []),
-            next_actions=list(value.get("next_actions") or []),
+            next_actions=normalize_hub_v2_next_actions(
+                value.get("next_actions"), operation_id=operation_id
+            ),
         )
-    return normalize_domain_result(value)
+    return _canonical_envelope(normalize_domain_result(value))
 
 
 class EdgeDeliveryBridgeV2:
@@ -359,6 +382,67 @@ class HubRuntimeTargetPortV2:
     ) -> dict[str, Any] | None:
         return self._visible_group(str(work_group_id or ""), context)
 
+    def _workers_for_target(
+        self,
+        *,
+        work_group_id: str,
+        machine_id: str,
+        edge_generation: str,
+    ) -> list[dict[str, Any]]:
+        workers: list[dict[str, Any]] = []
+        immutable_fields = (
+            "fleet_worker_ref",
+            "machine_id",
+            "edge_generation",
+            "edge_worker_id",
+            "work_group_id",
+            "lane_id",
+            "workspace_ref",
+            "name",
+            "created_at",
+        )
+        for entity in self.store.list_entities(FLEET_WORKER_ENTITY):
+            fleet = deepcopy(entity["record"])
+            if (
+                str(fleet.get("work_group_id") or "") != work_group_id
+                or str(fleet.get("machine_id") or "") != machine_id
+                or str(fleet.get("edge_generation") or "") != edge_generation
+            ):
+                continue
+            projection_entity = self.store.get_entity(
+                WORKER_PROJECTION_ENTITY, entity["entity_id"]
+            )
+            projection = deepcopy(projection_entity["record"]) if projection_entity else {}
+            projection_matches = bool(projection) and all(
+                not projection.get(field)
+                or str(projection.get(field)) == str(fleet.get(field) or "")
+                for field in (
+                    "fleet_worker_ref",
+                    "machine_id",
+                    "edge_generation",
+                    "edge_worker_id",
+                    "work_group_id",
+                )
+            )
+            value = projection if projection_matches else {}
+            value.update({field: fleet.get(field) for field in immutable_fields if field in fleet})
+            value["projection_missing"] = not projection_matches
+            if not projection_matches:
+                value.setdefault("worker_state", "available")
+                value.setdefault("turn_state", "none")
+                value.setdefault("liveness", "unknown")
+                value.setdefault("integration_state", "uncertain")
+                value.setdefault("review_disposition", "unreviewed")
+            workers.append(value)
+        workers.sort(
+            key=lambda item: (
+                str(item.get("lane_id") or ""),
+                str(item.get("name") or "").casefold(),
+                str(item.get("fleet_worker_ref") or ""),
+            )
+        )
+        return workers
+
     def list_machines(self) -> dict[str, Any]:
         envelope = self.runtime.fleet_status(
             include_offline=True,
@@ -437,19 +521,20 @@ class HubRuntimeTargetPortV2:
     ) -> dict[str, Any]:
         args = dict(arguments)
         identity = self._identity(context)
-        group_id = str(
-            args.get("work_group_id")
-            or (context.work_group_id if context else "")
-            or self.runtime._current_group_id(identity)
-            or ""
-        )
+        group_id = str(args.get("work_group_id") or "")
+        if not group_id and tool_name not in _WORKER_PROJECTION_TOOLS:
+            group_id = str(
+                (context.work_group_id if context else "")
+                or self.runtime._current_group_id(identity)
+                or ""
+            )
+        if not group_id and tool_name in _WORKER_PROJECTION_TOOLS:
+            return public_envelope("blocked", result={"reason": "work_group_id_required"})
         group = self._visible_group(group_id, context) if group_id else None
         if group_id and group is None:
             return public_envelope("not_found", result={"reason": "work_group_not_found"})
 
         if group is None:
-            if tool_name in {"patchbay_worker_list", "patchbay_worker_status", "patchbay_worker_wait"}:
-                return {"principal_ref": identity.principal_ref}
             machine_id = str(args.get("machine_id") or "")
             if not machine_id:
                 return public_envelope(
@@ -500,7 +585,11 @@ class HubRuntimeTargetPortV2:
             lane_id = str(next(iter(lanes)))
         lane = deepcopy(dict(lanes.get(lane_id) or {})) if lane_id else {}
 
-        workers = self.runtime._workers_for_group(group_id)
+        workers = self._workers_for_target(
+            work_group_id=group_id,
+            machine_id=machine_id,
+            edge_generation=str(group.get("pinned_edge_generation") or ""),
+        )
         worker: dict[str, Any] = {}
         fleet_ref = str(args.get("fleet_worker_ref") or "")
         worker_name = str(args.get("worker") or "").strip().casefold()
@@ -543,6 +632,7 @@ class HubRuntimeTargetPortV2:
             "work_group": deepcopy(group),
             "lane": lane,
             "worker": worker,
+            "projection_missing": bool(worker.get("projection_missing")) if worker else False,
             "machine": machine,
             "workspace": workspace,
         }
@@ -588,28 +678,121 @@ class HubRuntimeTargetPortV2:
 class HubWorkerProjectionPortV2:
     """Query and bounded-wait over authoritative Hub worker projections."""
 
-    def __init__(self, runtime: HubRuntimeV2, *, max_wait_seconds: float = 30.0):
+    def __init__(
+        self,
+        runtime: HubRuntimeV2,
+        *,
+        max_wait_seconds: float = 30.0,
+        minimum_poll_seconds: float = 20.0,
+        recommended_poll_seconds: float = 30.0,
+    ):
         self.runtime = runtime
         self.store = runtime.store
-        self.max_wait_seconds = max(0.0, float(max_wait_seconds))
+        self.minimum_poll_seconds = max(0.0, float(minimum_poll_seconds))
+        self.recommended_poll_seconds = max(
+            self.minimum_poll_seconds, float(recommended_poll_seconds)
+        )
+        self.max_wait_seconds = max(
+            self.minimum_poll_seconds, float(max_wait_seconds)
+        )
+        self._poll_responses: dict[str, dict[str, Any]] = {}
 
-    def _query_result(
+    def _poll_cache_key(
+        self,
+        *,
+        filters: Mapping[str, Any],
+        route: Mapping[str, Any],
+        context: RequestContext | None,
+    ) -> str:
+        identity = ManagerIdentity.from_request(
+            context, principal_ref=self.store.principal_ref
+        )
+        group_id = str(filters.get("work_group_id") or route.get("work_group_id") or "")
+        return ":".join(
+            (
+                identity.participant_ref,
+                group_id or str(route.get("machine_id") or "ungrouped"),
+            )
+        )
+
+    def _cached_poll_snapshot(
+        self,
+        cache_key: str,
+    ) -> dict[str, Any] | None:
+        cached = self._poll_responses.get(cache_key)
+        if not cached:
+            return None
+        elapsed = max(0.0, time.monotonic() - float(cached.get("at") or 0.0))
+        if elapsed >= self.minimum_poll_seconds:
+            return None
+        retry_after = max(1, int(self.minimum_poll_seconds - elapsed + 0.999))
+        return {
+            "snapshot": deepcopy(dict(cached.get("snapshot") or {})),
+            "elapsed": elapsed,
+            "retry_after": retry_after,
+        }
+
+    def _store_poll_snapshot(self, cache_key: str, snapshot: Mapping[str, Any]) -> None:
+        self._poll_responses[cache_key] = {
+            "at": time.monotonic(),
+            "snapshot": deepcopy(dict(snapshot)),
+        }
+        if len(self._poll_responses) <= 1024:
+            return
+        oldest = min(
+            self._poll_responses,
+            key=lambda key: float(self._poll_responses[key].get("at") or 0.0),
+        )
+        self._poll_responses.pop(oldest, None)
+
+    def _projection_snapshot(
         self,
         *,
         filters: Mapping[str, Any],
         route: Mapping[str, Any],
     ) -> dict[str, Any]:
         group_id = str(filters.get("work_group_id") or route.get("work_group_id") or "")
-        lane_id = str(filters.get("lane") or route.get("lane_id") or "")
-        fleet_ref = str(route.get("fleet_worker_ref") or "")
-        edge_worker_id = str(route.get("edge_worker_id") or "")
-        active_only = bool(filters.get("active_only", False))
-        include_stopped = bool(filters.get("include_stopped", False))
         values: list[tuple[int, dict[str, Any]]] = []
         for entity in self.store.list_entities(WORKER_PROJECTION_ENTITY):
             worker = deepcopy(entity["record"])
             if group_id and worker.get("work_group_id") != group_id:
                 continue
+            worker.setdefault("worker_id", str(worker.get("edge_worker_id") or ""))
+            revision = max(
+                int(entity.get("revision") or 0),
+                int(worker.get("edge_projection_revision") or worker.get("projection_revision") or 0),
+            )
+            worker["projection_revision"] = revision
+            values.append((revision, worker))
+        values.sort(
+            key=lambda item: (
+                str(item[1].get("name") or "").casefold(),
+                item[1].get("fleet_worker_ref") or "",
+            )
+        )
+        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
+        return {
+            "values": values,
+            "group": deepcopy(group_entity["record"]) if group_entity else {},
+            "operations": self.runtime._operations_for_group(group_id) if group_id else [],
+        }
+
+    def _query_result(
+        self,
+        *,
+        filters: Mapping[str, Any],
+        route: Mapping[str, Any],
+        snapshot: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        lane_id = str(filters.get("lane") or route.get("lane_id") or "")
+        fleet_ref = str(route.get("fleet_worker_ref") or "")
+        edge_worker_id = str(route.get("edge_worker_id") or "")
+        active_only = bool(filters.get("active_only", False))
+        include_stopped = bool(filters.get("include_stopped", False))
+        source = snapshot or self._projection_snapshot(filters=filters, route=route)
+        values: list[tuple[int, dict[str, Any]]] = []
+        for revision, source_worker in source.get("values") or []:
+            worker = deepcopy(dict(source_worker))
             if lane_id and worker.get("lane_id") != lane_id:
                 continue
             if fleet_ref and worker.get("fleet_worker_ref") != fleet_ref:
@@ -620,13 +803,7 @@ class HubWorkerProjectionPortV2:
                 continue
             if not include_stopped and worker.get("worker_state") == "stopped":
                 continue
-            worker.setdefault("worker_id", str(worker.get("edge_worker_id") or ""))
-            revision = max(
-                int(entity.get("revision") or 0),
-                int(worker.get("edge_projection_revision") or worker.get("projection_revision") or 0),
-            )
-            worker["projection_revision"] = revision
-            values.append((revision, worker))
+            values.append((int(revision), worker))
         values.sort(key=lambda item: (str(item[1].get("name") or "").casefold(), item[1].get("fleet_worker_ref") or ""))
 
         try:
@@ -647,9 +824,8 @@ class HubWorkerProjectionPortV2:
             "completed": sum(item[1].get("turn_state") == "completed" for item in values),
             "failed": sum(item[1].get("turn_state") == "failed" for item in values),
         }
-        group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
-        group = deepcopy(group_entity["record"]) if group_entity else {}
-        operations = self.runtime._operations_for_group(group_id) if group_id else []
+        group = deepcopy(dict(source.get("group") or {}))
+        operations = deepcopy(list(source.get("operations") or []))
         completion_contract = (
             derive_completion_contract(group, all_workers, operations) if group else {}
         )
@@ -684,8 +860,8 @@ class HubWorkerProjectionPortV2:
             "projection_revision": projection_revision,
             "next_cursor": str(start + limit) if start + limit < len(values) else "",
             "status_current": True,
-            "minimum_next_poll_seconds": 20,
-            "recommended_next_poll_seconds": 30,
+            "minimum_next_poll_seconds": int(self.minimum_poll_seconds),
+            "recommended_next_poll_seconds": int(self.recommended_poll_seconds),
             "poll_guidance": (
                 "Workers may remain active or quiet for many minutes. Follow the recommended action; "
                 "a wait timeout is not completion and is not a failure."
@@ -703,9 +879,39 @@ class HubWorkerProjectionPortV2:
         route: Mapping[str, Any],
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
-        del context
-        result = self._query_result(filters=filters, route=route)
+        cache_key = self._poll_cache_key(filters=filters, route=route, context=context)
+        cached = self._cached_poll_snapshot(cache_key)
+        snapshot = (
+            cached["snapshot"]
+            if cached is not None
+            else self._projection_snapshot(filters=filters, route=route)
+        )
+        result = self._query_result(filters=filters, route=route, snapshot=snapshot)
         result["view"] = view
+        result.update(
+            {
+                "poll_too_early": cached is not None,
+                "status_current": cached is None,
+                "seconds_since_last_poll": (
+                    int(cached["elapsed"]) if cached is not None else None
+                ),
+                "retry_after_seconds": (
+                    int(cached["retry_after"])
+                    if cached is not None
+                    else int(self.recommended_poll_seconds)
+                ),
+            }
+        )
+        if cached is not None:
+            result["poll_guidance"] = (
+                f"This manager checked this work group {int(cached['elapsed'])}s ago. "
+                f"Wait at least {int(cached['retry_after'])}s before another list/status pull; "
+                f"the normal cadence is {int(self.minimum_poll_seconds)}-"
+                f"{int(self.recommended_poll_seconds)} seconds. This cached response "
+                "is not a failure and does not interrupt workers."
+            )
+        else:
+            self._store_poll_snapshot(cache_key, snapshot)
         return result
 
     async def wait(
@@ -717,20 +923,36 @@ class HubWorkerProjectionPortV2:
         timeout_seconds: float,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
-        del context
-        timeout = min(max(0.0, float(timeout_seconds)), self.max_wait_seconds)
+        requested_timeout = max(0.0, float(timeout_seconds))
+        timeout = min(
+            max(self.minimum_poll_seconds, requested_timeout), self.max_wait_seconds
+        )
         started = time.monotonic()
+        snapshot: dict[str, Any] = {}
         while True:
-            result = self._query_result(filters=filters, route=route)
+            snapshot = self._projection_snapshot(filters=filters, route=route)
+            result = self._query_result(filters=filters, route=route, snapshot=snapshot)
             if int(result["projection_revision"]) > max(0, int(since_revision)):
                 break
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
                 break
-            await asyncio.sleep(min(0.025, remaining))
+            await asyncio.sleep(min(0.25, remaining))
         result["waited_seconds"] = int(round(time.monotonic() - started))
-        result["requested_wait_seconds"] = int(timeout_seconds)
+        result["requested_wait_seconds"] = int(requested_timeout)
+        result["effective_wait_seconds"] = int(timeout)
         result["changed"] = int(result["projection_revision"]) > max(0, int(since_revision))
+        result.update(
+            {
+                "view": "wait",
+                "poll_too_early": False,
+                "status_current": True,
+                "seconds_since_last_poll": None,
+                "retry_after_seconds": int(self.recommended_poll_seconds),
+            }
+        )
+        cache_key = self._poll_cache_key(filters=filters, route=route, context=context)
+        self._store_poll_snapshot(cache_key, snapshot)
         return result
 
     def get_worker(
@@ -766,13 +988,45 @@ class HubBrokerEdgeDispatchPortV2:
         payload = _mapping(kwargs.get("payload"))
         operation = self.broker.create_operation(**kwargs)
         self._remember(operation, payload)
-        return self.store.get_operation(str(operation["operation_id"])) or operation
+        refreshed = self.store.get_operation(str(operation["operation_id"])) or operation
+        result = deepcopy(dict(refreshed))
+        # The replay marker is call-scoped and intentionally is not persisted
+        # in SQLite.  Preserve it across this wrapper refresh so callers do not
+        # repeat the domain side effect behind an idempotently reused operation.
+        result["idempotent_replay"] = bool(operation.get("idempotent_replay"))
+        return result
+
+    def create_batch_operation(self, **kwargs: Any) -> dict[str, Any]:
+        child_specs = kwargs.get("child_specs")
+        if not isinstance(child_specs, list):
+            raise ValueError("child_specs must be a list")
+        dispatch_specs: list[dict[str, Any]] = []
+        for raw_spec in child_specs:
+            if not isinstance(raw_spec, Mapping):
+                raise ValueError("child_specs entries must be objects")
+            payload = _mapping(raw_spec.get("payload"))
+            action = str(payload.get("action") or "")
+            if action != "patchbay_edge_preflight" and not action.startswith("codex_"):
+                raise ValueError("batch child does not carry an Edge dispatch action")
+            dispatch_specs.append(
+                {
+                    "item_id": str(raw_spec.get("item_id") or ""),
+                    "action": action,
+                    "payload": payload,
+                }
+            )
+        return self.broker.create_batch_operation(
+            **kwargs, child_dispatch_specs=dispatch_specs
+        )
 
     def create_child_operation(self, parent_operation_id: str, **kwargs: Any) -> dict[str, Any]:
         payload = _mapping(kwargs.get("payload"))
         operation = self.broker.create_child_operation(parent_operation_id, **kwargs)
         self._remember(operation, payload)
-        return self.store.get_operation(str(operation["operation_id"])) or operation
+        refreshed = self.store.get_operation(str(operation["operation_id"])) or operation
+        result = deepcopy(dict(refreshed))
+        result["idempotent_replay"] = bool(operation.get("idempotent_replay"))
+        return result
 
     def _remember(self, operation: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         action = str(payload.get("action") or "")
@@ -889,6 +1143,8 @@ class HubBrokerEdgeDispatchPortV2:
         entity = self.store.get_entity(EDGE_DISPATCH_ENTITY, operation_id)
         if entity is None:
             return
+        if all(entity["record"].get(key) == value for key, value in changes.items()):
+            return
         record = deepcopy(entity["record"])
         record.update(deepcopy(changes))
         record["updated_at"] = time.time()
@@ -906,27 +1162,48 @@ class HubBrokerEdgeDispatchPortV2:
         max_operations: int = 100,
     ) -> list[str]:
         delivered: list[str] = []
-        records = sorted(
-            self.store.list_entities(EDGE_DISPATCH_ENTITY),
-            key=lambda item: (float(item["record"].get("created_at") or 0), item["entity_id"]),
+        # Operation state is authoritative. Query only work that can actually
+        # be dispatched; scanning and rewriting terminal history on every MCP
+        # call turns harmless status polling into unbounded database churn.
+        limit = max(1, int(max_operations))
+        dispatches = self.store.query_control_entities(
+            EDGE_DISPATCH_ENTITY,
+            operation_states=("created", "payload_ready", "dispatchable"),
+            limit=limit,
         )
-        dispatchable: list[str] = []
-        for entity in records:
-            operation_id = str(entity["entity_id"])
-            operation = self.store.get_operation(operation_id)
-            if operation is None:
-                self._update_dispatch(operation_id, status="orphaned")
-                continue
-            if operation["state"] in _TERMINAL_OPERATION_STATES:
-                self._update_dispatch(operation_id, status="complete")
-                continue
-            if operation["state"] != "dispatchable":
-                continue
-            dispatchable.append(operation_id)
-        for operation_id in dispatchable[: max(1, int(max_operations))]:
-            await self.dispatch_operation(operation_id, context=context)
-            delivered.append(operation_id)
+        for dispatch in dispatches:
+            operation_id = str(dispatch["entity_id"])
+            if await self.dispatch_if_pending(operation_id, context=context):
+                delivered.append(operation_id)
         return delivered
+
+    async def dispatch_if_pending(
+        self,
+        operation_id: str,
+        *,
+        context: RequestContext | None = None,
+    ) -> bool:
+        """Prepare and offer exactly one named operation, never global backlog."""
+
+        operation = self.store.get_operation(operation_id)
+        if operation is None:
+            return False
+        if operation["state"] == "created":
+            operation = self.broker.prepare_operation(
+                operation_id,
+                expected_revision=int(operation["revision"]),
+                principal_ref=str(operation["principal_ref"]),
+            ) or self.store.get_operation(operation_id)
+        if operation is not None and operation["state"] == "payload_ready":
+            operation = self.broker.make_dispatchable(
+                operation_id,
+                expected_revision=int(operation["revision"]),
+                principal_ref=str(operation["principal_ref"]),
+            ) or self.store.get_operation(operation_id)
+        if operation is None or operation["state"] != "dispatchable":
+            return False
+        await self.dispatch_operation(operation_id, context=context)
+        return True
 
     async def dispatch_operation(
         self,
@@ -1180,6 +1457,7 @@ class HubAppV2:
         pro_request_store: ProRequestCanonicalStore | None = None,
         pro_request_route: Mapping[str, Any] | None = None,
         clock: Callable[[], float] | None = None,
+        admission_gate: AdmissionFreezeGate | None = None,
     ):
         if canonical_pro_store is not None and pro_request_store is not None:
             raise ValueError("Pass only one of canonical_pro_store or pro_request_store")
@@ -1199,6 +1477,9 @@ class HubAppV2:
             self._owns_store = True
 
         self.edge = EdgeDeliveryBridgeV2(edge_delivery)
+        self.admission_gate = admission_gate or AdmissionFreezeController(
+            admission_coordination_path(self.store.path)
+        )
         self.broker = OperationBroker(self.store, clock=clock)
         self.runtime = HubRuntimeV2(
             self.config,
@@ -1310,21 +1591,146 @@ class HubAppV2:
     ) -> Mapping[str, Any]:
         if name not in self.tool_bindings:
             raise KeyError(f"Unknown Hub V2 tool: {name}")
+        if name in HUB_V2_MUTATING_TOOL_NAMES:
+            try:
+                with self.admission_gate.admit_mutation():
+                    result = await self._handle_tool_call_and_dispatch(
+                        name, arguments, context=context
+                    )
+            except AdmissionFrozenError:
+                state = getattr(self.admission_gate, "state", lambda: {})()
+                return _canonical_envelope(
+                    public_envelope(
+                        "blocked",
+                        result={
+                            "reason": "hub_mutation_admission_frozen",
+                            "admission": deepcopy(dict(state))
+                            if isinstance(state, Mapping)
+                            else {},
+                        },
+                        warnings=[
+                            "Hub maintenance is blocking new mutations; existing status and result reconciliation remain available."
+                        ],
+                        next_actions=[
+                            {"tool": "patchbay_fleet_status", "arguments": {}}
+                        ],
+                    )
+                )
+            return result
+
         result = deepcopy(
             dict(await self.runtime.handle_tool_call(name, arguments, context=context))
         )
-        delivered = await self.dispatch_port.dispatch_pending(context=context)
+        delivered: list[str] = []
+        operation_id = str(_mapping(result.get("operation")).get("operation_id") or "")
+        operation = self.store.get_operation(operation_id) if operation_id else None
+        if (
+            name != "patchbay_operation_status"
+            and operation is not None
+        ):
+            try:
+                with self.admission_gate.admit_mutation():
+                    if await self.dispatch_port.dispatch_if_pending(
+                        operation_id,
+                        context=context,
+                    ):
+                        delivered.append(operation_id)
+            except AdmissionFrozenError:
+                delivered = []
+        return await self._finalize_tool_result(
+            name, arguments, result, delivered, context=context
+        )
+
+    async def dispatch_pending_operations(
+        self,
+        *,
+        context: RequestContext | None = None,
+        max_operations: int = 100,
+    ) -> list[str]:
+        """Run one explicit recovery/background dispatch cycle.
+
+        MCP tools annotated read-only never call this method. Production
+        lifecycle code may invoke it as a deliberate background mutation
+        owner, while ordinary mutating tool calls continue to dispatch inside
+        their own admission lease.
+        """
+
+        with self.admission_gate.admit_mutation():
+            return await self.dispatch_port.dispatch_pending(
+                context=context,
+                max_operations=max_operations,
+            )
+
+    async def _handle_tool_call_and_dispatch(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        context: RequestContext | None,
+    ) -> Mapping[str, Any]:
+        result = deepcopy(
+            dict(await self.runtime.handle_tool_call(name, arguments, context=context))
+        )
+        delivered: list[str] = []
+        for operation_id in self._result_operation_ids(result):
+            if await self.dispatch_port.dispatch_if_pending(
+                operation_id, context=context
+            ):
+                delivered.append(operation_id)
+        return await self._finalize_tool_result(
+            name, arguments, result, delivered, context=context
+        )
+
+    @staticmethod
+    def _result_operation_ids(result: Mapping[str, Any]) -> list[str]:
+        """Return only operations created or resumed by this tool result."""
+
+        operation_ids: list[str] = []
+
+        def add(value: Any) -> None:
+            operation_id = str(_mapping(value).get("operation_id") or "")
+            if operation_id and operation_id not in operation_ids:
+                operation_ids.append(operation_id)
+
+        add(result.get("operation"))
+        payload = _mapping(result.get("result"))
+        add(payload.get("readiness"))
+        add(_mapping(payload.get("work_group")).get("readiness"))
+        for item in payload.get("items") or []:
+            if isinstance(item, Mapping):
+                add(item.get("operation"))
+        return operation_ids
+
+    async def _finalize_tool_result(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        result: Mapping[str, Any],
+        delivered: list[Mapping[str, Any]],
+        *,
+        context: RequestContext | None,
+    ) -> Mapping[str, Any]:
+        result = deepcopy(dict(result))
         if name == "patchbay_operation_status" and arguments.get("include_result"):
-            return self._refresh_operation_status_result(arguments, result)
-        if not delivered:
-            return result
-        if name in {"patchbay_work_group_create", "patchbay_work_group_resume", "patchbay_work_group_reassign"}:
-            return self._refresh_group_result(result, context=context)
-        if name in _WORKER_MUTATION_TOOLS:
-            return await self._refresh_worker_result(name, arguments, result, context=context)
-        if name in _PRO_REQUEST_MUTATION_TOOLS:
-            return self._refresh_pro_request_result(result)
-        return result
+            result = self._refresh_operation_status_result(arguments, result)
+        elif delivered and name in {
+            "patchbay_work_group_create",
+            "patchbay_work_group_resume",
+            "patchbay_work_group_reassign",
+        }:
+            result = self._refresh_group_result(result, context=context)
+        elif delivered and name in _WORKER_MUTATION_TOOLS:
+            result = await self._refresh_worker_result(name, arguments, result, context=context)
+        elif delivered and name in _PRO_REQUEST_MUTATION_TOOLS:
+            result = self._refresh_pro_request_result(result)
+        if name in {
+            "patchbay_work_group_create",
+            "patchbay_work_group_resume",
+        }:
+            result = await self._wait_for_group_preflight(
+                arguments, result, context=context
+            )
+        return _canonical_envelope(result)
 
     def _refresh_operation_status_result(
         self,
@@ -1336,11 +1742,14 @@ class HubAppV2:
         refreshed = deepcopy(dict(result))
         operation_id = str(arguments.get("operation_id") or "")
         operation = self.store.get_operation(operation_id) if operation_id else None
+        operation_tool = str(
+            (operation or {}).get("tool_name") or (operation or {}).get("tool") or ""
+        )
         if (
             operation is None
             or not isinstance(self.pro_request_adapter, FleetHubProRequestAdapterV2)
-            or not str(operation.get("tool_name") or operation.get("tool") or "").startswith(
-                "patchbay_pro_request_"
+            or not operation_tool.startswith(
+                ("patchbay_pro_request_", "codex_pro_request_")
             )
         ):
             return refreshed
@@ -1374,17 +1783,67 @@ class HubAppV2:
         if not group_id:
             return original
         refreshed = self.runtime.work_group_status(work_group_id=group_id, context=context)
-        if refreshed["status"] != "ok":
-            return original
-        merged = deepcopy(result_payload)
-        merged.update(deepcopy(dict(refreshed["result"])))
+        return self._merge_group_status_result(original, refreshed)
+
+    @staticmethod
+    def _merge_group_status_result(
+        original: Mapping[str, Any],
+        refreshed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        original_envelope = deepcopy(dict(original))
+        if refreshed.get("status") != "ok":
+            return original_envelope
+        refreshed_payload = refreshed.get("result")
+        if not isinstance(refreshed_payload, Mapping):
+            return original_envelope
+        merged = deepcopy(_mapping(original_envelope.get("result")))
+        merged.update(deepcopy(dict(refreshed_payload)))
         return public_envelope(
-            original.get("status", "ok"),
+            str(original_envelope.get("status") or "ok"),
             result=merged,
-            operation=_mapping(original.get("operation")),
-            warnings=list(original.get("warnings") or []),
-            next_actions=list(original.get("next_actions") or []),
+            operation=_mapping(original_envelope.get("operation")),
+            warnings=list(original_envelope.get("warnings") or []),
+            next_actions=list(original_envelope.get("next_actions") or []),
         )
+
+    async def _wait_for_group_preflight(
+        self,
+        arguments: Mapping[str, Any],
+        result: Mapping[str, Any],
+        *,
+        context: RequestContext | None,
+    ) -> dict[str, Any]:
+        original = deepcopy(dict(result))
+        requested_wait = arguments.get("wait_for_preflight_seconds", 0)
+        if (
+            not isinstance(requested_wait, int)
+            or isinstance(requested_wait, bool)
+            or requested_wait <= 0
+        ):
+            return original
+
+        result_payload = _mapping(original.get("result"))
+        group = _mapping(result_payload.get("work_group"))
+        readiness = _mapping(result_payload.get("readiness"))
+        if not readiness:
+            readiness = _mapping(group.get("readiness"))
+        if str(readiness.get("status") or "") != "pending":
+            return original
+
+        group_id = str(group.get("work_group_id") or "")
+        if not group_id:
+            return original
+        baseline_revision = int(result_payload.get("status_revision") or 0)
+        refreshed = await self.runtime.handle_tool_call(
+            "patchbay_work_group_status",
+            {
+                "work_group_id": group_id,
+                "since_revision": baseline_revision,
+                "wait_for_change_seconds": requested_wait,
+            },
+            context=context,
+        )
+        return self._merge_group_status_result(original, refreshed)
 
     async def _refresh_worker_result(
         self,
