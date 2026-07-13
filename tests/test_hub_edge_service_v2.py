@@ -57,6 +57,7 @@ class FakeWorkerRuntime:
             "content_sha256": "fake-projection",
         }
 
+
 class FakeToolHandler:
     def __init__(
         self,
@@ -221,7 +222,9 @@ async def test_intent_precedes_effect_context_is_reconstructed_and_duplicate_rep
 
 
 @pytest.mark.asyncio
-async def test_crash_before_effect_leaves_replayable_intent(tmp_path: Path, monkeypatch) -> None:
+async def test_crash_before_effect_leaves_replayable_intent(
+    tmp_path: Path, monkeypatch
+) -> None:
     handler = FakeToolHandler()
     journal, execution = service(tmp_path / "edge.sqlite3", handler)
     attempt = operation_attempt()
@@ -246,7 +249,9 @@ async def test_crash_before_effect_leaves_replayable_intent(tmp_path: Path, monk
 
 
 @pytest.mark.asyncio
-async def test_crash_after_effect_is_not_blindly_reexecuted_after_restart(tmp_path: Path) -> None:
+async def test_crash_after_effect_is_not_blindly_reexecuted_after_restart(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "edge.sqlite3"
     handler = FakeToolHandler(crash_after_effect=True)
     journal, execution = service(path, handler)
@@ -266,14 +271,19 @@ async def test_crash_after_effect_is_not_blindly_reexecuted_after_restart(tmp_pa
     assert recovery["found"] is True
     assert recovery["recovery_action"] == RECOVERY_RECONCILE_EFFECT
     assert recovery["needs_reconciliation"] is True
-    assert restarted.reconciliation_lookup(attempt_id=attempt["attempt_id"])[
-        "recovery_action"
-    ] == RECOVERY_RECONCILE_EFFECT
+    assert (
+        restarted.reconciliation_lookup(attempt_id=attempt["attempt_id"])[
+            "recovery_action"
+        ]
+        == RECOVERY_RECONCILE_EFFECT
+    )
     restarted_journal.close()
 
 
 @pytest.mark.asyncio
-async def test_result_outbox_replays_across_acknowledgement_and_pruning(tmp_path: Path) -> None:
+async def test_result_outbox_replays_across_acknowledgement_and_pruning(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "edge.sqlite3"
     handler = FakeToolHandler()
     journal, execution = service(path, handler)
@@ -305,7 +315,9 @@ async def test_result_outbox_replays_across_acknowledgement_and_pruning(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_blocked_domain_result_is_a_durable_semantic_receipt(tmp_path: Path) -> None:
+async def test_blocked_domain_result_is_a_durable_semantic_receipt(
+    tmp_path: Path,
+) -> None:
     handler = FakeToolHandler(
         result={
             "accepted": False,
@@ -350,6 +362,56 @@ async def test_known_pre_effect_refusal_is_blocked_not_outcome_unknown(
             "A worker named 'Reader' already exists in this workspace. Continue it with "
             "patchbay_worker_message, pass auto_suffix=true, or choose another human-readable name."
         ),
+    }
+    assert journal.get_attempt("attempt-service-1")["state"] == "result_ready"
+    journal.close()
+
+
+@pytest.mark.asyncio
+async def test_read_only_handler_error_is_known_blocked_outcome(
+    tmp_path: Path,
+) -> None:
+    handler = FakeToolHandler()
+    handler.refusal = ValueError("Workspace root does not exist: /workspace/missing")
+    journal = EdgeJournal(tmp_path / "edge.sqlite3", edge_generation=EDGE_GENERATION)
+    read_capabilities = capabilities()
+    read_capabilities["action_capabilities"]["codex_open_workspace"] = ACTION_VERSION
+    read_capabilities["action_capability_versions"]["codex_open_workspace"] = (
+        ACTION_VERSION
+    )
+    execution = EdgeExecutionService(
+        handler,
+        journal,
+        machine_id=MACHINE_ID,
+        capabilities=read_capabilities,
+    )
+    attempt = operation_attempt()
+    attempt.update(
+        {
+            "tool_name": "patchbay_workspace_open",
+            "action": "codex_open_workspace",
+            "arguments": {"repo": "/workspace/missing", "include_tree": False},
+            "payload": {"repo": "/workspace/missing", "include_tree": False},
+            "target_key": "repo_path:/workspace/missing",
+        }
+    )
+
+    receipt = await execution.execute_attempt(attempt)
+
+    assert handler.effects == 0
+    assert receipt["outcome"] == "blocked"
+    assert receipt["uncertain"] is False
+    assert receipt["error"] == ""
+    assert receipt["result"] == {
+        "accepted": False,
+        "failed": True,
+        "reason": "read_only_handler_failed",
+        "message": "Workspace root does not exist",
+        "ok": False,
+        "repo_requested": "/workspace/missing",
+        "repo_resolved": "/workspace/missing",
+        "repo_exists": False,
+        "error": "Workspace root does not exist",
     }
     assert journal.get_attempt("attempt-service-1")["state"] == "result_ready"
     journal.close()

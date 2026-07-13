@@ -418,6 +418,10 @@ hub:
 - Hub preflight is required before grouped worker starts: the edge confirms the
   repo/workspace can be resolved, reports compact git/capacity facts, and then
   worker starts are allowed unless an operator recovery override is used.
+- Edge workspace and inspection actions are read-only. Their validation or
+  handler failures are terminal known outcomes and never enter side-effect
+  reconciliation. A terminal preflight operation is always projected as ready
+  or failed; it cannot leave a group permanently pending.
 - Edge preflight reports bounded repository-local Python environments such as
   `.venv/bin/python` and `.venv/bin/pytest` when present. This is discovery and
   guidance, not a restriction: workers may create a repo-local environment and

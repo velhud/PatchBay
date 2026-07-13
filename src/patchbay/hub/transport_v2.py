@@ -5,6 +5,7 @@ This bridge is both the ``HubAppV2.edge_delivery`` implementation and the Edge
 facade discovered by :mod:`patchbay.hub.server_v2`.  It contains no global app
 or server wiring.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -70,13 +71,15 @@ def edge_execution_action(dispatch: Mapping[str, Any]) -> str:
     public_action = str(dispatch.get("action") or payload.get("action") or "")
     return str(
         dispatch.get("execution_action")
-        or (_PREFLIGHT_EXECUTION_ACTION if public_action == _PREFLIGHT_ACTION else public_action)
+        or (
+            _PREFLIGHT_EXECUTION_ACTION
+            if public_action == _PREFLIGHT_ACTION
+            else public_action
+        )
     )
 
 
-def edge_action_capability_version(
-    capabilities: Mapping[str, Any], action: str
-) -> str:
+def edge_action_capability_version(capabilities: Mapping[str, Any], action: str) -> str:
     versions = capabilities.get("action_capabilities")
     if not isinstance(versions, Mapping):
         versions = capabilities.get("action_capability_versions")
@@ -239,7 +242,9 @@ class HubPullTransportBridgeV2:
         if not isinstance(runtime, HubRuntimeV2):
             raise TypeError("Hub pull transport requires HubAppV2.runtime")
         if runtime.store is not store or broker.store is not store:
-            raise TypeError("Hub app runtime, broker, and transport must share one store")
+            raise TypeError(
+                "Hub app runtime, broker, and transport must share one store"
+            )
         if self._app is not None and self._app is not app:
             raise RuntimeError("Hub pull transport is already bound to another app")
         self._app = app
@@ -373,16 +378,22 @@ class HubPullTransportBridgeV2:
             payload=payload,
             principal_ref=self.store.principal_ref,
         )
-        operation = self.broker.prepare_operation(
-            str(operation["operation_id"]),
-            expected_revision=int(operation["revision"]),
-            principal_ref=str(operation["principal_ref"]),
-        ) or operation
-        operation = self.broker.make_dispatchable(
-            str(operation["operation_id"]),
-            expected_revision=int(operation["revision"]),
-            principal_ref=str(operation["principal_ref"]),
-        ) or operation
+        operation = (
+            self.broker.prepare_operation(
+                str(operation["operation_id"]),
+                expected_revision=int(operation["revision"]),
+                principal_ref=str(operation["principal_ref"]),
+            )
+            or operation
+        )
+        operation = (
+            self.broker.make_dispatchable(
+                str(operation["operation_id"]),
+                expected_revision=int(operation["revision"]),
+                principal_ref=str(operation["principal_ref"]),
+            )
+            or operation
+        )
         dispatch = self._persist_dispatch(operation, payload)
         self._offer_dispatch(operation, dispatch)
         return await self._wait_for_semantic_result(
@@ -513,7 +524,9 @@ class HubPullTransportBridgeV2:
             maximum = max(1, min(int(payload.get("max_attempts") or 1), 64))
             available = max(0, int(payload.get("available_slots", maximum)))
         except (TypeError, ValueError) as error:
-            raise ValueError("max_attempts and available_slots must be integers") from error
+            raise ValueError(
+                "max_attempts and available_slots must be integers"
+            ) from error
         maximum = min(maximum, available)
         if maximum < 1:
             return self._control_response(
@@ -537,7 +550,10 @@ class HubPullTransportBridgeV2:
                 break
             operation_id = str(entity["entity_id"])
             operation = self.store.get_operation(operation_id)
-            if operation is None or operation["state"] not in _CLAIMABLE_OPERATION_STATES:
+            if (
+                operation is None
+                or operation["state"] not in _CLAIMABLE_OPERATION_STATES
+            ):
                 continue
             attempt = self._active_attempt(operation_id)
             if attempt is None or attempt["state"] not in _RESUMABLE_ATTEMPT_STATES:
@@ -594,9 +610,7 @@ class HubPullTransportBridgeV2:
             if (
                 str(dispatch_record.get("required_contract_hash") or "")
                 != contract_hash
-                or str(
-                    dispatch_record.get("required_action_capability_version") or ""
-                )
+                or str(dispatch_record.get("required_action_capability_version") or "")
                 != action_version
             ):
                 self._update_dispatch(
@@ -612,12 +626,16 @@ class HubPullTransportBridgeV2:
             if not self._dispatch_is_action_compatible(dispatch_record, machine):
                 continue
             if operation["state"] == "outcome_unknown":
-                operation = self.broker.transition_operation(
-                    operation_id,
-                    expected_revision=int(operation["revision"]),
-                    state="reconciling",
-                    principal_ref=str(operation["principal_ref"]),
-                ) or self.store.get_operation(operation_id) or operation
+                operation = (
+                    self.broker.transition_operation(
+                        operation_id,
+                        expected_revision=int(operation["revision"]),
+                        state="reconciling",
+                        principal_ref=str(operation["principal_ref"]),
+                    )
+                    or self.store.get_operation(operation_id)
+                    or operation
+                )
             try:
                 saved = self.broker.claim_attempt(
                     operation_id,
@@ -716,7 +734,9 @@ class HubPullTransportBridgeV2:
     ) -> Mapping[str, Any]:
         self._authenticate(payload, token, require_contract=True)
         receipt_value = payload.get("receipt")
-        receipt = dict(receipt_value) if isinstance(receipt_value, Mapping) else dict(payload)
+        receipt = (
+            dict(receipt_value) if isinstance(receipt_value, Mapping) else dict(payload)
+        )
         receipt_id = _required_text(receipt.get("receipt_id"), "receipt_id")
         combined = {**dict(payload), **receipt}
         operation, attempt, _ = self._require_attempt_fences(combined)
@@ -758,12 +778,16 @@ class HubPullTransportBridgeV2:
         )
         current = self.store.get_operation(operation_id) or operation
         if current["state"] == "outcome_unknown" and not uncertain:
-            current = self.broker.transition_operation(
-                operation_id,
-                expected_revision=int(current["revision"]),
-                state="reconciling",
-                principal_ref=str(current["principal_ref"]),
-            ) or self.store.get_operation(operation_id) or current
+            current = (
+                self.broker.transition_operation(
+                    operation_id,
+                    expected_revision=int(current["revision"]),
+                    state="reconciling",
+                    principal_ref=str(current["principal_ref"]),
+                )
+                or self.store.get_operation(operation_id)
+                or current
+            )
 
         if uncertain:
             saved_operation = self._record_uncertain_receipt(
@@ -779,7 +803,9 @@ class HubPullTransportBridgeV2:
                 attempt_id,
                 expected_operation_revision=int(current["revision"]),
                 machine_id=str(payload["machine_id"]),
-                edge_generation=self._generation_number(str(payload["edge_generation"])),
+                edge_generation=self._generation_number(
+                    str(payload["edge_generation"])
+                ),
                 contract_hash=self._attempt_requested_contract_hash(combined),
                 fencing_token=int(combined["fencing_token"]),
                 result=domain_result,
@@ -802,7 +828,9 @@ class HubPullTransportBridgeV2:
                 attempt_id,
                 expected_revision=int(saved_attempt["revision"]),
                 machine_id=str(payload["machine_id"]),
-                edge_generation=self._generation_number(str(payload["edge_generation"])),
+                edge_generation=self._generation_number(
+                    str(payload["edge_generation"])
+                ),
                 contract_hash=self._attempt_requested_contract_hash(combined),
                 fencing_token=int(combined["fencing_token"]),
                 principal_ref=str(current["principal_ref"]),
@@ -855,16 +883,29 @@ class HubPullTransportBridgeV2:
         dispatch: Mapping[str, Any],
         domain_result: Mapping[str, Any],
     ) -> None:
-        payload = dispatch.get("payload") if isinstance(dispatch.get("payload"), Mapping) else {}
+        payload = (
+            dispatch.get("payload")
+            if isinstance(dispatch.get("payload"), Mapping)
+            else {}
+        )
         action = str(payload.get("action") or "")
-        arguments = payload.get("arguments") if isinstance(payload.get("arguments"), Mapping) else {}
-        group_id = str(payload.get("work_group_id") or arguments.get("work_group_id") or "")
+        arguments = (
+            payload.get("arguments")
+            if isinstance(payload.get("arguments"), Mapping)
+            else {}
+        )
+        group_id = str(
+            payload.get("work_group_id") or arguments.get("work_group_id") or ""
+        )
         reason = ""
         if action == "codex_worker_integrate" and domain_result.get("applied") is True:
             reason = "accepted_worker_integration_changed_base_checkout"
-        elif action == "codex_worker_start" and str(
-            arguments.get("workspace_mode") or "isolated_write"
-        ) == "shared_write" and domain_result.get("accepted") is not False:
+        elif (
+            action == "codex_worker_start"
+            and str(arguments.get("workspace_mode") or "isolated_write")
+            == "shared_write"
+            and domain_result.get("accepted") is not False
+        ):
             reason = "shared_write_worker_can_change_base_checkout"
         if reason:
             if action == "codex_worker_integrate":
@@ -872,7 +913,9 @@ class HubPullTransportBridgeV2:
                     work_group_id=group_id,
                     snapshot={
                         "head": "",
-                        "changed_files": list(domain_result.get("main_changed_files") or []),
+                        "changed_files": list(
+                            domain_result.get("main_changed_files") or []
+                        ),
                         "dirty": True,
                         "observed_at": self.runtime._clock(),
                         "source": "accepted_worker_integration",
@@ -920,7 +963,10 @@ class HubPullTransportBridgeV2:
                         record = saved["record"]
                     except HubStoreV2Conflict:
                         current = self.store.get_entity(EDGE_RECEIPT_ENTITY, receipt_id)
-                        if current is None or current["record"].get("status") != "retired":
+                        if (
+                            current is None
+                            or current["record"].get("status") != "retired"
+                        ):
                             raise
                         record = current["record"]
                 acknowledged.append(self._public_receipt(record))
@@ -965,7 +1011,9 @@ class HubPullTransportBridgeV2:
                 str(attempt["attempt_id"]),
                 expected_revision=int(attempt["revision"]),
                 machine_id=str(payload["machine_id"]),
-                edge_generation=self._generation_number(str(payload["edge_generation"])),
+                edge_generation=self._generation_number(
+                    str(payload["edge_generation"])
+                ),
                 contract_hash=self._attempt_requested_contract_hash(payload),
                 fencing_token=int(payload["fencing_token"]),
                 principal_ref=str(operation["principal_ref"]),
@@ -975,12 +1023,16 @@ class HubPullTransportBridgeV2:
             attempt = saved
             operation = self.store.get_operation(operation_id) or operation
         elif operation["state"] == "outcome_unknown":
-            operation = self.broker.transition_operation(
-                operation_id,
-                expected_revision=int(operation["revision"]),
-                state="reconciling",
-                principal_ref=str(operation["principal_ref"]),
-            ) or self.store.get_operation(operation_id) or operation
+            operation = (
+                self.broker.transition_operation(
+                    operation_id,
+                    expected_revision=int(operation["revision"]),
+                    state="reconciling",
+                    principal_ref=str(operation["principal_ref"]),
+                )
+                or self.store.get_operation(operation_id)
+                or operation
+            )
 
         recovery_action = str(local.get("recovery_action") or "")
         disposition = str(payload.get("disposition") or "")
@@ -1032,14 +1084,19 @@ class HubPullTransportBridgeV2:
                 },
                 payload,
             )
-        if disposition in {"retryable", "manual_recovery"} and attempt["state"] == "reconciling":
+        if (
+            disposition in {"retryable", "manual_recovery"}
+            and attempt["state"] == "reconciling"
+        ):
             completed = self.broker.complete_reconciliation(
                 operation_id,
                 str(attempt["attempt_id"]),
                 disposition=disposition,
                 expected_revision=int(attempt["revision"]),
                 machine_id=str(payload["machine_id"]),
-                edge_generation=self._generation_number(str(payload["edge_generation"])),
+                edge_generation=self._generation_number(
+                    str(payload["edge_generation"])
+                ),
                 contract_hash=self._attempt_requested_contract_hash(payload),
                 fencing_token=int(payload["fencing_token"]),
                 principal_ref=str(operation["principal_ref"]),
@@ -1222,9 +1279,7 @@ class HubPullTransportBridgeV2:
             raise HubStoreV2Conflict("edge_contract_mismatch")
         action = _required_text(payload_value.get("action"), "action")
         execution_action = self._execution_action(action)
-        action_version = self._action_capability_version(
-            capabilities, execution_action
-        )
+        action_version = self._action_capability_version(capabilities, execution_action)
         if not action_version:
             raise HubStoreV2Conflict("edge_action_capability_mismatch")
 
@@ -1293,7 +1348,9 @@ class HubPullTransportBridgeV2:
         manager_guidance: str,
         action: str = "",
     ) -> dict[str, Any]:
-        current = self.store.get_operation(str(operation["operation_id"])) or dict(operation)
+        current = self.store.get_operation(str(operation["operation_id"])) or dict(
+            operation
+        )
         if attempt is not None and attempt.get("state") == "offered":
             retired = self.broker.transition_attempt(
                 str(current["operation_id"]),
@@ -1317,21 +1374,29 @@ class HubPullTransportBridgeV2:
             },
         )
         if current["state"] == "dispatchable":
-            current = self.broker.transition_operation(
-                str(current["operation_id"]),
-                expected_revision=int(current["revision"]),
-                state="running",
-                principal_ref=str(current["principal_ref"]),
-            ) or self.store.get_operation(str(current["operation_id"])) or current
+            current = (
+                self.broker.transition_operation(
+                    str(current["operation_id"]),
+                    expected_revision=int(current["revision"]),
+                    state="running",
+                    principal_ref=str(current["principal_ref"]),
+                )
+                or self.store.get_operation(str(current["operation_id"]))
+                or current
+            )
         if current["state"] in {"running", "reconciling"}:
-            current = self.broker.transition_operation(
-                str(current["operation_id"]),
-                expected_revision=int(current["revision"]),
-                state="blocked",
-                principal_ref=str(current["principal_ref"]),
-                result=blocker,
-                error={"reason": reason, "action": action},
-            ) or self.store.get_operation(str(current["operation_id"])) or current
+            current = (
+                self.broker.transition_operation(
+                    str(current["operation_id"]),
+                    expected_revision=int(current["revision"]),
+                    state="blocked",
+                    principal_ref=str(current["principal_ref"]),
+                    result=blocker,
+                    error={"reason": reason, "action": action},
+                )
+                or self.store.get_operation(str(current["operation_id"]))
+                or current
+            )
         self._update_dispatch(
             str(current["operation_id"]),
             status="blocked",
@@ -1471,8 +1536,7 @@ class HubPullTransportBridgeV2:
         group = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
         return bool(
             group
-            and group["record"].get("readiness", {}).get("operation_id")
-            == operation_id
+            and group["record"].get("readiness", {}).get("operation_id") == operation_id
         )
 
     def _authenticate(
@@ -1496,7 +1560,9 @@ class HubPullTransportBridgeV2:
                 raise HubStoreV2Conflict("attempt_edge_generation_mismatch")
         if require_contract:
             requested = self._session_contract_hash(payload)
-            advertised = str(_mapping(machine.get("capabilities")).get("contract_hash") or "")
+            advertised = str(
+                _mapping(machine.get("capabilities")).get("contract_hash") or ""
+            )
             # During a rolling upgrade, an older Edge may still own attempts
             # created under its previously advertised contract. Placement
             # already prevents new work on an incompatible Edge, while the
@@ -1668,9 +1734,7 @@ class HubPullTransportBridgeV2:
         return bool(actual and required and actual == required)
 
     @staticmethod
-    def _action_capability_version(
-        capabilities: Mapping[str, Any], action: str
-    ) -> str:
+    def _action_capability_version(capabilities: Mapping[str, Any], action: str) -> str:
         return edge_action_capability_version(capabilities, action)
 
     def _require_attempt_fences(
@@ -1699,9 +1763,7 @@ class HubPullTransportBridgeV2:
             "operation_id": str(attempt.get("operation_id") or ""),
             "machine_id": str(attempt.get("machine_id") or ""),
             "edge_generation": int(attempt.get("edge_generation") or -1),
-            "required_contract_hash": str(
-                contract.get("required_contract_hash") or ""
-            ),
+            "required_contract_hash": str(contract.get("required_contract_hash") or ""),
             "fencing_token": int(attempt.get("fencing_token") or 0),
         }
         for field, value in expected.items():
@@ -1712,7 +1774,10 @@ class HubPullTransportBridgeV2:
     @staticmethod
     def _attempt_requested_contract_hash(payload: Mapping[str, Any]) -> str:
         """Prefer the attempt fence over current Edge metadata during recovery."""
-        for value in (payload.get("contract_hash"), payload.get("required_contract_hash")):
+        for value in (
+            payload.get("contract_hash"),
+            payload.get("required_contract_hash"),
+        ):
             if str(value or "").strip():
                 return str(value).strip()
         return HubPullTransportBridgeV2._requested_contract_hash(payload)
@@ -1756,9 +1821,7 @@ class HubPullTransportBridgeV2:
             "action_capabilities": {action: action_version},
         }
         wire = {
-            **self._external_attempt(
-                attempt, external_generation=external_generation
-            ),
+            **self._external_attempt(attempt, external_generation=external_generation),
             "machine_id": str(machine["machine_id"]),
             "required_edge_generation": external_generation,
             "required_contract_hash": required_contract,
@@ -1814,7 +1877,11 @@ class HubPullTransportBridgeV2:
             result = inner
 
         outcome = str(receipt.get("outcome") or "")
-        uncertain = bool(receipt.get("uncertain")) or outcome == "outcome_unknown" or status == "pending"
+        uncertain = (
+            bool(receipt.get("uncertain"))
+            or outcome == "outcome_unknown"
+            or status == "pending"
+        )
         if outcome == "blocked":
             result.setdefault("accepted", False)
             result.setdefault("reason", "domain_blocked")
@@ -1857,13 +1924,18 @@ class HubPullTransportBridgeV2:
         exists = facts.get("repo_exists")
         if exists is None:
             exists = facts.get("exists")
+        explicit_failure = bool(
+            facts.get("failed") is True
+            or facts.get("accepted") is False
+            or facts.get("ok") is False
+        )
         if exists is None:
-            exists = bool(resolved)
+            exists = False if explicit_failure else bool(resolved)
         git = facts.get("git")
         git_mapping = git if isinstance(git, Mapping) else {}
         normalized = {
             **facts,
-            "ok": bool(facts.get("ok", exists)),
+            "ok": bool(facts.get("ok", exists)) and not explicit_failure,
             "repo_requested": str(facts.get("repo_requested") or requested),
             "repo_resolved": resolved,
             "repo_exists": bool(exists),
@@ -1880,9 +1952,7 @@ class HubPullTransportBridgeV2:
                 or ""
             ),
             "dirty_status_summary": deepcopy(
-                facts.get("dirty_status_summary")
-                or git_mapping.get("status")
-                or {}
+                facts.get("dirty_status_summary") or git_mapping.get("status") or {}
             ),
             "disk_free_bytes": facts.get(
                 "disk_free_bytes", resources.get("disk_free_bytes", -1)
@@ -1934,7 +2004,9 @@ class HubPullTransportBridgeV2:
         current_attempt = self.store.get_attempt(attempt_id) or deepcopy(dict(attempt))
         pending = public_envelope(
             "pending",
-            result={**deepcopy(dict(domain_result)), "error": error} if error else domain_result,
+            result={**deepcopy(dict(domain_result)), "error": error}
+            if error
+            else domain_result,
         )
         attempt_state = str(current_attempt["state"])
         if attempt_state in {"executing", "effect_recorded", "reconciling"}:
@@ -1943,7 +2015,9 @@ class HubPullTransportBridgeV2:
                 attempt_id,
                 expected_revision=int(current_attempt["revision"]),
                 machine_id=str(combined["machine_id"]),
-                edge_generation=self._generation_number(str(combined["edge_generation"])),
+                edge_generation=self._generation_number(
+                    str(combined["edge_generation"])
+                ),
                 contract_hash=self._attempt_requested_contract_hash(combined),
                 fencing_token=int(combined["fencing_token"]),
                 state="manual_recovery",
@@ -1971,12 +2045,16 @@ class HubPullTransportBridgeV2:
                 return current
             raise HubStoreV2Conflict("conflicting_terminal_receipt")
         if current["state"] == "outcome_unknown":
-            current = self.broker.transition_operation(
-                operation_id,
-                expected_revision=int(current["revision"]),
-                state="reconciling",
-                principal_ref=str(current["principal_ref"]),
-            ) or self.store.get_operation(operation_id) or current
+            current = (
+                self.broker.transition_operation(
+                    operation_id,
+                    expected_revision=int(current["revision"]),
+                    state="reconciling",
+                    principal_ref=str(current["principal_ref"]),
+                )
+                or self.store.get_operation(operation_id)
+                or current
+            )
         return self._block_dispatch(
             current,
             None,
@@ -2017,8 +2095,7 @@ class HubPullTransportBridgeV2:
                 "result_hash",
             )
             if any(
-                existing["record"].get(key) != record.get(key)
-                for key in immutable_keys
+                existing["record"].get(key) != record.get(key) for key in immutable_keys
             ):
                 raise HubStoreV2Conflict("receipt_identity_conflict")
             return
@@ -2039,8 +2116,7 @@ class HubPullTransportBridgeV2:
         group = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
         if (
             group is None
-            or group["record"].get("readiness", {}).get("operation_id")
-            != operation_id
+            or group["record"].get("readiness", {}).get("operation_id") != operation_id
         ):
             return
         self.runtime.record_preflight_result(
@@ -2137,9 +2213,7 @@ class HubPullTransportBridgeV2:
         self, machine_id: str, edge_generation: str
     ) -> list[dict[str, Any]]:
         generation = self._generation_number(edge_generation) if edge_generation else -1
-        return edge_reconciliation_requests(
-            self.store, machine_id, generation
-        )
+        return edge_reconciliation_requests(self.store, machine_id, generation)
 
     @staticmethod
     def _public_receipt(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -2198,10 +2272,15 @@ def create_production_hub_v2_app(
     """Compose the production Hub V2 graph behind the pull-transport facade."""
 
     from patchbay.hub.app_v2 import HubAppV2
+
     config_value = deepcopy(dict(config))
-    hub = config_value.get("hub") if isinstance(config_value.get("hub"), Mapping) else {}
+    hub = (
+        config_value.get("hub") if isinstance(config_value.get("hub"), Mapping) else {}
+    )
     bridge = HubPullTransportBridgeV2(
-        semantic_wait_seconds=float(hub.get("semantic_wait_seconds") or DEFAULT_SEMANTIC_WAIT_SECONDS)
+        semantic_wait_seconds=float(
+            hub.get("semantic_wait_seconds") or DEFAULT_SEMANTIC_WAIT_SECONDS
+        )
     )
     app = HubAppV2(
         config_value,

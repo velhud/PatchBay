@@ -45,6 +45,13 @@ Use unique worker names or `auto_suffix: true` for repeated acceptance runs.
 Duplicate-name refusal must be terminal and actionable, never reported as an
 unknown mutation outcome.
 
+Also exercise both availability-routing outcomes. Use one disposable repository
+present on every eligible test Edge to prove a successful availability-selected
+preflight. Separately request one intentionally missing repository and verify
+that the read-only preflight reaches terminal `failed`/`blocked` state; its work
+group must not remain `pending`, enter side-effect reconciliation, or require an
+internal recovery action.
+
 ## Waiting Semantics
 
 `patchbay_worker_wait` without `since_revision` must snapshot the current worker
@@ -57,6 +64,8 @@ still active or quiet is normal and must not trigger cancellation.
 Classify failures at their actual boundary:
 
 - catalog, routing, projection, operation, or result errors are PatchBay;
+- an expected missing-workspace preflight is a terminal validation result, not
+  an uncertain mutation or a reason to keep waiting;
 - repository/test failures belong to the disposable task;
 - Codex authentication or subscription quota is an external execution block;
 - client-side safety or connector rejection is a client/platform block.

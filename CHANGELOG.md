@@ -12,6 +12,10 @@
   Hub projection records. Conflicting snapshots roll back completely and can
   be retried at the same revision; tombstoned history no longer inflates
   current fleet worker counts.
+- Made read-only Edge handler failures terminal and deterministic instead of
+  sending them into side-effect reconciliation. Failed workspace preflight now
+  remains failed through normalization, and a terminal preflight operation can
+  no longer leave its work group appearing permanently pending.
 - Gave the private worker supervisor a bounded cleanup-proof window under host
   contention before escalation. Semantic completion and the worker report stay
   durable immediately, while repository locks remain held until the supervisor
