@@ -12,7 +12,7 @@ the generic verification contract and collaborator-safe results.
 | --- | --- |
 | Codex CLI baseline | Current local verification recorded `codex-cli 0.144.1` |
 | Python checks | `compileall` passes |
-| Test suite | Current integrated repair candidate: `973 passed, 4 skipped` on macOS across the 977-test inventory. The final committed build must still pass the complete production Linux run after state-preserving deployment; the result is recorded only after that gate completes. |
+| Test suite | Release `9907bc8`: `973 passed, 4 skipped` on macOS and `975 passed, 2 skipped` on the deployed production Linux Hub across the same 977-test inventory. |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Pro Escalation request loop | Unit tests and the live MCP probe cover CLI create, MCP list/read/claim/respond, CLI response readback, and blocked origin-worker dispatch |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |
@@ -22,11 +22,11 @@ the generic verification contract and collaborator-safe results.
 | Real MCP worker negative-case trial | `scripts/real_mcp_worker_trial.py --include-safety-cases` passes direct MCP worker lifecycle and negative cases |
 | Direct multi-client MCP trial | `scripts/real_mcp_worker_trial.py --multi-client --include-safety-cases --tool-mode worker --json` passes two-session tool-mode, ownership, takeover, safety refusals, preview, integration, and artifact sanitization checks |
 | Fresh-worker stop protection | A focused live MCP probe confirms ordinary `codex_worker_stop` on a newly started worker returns `stop_confirmation_required: true`; `force: true` then stops it |
-| Public Hub V2 acceptance | The last deployed build passed authenticated production-tunnel initialize, exact 31-tool discovery, fleet/workspace discovery, durable group preflight, real parallel Codex workers, patient wait, report inspection, signed integration without commit, and base verification against a disposable Edge repository. Every connector-facing release must repeat this gate after deployment; local outside-in evaluation is not a substitute for the deployed tunnel. |
+| Public Hub V2 acceptance | Release `9907bc8` passed authenticated production-tunnel initialize, exact 31-tool discovery, two-Edge fleet/workspace discovery, durable group preflight, real GPT-5.4 Mini workers, batch dispatch, same-worker follow-up, patient wait, report inspection, signed integration without commit, base verification, availability-only routing, authoritative group closure, and fresh-session recovery of existing open groups. Every connector-facing release must repeat this gate after deployment; local outside-in evaluation is not a substitute for the deployed tunnel. |
 | Production entrypoint restart | `scripts/production_entrypoint_restart_eval.py --json --rehearse-old-schema` passes real Hub/Edge CLI startup, enrollment, grouped worker dispatch, clean restart, same-worker follow-up, stable Hub/Edge identity, monotonic durable state, and real schema-2-to-3 Hub/Edge backup/migration/restore. Six additional consecutive Linux rehearsals passed, including two concurrent evaluator processes. |
 | Real Codex through MCP | `codex_plan_job` completes through PatchBay |
 | Current Codex JSONL parsing | `agent_message` results parse into structured output |
-| Active ChatGPT Pro VM worker use | Operational through Hub V2 and enrolled Edges; the public acceptance contract must still be rerun for connector-facing releases |
+| Active ChatGPT Pro VM worker use | Operational through Hub V2 and enrolled Edges; release `9907bc8` passed the complete public acceptance contract through the unchanged connector URL |
 | Multi-client state | Durable Hub/group state and fresh MCP transport reconnection are covered; independent ChatGPT browser conversations remain a deployment-specific operational exercise |
 | Real apply-job diff eval from ChatGPT | Pending |
 | Real resume/continuation eval from ChatGPT | Pending |
