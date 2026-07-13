@@ -809,7 +809,7 @@ class OperationBroker:
                 str(saved["state"]) in TERMINAL_OPERATION_STATES
                 and saved["parent_operation_id"]
             ):
-                self._aggregate_parent_in_transaction(
+                self._reconcile_batch_parent_in_transaction(
                     connection, str(saved["parent_operation_id"])
                 )
             return self._operation_from_row(saved)
@@ -1855,7 +1855,7 @@ class OperationBroker:
                         connection, str(operation["operation_id"])
                     )
                     if saved["parent_operation_id"]:
-                        self._aggregate_parent_in_transaction(
+                        self._reconcile_batch_parent_in_transaction(
                             connection, str(saved["parent_operation_id"])
                         )
                     response = self._operation_from_row(saved)
@@ -1965,7 +1965,7 @@ class OperationBroker:
         )
         saved = self._operation_row(connection, str(operation["operation_id"]))
         if saved["parent_operation_id"]:
-            self._aggregate_parent_in_transaction(
+            self._reconcile_batch_parent_in_transaction(
                 connection,
                 str(saved["parent_operation_id"]),
                 allow_terminal_refresh=True,
@@ -2022,7 +2022,7 @@ class OperationBroker:
                 expected_revision
             ):
                 return None
-            saved = self._aggregate_parent_in_transaction(connection, parent_id)
+            saved = self._reconcile_batch_parent_in_transaction(connection, parent_id)
             response = self._operation_from_row(saved)
             children = connection.execute(
                 """
@@ -2564,6 +2564,188 @@ class OperationBroker:
         expires_at = attempt["lease_expires_at"]
         return expires_at is not None and float(expires_at) <= float(now)
 
+    def reconcile_manifestless_terminal_batch_parents(
+        self, *, operation_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Retire pre-manifest batch parents once every observed child is terminal.
+
+        PatchBay releases before atomic batch manifests created a parent first,
+        then persisted children one by one.  A later lifecycle repair can make
+        every surviving child terminal while leaving that old parent in
+        ``created`` forever.  We cannot prove that the observed child set is the
+        complete requested set, so these parents must never be reported as a
+        successful batch.  They are, however, provably unable to make further
+        progress and must not remain active indefinitely.
+        """
+
+        requested_ids = (
+            sorted({_clean(value, "operation_id") for value in operation_ids})
+            if operation_ids is not None
+            else None
+        )
+        if requested_ids == []:
+            return {"repaired": [], "repaired_count": 0}
+        operation_filter = ""
+        parameters: list[Any] = []
+        if requested_ids is not None:
+            placeholders = ", ".join("?" for _ in requested_ids)
+            operation_filter = f"AND parent.operation_id IN ({placeholders})"
+            parameters.extend(requested_ids)
+        parameters.append(BATCH_CHILD_MANIFEST_ENTITY_TYPE)
+
+        repaired: list[str] = []
+        with self.store.immediate_transaction() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT parent.operation_id
+                FROM operations AS parent
+                WHERE parent.tool = 'patchbay_worker_start_batch'
+                  AND parent.state NOT IN ('succeeded', 'blocked', 'failed', 'cancelled')
+                  {operation_filter}
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM entity_records AS manifest
+                      WHERE manifest.entity_type = ?
+                        AND manifest.entity_id = parent.operation_id
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM operations AS child
+                      WHERE child.parent_operation_id = parent.operation_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM operations AS child
+                      WHERE child.parent_operation_id = parent.operation_id
+                        AND child.state NOT IN ('succeeded', 'blocked', 'failed', 'cancelled')
+                )
+                ORDER BY parent.created_at, parent.operation_id
+                """,
+                parameters,
+            ).fetchall()
+            for row in rows:
+                operation_id = str(row["operation_id"])
+                before = self._operation_row(connection, operation_id)
+                after = self._reconcile_batch_parent_in_transaction(
+                    connection, operation_id
+                )
+                if (
+                    str(before["state"]) not in TERMINAL_OPERATION_STATES
+                    and str(after["state"]) == "blocked"
+                ):
+                    repaired.append(operation_id)
+        return {"repaired": repaired, "repaired_count": len(repaired)}
+
+    def _reconcile_batch_parent_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        parent_operation_id: str,
+        *,
+        allow_terminal_refresh: bool = False,
+    ) -> sqlite3.Row:
+        parent = self._operation_row(connection, parent_operation_id)
+        if str(parent["tool"]) != "patchbay_worker_start_batch":
+            return self._aggregate_parent_in_transaction(
+                connection,
+                parent_operation_id,
+                allow_terminal_refresh=allow_terminal_refresh,
+            )
+        if str(parent["state"]) in TERMINAL_OPERATION_STATES:
+            return self._aggregate_parent_in_transaction(
+                connection,
+                parent_operation_id,
+                allow_terminal_refresh=allow_terminal_refresh,
+            )
+
+        manifest = connection.execute(
+            """
+            SELECT 1 FROM entity_records
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            (BATCH_CHILD_MANIFEST_ENTITY_TYPE, parent_operation_id),
+        ).fetchone()
+        if manifest is not None:
+            return self._aggregate_parent_in_transaction(
+                connection,
+                parent_operation_id,
+                allow_terminal_refresh=allow_terminal_refresh,
+            )
+
+        children = connection.execute(
+            """
+            SELECT * FROM operations
+            WHERE parent_operation_id = ?
+            ORDER BY item_id, operation_id
+            """,
+            (parent_operation_id,),
+        ).fetchall()
+        if not children or any(
+            str(child["state"]) not in TERMINAL_OPERATION_STATES for child in children
+        ):
+            return parent
+        return self._terminalize_manifestless_batch_parent_in_transaction(
+            connection, parent, children
+        )
+
+    def _terminalize_manifestless_batch_parent_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        parent: sqlite3.Row,
+        children: list[sqlite3.Row],
+    ) -> sqlite3.Row:
+        observed_children = [
+            {
+                "item_id": str(child["item_id"]),
+                "operation_id": str(child["operation_id"]),
+                "state": str(child["state"]),
+                "status": self._public_status_for_row(child),
+            }
+            for child in children
+        ]
+        normalized = public_envelope(
+            "blocked",
+            result={
+                "reason": "legacy_batch_manifest_missing",
+                "legacy_compatibility_reconciliation": True,
+                "completion_claimed": False,
+                "observed_child_count": len(observed_children),
+                "observed_children": observed_children,
+            },
+        )
+        while str(parent["state"]) in {"created", "payload_ready", "dispatchable"}:
+            next_state = {
+                "created": "payload_ready",
+                "payload_ready": "dispatchable",
+                "dispatchable": "running",
+            }[str(parent["state"])]
+            parent = self._transition_operation_in_transaction(
+                connection, parent, next_state
+            )
+        if str(parent["state"]) == "outcome_unknown":
+            parent = self._transition_operation_in_transaction(
+                connection, parent, "reconciling"
+            )
+        if str(parent["state"]) not in {"running", "reconciling"}:
+            raise HubStoreV2StateError(
+                f"Cannot reconcile legacy batch parent in state {parent['state']}"
+            )
+        parent = self._transition_operation_in_transaction(
+            connection, parent, "blocked", result=normalized
+        )
+        self.store._append_event_in_transaction(
+            connection,
+            "operation.legacy_batch_parent_terminalized",
+            {
+                "reason": "missing_atomic_child_manifest",
+                "completion_claimed": False,
+                "observed_child_count": len(observed_children),
+                "observed_child_operation_ids": [
+                    item["operation_id"] for item in observed_children
+                ],
+            },
+            operation_id=str(parent["operation_id"]),
+            entity_revision=int(parent["revision"]),
+        )
+        return parent
+
     def _aggregate_parent_in_transaction(
         self,
         connection: sqlite3.Connection,
@@ -2707,7 +2889,7 @@ class OperationBroker:
             entity_revision=int(parent["revision"]),
         )
         if allow_terminal_refresh and parent["parent_operation_id"]:
-            self._aggregate_parent_in_transaction(
+            self._reconcile_batch_parent_in_transaction(
                 connection,
                 str(parent["parent_operation_id"]),
                 allow_terminal_refresh=True,

@@ -16,6 +16,11 @@
   sending them into side-effect reconciliation. Failed workspace preflight now
   remains failed through normalization, and a terminal preflight operation can
   no longer leave its work group appearing permanently pending.
+- Added a compatibility reconciliation for pre-atomic batch parents that lack
+  child manifests after all of their observed children are terminal. PatchBay
+  now preserves the incomplete historical evidence, marks the obsolete parent
+  terminal and blocked without claiming batch success, and stops reporting the
+  containing work group as active forever.
 - Gave the private worker supervisor a bounded cleanup-proof window under host
   contention before escalation. Semantic completion and the worker report stay
   durable immediately, while repository locks remain held until the supervisor

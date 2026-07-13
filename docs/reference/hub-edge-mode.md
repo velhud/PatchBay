@@ -268,11 +268,15 @@ command. While child starts are active it reports `aggregate_running` with
 child's terminal outcome before becoming complete. New batches commit the
 parent, compact child manifest, every child operation, and every durable Edge
 dispatch in one SQLite transaction. A historical or damaged batch missing its
-manifest, a child, or a child dispatch returns `recovery_required` with exact
-missing item IDs. Do not wait forever and do not invent an internal recovery
-tool: inspect the returned recovery details, preserve the old operation ID for
-evidence, and submit deliberate replacement work only when the manager-level
-guidance says replacement is safe.
+manifest, a child, or a child dispatch returns `recovery_required` with the
+available evidence and exact missing item IDs when known. If a pre-atomic
+manifestless parent has only terminal observed children, Hub durably retires
+that parent as `blocked` during compatibility reconciliation. This does not
+claim that the observed set was the complete requested batch, but it prevents
+the obsolete parent from appearing active forever. Do not invent an internal
+recovery tool: inspect the returned recovery details, preserve the old
+operation ID for evidence, and submit deliberate replacement work only when
+the manager-level guidance says replacement is safe.
 
 Transport reconciliation is automatic. ChatGPT does not receive and must not
 need a lease-transition or `complete_reconciliation` tool. For nonterminal

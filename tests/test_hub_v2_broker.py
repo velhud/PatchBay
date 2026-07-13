@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
 import pytest
 
 from patchbay.hub.broker import OperationBroker
+from patchbay.hub.runtime_v2 import WORK_GROUP_ENTITY, HubRuntimeV2
 from patchbay.hub.store_v2 import (
     HubStoreV2,
     HubStoreV2Conflict,
@@ -270,6 +272,191 @@ def test_child_identity_is_stable_and_parent_aggregates_mixed_results(tmp_path):
     assert len(broker.list_child_operations(parent["operation_id"])) == 2
 
 
+@pytest.mark.asyncio
+async def test_manifestless_legacy_parent_becomes_terminal_when_children_finish(
+    tmp_path,
+):
+    store = HubStoreV2(tmp_path / "legacy-terminal-children.sqlite3")
+    broker = OperationBroker(store)
+    parent = broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-legacy",
+        idempotency_key="legacy-without-manifest",
+        payload={"items": ["reader", "writer"]},
+    )
+    children = [
+        broker.create_child_operation(
+            parent["operation_id"],
+            item_id=item_id,
+            tool="patchbay_worker_start",
+            logical_target=f"group-legacy/{item_id}",
+            payload={"name": item_id.title()},
+        )
+        for item_id in ("reader", "writer")
+    ]
+
+    for index, child in enumerate(children):
+        child = broker.prepare_operation(
+            child["operation_id"], expected_revision=child["revision"]
+        )
+        child = broker.make_dispatchable(
+            child["operation_id"], expected_revision=child["revision"]
+        )
+        child = broker.transition_operation(
+            child["operation_id"],
+            expected_revision=child["revision"],
+            state="running",
+        )
+        broker.transition_operation(
+            child["operation_id"],
+            expected_revision=child["revision"],
+            state="blocked",
+            result={"status": "blocked", "result": {"reason": "test_terminal"}},
+        )
+        expected_parent_state = "created" if index == 0 else "blocked"
+        assert (
+            store.get_operation(parent["operation_id"])["state"]
+            == expected_parent_state
+        )
+
+    reconciled = store.get_operation(parent["operation_id"])
+    assert reconciled["result"]["status"] == "blocked"
+    assert reconciled["result"]["result"] == {
+        "reason": "legacy_batch_manifest_missing",
+        "legacy_compatibility_reconciliation": True,
+        "completion_claimed": False,
+        "observed_child_count": 2,
+        "observed_children": [
+            {
+                "item_id": "reader",
+                "operation_id": children[0]["operation_id"],
+                "state": "blocked",
+                "status": "blocked",
+            },
+            {
+                "item_id": "writer",
+                "operation_id": children[1]["operation_id"],
+                "state": "blocked",
+                "status": "blocked",
+            },
+        ],
+    }
+    status = await broker.operation_status(parent["operation_id"])
+    assert status["status"] == "blocked"
+    assert status["result"]["outcome"]["terminal"] is True
+    assert status["warnings"][0]["details"] == {
+        "reason": "missing_atomic_child_manifest",
+        "actual_child_count": 2,
+    }
+    assert (
+        store.connection.execute(
+            """
+            SELECT COUNT(*) FROM events
+            WHERE operation_id = ?
+              AND event_type = 'operation.legacy_batch_parent_terminalized'
+            """,
+            (parent["operation_id"],),
+        ).fetchone()[0]
+        == 1
+    )
+
+
+def test_group_status_retires_only_its_manifestless_parent_with_terminal_children(
+    tmp_path,
+):
+    store = HubStoreV2(tmp_path / "legacy-startup-reconciliation.sqlite3")
+    broker = OperationBroker(store)
+    terminal_parent = broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-terminal",
+        idempotency_key="legacy-terminal-parent",
+        payload={"items": ["reader"]},
+    )
+    terminal_child = broker.create_child_operation(
+        terminal_parent["operation_id"],
+        item_id="reader",
+        tool="patchbay_worker_start",
+        logical_target="group-terminal/reader",
+        payload={"name": "Reader"},
+    )
+    active_parent = broker.create_operation(
+        tool="patchbay_worker_start_batch",
+        logical_target="group-active",
+        idempotency_key="legacy-active-parent",
+        payload={"items": ["reader"]},
+    )
+    broker.create_child_operation(
+        active_parent["operation_id"],
+        item_id="reader",
+        tool="patchbay_worker_start",
+        logical_target="group-active/reader",
+        payload={"name": "Reader"},
+    )
+    with store.immediate_transaction() as connection:
+        connection.execute(
+            """
+            UPDATE operations
+            SET state = 'blocked', revision = 6, result_json = ?, updated_at = updated_at + 1
+            WHERE operation_id = ?
+            """,
+            (
+                json.dumps(
+                    {"status": "blocked", "result": {"reason": "legacy_terminal"}}
+                ),
+                terminal_child["operation_id"],
+            ),
+        )
+    store.put_entity(
+        WORK_GROUP_ENTITY,
+        "group-terminal",
+        {
+            "work_group_id": "group-terminal",
+            "principal_ref": store.principal_ref,
+            "title": "Legacy terminal group",
+            "goal": "Prove bounded compatibility reconciliation.",
+            "status": "open",
+            "lifecycle": "active",
+            "visibility": "private",
+            "execution_mode": "end_to_end",
+            "definition_of_done": "Retire only the selected legacy parent.",
+            "lanes": {},
+            "created_at": 1.0,
+            "updated_at": 1.0,
+        },
+        expected_revision=0,
+    )
+
+    runtime = HubRuntimeV2(store, broker=broker)
+    status = runtime.work_group_status(work_group_id="group-terminal")
+
+    assert (
+        status["result"]["completion_contract"]["activity_counts"][
+            "active_operations"
+        ]
+        == 0
+    )
+    assert store.get_operation(terminal_parent["operation_id"])["state"] == "blocked"
+    assert store.get_operation(active_parent["operation_id"])["state"] == "created"
+    assert (
+        store.work_group_status_projection("group-terminal")["operation_summary"][
+            "active"
+        ]
+        == 0
+    )
+    assert (
+        store.work_group_status_projection("group-active")["operation_summary"][
+            "active"
+        ]
+        == 1
+    )
+    assert broker.reconcile_manifestless_terminal_batch_parents(
+        operation_ids=[terminal_parent["operation_id"]]
+    ) == {
+        "repaired": [],
+        "repaired_count": 0,
+    }
+
+
 def test_batch_manifest_is_immutable_and_rejects_undeclared_children(tmp_path):
     store = HubStoreV2(tmp_path / "hub.sqlite3")
     broker = OperationBroker(store)
@@ -347,9 +534,7 @@ def test_atomic_batch_rolls_back_parent_manifest_and_every_child_on_failure(
             child_specs=child_specs,
         )
 
-    assert (
-        store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
-    )
+    assert store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
     assert store.list_entities("hub.operation_batch_child_manifest") == []
     assert store.connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
 
@@ -529,7 +714,9 @@ def test_atomic_batch_includes_dispatch_records_and_rolls_everything_back(
             child_dispatch_specs=dispatch_specs,
         )
 
-    assert store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+    assert (
+        store.connection.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+    )
     assert store.connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
     assert store.list_entities("hub.operation_batch_child_manifest") == []
     assert store.list_entities("hub.edge_dispatch") == []

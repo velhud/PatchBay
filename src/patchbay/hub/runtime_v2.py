@@ -2829,6 +2829,7 @@ class HubRuntimeV2:
         entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id)
         if entity is None or entity["record"].get("principal_ref") != identity.principal_ref:
             return public_envelope("not_found", result={"reason": "work_group_not_found"})
+        self._reconcile_group_manifestless_batches(group_id)
         return self._group_envelope(
             entity["record"],
             include_workers=include_workers,
@@ -2875,6 +2876,7 @@ class HubRuntimeV2:
         group_entity = self.store.get_entity(WORK_GROUP_ENTITY, work_group_id)
         if group_entity is None or group_entity["record"].get("principal_ref") != identity.principal_ref:
             return public_envelope("not_found", result={"reason": "work_group_not_found"})
+        self._reconcile_group_manifestless_batches(work_group_id)
         group = deepcopy(group_entity["record"])
         if group.get("status") != "open":
             return public_envelope("blocked", result={"reason": "closed_group_cannot_resume"})
@@ -3405,6 +3407,19 @@ class HubRuntimeV2:
             for operation_id in sorted(operation_ids)
             if (operation := self.store.get_operation(operation_id)) is not None
         ]
+
+    def _reconcile_group_manifestless_batches(
+        self, work_group_id: str
+    ) -> dict[str, Any]:
+        operation_ids = [
+            str(operation["operation_id"])
+            for operation in self._operations_for_group(work_group_id)
+            if operation.get("tool") == "patchbay_worker_start_batch"
+            and operation.get("state") not in TERMINAL_OPERATION_STATES
+        ]
+        return self.broker.reconcile_manifestless_terminal_batch_parents(
+            operation_ids=operation_ids
+        )
 
     def _cancel_unclaimed_group_operations(
         self, work_group_id: str, *, exclude_operation_ids: set[str] | None = None
