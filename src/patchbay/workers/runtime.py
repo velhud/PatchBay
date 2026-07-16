@@ -180,6 +180,9 @@ class WorkerRuntime:
         self._projection_terminal_shared_change_summaries: dict[
             str, tuple[tuple[Any, ...], Dict[str, Any]]
         ] = {}
+        self._projection_terminal_shared_heads: dict[
+            str, tuple[tuple[Any, ...], str]
+        ] = {}
         self._projection_change_summary_lock = threading.Lock()
 
     def _prune_monitoring_caches(self, *, now: float | None = None) -> None:
@@ -804,12 +807,14 @@ class WorkerRuntime:
         shared_projection_versions = self._terminal_shared_projection_versions(groups)
         workers: list[Dict[str, Any]] = []
         snapshot_change_summaries: dict[tuple[str, str], Dict[str, Any]] = {}
+        snapshot_shared_heads: dict[str, str] = {}
         for jobs in groups:
             try:
                 workers.append(
                     self._worker_projection(
                         jobs,
                         projection_change_cache=snapshot_change_summaries,
+                        projection_shared_head_cache=snapshot_shared_heads,
                         shared_projection_versions=shared_projection_versions,
                         force_change_refresh=force_change_refresh,
                     )
@@ -834,6 +839,7 @@ class WorkerRuntime:
                 self._projection_terminal_shared_change_summaries.pop(
                     execution_path, None
                 )
+                self._projection_terminal_shared_heads.pop(execution_path, None)
         previous_ids = self._normalize_projection_worker_ids(previous_edge_worker_ids)
         tombstones = [
             {"edge_worker_id": worker_id}
@@ -2264,6 +2270,7 @@ class WorkerRuntime:
         projection_change_cache: Optional[
             dict[tuple[str, str], Dict[str, Any]]
         ] = None,
+        projection_shared_head_cache: Optional[dict[str, str]] = None,
         shared_projection_versions: Optional[dict[str, tuple[Any, ...]]] = None,
         force_change_refresh: bool = False,
     ) -> Dict[str, Any]:
@@ -2361,7 +2368,16 @@ class WorkerRuntime:
             "cancelled",
         }:
             worker["base_checkout_snapshot"] = {
-                "head": self._git_head(repo_path),
+                "head": self._projection_shared_head(
+                    repo_path,
+                    projection_shared_head_cache=projection_shared_head_cache,
+                    shared_projection_version=(
+                        shared_projection_versions.get(execution_path)
+                        if shared_projection_versions is not None
+                        else None
+                    ),
+                    force_refresh=force_change_refresh,
+                ),
                 "changed_files": list(change_summary.get("changed_files") or []),
                 "change_count": int(change_summary.get("change_count") or 0),
                 "dirty": bool(change_summary.get("has_changes")),
@@ -2597,6 +2613,41 @@ class WorkerRuntime:
                     deepcopy(summary),
                 )
         return summary
+
+    def _projection_shared_head(
+        self,
+        repo_path: str,
+        *,
+        projection_shared_head_cache: Optional[dict[str, str]],
+        shared_projection_version: tuple[Any, ...] | None,
+        force_refresh: bool,
+    ) -> str:
+        """Read one shared HEAD per snapshot, or reuse it while fully idle."""
+
+        execution_path = str(Path(repo_path).expanduser().resolve())
+        if (
+            projection_shared_head_cache is not None
+            and execution_path in projection_shared_head_cache
+        ):
+            return projection_shared_head_cache[execution_path]
+        if shared_projection_version is not None and not force_refresh:
+            with self._projection_change_summary_lock:
+                cached = self._projection_terminal_shared_heads.get(execution_path)
+            if cached is not None and cached[0] == shared_projection_version:
+                if projection_shared_head_cache is not None:
+                    projection_shared_head_cache[execution_path] = cached[1]
+                return cached[1]
+
+        head = self._git_head(execution_path)
+        if projection_shared_head_cache is not None:
+            projection_shared_head_cache[execution_path] = head
+        if shared_projection_version is not None:
+            with self._projection_change_summary_lock:
+                self._projection_terminal_shared_heads[execution_path] = (
+                    shared_projection_version,
+                    head,
+                )
+        return head
 
     def _terminal_shared_projection_versions(
         self,

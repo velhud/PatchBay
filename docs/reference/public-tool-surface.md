@@ -180,8 +180,9 @@ boundaries; historical facts are never asserted as live Git state.
 The Edge still publishes full worker history, but routine background projection
 does not run one Git worktree scan per historical worker on every heartbeat.
 Within one snapshot, active workers sharing a base checkout reuse one exact
-scan. Fully terminal shared checkouts and stable terminal isolated worktrees
-reuse summaries until a new turn, explicit refresh, or the Edge runtime
+scan and one base HEAD read. Fully terminal shared checkouts and stable terminal
+isolated worktrees reuse summaries and the shared base HEAD until a new turn,
+explicit refresh, or the Edge runtime
 rebuilds its in-memory projection state. Create/resume preflight, integration
 preview/application, and focused
 change/file/diff inspection independently read live state and remain

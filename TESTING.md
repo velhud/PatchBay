@@ -376,7 +376,8 @@ or Pro Request behavior. Regression coverage must prove that:
 - stable terminal isolated-worktree projections reuse their background change
   summary, a new worker turn or explicit force refresh invalidates that summary,
   fully terminal shared-checkout workers reuse one path-scoped background
-  summary, active shared work scans once per snapshot, and one malformed worker
+  summary and base HEAD, active shared work scans each once per snapshot, and
+  one malformed worker
   projection cannot suppress valid workers from the same fleet snapshot;
 - missing worker projections retain group-scoped inspect/message routing through
   the durable fleet identity without cross-group or cross-generation leakage;

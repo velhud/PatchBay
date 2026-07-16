@@ -420,24 +420,34 @@ def test_projection_snapshot_deduplicates_shared_checkout_scan_per_snapshot(tmp_
             workspace_mode="shared_write",
         )
     changed_files = runtime._changed_files
+    git_head = runtime._git_head
     change_scans = 0
+    head_scans = 0
 
     def counted_changed_files(jobs):
         nonlocal change_scans
         change_scans += 1
         return changed_files(jobs)
 
+    def counted_git_head(repo_path):
+        nonlocal head_scans
+        head_scans += 1
+        return git_head(repo_path)
+
     runtime._changed_files = counted_changed_files
+    runtime._git_head = counted_git_head
 
     first = runtime.projection_snapshot()
     second = runtime.projection_snapshot()
 
     assert change_scans == 1
+    assert head_scans == 1
     assert len(first["workers"]) == 2
     assert first["content_revision"] == second["content_revision"]
 
     runtime.projection_snapshot(force_change_refresh=True)
     assert change_scans == 2
+    assert head_scans == 2
 
 
 def test_projection_snapshot_invalidates_shared_cache_for_new_worker_turn(tmp_path):
