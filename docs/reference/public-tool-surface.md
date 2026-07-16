@@ -149,6 +149,13 @@ Worker names are scoped to the base workspace. The same human name can be reused
 
 PatchBay distinguishes authoritative Codex completion from CLI wrapper cleanup. The exact known Codex session may record `task_complete` before its wrapper exits; PatchBay preserves that final answer, cleans up the lingering wrapper, and reports the worker completed instead of later calling it stale. While cleanup is pending, the report remains readable but same-worker follow-up and integration are refused until the complete process group is gone and the repository lock is released. Resume turns seed this observer with the worker's durable existing session id and durable turn offset, so they do not replay a prior completion or depend on Codex emitting another `thread.started` event. This session observation is exact-id scoped, does not expose the transcript or session path, and does not impose a timeout on unfinished work. Diagnostic views may include compact `terminal_source` and `wrapper_cleanup_outcome` fields. The optional stop `reason` is retained as cancellation evidence and is distinct from `takeover_reason`, which explains an ownership transfer.
 
+Startup and periodic reconciliation also repair an orphaned in-process
+repository lease when the associated durable job is terminal, wrapper cleanup
+is conclusively finished, and no live runtime or cleanup owner remains. Missing
+jobs, live runtimes, and pending or uncertain process-tree cleanup remain
+fail-closed and continue to return `repo_busy`; PatchBay never treats deletion
+of a lock file as recovery.
+
 Recommended ChatGPT worker-management loop:
 
 Parallel implementation workers normally belong in `isolated_write` worktrees.
@@ -169,6 +176,17 @@ snapshot directly from the authoritative mutation result. Shared-write starts
 mark the snapshot stale while work is active, and the terminal shared-write
 projection reconciles it. Full Edge preflight still runs at create/resume
 boundaries; historical facts are never asserted as live Git state.
+
+The Edge still publishes full worker history, but routine background projection
+does not run one Git worktree scan per historical worker on every heartbeat.
+Within one snapshot, workers sharing a base checkout reuse one exact scan.
+Stable terminal isolated-worktree summaries are reused until that worker starts
+a new turn or the Edge runtime rebuilds its in-memory projection state. Active
+work, create/resume preflight, integration preview/application, and focused
+change/file/diff inspection independently read live state and remain
+authoritative. A terminal history summary is therefore orientation state, not
+permission to integrate or proof that an externally edited retained worktree is
+unchanged.
 
 Hub worker list, status, and wait calls require an explicit `work_group_id`.
 This prevents unrelated groups from contaminating an aggregate when several

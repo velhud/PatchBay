@@ -148,7 +148,14 @@ class RepoMutationLockManager:
             lease.release()
 
     def bind_to_job(self, job_id: str, lease: RepoMutationLease) -> None:
-        self._job_leases[str(job_id)] = lease
+        with self._cleanup_guard:
+            self._job_leases[str(job_id)] = lease
+
+    def bound_job_ids(self) -> set[str]:
+        """Return jobs that still own an in-process lease or cleanup barrier."""
+
+        with self._cleanup_guard:
+            return set(self._job_leases).union(self._cleanup_job_repos)
 
     def duplicate_job_lock_fd(self, job_id: str) -> int | None:
         """Duplicate a bound job's OS lock for its process supervisor.
@@ -160,17 +167,18 @@ class RepoMutationLockManager:
         supervisor has inherited it.
         """
 
-        lease = self._job_leases.get(str(job_id))
-        if (
-            lease is None
-            or lease.released
-            or lease.file_handle is None
-            or lease.file_handle.closed
-        ):
-            return None
-        duplicate = os.dup(lease.file_handle.fileno())
-        os.set_inheritable(duplicate, True)
-        return duplicate
+        with self._cleanup_guard:
+            lease = self._job_leases.get(str(job_id))
+            if (
+                lease is None
+                or lease.released
+                or lease.file_handle is None
+                or lease.file_handle.closed
+            ):
+                return None
+            duplicate = os.dup(lease.file_handle.fileno())
+            os.set_inheritable(duplicate, True)
+            return duplicate
 
     def block_job_cleanup(
         self,
@@ -281,7 +289,8 @@ class RepoMutationLockManager:
 
     def release_job(self, job_id: str) -> None:
         job = str(job_id)
-        lease = self._job_leases.pop(job, None)
+        with self._cleanup_guard:
+            lease = self._job_leases.pop(job, None)
         if lease is not None:
             lease.release()
         self._release_cleanup_block(job)

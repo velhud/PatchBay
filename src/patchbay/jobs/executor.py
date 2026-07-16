@@ -26,7 +26,7 @@ from patchbay.jobs.manager import (
     JobManager,
     JobState,
     terminal_cleanup_pending,
-    terminal_cleanup_recovery_required,  # noqa: F401 - compatibility re-export
+    terminal_cleanup_recovery_required,
 )
 from patchbay.jobs.process_supervisor import cleanup_proof_budget_seconds
 from patchbay.jobs.session_terminal import CodexSessionTerminalObserver
@@ -297,6 +297,7 @@ class JobExecutor:
             reconciled.append(job_id)
             logger.warning("Reconciled stale running job %s with no tracked process", job_id)
 
+        orphaned_repo_leases_released = self._release_proven_terminal_repo_leases()
         self._refresh_runtime_liveness_cache()
         return {
             "checked": checked,
@@ -306,8 +307,46 @@ class JobExecutor:
             "recovered_completed_job_ids": recovered_completed,
             "cleanup_reconciled": len(cleanup_reconciled),
             "cleanup_reconciled_job_ids": cleanup_reconciled,
+            "orphaned_repo_leases_released": len(orphaned_repo_leases_released),
+            "orphaned_repo_lease_job_ids": orphaned_repo_leases_released,
             "grace_seconds": grace,
         }
+
+    def _release_proven_terminal_repo_leases(self) -> list[str]:
+        """Repair lease bookkeeping only after durable cleanup is proven.
+
+        A non-pending terminal cleanup outcome is the durable contract that the
+        complete owned process tree is gone and the repository lease was
+        released. If an in-process lease or cleanup barrier still exists for
+        that job, it is orphaned bookkeeping. Missing jobs and every pending or
+        uncertain cleanup outcome remain fail-closed.
+        """
+
+        released: list[str] = []
+        for job_id in sorted(self.repo_locks.bound_job_ids()):
+            job = self.job_manager.get_job(job_id)
+            cleanup_outcome = str(
+                getattr(job, "wrapper_cleanup_outcome", "") or ""
+            )
+            if (
+                job is None
+                or job.state
+                not in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+                or not cleanup_outcome
+                or terminal_cleanup_pending(cleanup_outcome)
+                or terminal_cleanup_recovery_required(cleanup_outcome)
+                or self._terminal_cleanup_has_active_owner(job_id)
+                or self._job_has_live_runtime(job_id)
+                or self._recorded_cleanup_has_untrusted_live_members(job)
+            ):
+                continue
+            self.repo_locks.release_job(job_id)
+            released.append(job_id)
+            logger.warning(
+                "Released orphaned repository lease for proven terminal job %s",
+                job_id,
+            )
+        return released
 
     async def reconcile_stale_running_jobs_async(self) -> Dict[str, Any]:
         """Run discovery off-loop and return asyncio cleanup to its owning loop."""

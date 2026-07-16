@@ -373,9 +373,10 @@ or Pro Request behavior. Regression coverage must prove that:
   the complete process group is reaped, all post-completion process/pipe waits
   are bounded, same-worker message and integration are refused while cleanup is
   pending, and executor-task liveness is not mislabeled as a live Codex process;
-- terminal worker projections remain current when workspace files change after
-  an earlier snapshot, and one malformed worker projection cannot suppress
-  valid workers from the same fleet snapshot;
+- stable terminal isolated-worktree projections reuse their background change
+  summary, a new worker turn or explicit force refresh invalidates that summary,
+  shared-checkout workers scan once per snapshot, and one malformed worker
+  projection cannot suppress valid workers from the same fleet snapshot;
 - missing worker projections retain group-scoped inspect/message routing through
   the durable fleet identity without cross-group or cross-generation leakage;
 - serialized shared-write policy refuses competing base writers, while an

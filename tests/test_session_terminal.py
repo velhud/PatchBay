@@ -96,6 +96,144 @@ def test_supervisor_cleanup_call_budget_covers_both_discovery_layers(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_releases_proven_terminal_orphan_repo_lease(
+    tmp_path,
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    repo = config["repositories"]["default"]
+    lease = await executor.repo_locks.acquire(
+        repo, operation="shared_write_fixture"
+    )
+    job_id = manager.create_job(
+        "resume",
+        "proven terminal orphan",
+        repo,
+        mark_repo_lock_options({}, operation="shared_write_fixture"),
+    )
+    executor.repo_locks.bind_to_job(job_id, lease)
+    manager.transition_job_terminal(
+        job_id,
+        JobState.COMPLETED,
+        result=full_result("PROVEN_TERMINAL"),
+        wrapper_cleanup_outcome="terminated_after_terminal",
+    )
+
+    with pytest.raises(RepoMutationBusy):
+        await executor.repo_locks.acquire(repo, operation="before_reconcile")
+
+    reconciliation = executor.reconcile_stale_running_jobs(grace_seconds=0)
+
+    assert reconciliation["orphaned_repo_leases_released"] == 1
+    assert reconciliation["orphaned_repo_lease_job_ids"] == [job_id]
+    assert job_id not in executor.repo_locks.bound_job_ids()
+    next_lease = await executor.repo_locks.acquire(
+        repo, operation="after_reconcile"
+    )
+    next_lease.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cleanup_outcome",
+    [
+        None,
+        "cleanup_pending",
+        "cleanup_blocked_untrusted_process_identity",
+    ],
+)
+async def test_proven_terminal_lease_reconciliation_keeps_unproven_cleanup_locked(
+    tmp_path, cleanup_outcome,
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    repo = config["repositories"]["default"]
+    lease = await executor.repo_locks.acquire(
+        repo, operation="pending_cleanup_fixture"
+    )
+    job_id = manager.create_job(
+        "resume",
+        "pending cleanup",
+        repo,
+        mark_repo_lock_options({}, operation="pending_cleanup_fixture"),
+    )
+    executor.repo_locks.bind_to_job(job_id, lease)
+    manager.transition_job_terminal(
+        job_id,
+        JobState.COMPLETED,
+        result=full_result("PENDING_CLEANUP"),
+        wrapper_cleanup_outcome=cleanup_outcome,
+    )
+
+    assert executor._release_proven_terminal_repo_leases() == []
+    assert job_id in executor.repo_locks.bound_job_ids()
+    with pytest.raises(RepoMutationBusy):
+        await executor.repo_locks.acquire(repo, operation="must_remain_busy")
+
+    executor.repo_locks.release_job(job_id)
+
+
+@pytest.mark.asyncio
+async def test_repo_lease_reconciliation_keeps_missing_job_locked(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    repo = config["repositories"]["default"]
+    lease = await executor.repo_locks.acquire(
+        repo, operation="missing_job_fixture"
+    )
+    job_id = "missing-job"
+    executor.repo_locks.bind_to_job(job_id, lease)
+
+    assert executor._release_proven_terminal_repo_leases() == []
+    assert job_id in executor.repo_locks.bound_job_ids()
+    with pytest.raises(RepoMutationBusy):
+        await executor.repo_locks.acquire(repo, operation="must_fail_closed")
+
+    executor.repo_locks.release_job(job_id)
+
+
+@pytest.mark.asyncio
+async def test_repo_lease_reconciliation_keeps_untrusted_cleanup_locked(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    repo = config["repositories"]["default"]
+    lease = await executor.repo_locks.acquire(
+        repo, operation="untrusted_cleanup_fixture"
+    )
+    job_id = manager.create_job(
+        "resume",
+        "untrusted cleanup",
+        repo,
+        mark_repo_lock_options({}, operation="untrusted_cleanup_fixture"),
+    )
+    executor.repo_locks.bind_to_job(job_id, lease)
+    manager.transition_job_terminal(
+        job_id,
+        JobState.COMPLETED,
+        result=full_result("UNTRUSTED_CLEANUP"),
+        wrapper_cleanup_outcome="terminated_after_terminal",
+    )
+    monkeypatch.setattr(
+        executor,
+        "_recorded_cleanup_has_untrusted_live_members",
+        lambda _job: True,
+    )
+
+    assert executor._release_proven_terminal_repo_leases() == []
+    assert job_id in executor.repo_locks.bound_job_ids()
+    with pytest.raises(RepoMutationBusy):
+        await executor.repo_locks.acquire(repo, operation="must_fail_untrusted")
+
+    executor.repo_locks.release_job(job_id)
+
+
+@pytest.mark.asyncio
 async def test_cancelling_startup_file_lock_wait_releases_all_lock_ownership(
     tmp_path,
 ):

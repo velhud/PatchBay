@@ -54,7 +54,10 @@ The supervisor never publishes absence before the target launch gate and
 tracker boundary are established. Cleanup proof is fsync-durable, terminal
 reports become durable before wrapper cleanup, and repository mutation remains
 blocked whenever ownership is genuinely unknown inside the supported trusted
-worker contract.
+worker contract. Startup and periodic reconciliation may release an orphaned
+in-process lease only when the durable job is terminal, cleanup is conclusively
+finished, and no live runtime or cleanup owner remains; missing jobs and pending
+or uncertain cleanup stay fail-closed.
 
 ## Auth And Tunnel Policy
 

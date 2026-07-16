@@ -17,6 +17,7 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -173,6 +174,10 @@ class WorkerRuntime:
         self._monotonic_clock = monotonic_clock or time.monotonic
         self._status_poll_snapshots: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._status_poll_responses: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+        self._projection_terminal_change_summaries: dict[
+            str, tuple[tuple[Any, ...], Dict[str, Any]]
+        ] = {}
+        self._projection_change_summary_lock = threading.Lock()
 
     def _prune_monitoring_caches(self, *, now: float | None = None) -> None:
         """Apply idle TTL and LRU bounds without changing durable worker visibility."""
@@ -752,6 +757,7 @@ class WorkerRuntime:
         self,
         *,
         previous_edge_worker_ids: Optional[Iterable[str]] = None,
+        force_change_refresh: bool = False,
     ) -> Dict[str, Any]:
         """Return the durable full-history worker projection used by Hub V2.
 
@@ -764,13 +770,15 @@ class WorkerRuntime:
         """
         self._reconcile_active_jobs_sync()
         return self._build_projection_snapshot(
-            previous_edge_worker_ids=previous_edge_worker_ids
+            previous_edge_worker_ids=previous_edge_worker_ids,
+            force_change_refresh=force_change_refresh,
         )
 
     async def projection_snapshot_async(
         self,
         *,
         previous_edge_worker_ids: Optional[Iterable[str]] = None,
+        force_change_refresh: bool = False,
     ) -> Dict[str, Any]:
         """Reconcile with the owning loop, then build projection off-loop."""
 
@@ -778,20 +786,29 @@ class WorkerRuntime:
         return await asyncio.to_thread(
             self._build_projection_snapshot,
             previous_edge_worker_ids=previous_edge_worker_ids,
+            force_change_refresh=force_change_refresh,
         )
 
     def _build_projection_snapshot(
         self,
         *,
         previous_edge_worker_ids: Optional[Iterable[str]] = None,
+        force_change_refresh: bool = False,
     ) -> Dict[str, Any]:
         """Build projection content without reconciling runtime state."""
 
         groups = self._projection_worker_groups_snapshot()
         workers: list[Dict[str, Any]] = []
+        snapshot_change_summaries: dict[tuple[str, str], Dict[str, Any]] = {}
         for jobs in groups:
             try:
-                workers.append(self._worker_projection(jobs))
+                workers.append(
+                    self._worker_projection(
+                        jobs,
+                        projection_change_cache=snapshot_change_summaries,
+                        force_change_refresh=force_change_refresh,
+                    )
+                )
             except Exception as error:
                 logger.warning(
                     "Worker projection failed for %s (%s)",
@@ -800,6 +817,11 @@ class WorkerRuntime:
                 )
                 workers.append(self._projection_error_worker(jobs, error))
         current_ids = [str(worker["edge_worker_id"]) for worker in workers]
+        with self._projection_change_summary_lock:
+            for worker_id in (
+                set(self._projection_terminal_change_summaries) - set(current_ids)
+            ):
+                self._projection_terminal_change_summaries.pop(worker_id, None)
         previous_ids = self._normalize_projection_worker_ids(previous_edge_worker_ids)
         tombstones = [
             {"edge_worker_id": worker_id}
@@ -2223,7 +2245,15 @@ class WorkerRuntime:
         canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def _worker_projection(self, jobs: list[JobInfo]) -> Dict[str, Any]:
+    def _worker_projection(
+        self,
+        jobs: list[JobInfo],
+        *,
+        projection_change_cache: Optional[
+            dict[tuple[str, str], Dict[str, Any]]
+        ] = None,
+        force_change_refresh: bool = False,
+    ) -> Dict[str, Any]:
         latest = jobs[-1]
         options = latest.options or {}
         edge_worker_id, worker_name = self._worker_identity(jobs)
@@ -2231,7 +2261,12 @@ class WorkerRuntime:
         session_id = self._session_for_jobs(jobs)
         turn_state = self._projection_turn_state(latest, session_id=session_id)
         liveness = self._projection_liveness(jobs, session_id=session_id)
-        change_summary = self._projection_change_summary(jobs, workspace=workspace)
+        change_summary = self._projection_change_summary(
+            jobs,
+            workspace=workspace,
+            projection_change_cache=projection_change_cache,
+            force_change_refresh=force_change_refresh,
+        )
         integration_state = self._projection_integration_state(
             jobs,
             workspace=workspace,
@@ -2436,7 +2471,14 @@ class WorkerRuntime:
         jobs: list[JobInfo],
         *,
         workspace: Dict[str, Any],
+        projection_change_cache: Optional[
+            dict[tuple[str, str], Dict[str, Any]]
+        ] = None,
+        force_change_refresh: bool = False,
     ) -> Dict[str, Any]:
+        snapshot_key: tuple[str, str] | None = None
+        terminal_cache_key: tuple[Any, ...] | None = None
+        edge_worker_id = ""
         if workspace["mode"] == "read_only":
             changed_files: list[str] = []
             available = True
@@ -2444,19 +2486,86 @@ class WorkerRuntime:
             changed_files = []
             available = False
         else:
+            execution_path = self._execution_path_for_workspace(workspace)
+            snapshot_key = (str(workspace["mode"]), execution_path)
+            if (
+                projection_change_cache is not None
+                and workspace["mode"] == "shared_write"
+                and snapshot_key in projection_change_cache
+            ):
+                return deepcopy(projection_change_cache[snapshot_key])
+
+            terminal_cache_key = self._terminal_projection_change_cache_key(
+                jobs,
+                workspace=workspace,
+            )
+            edge_worker_id = self._worker_identity(jobs)[0]
+            if (
+                projection_change_cache is not None
+                and terminal_cache_key is not None
+                and not force_change_refresh
+            ):
+                with self._projection_change_summary_lock:
+                    cached = self._projection_terminal_change_summaries.get(
+                        edge_worker_id
+                    )
+                if cached is not None and cached[0] == terminal_cache_key:
+                    return deepcopy(cached[1])
             try:
                 changed_files = self._changed_files(jobs)
                 available = True
             except Exception:
                 changed_files = []
                 available = False
-        return {
+        summary = {
             "available": available,
             "has_changes": bool(changed_files) if available else None,
             "change_count": len(changed_files) if available else None,
             "changed_files": changed_files[:MAX_PROJECTION_CHANGED_FILES],
             "truncated": len(changed_files) > MAX_PROJECTION_CHANGED_FILES,
         }
+        if (
+            projection_change_cache is not None
+            and workspace["mode"] == "shared_write"
+            and snapshot_key is not None
+        ):
+            projection_change_cache[snapshot_key] = deepcopy(summary)
+        if (
+            projection_change_cache is not None
+            and terminal_cache_key is not None
+            and available
+        ):
+            with self._projection_change_summary_lock:
+                self._projection_terminal_change_summaries[edge_worker_id] = (
+                    terminal_cache_key,
+                    deepcopy(summary),
+                )
+        return summary
+
+    def _terminal_projection_change_cache_key(
+        self,
+        jobs: list[JobInfo],
+        *,
+        workspace: Dict[str, Any],
+    ) -> tuple[Any, ...] | None:
+        """Key immutable managed isolated-worktree state after cleanup."""
+
+        latest = jobs[-1]
+        if (
+            workspace["mode"] != "isolated_write"
+            or not workspace["available"]
+            or workspace["discarded"]
+            or latest.state in {JobState.PENDING, JobState.RUNNING}
+            or self._terminal_cleanup_pending_for_jobs(jobs)
+            or self._terminal_cleanup_recovery_required_for_jobs(jobs)
+        ):
+            return None
+        return (
+            latest.job_id,
+            latest.state.value,
+            str(workspace.get("worktree_path") or ""),
+            tuple(sorted(self._included_untracked_base_digests(jobs).items())),
+        )
 
     def _projection_integration_state(
         self,

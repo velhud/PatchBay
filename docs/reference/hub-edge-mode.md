@@ -364,6 +364,19 @@ If an active turn cannot be drained, postpone that Edge. Do not deploy through
 it and do not delete or rewrite its durable state merely to make the rollout
 look clean.
 
+For one-machine `repo_busy` recovery, first prove that the affected repository
+has no live mutator, no active cleanup owner, and no uncertain process-tree
+cleanup. Preserve the base checkout, Edge job store, Codex session state,
+worktree metadata, and group identity. A controlled restart of only that Edge
+then releases parent-owned file descriptors while leaving other machines and
+their groups running. After reconnect, verify the same machine generation,
+group, worker/session/workspace records, checkout HEAD and dirty-path inventory;
+then prove a fresh lock acquisition before resuming the same worker. Never
+delete the lock file, reset/clean/stash the checkout, or restart another Edge to
+clear a repository-local incident. Runtime reconciliation repairs an orphaned
+in-process lease only when durable terminal and completed-cleanup evidence is
+conclusive; missing jobs and pending or uncertain cleanup remain fail-closed.
+
 Work groups accept `shared_write_policy=serialized|manager_controlled`.
 `serialized` keeps the per-repository mutation lock. `manager_controlled`
 permits multiple workers to write directly in the same base checkout because
@@ -439,11 +452,16 @@ hub:
   install missing development dependencies when required by the task.
 - Edge machines keep local Codex auth, repositories, worker state, worktrees,
   logs, and credentials.
-- Edge worker projection preserves full-history continuity and recomputes
-  terminal entries from durable worker/workspace state. PatchBay deliberately
-  does not keep a terminal cache that could hide repository changes made
-  outside PatchBay. A malformed worker projection is represented by a compact,
-  sanitized error entry while all other workers remain visible.
+- Edge worker projection preserves full-history continuity. Routine background
+  snapshots scan a shared checkout once even when many historical workers point
+  to it, and reuse stable terminal isolated-worktree change summaries until a
+  new turn or Edge runtime restart. This prevents the heartbeat loop from
+  launching one full Git scan per historical worker every few seconds. Active
+  work, strict create/resume preflight, integration, and focused inspection
+  independently remain live and authoritative; cached terminal summaries are
+  historical orientation and must not be used as integration proof. A malformed worker
+  projection is represented by a compact, sanitized error entry while all
+  other workers remain visible.
 - When one worker projection is absent, Hub can route focused inspect/message
   through the durable fleet-worker identity scoped to the same group, machine,
   and generation. The response marks `projection_missing: true`; Edge remains

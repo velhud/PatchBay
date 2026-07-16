@@ -369,13 +369,15 @@ def test_projection_snapshot_reports_changes_and_deterministic_content_revisions
     first = runtime.projection_snapshot()
     second = runtime.projection_snapshot()
     (worktree / "post-snapshot.txt").write_text("new evidence\n", encoding="utf-8")
-    mutated = runtime.projection_snapshot()
+    cached = runtime.projection_snapshot()
+    mutated = runtime.projection_snapshot(force_change_refresh=True)
     worker = first["workers"][0]
 
     assert first["content_revision"] == f"sha256:{first['content_sha256']}"
     assert first["content_revision"] == second["content_revision"]
     assert first["content_sha256"] == second["content_sha256"]
-    assert change_scans == 3
+    assert cached["content_revision"] == second["content_revision"]
+    assert change_scans == 2
     assert mutated["content_revision"] != second["content_revision"]
     assert mutated["workers"][0]["change_summary"]["changed_files"] == [
         "post-snapshot.txt",
@@ -398,9 +400,95 @@ def test_projection_snapshot_reports_changes_and_deterministic_content_revisions
     integrated = runtime.projection_snapshot()
 
     assert integrated["content_revision"] != first["content_revision"]
-    assert change_scans == 4
+    assert change_scans == 2
     assert integrated["workers"][0]["integration_state"] == "applied_to_checkout"
     assert integrated["workers"][0]["review_disposition"] == "accepted"
+
+
+def test_projection_snapshot_deduplicates_shared_checkout_scan_per_snapshot(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = ProjectionExecutor()
+    runtime = WorkerRuntime(config, manager, executor)
+    for worker_id in ("wrk-shared-a", "wrk-shared-b"):
+        add_worker(
+            manager,
+            executor,
+            worker_id=worker_id,
+            name=worker_id,
+            state=JobState.COMPLETED,
+            workspace_mode="shared_write",
+        )
+    changed_files = runtime._changed_files
+    change_scans = 0
+
+    def counted_changed_files(jobs):
+        nonlocal change_scans
+        change_scans += 1
+        return changed_files(jobs)
+
+    runtime._changed_files = counted_changed_files
+
+    first = runtime.projection_snapshot()
+    second = runtime.projection_snapshot()
+
+    assert change_scans == 2
+    assert len(first["workers"]) == 2
+    assert first["content_revision"] == second["content_revision"]
+
+
+def test_projection_snapshot_invalidates_terminal_cache_for_new_worker_turn(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = ProjectionExecutor()
+    runtime = WorkerRuntime(config, manager, executor)
+    first_job_id = add_worker(
+        manager,
+        executor,
+        worker_id="wrk-turn-cache",
+        name="Turn Cache",
+        state=JobState.COMPLETED,
+        workspace_mode="isolated_write",
+    )
+    worktree = Path(manager.jobs[first_job_id].worktree_path)
+    (worktree / "first.txt").write_text("first\n", encoding="utf-8")
+    changed_files = runtime._changed_files
+    change_scans = 0
+
+    def counted_changed_files(jobs):
+        nonlocal change_scans
+        change_scans += 1
+        return changed_files(jobs)
+
+    runtime._changed_files = counted_changed_files
+    first = runtime.projection_snapshot()
+    assert change_scans == 1
+
+    first_job = manager.jobs[first_job_id]
+    second_job_id = manager.create_job(
+        "resume",
+        "Projection follow-up",
+        first_job.repo_path,
+        deepcopy(first_job.options or {}),
+    )
+    manager.update_job_state(
+        second_job_id,
+        JobState.COMPLETED,
+        started_at=time.time() - 10,
+        completed_at=time.time(),
+        session_id=first_job.session_id,
+        result={"summary": "Second turn"},
+    )
+    (worktree / "second.txt").write_text("second\n", encoding="utf-8")
+
+    second = runtime.projection_snapshot()
+
+    assert change_scans == 2
+    assert first["content_revision"] != second["content_revision"]
+    assert second["workers"][0]["change_summary"]["changed_files"] == [
+        "first.txt",
+        "second.txt",
+    ]
 
 
 def test_projection_snapshot_does_not_read_or_mutate_manager_poll_delta_caches(tmp_path):
@@ -496,10 +584,10 @@ def test_projection_snapshot_isolates_malformed_worker_projection(tmp_path, monk
     )
     project = runtime._worker_projection
 
-    def malformed_projection(jobs):
+    def malformed_projection(jobs, **kwargs):
         if runtime._worker_identity(jobs)[0] == "wrk-malformed":
             raise ValueError("private projection detail /secret/worktree")
-        return project(jobs)
+        return project(jobs, **kwargs)
 
     monkeypatch.setattr(runtime, "_worker_projection", malformed_projection)
 
