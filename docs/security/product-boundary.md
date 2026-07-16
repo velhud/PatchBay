@@ -57,7 +57,9 @@ blocked whenever ownership is genuinely unknown inside the supported trusted
 worker contract. Startup and periodic reconciliation may release an orphaned
 in-process lease only when the durable job is terminal, cleanup is conclusively
 finished, and no live runtime or cleanup owner remains; missing jobs and pending
-or uncertain cleanup stay fail-closed.
+or uncertain cleanup stay fail-closed. Routine liveness refresh may reuse that
+same conclusive inactive proof, but never substitutes cached absence when the
+cleanup outcome is missing, pending, or uncertain.
 
 ## Auth And Tunnel Policy
 

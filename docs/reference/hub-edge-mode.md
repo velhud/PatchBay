@@ -464,6 +464,11 @@ hub:
   historical orientation and must not be used as integration proof. A malformed worker
   projection is represented by a compact, sanitized error entry while all
   other workers remain visible.
+- Durable terminal cleanup proof is also the liveness-cache boundary. Once a
+  turn conclusively has no owned process, routine projections reuse inactive
+  liveness instead of rediscovering that historical process tree every cycle.
+  Missing, pending, or uncertain cleanup remains fail-closed and is still
+  inspected.
 - When one worker projection is absent, Hub can route focused inspect/message
   through the durable fleet-worker identity scoped to the same group, machine,
   and generation. The response marks `projection_missing: true`; Edge remains

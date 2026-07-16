@@ -1633,13 +1633,44 @@ class JobExecutor:
 
     def _refresh_runtime_liveness_cache(self) -> None:
         snapshot: dict[str, Dict[str, bool]] = {}
-        for job_id in list(self.job_manager.jobs):
+        for job_id, job in list(self.job_manager.jobs.items()):
             try:
-                snapshot[job_id] = self._runtime_liveness(job_id)
+                cleanup_outcome = str(job.wrapper_cleanup_outcome or "")
+                if (
+                    job.state
+                    in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+                    and cleanup_outcome
+                    and not terminal_cleanup_pending(cleanup_outcome)
+                    and not terminal_cleanup_recovery_required(cleanup_outcome)
+                    and job_id not in self.tasks
+                    and job_id not in self.processes
+                    and not self._terminal_cleanup_has_active_owner(job_id)
+                ):
+                    snapshot[job_id] = self._inactive_runtime_liveness()
+                else:
+                    snapshot[job_id] = self._runtime_liveness(job_id)
             except Exception:
                 continue
         with self._runtime_liveness_cache_lock:
             self._runtime_liveness_cache = snapshot
+
+    @staticmethod
+    def _inactive_runtime_liveness() -> Dict[str, bool]:
+        """Return durable-cleanup liveness without repeating process discovery."""
+
+        return {
+            "executor_task_alive": False,
+            "tracked_process_alive": False,
+            "tracked_group_alive": False,
+            "recorded_pid_alive": False,
+            "recorded_group_alive": False,
+            "marked_descendants_alive": False,
+            "tracked_descendants_alive": False,
+            "descendant_liveness_unknown": False,
+            "supervisor_cleanup_unproven": False,
+            "process_alive": False,
+            "runtime_alive": False,
+        }
 
     def runtime_liveness_snapshot(self, job_id: str) -> Dict[str, bool]:
         """Return the latest reconciled liveness without process discovery."""

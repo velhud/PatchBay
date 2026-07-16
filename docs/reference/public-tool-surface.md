@@ -154,7 +154,10 @@ repository lease when the associated durable job is terminal, wrapper cleanup
 is conclusively finished, and no live runtime or cleanup owner remains. Missing
 jobs, live runtimes, and pending or uncertain process-tree cleanup remain
 fail-closed and continue to return `repo_busy`; PatchBay never treats deletion
-of a lock file as recovery.
+of a lock file as recovery. The same conclusive cleanup proof lets routine Edge
+projection reuse an inactive liveness record for that historical turn instead
+of repeating process-tree discovery every few seconds; absent or uncertain
+proof never takes this fast path.
 
 Recommended ChatGPT worker-management loop:
 

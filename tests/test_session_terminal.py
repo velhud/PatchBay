@@ -233,6 +233,40 @@ async def test_repo_lease_reconciliation_keeps_untrusted_cleanup_locked(
     executor.repo_locks.release_job(job_id)
 
 
+def test_liveness_refresh_skips_process_discovery_for_proven_terminal_cleanup(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    proven_id = manager.create_job("plan", "proven", config["repositories"]["default"])
+    manager.update_job_state(
+        proven_id,
+        JobState.COMPLETED,
+        wrapper_cleanup_outcome="process_exited",
+    )
+    missing_id = manager.create_job("plan", "missing", config["repositories"]["default"])
+    manager.update_job_state(missing_id, JobState.COMPLETED)
+    running_id = manager.create_job("plan", "running", config["repositories"]["default"])
+    manager.update_job_state(running_id, JobState.RUNNING)
+    discovered: list[str] = []
+
+    def record_discovery(job_id):
+        discovered.append(job_id)
+        return executor._inactive_runtime_liveness()
+
+    monkeypatch.setattr(executor, "_runtime_liveness", record_discovery)
+
+    executor._refresh_runtime_liveness_cache()
+
+    assert proven_id not in discovered
+    assert missing_id in discovered
+    assert running_id in discovered
+    assert executor.runtime_liveness_snapshot(proven_id) == (
+        executor._inactive_runtime_liveness()
+    )
+
+
 @pytest.mark.asyncio
 async def test_cancelling_startup_file_lock_wait_releases_all_lock_ownership(
     tmp_path,

@@ -373,6 +373,9 @@ or Pro Request behavior. Regression coverage must prove that:
   the complete process group is reaped, all post-completion process/pipe waits
   are bounded, same-worker message and integration are refused while cleanup is
   pending, and executor-task liveness is not mislabeled as a live Codex process;
+- liveness refresh reuses conclusive durable terminal-cleanup proof instead of
+  repeating process-tree discovery for every historical turn on each Edge
+  projection cycle, while missing or uncertain cleanup still performs discovery;
 - stable terminal isolated-worktree projections reuse their background change
   summary, a new worker turn or explicit force refresh invalidates that summary,
   fully terminal shared-checkout workers reuse one path-scoped background
