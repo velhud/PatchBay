@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from patchbay.jobs import manager as manager_module
 from patchbay.jobs.manager import JobManager, JobState
 
 
@@ -88,6 +89,33 @@ def test_job_manager_persists_redacted_completed_job(tmp_path, monkeypatch):
     assert json.loads(record_path.read_text(encoding="utf-8"))[
         "persistence_version"
     ] == 2
+
+
+def test_identical_job_persistence_skips_atomic_rewrite(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    job_id = manager.create_job(
+        "plan", "inspect", config["repositories"]["default"], {}
+    )
+    record_path = tmp_path / "logs" / "jobs" / "state" / f"{job_id}.json"
+    original_payload = record_path.read_bytes()
+    original_mtime = record_path.stat().st_mtime_ns
+    original_revision = manager.state_revision
+    replace_calls = []
+    atomic_replace = manager_module.os.replace
+
+    def record_replace(source, destination):
+        replace_calls.append((source, destination))
+        return atomic_replace(source, destination)
+
+    monkeypatch.setattr(manager_module.os, "replace", record_replace)
+
+    manager._persist_job(manager.jobs[job_id])
+
+    assert replace_calls == []
+    assert manager.state_revision == original_revision
+    assert record_path.read_bytes() == original_payload
+    assert record_path.stat().st_mtime_ns == original_mtime
 
 
 def test_completion_evidence_is_redacted_and_survives_reload(tmp_path):

@@ -768,6 +768,17 @@ class JobManager:
         with self._state_lock:
             path = self._job_record_path(job.job_id)
             payload = json.dumps(job.to_persisted_dict(), indent=2, sort_keys=True)
+            try:
+                if path.read_text(encoding="utf-8") == payload:
+                    return
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logger.debug(
+                    "Failed to compare existing job record %s before persistence: %s",
+                    job.job_id,
+                    internal_log_error(error),
+                )
             descriptor, temporary_path = tempfile.mkstemp(
                 prefix=f".{path.name}.",
                 suffix=".tmp",
