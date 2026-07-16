@@ -26,7 +26,7 @@ def make_config(tmp_path):
     }
 
 
-def test_job_manager_persists_redacted_completed_job(tmp_path):
+def test_job_manager_persists_redacted_completed_job(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     manager = JobManager(config)
     job_id = manager.create_job(
@@ -52,6 +52,7 @@ def test_job_manager_persists_redacted_completed_job(tmp_path):
     persisted = json.loads(record_path.read_text(encoding="utf-8"))
     serialized = json.dumps(persisted)
     assert persisted["state"] == "completed"
+    assert persisted["persistence_version"] == 2
     assert "prompt" not in persisted
     assert "prompt_preview" not in persisted
     assert persisted["result"]["summary"] == "done with token=[REDACTED_POSSIBLE_SECRET]"
@@ -60,7 +61,16 @@ def test_job_manager_persists_redacted_completed_job(tmp_path):
     assert "fixture-value" not in serialized
     assert "raw output should not persist" not in serialized
 
+    reload_persists = []
+    persist_job = JobManager._persist_job
+
+    def count_reload_persist(self, job):
+        reload_persists.append(job.job_id)
+        return persist_job(self, job)
+
+    monkeypatch.setattr(JobManager, "_persist_job", count_reload_persist)
     reloaded = JobManager(config)
+    assert reload_persists == []
     job = reloaded.get_job(job_id)
     assert job is not None
     assert job.state == JobState.COMPLETED
@@ -69,6 +79,15 @@ def test_job_manager_persists_redacted_completed_job(tmp_path):
         "summary": "done with token=[REDACTED_POSSIBLE_SECRET]",
         "files_changed": [],
     }
+
+    persisted.pop("persistence_version")
+    record_path.write_text(json.dumps(persisted), encoding="utf-8")
+    reload_persists.clear()
+    JobManager(config)
+    assert reload_persists == [job_id]
+    assert json.loads(record_path.read_text(encoding="utf-8"))[
+        "persistence_version"
+    ] == 2
 
 
 def test_completion_evidence_is_redacted_and_survives_reload(tmp_path):

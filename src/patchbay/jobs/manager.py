@@ -21,6 +21,7 @@ from patchbay.evidence import EvidenceRecorder
 from patchbay.security import internal_log_error, redact_sensitive_output, validate_allowed_path
 
 logger = logging.getLogger(__name__)
+JOB_PERSISTENCE_VERSION = 2
 
 
 class JobState(str, Enum):
@@ -127,6 +128,7 @@ class JobInfo:
     def to_persisted_dict(self) -> Dict[str, Any]:
         """Convert to a redacted durable job record."""
         data = self.to_dict()
+        data["persistence_version"] = JOB_PERSISTENCE_VERSION
         data.pop("prompt", None)
         if self.result:
             data["result"] = {
@@ -168,6 +170,7 @@ class JobManager:
         # re-entrant boundary. create_job takes _admission_lock before this lock;
         # no other path takes _admission_lock, so the ordering cannot invert.
         self._state_lock = threading.RLock()
+        self._state_revision = 0
         self.max_concurrent = config['server']['max_concurrent_jobs']
         self.queue_enabled = bool(config.get("server", {}).get("queue_enabled", False))
         self.job_timeout = config['server']['job_timeout_seconds']
@@ -189,6 +192,13 @@ class JobManager:
             self.queue_enabled,
             timeout_label,
         )
+
+    @property
+    def state_revision(self) -> int:
+        """Return the in-memory revision of durable job state."""
+
+        with self._state_lock:
+            return self._state_revision
     
     def create_job(self, mode: str, prompt: str, repo_path: str, options: Optional[Dict] = None) -> str:
         """Create a new job under the active-job admission lock."""
@@ -771,6 +781,7 @@ class JobManager:
                     os.fsync(handle.fileno())
                 os.replace(temporary_path, path)
                 self._fsync_job_state_dir()
+                self._state_revision += 1
             finally:
                 Path(temporary_path).unlink(missing_ok=True)
 
@@ -792,6 +803,7 @@ class JobManager:
             try:
                 self._job_record_path(job_id).unlink(missing_ok=True)
                 self._fsync_job_state_dir()
+                self._state_revision += 1
             except Exception as error:
                 logger.warning("Failed to delete job record %s: %s", job_id, internal_log_error(error))
 
@@ -800,44 +812,71 @@ class JobManager:
         for path in sorted(self.job_state_dir.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                needs_persist = (
+                    data.get("persistence_version") != JOB_PERSISTENCE_VERSION
+                )
                 job = JobInfo.from_persisted_dict(data)
-                self._recover_result_artifact(job)
+                needs_persist = self._recover_result_artifact(job) or needs_persist
                 if job.state == JobState.PENDING:
                     job.state = JobState.FAILED
                     job.completed_at = time.time()
                     job.error = "Job did not finish before the server stopped."
+                    needs_persist = True
                 elif job.state == JobState.RUNNING:
-                    job.progress = job.progress or "Recovered running job record after PatchBay restart; executor reconciliation will verify whether a live Codex runtime still exists."
+                    if not job.progress:
+                        job.progress = "Recovered running job record after PatchBay restart; executor reconciliation will verify whether a live Codex runtime still exists."
+                        needs_persist = True
                 elif job.state == JobState.COMPLETED:
+                    needs_persist = job.error is not None or needs_persist
                     job.error = None
                 if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+                    live_only_before = (
+                        job.current_phase,
+                        job.current_item_type,
+                        job.current_item_status,
+                        job.current_command_preview,
+                        job.current_command_started_at,
+                    )
                     self._normalize_terminal_job(job)
+                    live_only_after = (
+                        job.current_phase,
+                        job.current_item_type,
+                        job.current_item_status,
+                        job.current_command_preview,
+                        job.current_command_started_at,
+                    )
+                    needs_persist = live_only_before != live_only_after or needs_persist
                 with self._state_lock:
                     self.jobs[job.job_id] = job
-                    self._persist_job(job)
+                    if needs_persist:
+                        self._persist_job(job)
                 loaded += 1
             except Exception as error:
                 logger.warning("Failed to load job record %s: %s", path.name, internal_log_error(error))
         if loaded:
+            with self._state_lock:
+                self._state_revision += 1
             logger.info("Loaded %d durable job record(s)", loaded)
 
-    def _recover_result_artifact(self, job: JobInfo) -> None:
+    def _recover_result_artifact(self, job: JobInfo) -> bool:
         """Recover a terminal result payload when the state file lost it."""
         if job.state not in {
             JobState.COMPLETED,
             JobState.FAILED,
             JobState.CANCELLED,
         }:
-            return
+            return False
         if isinstance(job.result, dict):
-            return
+            return False
         result_path = self.job_logs_dir / f"{job.job_id}_result.json"
         if not result_path.exists():
-            return
+            return False
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
         except Exception as error:
             logger.warning("Failed to recover result artifact for job %s: %s", job.job_id, internal_log_error(error))
-            return
+            return False
         if isinstance(payload, dict):
             job.result = redact_sensitive_output(payload)
+            return True
+        return False

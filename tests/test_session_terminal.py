@@ -258,6 +258,7 @@ def test_liveness_refresh_skips_process_discovery_for_proven_terminal_cleanup(
     monkeypatch.setattr(executor, "_runtime_liveness", record_discovery)
 
     executor._refresh_runtime_liveness_cache()
+    first_revision = executor.runtime_liveness_revision
 
     assert proven_id not in discovered
     assert missing_id in discovered
@@ -272,6 +273,7 @@ def test_liveness_refresh_skips_process_discovery_for_proven_terminal_cleanup(
     assert proven_id not in discovered
     assert missing_id not in discovered
     assert running_id in discovered
+    assert executor.runtime_liveness_revision == first_revision
 
 
 @pytest.mark.asyncio

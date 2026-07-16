@@ -7,6 +7,7 @@ the journal ordering enforced below.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from typing import Any, AsyncIterator, Iterable, Mapping, Protocol, Sequence
@@ -447,6 +448,39 @@ class EdgeExecutionService:
                 previous_edge_worker_ids=previous,
             )
         return self._finalize_projection_snapshot(raw)
+
+    async def projection_state_token_async(self) -> Any | None:
+        """Return a reconciled cheap token for projection-visible state."""
+
+        runtime = getattr(self.handler, "worker_runtime", None)
+        token_builder = getattr(runtime, "projection_state_token_async", None)
+        if callable(token_builder):
+            worker_token = token_builder()
+            if inspect.isawaitable(worker_token):
+                worker_token = await worker_token
+        else:
+            token_builder = getattr(runtime, "projection_state_token", None)
+            if not callable(token_builder):
+                return None
+            worker_token = token_builder()
+        pro_store = getattr(self.handler, "pro_request_store", None)
+        pro_revision = int(
+            getattr(pro_store, "projection_state_revision", 0) or 0
+        )
+        return worker_token, pro_revision
+
+    def projection_state_token(self) -> Any | None:
+        """Return the current cheap token without running reconciliation."""
+
+        runtime = getattr(self.handler, "worker_runtime", None)
+        token_builder = getattr(runtime, "projection_state_token", None)
+        if not callable(token_builder):
+            return None
+        pro_store = getattr(self.handler, "pro_request_store", None)
+        pro_revision = int(
+            getattr(pro_store, "projection_state_revision", 0) or 0
+        )
+        return token_builder(), pro_revision
 
     def _projection_previous_worker_ids(
         self,

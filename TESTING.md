@@ -380,6 +380,12 @@ or Pro Request behavior. Regression coverage must prove that:
 - production Edge HTTP transport reuses a bounded pool of persistent
   connections across independent control loops, discards broken connections,
   and never hides an uncertain response behind an automatic request retry;
+- stable Edge state tokens suppress duplicate full-history projection builds
+  and uploads, while heartbeat carries bounded counts rather than embedding the
+  full worker snapshot and a changed job/liveness/Pro Request revision forces a
+  new atomic projection;
+- current-version durable job records load without being rewritten, while old
+  records still receive one redacting/normalizing migration write;
 - stable terminal isolated-worktree projections reuse their background change
   summary, a new worker turn or explicit force refresh invalidates that summary,
   fully terminal shared-checkout workers reuse one path-scoped background

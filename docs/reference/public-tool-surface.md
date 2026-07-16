@@ -162,7 +162,9 @@ outcome reuses only its last conservative liveness result between bounded
 periodic discovery passes and never gains mutation permission from that cache.
 The Edge's recurring manager exchanges reuse bounded persistent HTTP
 connections; a connection failure is surfaced without automatically replaying
-a request whose Hub outcome may be unknown.
+a request whose Hub outcome may be unknown. Stable reconciled Edge state keeps
+the last accepted projection revision and heartbeat reports only bounded worker
+counts; any job, liveness, or Pro Request revision forces a new full snapshot.
 
 Recommended ChatGPT worker-management loop:
 

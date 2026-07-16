@@ -70,6 +70,18 @@ class FakeWorkerRuntime:
         )
 
 
+class TokenWorkerRuntime(FakeWorkerRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self.state_token = 0
+
+    def projection_state_token(self) -> tuple[int, int]:
+        return self.state_token, 0
+
+    async def projection_state_token_async(self) -> tuple[int, int]:
+        return self.projection_state_token()
+
+
 class FakeToolHandler:
     def __init__(self, *, block: bool = False) -> None:
         self.config: dict[str, Any] = {}
@@ -344,6 +356,55 @@ async def test_persistent_transport_discards_failure_without_hidden_retry() -> N
     assert await transport.post_json("/claim", {"slots": 1}) == {"accepted": True}
     assert len(connections) == 2
     await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stable_projection_is_not_rebuilt_or_embedded_in_heartbeat(
+    tmp_path: Path,
+) -> None:
+    capabilities = _capabilities()
+    handler = FakeToolHandler()
+    handler.worker_runtime = TokenWorkerRuntime()
+    journal, execution = _service(tmp_path / "edge.sqlite3", handler, capabilities)
+    transport = FakeHttpTransport()
+    runner = _runner(execution, transport)
+
+    first = await runner.projection_once()
+    unchanged = await runner.projection_once()
+
+    assert first["projection_accepted"] is True
+    assert unchanged["projection_unchanged"] is True
+    assert len(transport.calls[DEFAULT_ENDPOINTS.projection]) == 1
+    assert journal.projection_revision == 1
+
+    handler.worker_runtime.state_token += 1
+    handler.worker_runtime.workers = [
+        {
+            "edge_worker_id": "worker-stable",
+            "turn_state": "completed",
+            "liveness": "terminal",
+            "integration_state": "not_integrated",
+        }
+    ]
+    await runner.projection_once()
+    await runner.heartbeat_once()
+
+    assert len(transport.calls[DEFAULT_ENDPOINTS.projection]) == 2
+    heartbeat_status = transport.calls[DEFAULT_ENDPOINTS.heartbeat][-1][
+        "worker_status"
+    ]
+    assert "workers" not in heartbeat_status
+    assert heartbeat_status["counts"] == {
+        "total": 1,
+        "active": 0,
+        "quiet": 0,
+        "stale": 0,
+        "lost": 0,
+        "completed": 1,
+        "failed": 0,
+        "unintegrated": 1,
+    }
+    journal.close()
 
 
 class FirstReceiptFailsTransport(FakeHttpTransport):

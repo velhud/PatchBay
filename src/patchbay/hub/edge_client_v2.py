@@ -863,6 +863,8 @@ class EdgeV2Runner:
         ] = OrderedDict()
         self._background_errors: list[str] = []
         self._latest_projection: dict[str, Any] = {}
+        self._latest_projection_status: dict[str, Any] = {}
+        self._last_published_projection_state_token: Any | None = None
         self._projection_error = ""
         self._run_task: asyncio.Task[Any] | None = None
         self._shutdown_lock = asyncio.Lock()
@@ -954,9 +956,9 @@ class EdgeV2Runner:
         projection_health["projection_age_seconds"] = (
             max(0.0, time.time() - float(last_success)) if last_success else None
         )
-        worker_status = self._latest_projection or (
-            {"error": self._projection_error} if self._projection_error else {}
-        )
+        worker_status = dict(self._latest_projection_status)
+        if self._projection_error:
+            worker_status["projection_error"] = True
         resource_status = build_resource_status(self.config, worker_status)
         resource_status["projection_health"] = projection_health
         payload = {
@@ -980,13 +982,24 @@ class EdgeV2Runner:
     async def projection_once(self) -> dict[str, Any]:
         """Build and publish one full, monotonically revisioned projection."""
 
+        state_token = await self.execution.projection_state_token_async()
+        if (
+            state_token is not None
+            and self._latest_projection
+            and state_token == self._last_published_projection_state_token
+        ):
+            return {
+                "accepted": True,
+                "projection_accepted": False,
+                "projection_unchanged": True,
+                "current_projection_revision": self.execution.journal.projection_revision,
+            }
         try:
             projection = await self.execution.projection_snapshot_async()
         except Exception as error:
             self._projection_error = str(error)
+            self._last_published_projection_state_token = None
             raise
-        self._latest_projection = dict(projection)
-        self._projection_error = ""
         response = await self._request(
             self.endpoints.projection,
             {
@@ -994,6 +1007,17 @@ class EdgeV2Runner:
                 "projection_revision": int(projection["projection_revision"]),
                 "projection": projection,
             },
+        )
+        self._latest_projection = dict(projection)
+        self._latest_projection_status = _compact_projection_status(projection)
+        self._projection_error = ""
+        current_token = self.execution.projection_state_token()
+        self._last_published_projection_state_token = (
+            current_token
+            if current_token == state_token
+            and response.get("accepted") is not False
+            and response.get("projection_accepted") is not False
+            else None
         )
         self._queue_response_work(response)
         self._heartbeat_event.set()
@@ -2097,6 +2121,48 @@ async def _transport_post(
     if not isinstance(result, Mapping):
         raise EdgeV2HttpError("Hub V2 transport response must be an object")
     return dict(result)
+
+
+def _compact_projection_status(projection: Mapping[str, Any]) -> dict[str, Any]:
+    """Summarize a full projection for bounded heartbeat resource telemetry."""
+
+    counts = {
+        "total": 0,
+        "active": 0,
+        "quiet": 0,
+        "stale": 0,
+        "lost": 0,
+        "completed": 0,
+        "failed": 0,
+        "unintegrated": 0,
+    }
+    for worker in projection.get("workers") or []:
+        if not isinstance(worker, Mapping):
+            continue
+        counts["total"] += 1
+        turn_state = str(worker.get("turn_state") or worker.get("state") or "")
+        liveness = str(worker.get("liveness") or "")
+        if turn_state in {"starting", "working", "running"}:
+            counts["active"] += 1
+        if liveness in {"quiet", "stale", "lost"}:
+            counts[liveness] += 1
+        if turn_state == "completed":
+            counts["completed"] += 1
+        elif turn_state in {"failed", "cancelled"}:
+            counts["failed"] += 1
+        if str(worker.get("integration_state") or "") in {
+            "pending",
+            "not_integrated",
+            "unintegrated",
+        }:
+            counts["unintegrated"] += 1
+    return {
+        "snapshot_kind": "summary",
+        "projection_revision": int(projection.get("projection_revision") or 0),
+        "content_revision": str(projection.get("content_revision") or ""),
+        "active": counts["active"],
+        "counts": counts,
+    }
 
 
 def _claimed_attempts(response: Mapping[str, Any]) -> list[dict[str, Any]]:

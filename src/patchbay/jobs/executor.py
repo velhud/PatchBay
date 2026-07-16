@@ -174,6 +174,7 @@ class JobExecutor:
         self._live_job_descendants: dict[str, dict[int, Optional[str]]] = {}
         self._runtime_liveness_cache_lock = threading.Lock()
         self._runtime_liveness_cache: dict[str, Dict[str, bool]] = {}
+        self._runtime_liveness_cache_revision = 0
         self._terminal_unknown_liveness_checked_at: dict[str, float] = {}
         self._terminal_unknown_liveness_refresh_seconds = 60.0
         self._terminal_cleanup_transition_lock = threading.RLock()
@@ -1682,6 +1683,8 @@ class JobExecutor:
         for job_id in set(self._terminal_unknown_liveness_checked_at) - current_job_ids:
             self._terminal_unknown_liveness_checked_at.pop(job_id, None)
         with self._runtime_liveness_cache_lock:
+            if snapshot != self._runtime_liveness_cache:
+                self._runtime_liveness_cache_revision += 1
             self._runtime_liveness_cache = snapshot
 
     @staticmethod
@@ -1732,6 +1735,13 @@ class JobExecutor:
             "process_alive": tracked_process_alive,
             "runtime_alive": executor_task_alive or tracked_process_alive,
         }
+
+    @property
+    def runtime_liveness_revision(self) -> int:
+        """Return a revision that changes only when projected liveness changes."""
+
+        with self._runtime_liveness_cache_lock:
+            return self._runtime_liveness_cache_revision
 
     def _job_has_live_runtime(self, job_id: str) -> bool:
         return self._runtime_liveness(job_id)["runtime_alive"]

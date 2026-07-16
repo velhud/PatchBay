@@ -68,6 +68,11 @@ across its control loops. A transport failure discards that connection and is
 reported to the loop; the transport does not automatically repeat a request
 whose server-side outcome may be unknown.
 
+Heartbeat does not duplicate the full historical worker projection. It carries
+bounded counts and safe resource telemetry; the separately versioned atomic
+projection is rebuilt whenever reconciled job, liveness, or Pro Request state
+changes.
+
 ## Auth And Tunnel Policy
 
 Localhost-only mode may support no authentication if explicitly configured. Any non-loopback bind address or public tunnel must require authentication.

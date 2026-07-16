@@ -780,6 +780,21 @@ class WorkerRuntime:
             force_change_refresh=force_change_refresh,
         )
 
+    def projection_state_token(self) -> tuple[int, int]:
+        """Return a cheap token for state represented by worker projection."""
+
+        manager_revision = int(getattr(self.job_manager, "state_revision", 0) or 0)
+        liveness_revision = int(
+            getattr(self.job_executor, "runtime_liveness_revision", 0) or 0
+        )
+        return manager_revision, liveness_revision
+
+    async def projection_state_token_async(self) -> tuple[int, int]:
+        """Reconcile process state before returning the projection token."""
+
+        await self._reconcile_active_jobs_async()
+        return self.projection_state_token()
+
     async def projection_snapshot_async(
         self,
         *,

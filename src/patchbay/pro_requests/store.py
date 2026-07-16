@@ -48,6 +48,13 @@ class ProRequestStore:
         configured_root = pro_config.get("root")
         self.root = resolve_runtime_path(configured_root, "pro-requests")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._projection_revision = 0
+
+    @property
+    def projection_state_revision(self) -> int:
+        """Return the in-memory revision of projected request manifests."""
+
+        return self._projection_revision
 
     def create_request(
         self,
@@ -577,6 +584,7 @@ class ProRequestStore:
         tmp = request_dir / "manifest.json.tmp"
         tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         tmp.replace(request_dir / "manifest.json")
+        self._projection_revision += 1
 
     def _append_event(
         self,
