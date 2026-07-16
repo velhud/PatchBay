@@ -453,9 +453,10 @@ hub:
 - Edge machines keep local Codex auth, repositories, worker state, worktrees,
   logs, and credentials.
 - Edge worker projection preserves full-history continuity. Routine background
-  snapshots scan a shared checkout once even when many historical workers point
-  to it, and reuse stable terminal isolated-worktree change summaries until a
-  new turn or Edge runtime restart. This prevents the heartbeat loop from
+  snapshots scan an active shared checkout once even when many workers point to
+  it, and fully terminal shared checkouts and stable terminal isolated
+  worktrees reuse change summaries until a new turn, explicit refresh, or Edge
+  runtime restart. This prevents the heartbeat loop from
   launching one full Git scan per historical worker every few seconds. Active
   work, strict create/resume preflight, integration, and focused inspection
   independently remain live and authoritative; cached terminal summaries are

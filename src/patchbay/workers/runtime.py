@@ -177,6 +177,9 @@ class WorkerRuntime:
         self._projection_terminal_change_summaries: dict[
             str, tuple[tuple[Any, ...], Dict[str, Any]]
         ] = {}
+        self._projection_terminal_shared_change_summaries: dict[
+            str, tuple[tuple[Any, ...], Dict[str, Any]]
+        ] = {}
         self._projection_change_summary_lock = threading.Lock()
 
     def _prune_monitoring_caches(self, *, now: float | None = None) -> None:
@@ -798,6 +801,7 @@ class WorkerRuntime:
         """Build projection content without reconciling runtime state."""
 
         groups = self._projection_worker_groups_snapshot()
+        shared_projection_versions = self._terminal_shared_projection_versions(groups)
         workers: list[Dict[str, Any]] = []
         snapshot_change_summaries: dict[tuple[str, str], Dict[str, Any]] = {}
         for jobs in groups:
@@ -806,6 +810,7 @@ class WorkerRuntime:
                     self._worker_projection(
                         jobs,
                         projection_change_cache=snapshot_change_summaries,
+                        shared_projection_versions=shared_projection_versions,
                         force_change_refresh=force_change_refresh,
                     )
                 )
@@ -822,6 +827,13 @@ class WorkerRuntime:
                 set(self._projection_terminal_change_summaries) - set(current_ids)
             ):
                 self._projection_terminal_change_summaries.pop(worker_id, None)
+            for execution_path in (
+                set(self._projection_terminal_shared_change_summaries)
+                - set(shared_projection_versions)
+            ):
+                self._projection_terminal_shared_change_summaries.pop(
+                    execution_path, None
+                )
         previous_ids = self._normalize_projection_worker_ids(previous_edge_worker_ids)
         tombstones = [
             {"edge_worker_id": worker_id}
@@ -2252,6 +2264,7 @@ class WorkerRuntime:
         projection_change_cache: Optional[
             dict[tuple[str, str], Dict[str, Any]]
         ] = None,
+        shared_projection_versions: Optional[dict[str, tuple[Any, ...]]] = None,
         force_change_refresh: bool = False,
     ) -> Dict[str, Any]:
         latest = jobs[-1]
@@ -2265,6 +2278,7 @@ class WorkerRuntime:
             jobs,
             workspace=workspace,
             projection_change_cache=projection_change_cache,
+            shared_projection_versions=shared_projection_versions,
             force_change_refresh=force_change_refresh,
         )
         integration_state = self._projection_integration_state(
@@ -2474,6 +2488,7 @@ class WorkerRuntime:
         projection_change_cache: Optional[
             dict[tuple[str, str], Dict[str, Any]]
         ] = None,
+        shared_projection_versions: Optional[dict[str, tuple[Any, ...]]] = None,
         force_change_refresh: bool = False,
     ) -> Dict[str, Any]:
         snapshot_key: tuple[str, str] | None = None
@@ -2494,6 +2509,30 @@ class WorkerRuntime:
                 and snapshot_key in projection_change_cache
             ):
                 return deepcopy(projection_change_cache[snapshot_key])
+
+            shared_projection_version = (
+                shared_projection_versions.get(execution_path)
+                if shared_projection_versions is not None
+                and workspace["mode"] == "shared_write"
+                else None
+            )
+            if shared_projection_version is not None and not force_change_refresh:
+                with self._projection_change_summary_lock:
+                    cached_shared = (
+                        self._projection_terminal_shared_change_summaries.get(
+                            execution_path
+                        )
+                    )
+                if (
+                    cached_shared is not None
+                    and cached_shared[0] == shared_projection_version
+                ):
+                    cached_summary = deepcopy(cached_shared[1])
+                    if projection_change_cache is not None:
+                        projection_change_cache[snapshot_key] = deepcopy(
+                            cached_summary
+                        )
+                    return cached_summary
 
             terminal_cache_key = self._terminal_projection_change_cache_key(
                 jobs,
@@ -2531,6 +2570,23 @@ class WorkerRuntime:
         ):
             projection_change_cache[snapshot_key] = deepcopy(summary)
         if (
+            workspace["mode"] == "shared_write"
+            and snapshot_key is not None
+            and shared_projection_versions is not None
+            and (
+                shared_projection_version := shared_projection_versions.get(
+                    snapshot_key[1]
+                )
+            )
+            is not None
+            and available
+        ):
+            with self._projection_change_summary_lock:
+                self._projection_terminal_shared_change_summaries[snapshot_key[1]] = (
+                    shared_projection_version,
+                    deepcopy(summary),
+                )
+        if (
             projection_change_cache is not None
             and terminal_cache_key is not None
             and available
@@ -2541,6 +2597,45 @@ class WorkerRuntime:
                     deepcopy(summary),
                 )
         return summary
+
+    def _terminal_shared_projection_versions(
+        self,
+        groups: list[list[JobInfo]],
+    ) -> dict[str, tuple[Any, ...]]:
+        """Version shared checkouts only while every projected turn is stable."""
+
+        entries_by_path: dict[str, list[tuple[str, str, str]]] = {}
+        unstable_paths: set[str] = set()
+        for jobs in groups:
+            try:
+                workspace = self._workspace_for_jobs(jobs)
+                if workspace["mode"] != "shared_write":
+                    continue
+                execution_path = self._execution_path_for_workspace(workspace)
+                latest = jobs[-1]
+                if (
+                    not workspace["available"]
+                    or workspace["discarded"]
+                    or latest.state in {JobState.PENDING, JobState.RUNNING}
+                    or self._terminal_cleanup_pending_for_jobs(jobs)
+                    or self._terminal_cleanup_recovery_required_for_jobs(jobs)
+                ):
+                    unstable_paths.add(execution_path)
+                    continue
+                edge_worker_id = self._worker_identity(jobs)[0]
+                entries_by_path.setdefault(execution_path, []).append(
+                    (edge_worker_id, latest.job_id, latest.state.value)
+                )
+            except Exception:
+                continue
+        return {
+            execution_path: (
+                "terminal_shared_projection_v1",
+                tuple(sorted(entries)),
+            )
+            for execution_path, entries in entries_by_path.items()
+            if execution_path not in unstable_paths
+        }
 
     def _terminal_projection_change_cache_key(
         self,

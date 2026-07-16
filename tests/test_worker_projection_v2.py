@@ -432,9 +432,60 @@ def test_projection_snapshot_deduplicates_shared_checkout_scan_per_snapshot(tmp_
     first = runtime.projection_snapshot()
     second = runtime.projection_snapshot()
 
-    assert change_scans == 2
+    assert change_scans == 1
     assert len(first["workers"]) == 2
     assert first["content_revision"] == second["content_revision"]
+
+    runtime.projection_snapshot(force_change_refresh=True)
+    assert change_scans == 2
+
+
+def test_projection_snapshot_invalidates_shared_cache_for_new_worker_turn(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = ProjectionExecutor()
+    runtime = WorkerRuntime(config, manager, executor)
+    first_job_id = add_worker(
+        manager,
+        executor,
+        worker_id="wrk-shared-turn-cache",
+        name="Shared Turn Cache",
+        state=JobState.COMPLETED,
+        workspace_mode="shared_write",
+    )
+    changed_files = runtime._changed_files
+    change_scans = 0
+
+    def counted_changed_files(jobs):
+        nonlocal change_scans
+        change_scans += 1
+        return changed_files(jobs)
+
+    runtime._changed_files = counted_changed_files
+    runtime.projection_snapshot()
+    runtime.projection_snapshot()
+    assert change_scans == 1
+
+    first_job = manager.jobs[first_job_id]
+    second_job_id = manager.create_job(
+        "resume",
+        "Shared projection follow-up",
+        first_job.repo_path,
+        deepcopy(first_job.options or {}),
+    )
+    manager.update_job_state(
+        second_job_id,
+        JobState.COMPLETED,
+        started_at=time.time() - 10,
+        completed_at=time.time(),
+        session_id=first_job.session_id,
+        result={"summary": "Second shared turn"},
+    )
+
+    runtime.projection_snapshot()
+    runtime.projection_snapshot()
+
+    assert change_scans == 2
 
 
 def test_projection_snapshot_invalidates_terminal_cache_for_new_worker_turn(tmp_path):
