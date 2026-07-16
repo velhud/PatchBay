@@ -470,6 +470,9 @@ hub:
   A missing cleanup outcome remains fail-closed and is periodically rechecked
   while reusing its last conservative result between checks. Pending or
   uncertain cleanup remains on active reconciliation.
+- Production Edge control loops share a bounded persistent HTTP connection
+  pool. Broken connections are discarded, but an individual request is never
+  automatically replayed below the durable operation boundary.
 - When one worker projection is absent, Hub can route focused inspect/message
   through the durable fleet-worker identity scoped to the same group, machine,
   and generation. The response marks `projection_missing: true`; Edge remains

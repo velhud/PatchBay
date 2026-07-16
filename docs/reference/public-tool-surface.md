@@ -160,6 +160,9 @@ of repeating process-tree discovery every few seconds; absent or uncertain
 proof never takes this fast path. A legacy terminal record with no cleanup
 outcome reuses only its last conservative liveness result between bounded
 periodic discovery passes and never gains mutation permission from that cache.
+The Edge's recurring manager exchanges reuse bounded persistent HTTP
+connections; a connection failure is surfaced without automatically replaying
+a request whose Hub outcome may be unknown.
 
 Recommended ChatGPT worker-management loop:
 

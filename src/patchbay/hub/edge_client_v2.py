@@ -9,14 +9,19 @@ durable result receipts across HTTP.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import inspect
 import json
 import logging
 import os
+import queue
 import secrets
 import socket
+import ssl
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -56,6 +61,7 @@ DEFAULT_LEASE_RENEWAL_SECONDS = 10.0
 DEFAULT_ATTEMPT_LEASE_SECONDS = 30.0
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
+DEFAULT_HTTP_KEEPALIVE_CONNECTIONS = 8
 DEFAULT_MAX_CONCURRENT_TASKS = 4
 logger = logging.getLogger(__name__)
 MAX_CONCURRENT_TASKS = 64
@@ -247,8 +253,182 @@ class UrllibEdgeV2Transport:
         )
 
 
+class PersistentEdgeV2Transport:
+    """Async JSON transport with bounded reusable stdlib HTTP connections.
+
+    One request is attempted exactly once. A stale or broken pooled connection
+    is discarded and reported to the runner instead of being retried below the
+    durable Hub operation boundary.
+    """
+
+    def __init__(
+        self,
+        hub_url: str,
+        *,
+        timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
+        max_keepalive_connections: int = DEFAULT_HTTP_KEEPALIVE_CONNECTIONS,
+        connection_factory: Callable[[], http.client.HTTPConnection] | None = None,
+    ):
+        self.hub_url = normalize_hub_url(hub_url)
+        self.timeout_seconds = _positive_float(timeout_seconds, "timeout_seconds")
+        self.max_keepalive_connections = _bounded_positive_int(
+            max_keepalive_connections,
+            "max_keepalive_connections",
+            maximum=64,
+        )
+        parsed = urllib.parse.urlsplit(self.hub_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Hub URL must use http or https with a hostname")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("Hub URL cannot contain credentials, a query, or a fragment")
+        self._scheme = parsed.scheme
+        self._host = parsed.hostname
+        self._port = parsed.port
+        self._base_path = parsed.path.rstrip("/")
+        self._ssl_context = ssl.create_default_context() if parsed.scheme == "https" else None
+        self._connection_factory = connection_factory
+        self._pool: queue.LifoQueue[http.client.HTTPConnection] = queue.LifoQueue(
+            maxsize=self.max_keepalive_connections
+        )
+        self._state_lock = threading.Lock()
+        self._closed = False
+
+    async def post_json(
+        self,
+        path: str,
+        payload: Mapping[str, Any],
+        *,
+        token: str = "",
+        timeout_seconds: float | None = None,
+    ) -> Mapping[str, Any]:
+        timeout = self.timeout_seconds if timeout_seconds is None else float(timeout_seconds)
+        return await asyncio.to_thread(
+            self._post_json,
+            path,
+            payload,
+            token=token,
+            timeout_seconds=timeout,
+        )
+
+    async def aclose(self) -> None:
+        await asyncio.to_thread(self.close)
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+        while True:
+            try:
+                connection = self._pool.get_nowait()
+            except queue.Empty:
+                break
+            connection.close()
+
+    def _post_json(
+        self,
+        path: str,
+        payload: Mapping[str, Any],
+        *,
+        token: str,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        endpoint = str(path or "").strip()
+        if not endpoint.startswith("/"):
+            raise ValueError("Edge endpoint path must start with '/'")
+        try:
+            body = json.dumps(
+                dict(payload),
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Edge HTTP payload must be JSON serializable") from exc
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        connection = self._acquire_connection(timeout_seconds)
+        reusable = False
+        try:
+            connection.request(
+                "POST",
+                f"{self._base_path}{endpoint}",
+                body=body,
+                headers=headers,
+            )
+            response = connection.getresponse()
+            raw = response.read().decode("utf-8")
+            reusable = not response.will_close
+            if not 200 <= response.status < 300:
+                raise EdgeV2HttpError(
+                    f"Hub V2 request failed: {response.status} {raw}",
+                    status_code=response.status,
+                )
+        except EdgeV2HttpError:
+            raise
+        except (http.client.HTTPException, TimeoutError, OSError) as error:
+            raise EdgeV2HttpError(f"Hub V2 request failed: {error}") from error
+        finally:
+            if reusable:
+                self._release_connection(connection)
+            else:
+                connection.close()
+        try:
+            decoded = json.loads(raw or "{}")
+        except json.JSONDecodeError as exc:
+            raise EdgeV2HttpError("Hub V2 returned invalid JSON") from exc
+        if not isinstance(decoded, dict):
+            raise EdgeV2HttpError("Hub V2 response must be a JSON object")
+        return decoded
+
+    def _acquire_connection(self, timeout_seconds: float) -> http.client.HTTPConnection:
+        with self._state_lock:
+            if self._closed:
+                raise EdgeV2HttpError("Hub V2 transport is closed")
+        try:
+            connection = self._pool.get_nowait()
+        except queue.Empty:
+            connection = self._new_connection(timeout_seconds)
+        connection.timeout = timeout_seconds
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout_seconds)
+        return connection
+
+    def _new_connection(self, timeout_seconds: float) -> http.client.HTTPConnection:
+        if self._connection_factory is not None:
+            return self._connection_factory()
+        if self._scheme == "https":
+            return http.client.HTTPSConnection(
+                self._host,
+                self._port,
+                timeout=timeout_seconds,
+                context=self._ssl_context,
+            )
+        return http.client.HTTPConnection(
+            self._host,
+            self._port,
+            timeout=timeout_seconds,
+        )
+
+    def _release_connection(self, connection: http.client.HTTPConnection) -> None:
+        with self._state_lock:
+            closed = self._closed
+        if closed:
+            connection.close()
+            return
+        try:
+            self._pool.put_nowait(connection)
+        except queue.Full:
+            connection.close()
+
+
 # The longer name is useful to callers which describe dependencies by role.
-AsyncJsonHttpTransport = UrllibEdgeV2Transport
+AsyncJsonHttpTransport = PersistentEdgeV2Transport
 
 
 @dataclass(frozen=True)
@@ -588,7 +768,7 @@ class EdgeV2Runner:
                 "Edge profile generation does not match EdgeExecutionService journal"
             )
         self.profile = normalized_profile
-        self.transport = transport or UrllibEdgeV2Transport(
+        self.transport = transport or PersistentEdgeV2Transport(
             normalized_profile.hub_url,
             timeout_seconds=request_timeout_seconds,
         )
@@ -1867,6 +2047,12 @@ class EdgeV2Runner:
                 await self.reconcile_once()
             except Exception as error:
                 self._record_background_error("shutdown_reconciliation", error)
+            close_transport = getattr(self.transport, "aclose", None)
+            if callable(close_transport):
+                try:
+                    await close_transport()
+                except Exception as error:
+                    self._record_background_error("shutdown_transport", error)
             if self.close_journal_on_shutdown and not self.execution.journal.closed:
                 self.execution.journal.close()
             self._closed = True
@@ -2152,6 +2338,7 @@ __all__ = [
     "EdgeV2Runner",
     "EdgeV2Transport",
     "OutboundEdgeRunnerV2",
+    "PersistentEdgeV2Transport",
     "UrllibEdgeV2Transport",
     "edge_contract_metadata",
     "enroll_edge_v2",

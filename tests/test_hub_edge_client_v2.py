@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from collections import defaultdict
 from copy import deepcopy
@@ -14,8 +15,10 @@ from patchbay.connector.launcher import load_config
 from patchbay.hub.edge import build_capabilities, load_edge_profile, save_edge_profile
 from patchbay.hub.edge_client_v2 import (
     DEFAULT_ENDPOINTS,
+    EdgeV2HttpError,
     EdgeV2Profile,
     EdgeV2Runner,
+    PersistentEdgeV2Transport,
     create_edge_v2_runner,
     edge_contract_metadata,
 )
@@ -252,6 +255,95 @@ class FakeHttpTransport:
             )
             return response
         raise AssertionError(f"Unexpected fake HTTP path: {path}")
+
+
+class FakePersistentResponse:
+    def __init__(self, payload: Mapping[str, Any], *, will_close: bool = False) -> None:
+        self.status = 200
+        self.will_close = will_close
+        self._payload = dict(payload)
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+
+class FakePersistentConnection:
+    def __init__(self, *, fail_request: bool = False) -> None:
+        self.sock = None
+        self.fail_request = fail_request
+        self.requests: list[tuple[str, str, bytes, dict[str, str]]] = []
+        self.closed = False
+        self.timeout: float | None = None
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> None:
+        self.requests.append((method, path, body, dict(headers)))
+        if self.fail_request:
+            raise OSError("simulated stale keep-alive connection")
+
+    def getresponse(self) -> FakePersistentResponse:
+        return FakePersistentResponse({"accepted": True})
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_persistent_transport_reuses_connection_and_closes_pool() -> None:
+    connections: list[FakePersistentConnection] = []
+
+    def create_connection() -> FakePersistentConnection:
+        connection = FakePersistentConnection()
+        connections.append(connection)
+        return connection
+
+    transport = PersistentEdgeV2Transport(
+        "https://hub.example/control",
+        connection_factory=create_connection,
+    )
+
+    assert await transport.post_json("/heartbeat", {"revision": 1}) == {
+        "accepted": True
+    }
+    assert await transport.post_json("/claim", {"slots": 4}) == {"accepted": True}
+
+    assert len(connections) == 1
+    assert [request[1] for request in connections[0].requests] == [
+        "/control/heartbeat",
+        "/control/claim",
+    ]
+    await transport.aclose()
+    assert connections[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_persistent_transport_discards_failure_without_hidden_retry() -> None:
+    connections: list[FakePersistentConnection] = []
+
+    def create_connection() -> FakePersistentConnection:
+        connection = FakePersistentConnection(fail_request=not connections)
+        connections.append(connection)
+        return connection
+
+    transport = PersistentEdgeV2Transport(
+        "https://hub.example",
+        connection_factory=create_connection,
+    )
+
+    with pytest.raises(EdgeV2HttpError, match="simulated stale"):
+        await transport.post_json("/claim", {"slots": 1})
+
+    assert len(connections) == 1
+    assert len(connections[0].requests) == 1
+    assert connections[0].closed is True
+    assert await transport.post_json("/claim", {"slots": 1}) == {"accepted": True}
+    assert len(connections) == 2
+    await transport.aclose()
 
 
 class FirstReceiptFailsTransport(FakeHttpTransport):

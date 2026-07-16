@@ -377,6 +377,9 @@ or Pro Request behavior. Regression coverage must prove that:
   repeating process-tree discovery for every historical turn on each Edge
   projection cycle, while missing cleanup remains fail-closed and is
   periodically rechecked instead of being rediscovered on every heartbeat;
+- production Edge HTTP transport reuses a bounded pool of persistent
+  connections across independent control loops, discards broken connections,
+  and never hides an uncertain response behind an automatic request retry;
 - stable terminal isolated-worktree projections reuse their background change
   summary, a new worker turn or explicit force refresh invalidates that summary,
   fully terminal shared-checkout workers reuse one path-scoped background

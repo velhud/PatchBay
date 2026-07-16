@@ -237,6 +237,8 @@ For shared MCP Server URLs, the runtime treats ownership as coordination rather 
 
 The worker bridge does not replace the security boundary. It should reuse the same typed registry, path guard, power-mode controls, auth policy, artifact caps, and redaction rules used by the current public surface.
 
+Production Edge control loops share a bounded pool of persistent HTTP connections so idle claim, heartbeat, and projection exchanges reuse TLS state. A broken connection is discarded and surfaced to the owning loop without a hidden request retry, preserving the durable operation boundary when a response outcome is unknown.
+
 ## Codex Execution Boundary
 
 The execution boundary is organized around explicit services:

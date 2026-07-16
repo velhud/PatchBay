@@ -63,6 +63,11 @@ cleanup outcome is pending or uncertain. A legacy missing outcome may reuse its
 last conservative liveness result between periodic discovery passes, but it
 remains fail-closed and that cache cannot authorize mutation.
 
+The production Edge reuses a bounded pool of authenticated HTTP connections
+across its control loops. A transport failure discards that connection and is
+reported to the loop; the transport does not automatically repeat a request
+whose server-side outcome may be unknown.
+
 ## Auth And Tunnel Policy
 
 Localhost-only mode may support no authentication if explicitly configured. Any non-loopback bind address or public tunnel must require authentication.
