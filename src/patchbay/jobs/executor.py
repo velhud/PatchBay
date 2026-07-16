@@ -174,6 +174,8 @@ class JobExecutor:
         self._live_job_descendants: dict[str, dict[int, Optional[str]]] = {}
         self._runtime_liveness_cache_lock = threading.Lock()
         self._runtime_liveness_cache: dict[str, Dict[str, bool]] = {}
+        self._terminal_unknown_liveness_checked_at: dict[str, float] = {}
+        self._terminal_unknown_liveness_refresh_seconds = 60.0
         self._terminal_cleanup_transition_lock = threading.RLock()
         self._terminal_cleanup_completed: set[str] = set()
         self._cancellation_intents: set[str] = set()
@@ -1632,6 +1634,12 @@ class JobExecutor:
         }
 
     def _refresh_runtime_liveness_cache(self) -> None:
+        now = time.monotonic()
+        with self._runtime_liveness_cache_lock:
+            previous = {
+                job_id: dict(value)
+                for job_id, value in self._runtime_liveness_cache.items()
+            }
         snapshot: dict[str, Dict[str, bool]] = {}
         for job_id, job in list(self.job_manager.jobs.items()):
             try:
@@ -1647,10 +1655,32 @@ class JobExecutor:
                     and not self._terminal_cleanup_has_active_owner(job_id)
                 ):
                     snapshot[job_id] = self._inactive_runtime_liveness()
+                elif (
+                    job.state
+                    in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+                    and not cleanup_outcome
+                    and job_id not in self.tasks
+                    and job_id not in self.processes
+                    and not self._terminal_cleanup_has_active_owner(job_id)
+                    and job_id in previous
+                    and now
+                    - self._terminal_unknown_liveness_checked_at.get(job_id, 0.0)
+                    < self._terminal_unknown_liveness_refresh_seconds
+                ):
+                    snapshot[job_id] = previous[job_id]
                 else:
                     snapshot[job_id] = self._runtime_liveness(job_id)
+                    if (
+                        job.state
+                        in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+                        and not cleanup_outcome
+                    ):
+                        self._terminal_unknown_liveness_checked_at[job_id] = now
             except Exception:
                 continue
+        current_job_ids = set(snapshot)
+        for job_id in set(self._terminal_unknown_liveness_checked_at) - current_job_ids:
+            self._terminal_unknown_liveness_checked_at.pop(job_id, None)
         with self._runtime_liveness_cache_lock:
             self._runtime_liveness_cache = snapshot
 

@@ -59,7 +59,9 @@ in-process lease only when the durable job is terminal, cleanup is conclusively
 finished, and no live runtime or cleanup owner remains; missing jobs and pending
 or uncertain cleanup stay fail-closed. Routine liveness refresh may reuse that
 same conclusive inactive proof, but never substitutes cached absence when the
-cleanup outcome is missing, pending, or uncertain.
+cleanup outcome is pending or uncertain. A legacy missing outcome may reuse its
+last conservative liveness result between periodic discovery passes, but it
+remains fail-closed and that cache cannot authorize mutation.
 
 ## Auth And Tunnel Policy
 

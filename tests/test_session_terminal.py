@@ -266,6 +266,13 @@ def test_liveness_refresh_skips_process_discovery_for_proven_terminal_cleanup(
         executor._inactive_runtime_liveness()
     )
 
+    discovered.clear()
+    executor._refresh_runtime_liveness_cache()
+
+    assert proven_id not in discovered
+    assert missing_id not in discovered
+    assert running_id in discovered
+
 
 @pytest.mark.asyncio
 async def test_cancelling_startup_file_lock_wait_releases_all_lock_ownership(

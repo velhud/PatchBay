@@ -157,7 +157,9 @@ fail-closed and continue to return `repo_busy`; PatchBay never treats deletion
 of a lock file as recovery. The same conclusive cleanup proof lets routine Edge
 projection reuse an inactive liveness record for that historical turn instead
 of repeating process-tree discovery every few seconds; absent or uncertain
-proof never takes this fast path.
+proof never takes this fast path. A legacy terminal record with no cleanup
+outcome reuses only its last conservative liveness result between bounded
+periodic discovery passes and never gains mutation permission from that cache.
 
 Recommended ChatGPT worker-management loop:
 

@@ -375,7 +375,8 @@ or Pro Request behavior. Regression coverage must prove that:
   pending, and executor-task liveness is not mislabeled as a live Codex process;
 - liveness refresh reuses conclusive durable terminal-cleanup proof instead of
   repeating process-tree discovery for every historical turn on each Edge
-  projection cycle, while missing or uncertain cleanup still performs discovery;
+  projection cycle, while missing cleanup remains fail-closed and is
+  periodically rechecked instead of being rediscovered on every heartbeat;
 - stable terminal isolated-worktree projections reuse their background change
   summary, a new worker turn or explicit force refresh invalidates that summary,
   fully terminal shared-checkout workers reuse one path-scoped background
