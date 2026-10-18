@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - chatgpt-source-export-20261018
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
