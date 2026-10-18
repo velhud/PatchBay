@@ -1,0 +1,25 @@
+name: ChatGPT source export
+
+on:
+  push:
+    branches:
+      - chatgpt-source-export-20261018
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Create tracked-source archive
+        run: git archive --format=zip --output=PatchBay-source.zip HEAD
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchbay-source-678aa3ff
+          path: PatchBay-source.zip
+          if-no-files-found: error
+          retention-days: 1
