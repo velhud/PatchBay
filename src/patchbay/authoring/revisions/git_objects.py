@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -108,10 +107,10 @@ class Git:
             if updates:
                 self.run(["update-index", "-z", "--index-info"], data=b"".join(updates), env=env)
             tree = self.text(["write-tree"], env=env)
-            identity = {"GIT_AUTHOR_NAME": "PatchBay Author", "GIT_AUTHOR_EMAIL": "patchbay-author@localhost",
+            metadata = {"GIT_AUTHOR_NAME": "PatchBay Author", "GIT_AUTHOR_EMAIL": "patchbay-author@localhost",
                         "GIT_COMMITTER_NAME": "PatchBay Author", "GIT_COMMITTER_EMAIL": "patchbay-author@localhost",
                         "GIT_AUTHOR_DATE": f"{int(created)} +0000", "GIT_COMMITTER_DATE": f"{int(created)} +0000"}
-            commit = self.text(["commit-tree", tree, "-p", parent], data=("Author candidate " + operation_id + "\n").encode(), env=identity)
+            commit = self.text(["commit-tree", tree, "-p", parent], data=("Author candidate " + operation_id + "\n").encode(), env=metadata)
             existing = invoke(self.root, ["show-ref", "--verify", "--hash", ref], check=False)
             if existing.returncode == 0:
                 require(existing.stdout.decode().strip() == commit, "CANDIDATE_CONFLICT", "A retained candidate ref has different content")
@@ -127,6 +126,8 @@ class Git:
         commit = self.resolve(commit)
         require(not destination.exists(), "WORKSPACE_CONFLICT", "Execution destination already exists")
         invoke(None, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", "--", str(self.root), str(destination)], timeout=300)
+        # Internal author refs need not be among clone's default heads/tags.
+        invoke(destination, ["fetch", "--no-tags", "--no-recurse-submodules", "--", str(self.root), commit], timeout=300)
         invoke(destination, ["config", "--remove-section", "remote.origin"], check=False)
         invoke(destination, ["config", "core.autocrlf", "false"])
         invoke(destination, ["config", "core.filemode", "true"])
@@ -134,8 +135,41 @@ class Git:
         require(Git(destination).resolve("HEAD") == commit, "GIT_ERROR", "Execution checkout is not the pinned candidate")
 
     def diff(self, base: str, commit: str, *, path: str | None = None, limit: int = 512000) -> dict:
-        args = ["diff", "--no-ext-diff", "--no-textconv", "--binary", self.resolve(base), self.resolve(commit), "--"]
+        require(1 <= limit <= 5 * 1024**2, "INVALID_REQUEST", "Invalid diff byte budget")
+        args = ["git", "-C", str(self.root), "diff", "--no-ext-diff", "--no-textconv", "--binary", self.resolve(base), self.resolve(commit), "--"]
         if path:
             args.append(safe_path(path))
-        raw = self.run(args)
-        return {"diff": raw[:limit].decode("utf-8", "replace"), "truncated": len(raw) > limit, "bytes": len(raw)}
+        # Stop after a bounded prefix instead of accumulating an arbitrarily large binary diff.
+        import selectors
+        import time
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_environment(self.root))
+        selector = selectors.DefaultSelector()
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ)
+        data, truncated, timed_out = bytearray(), False, False
+        deadline = time.monotonic() + 30
+        try:
+            while selector.get_map() and len(data) <= limit:
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                for key, _ in selector.select(.1):
+                    chunk = os.read(key.fileobj.fileno(), min(65536, limit + 1 - len(data)))
+                    if chunk:
+                        data.extend(chunk)
+                    else:
+                        selector.unregister(key.fileobj)
+                if len(data) > limit:
+                    truncated = True
+                    break
+        finally:
+            selector.close()
+            process.stdout.close()
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait()
+        return {"diff": bytes(data[:limit]).decode("utf-8", "replace"), "truncated": truncated or timed_out,
+                "returned_bytes": min(len(data), limit), "timed_out": timed_out}
