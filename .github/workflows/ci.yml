@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, chatgpt/source-export-20261019]
 
 jobs:
   python-smoke:
@@ -11,6 +11,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Export exact source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchbay-source-${{ github.sha }}
+          path: .
+          include-hidden-files: true
+          retention-days: 1
 
       - uses: actions/setup-python@v5
         with:
