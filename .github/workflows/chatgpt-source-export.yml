@@ -1,0 +1,46 @@
+name: ChatGPT temporary source export
+
+on:
+  push:
+    branches:
+      - chatgpt/patchbay-fixes-20261019
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package repository source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          root = Path('.')
+          output = Path('PatchBay-source.zip')
+          excluded = {
+              '.github/workflows/chatgpt-source-export.yml',
+              'PatchBay-source.zip',
+          }
+          with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted(root.rglob('*')):
+                  rel = path.as_posix()
+                  if path.is_dir() or rel.startswith('.git/') or rel in excluded:
+                      continue
+                  archive.write(path, rel)
+          PY
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchbay-source-678aa3ff
+          path: PatchBay-source.zip
+          if-no-files-found: error
+          retention-days: 1
