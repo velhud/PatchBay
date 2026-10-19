@@ -1,4 +1,4 @@
-"""Cross-process advisory locks with same-thread nested acquisition support."""
+"""Cross-process locks, explicit nonblocking maintenance, and safe nested use."""
 from __future__ import annotations
 
 import os
@@ -6,13 +6,13 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..errors import require
+from ..errors import AuthorError, require
 
 _local = threading.local()
 
 
 @contextmanager
-def file_lock(path: Path, *, shared: bool = False):
+def file_lock(path: Path, *, shared: bool = False, blocking: bool = True):
     try:
         import fcntl
     except ImportError as exc:
@@ -27,10 +27,13 @@ def file_lock(path: Path, *, shared: bool = False):
         yield
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+        mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        try:
+            fcntl.flock(descriptor, mode | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError as exc:
+            raise AuthorError("MAINTENANCE_BLOCKED", "An author operation currently owns the maintenance boundary") from exc
         held[key] = shared
         try:
             yield
