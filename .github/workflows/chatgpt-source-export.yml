@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - chatgpt/patchbay-fixes-20261019
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
