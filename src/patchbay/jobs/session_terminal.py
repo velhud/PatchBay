@@ -9,6 +9,9 @@ from typing import Any, Iterable
 
 from patchbay.codex_home import resolve_codex_home
 
+MAX_SESSION_RECORD_BYTES = 4 * 1024 * 1024
+MAX_POLL_BYTES = 1024 * 1024
+
 
 @dataclass(frozen=True)
 class SessionTerminalSnapshot:
@@ -39,6 +42,8 @@ class CodexSessionTerminalObserver:
         self._source: Path | None = None
         self._offset = max(0, int(initial_offset))
         self._pending = b""
+        self._discarding_record = False
+        self.oversized_records = 0
         self._latest_agent_message = ""
         self._snapshot = SessionTerminalSnapshot()
 
@@ -56,6 +61,7 @@ class CodexSessionTerminalObserver:
         except OSError:
             return self._offset
         self._pending = b""
+        self._discarding_record = False
         return self._offset
 
     def poll(self) -> SessionTerminalSnapshot:
@@ -71,18 +77,30 @@ class CodexSessionTerminalObserver:
         try:
             with self._source.open("rb") as handle:
                 handle.seek(self._offset)
-                chunk = handle.read()
+                chunk = handle.read(MAX_POLL_BYTES)
                 self._offset = handle.tell()
         except OSError:
             return self._snapshot
         if not chunk:
             return self._snapshot
 
-        data = self._pending + chunk
-        lines = data.split(b"\n")
-        self._pending = lines.pop() if lines else b""
-        for raw_line in lines:
-            self._observe_line(raw_line)
+        pieces = chunk.split(b"\n")
+        for index, piece in enumerate(pieces):
+            terminated = index < len(pieces) - 1
+            if self._discarding_record:
+                if terminated:
+                    self._discarding_record = False
+                continue
+            if len(self._pending) + len(piece) > MAX_SESSION_RECORD_BYTES:
+                self._pending = b""
+                self.oversized_records += 1
+                self._discarding_record = not terminated
+                continue
+            self._pending += piece
+            if not terminated:
+                continue
+            self._observe_line(self._pending)
+            self._pending = b""
             if self._snapshot.completed:
                 break
         if not self._snapshot.completed and self._pending and self._decode_line(self._pending) is not None:
@@ -114,8 +132,9 @@ class CodexSessionTerminalObserver:
     def _file_declares_session(self, source: Path) -> bool:
         try:
             with source.open("rb") as handle:
-                for index, raw_line in enumerate(handle):
-                    if index >= 80:
+                for index in range(80):
+                    raw_line = handle.readline(MAX_SESSION_RECORD_BYTES + 1)
+                    if not raw_line or len(raw_line) > MAX_SESSION_RECORD_BYTES:
                         break
                     value = self._decode_line(raw_line)
                     if not isinstance(value, dict) or value.get("type") != "session_meta":

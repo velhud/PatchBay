@@ -242,17 +242,16 @@ WORKER_TAKEOVER_PROPERTIES: Dict[str, Any] = {
 WORKER_EXECUTION_OPTION_PROPERTIES: Dict[str, Any] = {
     "model": {
         "type": "string",
+        "enum": ["gpt-6-luna"],
         "description": (
-            "Optional Codex model id for this worker, such as a model returned by codex_worker_options. "
-            "Omit to use the configured Codex default."
+            "Only gpt-6-luna is authorized for delegated workers. Omission explicitly selects Luna."
         ),
     },
     "reasoning_effort": {
         "type": "string",
-        "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+        "enum": ["high", "xhigh", "max"],
         "description": (
-            "Optional Codex reasoning effort for supported models. Omit to use the selected model or Codex default. "
-            "The live Codex catalog is authoritative; ultra may trigger automatic internal delegation inside one worker."
+            "Use high (default), xhigh, or max for delegated Luna workers. No other effort is authorized."
         ),
     },
 }
@@ -264,7 +263,7 @@ WORKER_TOOLS = [
             "Read-only progressive setup menu for worker execution choices. Call this when ChatGPT needs to "
             "choose a Codex model or reasoning effort before starting or continuing a worker. It loads bounded "
             "model metadata from the installed Codex runtime/catalog, returns advisory model-selection guidance "
-            "for GPT-5.6 Sol, Terra, and Luna plus GPT-5.5, GPT-5.4, GPT-5.4 Mini, and Spark, and explains which fields to pass to "
+            "for the authorized GPT-6 Luna worker and explains which fields to pass to "
             "codex_worker_start or codex_worker_message. repo_path is accepted as a harmless compatibility field "
             "and ignored because this is a runtime/model menu, not a repository operation. The guidance is a judgment "
             "aid, not a hard router."

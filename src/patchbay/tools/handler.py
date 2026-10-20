@@ -13,8 +13,43 @@ from . import handler_legacy as _legacy
 
 
 class ToolHandler(_legacy.ToolHandler):
+    def _extract_options(self, args):
+        from patchbay.workers.model_options import pin_execution_options
+        return pin_execution_options(super()._extract_options(args))
+
+    def _build_review_command(self, args):
+        from patchbay.workers.model_options import pin_execution_options
+        options = pin_execution_options(args)
+        # Validate caller overrides through the existing allow-list. The
+        # mandatory internal effort is not an arbitrary caller override.
+        command, stdin = super()._build_review_command({**args, "model": options["model"]})
+        command[2:2] = ["-c", options["config_overrides"][-1]]
+        return command, stdin
+
+    async def _codex_worker_options(self, args):
+        return worker_option_menu(self.config, model=args.get("model"),
+                                  max_models=args.get("max_models", 12),
+                                  include_model_details=bool(args.get("include_model_details", False)))
+    async def _codex_worker_inbox(self, args):
+        # The canonical argument translator maps label to title for other tools.
+        if "title" in args and "label" not in args:
+            args = {**args, "label": args["title"]}
+        return await super()._codex_worker_inbox(args)
+
+    async def _codex_cancel_job(self, args):
+        from patchbay.ownership import takeover_required, takeover_refusal
+        job = self.job_manager.get_job(args["job_id"])
+        if job and takeover_required(job.options, self.current_request_context()) and not args.get("takeover"):
+            return {"cancelled": False, **takeover_refusal(
+                job.options, self.current_request_context(), mutation_name="cancelling this job")}
+        return await super()._codex_cancel_job(args)
+
     async def _codex_pro_request_dispatch(self, args: Dict[str, Any]) -> Dict[str, Any]:
         target = str(args.get("target") or "origin_worker")
+        if target == "new_worker":
+            from patchbay.workers.model_options import worker_execution_policy
+            model, effort = worker_execution_policy(args.get("model"), args.get("reasoning_effort"))
+            args = {**args, "model": model, "reasoning_effort": effort}
         manifest, refusal = self.pro_request_store.mark_dispatch_requested(
             request_id=args["request_id"],
             target=target,

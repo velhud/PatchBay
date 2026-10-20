@@ -2,6 +2,13 @@
 
 Historical test counts from the source branches do not qualify the consolidated source. Run from the repository root on the exact candidate commit.
 
+The [October audit source map](docs/testing/unified-audit-2026-10-20.md) records
+the repaired paths and remaining qualification obligations. On macOS, Author
+execution tests explicitly skip; their guard is also tested. Those skips do not
+qualify Author execution. Include `tests/test_completion_regressions_20261020.py`
+and `tests/test_final_audit_boundaries.py` in any focused audit recheck (the full
+suite includes them automatically).
+
 ## 1. Pin and inspect the candidate
 
 ```bash

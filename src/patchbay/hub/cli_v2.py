@@ -231,6 +231,8 @@ _V2_EXPLICIT_INDEXES = frozenset(
         "entity_control_type_order_idx",
         "operations_parent_idx",
         "operations_state_created_idx",
+        "operations_logical_target_idx",
+        "entity_work_group_idx",
         "operation_group_index_group_operation_idx",
         "attempts_operation_idx",
         "events_operation_idx",
@@ -940,6 +942,10 @@ def v2_store_doctor(
             if not str(row[0]).startswith("sqlite_autoindex_")
         }
         result["indexes"] = sorted(indexes)
+        try:
+            HubStoreV2._assert_schema_contract(connection, SCHEMA_VERSION)
+        except Exception as error:
+            errors.append({"code": "schema_definition_mismatch", "message": str(error)})
         if indexes != _V2_EXPLICIT_INDEXES:
             errors.append(
                 {

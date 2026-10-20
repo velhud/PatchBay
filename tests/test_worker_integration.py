@@ -651,7 +651,7 @@ async def test_integration_blocks_secret_like_paths(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_integration_skips_untracked_binary_files(tmp_path):
+async def test_integration_delivers_untracked_binary_files_exactly(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)
     executor = RecordingExecutor(config, manager)
@@ -664,9 +664,12 @@ async def test_integration_skips_untracked_binary_files(tmp_path):
     manager.update_job_state(job.job_id, JobState.COMPLETED, result={"summary": "Created binary"}, session_id="session-1")
 
     preview = await runtime.inspect_worker(worker="Implementer", view="integration_preview")
-    assert preview["can_apply"] is False
-    assert preview["skipped_files"] == ["binary.dat"]
-    assert preview["patch_bytes"] == 0
+    assert preview["can_apply"] is True
+    assert preview["skipped_files"] == []
+    assert preview["patch_bytes"] > 0
+    applied = await runtime.integrate_worker(worker="Implementer", preview_token=preview["preview_token"])
+    assert applied["applied"] is True
+    assert Path(config["repositories"]["default"], "binary.dat").read_bytes() == b"\x00\x01worker-binary"
 
 
 @pytest.mark.asyncio

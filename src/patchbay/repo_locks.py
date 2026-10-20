@@ -139,6 +139,24 @@ class RepoMutationLockManager:
                 finally:
                     turnstile_handle.close()
 
+    @contextlib.contextmanager
+    def hold_sync(self, repo_path: str, *, operation: str):
+        """Nonblocking synchronous writer using the same cleanup turnstile."""
+        normalized = str(Path(repo_path).expanduser().resolve())
+        with self._cleanup_guard:
+            if self._cleanup_block_jobs.get(normalized):
+                raise RepoMutationBusy(normalized, operation)
+        if fcntl is None:
+            raise RepoMutationBusy(normalized, operation)
+        with self._open_turnstile_file(normalized) as turnstile, self._open_lock_file(normalized) as main:
+            try:
+                fcntl.flock(turnstile.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(main.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RepoMutationBusy(normalized, operation) from error
+            fcntl.flock(turnstile.fileno(), fcntl.LOCK_UN)
+            yield
+
     @contextlib.asynccontextmanager
     async def hold(self, repo_path: str, *, operation: str) -> AsyncIterator[RepoMutationLease]:
         lease = await self.acquire(repo_path, operation=operation)

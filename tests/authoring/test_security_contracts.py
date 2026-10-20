@@ -54,6 +54,7 @@ def test_native_file_transport_rejects_private_and_unapproved_urls(setup_author,
     with pytest.raises(AuthorError): downloader.validate_url("https://files.oaiusercontent.com/file")
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_nonzero_exit_is_not_green_even_with_passing_junit(setup_author):
     s, source, _, _, _ = setup_author
     program = "from pathlib import Path; Path('.author-reports').mkdir(); Path('.author-reports/j.xml').write_text('<testsuite><testcase name=\"fake-green\"/></testsuite>'); raise SystemExit(9)"
@@ -68,6 +69,7 @@ def test_nonzero_exit_is_not_green_even_with_passing_junit(setup_author):
 
 
 @pytest.mark.skipif(not os.environ.get("PATCHBAY_AUTHOR_DOCKER_IMAGE"), reason="Requires an explicitly prepared local Docker image")
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_strict_docker_denies_network_and_host_auth_environment(setup_author, monkeypatch):
     s, source, _, _, _ = setup_author
     monkeypatch.setenv("AUTHOR_TEST_MUST_NOT_LEAK", "host-only-value")

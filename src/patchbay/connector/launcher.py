@@ -75,6 +75,7 @@ def prepare_start(
     _apply_cli_overrides(
         config,
         root=requested_root,
+        reset_allowed_roots=root is not None,
         allow_roots=allow_roots,
         host=host,
         port=port,
@@ -224,10 +225,13 @@ def _apply_cli_overrides(
     codex_session_read: bool | None,
     widget_domain: str | None,
     tool_mode: str | None,
+    reset_allowed_roots: bool = True,
 ) -> None:
     repositories = config.setdefault("repositories", {})
     repositories["default"] = root
     allowed = [root]
+    if not reset_allowed_roots:
+        allowed.extend(normalize_root(item) for item in repositories.get("allowed", []))
     allowed.extend(normalize_root(item) for item in allow_roots)
     repositories["allowed"] = _unique(allowed)
 

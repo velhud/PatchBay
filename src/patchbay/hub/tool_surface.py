@@ -991,7 +991,7 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
                     "allowed_machine_ids": _string_array("Optional successor placement allow-list."),
                     "required_tags": _string_array("Require all listed successor machine tags."),
                     "carry_context": _string(
-                        "Context staged into the successor; live sessions and worktrees are never moved.",
+                        "Stage up to 50 bounded report metadata entries in successor handoff_context. Full reports, artifacts, and changes require explicit retrieval and review; no files or sessions are transferred, including reports_and_changes.",
                         enum=("reports", "reports_and_changes", "none"),
                     ),
                     "idempotency_key": deepcopy(IDEMPOTENCY_KEY_SCHEMA),
@@ -1398,6 +1398,7 @@ def _pro_request_descriptor(canonical_name: str, target_name: str) -> dict[str, 
         )
         properties["idempotency_key"] = deepcopy(IDEMPOTENCY_KEY_SCHEMA)
         required.append("idempotency_key")
+        required.append("expected_revision")
     description = _target_description(
         str(source["description"]),
         "Hub applies principal, participant, group, machine-generation, workspace, and revision consistency before returning or mutating the machine-affine request.",

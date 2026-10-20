@@ -95,6 +95,7 @@ def test_author_serve_disables_access_log(setup_author, monkeypatch):
     assert observed["access_log"] is False
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_replayed_stale_check_keeps_one_run(setup_author, tmp_path):
     service, _, _, task, lease = setup_author
     checks = Checks(service.store)
@@ -144,6 +145,7 @@ def _configured_check(setup_author, name: str, check: Check, **profile_options):
     return service, task, lease, operation
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_cancelled_check_keeps_cancelled_feedback_classification(setup_author):
     service, task, lease, operation = _configured_check(
         setup_author,
@@ -166,6 +168,7 @@ def test_cancelled_check_keeps_cancelled_feedback_classification(setup_author):
     assert Feedback(service.store).get(task["id"])["classification"] == "CANCELLED"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_noisy_log_page_retains_truncation_and_hash(setup_author):
     program = "import os\nfor _ in range(64): os.write(1, b'x' * 65536)\n"
     service, task, _, operation = _configured_check(
@@ -182,6 +185,7 @@ def test_noisy_log_page_retains_truncation_and_hash(setup_author):
     assert page["sha256"] == output["sha256"]
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_exact_git_context_is_ready_for_review(setup_author):
     service, source, _, original, _ = setup_author
     expected = original["current_commit"]

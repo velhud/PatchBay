@@ -10,13 +10,8 @@ Spark for bounded small lanes with GPT-5.4 Mini as immediate fallback, Luna for
 compact standard work, Terra for most substantial work, and Sol for difficult or
 high-authority judgment. Sol medium is the normal default; use higher effort only
 when difficulty or consequences justify it."""
-_NEW_POLICY = """Model routing is advisory and patchbay_worker_options is authoritative. For
-ordinary worker starts, explicitly select model='gpt-6-luna' with
-reasoning_effort='high' when the installed catalog supports it. Keep that
-effective model and effort on follow-up unless the manager deliberately changes
-them. Terra and Sol are explicit escalations. Spark, GPT-5.4 Mini, GPT-5.4, and
-GPT-5.5 are explicit availability, compatibility, or evidence-backed fallbacks;
-never route to them silently."""
+_NEW_POLICY = "Call patchbay_worker_options to inspect catalog availability. " + "Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker."
+
 
 if _OLD_POLICY not in _legacy.HUB_V2_INSTRUCTIONS:
     raise RuntimeError("Legacy Hub V2 model policy changed; reconcile the replacement explicitly")

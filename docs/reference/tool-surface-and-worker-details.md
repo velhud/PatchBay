@@ -41,9 +41,9 @@ Completed reports should include summary, detailed report, evidence, changed fil
 
 ## Model and reasoning selection
 
-The manager calls the options tool and explicitly selects ordinary Luna/High when supported. The runtime preserves the requested values through worker start, follow-up, Pro dispatch, and evidence. Fallbacks and escalations are deliberate and visible.
+Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
-Do not restore old guidance that makes Spark the automatic first choice or GPT-5.4 Mini an automatic retry. Do not make Terra the silent default for ordinary serious work. Do not hard-code Luna into a path that cannot verify installed catalog support.
+Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
 ## Author Mode details
 

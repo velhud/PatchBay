@@ -147,6 +147,8 @@ def test_hub_backup_cli_prepares_exact_source_migration_marker(
             "group-before-migration",
             {"work_group_id": "group-before-migration"},
         )
+        store.connection.execute("DROP INDEX operations_logical_target_idx")
+        store.connection.execute("DROP INDEX entity_work_group_idx")
         store.connection.execute("DROP TABLE operation_group_index")
         store.connection.execute(
             "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"
@@ -172,11 +174,11 @@ def test_hub_backup_cli_prepares_exact_source_migration_marker(
     marker = created["pre_migration_backup"]
     assert marker["valid"] is True
     assert marker["source_schema_version"] == 2
-    assert marker["target_schema_version"] == 3
+    assert marker["target_schema_version"] == 4
     assert Path(marker["marker_path"]).is_file()
 
     with HubStoreV2(source) as migrated:
-        assert migrated.schema_info()["schema_version"] == 3
+        assert migrated.schema_info()["schema_version"] == 4
         assert (
             migrated.get_entity("hub.work_group", "group-before-migration") is not None
         )

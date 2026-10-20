@@ -81,20 +81,20 @@ async def test_tool_handler_exposes_worker_option_menu(monkeypatch, tmp_path):
 
     def fake_menu(config_arg, **kwargs):
         assert config_arg is config
-        assert kwargs["model"] == "gpt-5.5"
+        assert kwargs["model"] == "gpt-6-luna"
         return {
             "source": "test",
-            "models": [{"id": "gpt-5.5"}],
+            "models": [{"id": "gpt-6-luna"}],
             "reasoning_efforts": [{"effort": "high"}],
             "next_step": "Use codex_worker_start.",
         }
 
     monkeypatch.setattr("patchbay.tools.handler.worker_option_menu", fake_menu)
 
-    result = await handler.handle_tool_call("codex_worker_options", {"model": "gpt-5.5"})
+    result = await handler.handle_tool_call("codex_worker_options", {"model": "gpt-6-luna"})
 
     assert result["source"] == "test"
-    assert result["models"][0]["id"] == "gpt-5.5"
+    assert result["models"][0]["id"] == "gpt-6-luna"
 
 
 @pytest.mark.asyncio
@@ -192,7 +192,7 @@ async def test_tool_handler_exposes_natural_worker_flow(tmp_path):
         {
             "name": "Architecture Reader",
             "brief": "Read the architecture and report its main boundary.",
-            "model": "gpt-5.5",
+            "model": "gpt-6-luna",
             "reasoning_effort": "high",
         },
     )
@@ -221,7 +221,7 @@ async def test_tool_handler_exposes_natural_worker_flow(tmp_path):
     assert resume_job.options["resume_session_id"] == "session-abc"
     assert resume_job.worktree_path == first_job.worktree_path
     assert resume_job.options["sandbox"] == "workspace-write"
-    assert resume_job.options["model"] == "gpt-5.5"
+    assert resume_job.options["model"] == "gpt-6-luna"
     assert resume_job.options["_worker_reasoning_effort"] == "high"
 
     workers = await handler.handle_tool_call("codex_worker_list", {})

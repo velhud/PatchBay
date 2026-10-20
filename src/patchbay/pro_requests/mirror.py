@@ -21,7 +21,12 @@ def write_mirror(
         raise ValueError("Pro Request mirror_dir must stay inside the repository")
     request_id = public_manifest["id"]
     target = target_root / request_id
+    if target.is_symlink():
+        raise ValueError("Pro Request mirror target must not be a symlink")
     target.mkdir(parents=True, exist_ok=True)
+    for name in ("README.md", "status.json", "report.md", "response.md"):
+        if (target / name).is_symlink():
+            raise ValueError("Pro Request mirror files must not be symlinks")
     (target / "README.md").write_text(_readme(public_manifest), encoding="utf-8")
     (target / "status.json").write_text(json.dumps(public_manifest, indent=2, sort_keys=True), encoding="utf-8")
     (target / "report.md").write_text(report_text, encoding="utf-8")

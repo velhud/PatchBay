@@ -49,7 +49,7 @@ def test_review_command_keeps_prompt_on_stdin(tmp_path):
             "prompt": "review these changes",
             "base": "main",
             "title": "Review title",
-            "model": "gpt-5",
+            "model": "gpt-6-luna",
         }
     )
 

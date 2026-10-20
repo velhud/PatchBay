@@ -1406,13 +1406,22 @@ class FleetHubProRequestAdapterV2(HubProRequestAdapterV2):
             "machine_id": association["machine_id"],
             "edge_generation": association["edge_generation"],
         }
-        operation = self.broker.create_operation(
-            tool=name,
-            logical_target=f"pro-request:{association['request_ref']}",
+        from contextlib import nullcontext
+        group_id = str(payload["target"].get("work_group_id") or "")
+        scope = self.hub_store.operation_group_association_scope(
+            tool=name, logical_target=f"pro-request:{association['request_ref']}",
             idempotency_key=str(args.get("idempotency_key") or ""),
-            payload=payload,
-            principal_ref=self.hub_store.principal_ref,
-        )
+            principal_ref=self.hub_store.principal_ref, work_group_id=group_id,
+        ) if group_id else nullcontext()
+        with scope:
+            operation = self.broker.create_operation(
+                tool=name, logical_target=f"pro-request:{association['request_ref']}",
+                idempotency_key=str(args.get("idempotency_key") or ""), payload=payload,
+                principal_ref=self.hub_store.principal_ref,
+            )
+        if group_id:
+            self.hub_store.assert_operation_group_association(
+                operation_id=operation["operation_id"], work_group_id=group_id)
         operation = self._ensure_dispatchable(operation)
         return self.operation_result(operation, association=association)
 

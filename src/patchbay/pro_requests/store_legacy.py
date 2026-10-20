@@ -254,6 +254,8 @@ class ProRequestStore:
         refusal = self._mutation_refusal(manifest, request_context, takeover=takeover, mutation_name="responding to this Pro Request")
         if refusal:
             return {"accepted": False, "request_id": manifest["id"], **refusal}
+        if len(str(worker_message_markdown or "").encode("utf-8")) > self._max_response_bytes():
+            raise ValueError("worker_message_markdown exceeds the complete-delivery limit")
         response_text, truncated, total = bounded_text(response_markdown, self._max_response_bytes())
         (request_dir / "response.md").write_text(response_text, encoding="utf-8")
         timestamp = now_ts()
@@ -265,7 +267,7 @@ class ProRequestStore:
             "exists": True,
             "response_kind": optional_short_text(response_kind, max_chars=80) or "analysis",
             "responded_at": timestamp,
-            "worker_message_markdown": str(worker_message_markdown or "")[:12_000],
+            "worker_message_markdown": str(worker_message_markdown or ""),
             "truncated": truncated,
             "total_bytes": total,
         }

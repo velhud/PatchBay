@@ -26,6 +26,7 @@ from patchbay.protocol.context import RequestContext
 from patchbay.protocol.mcp import MCPProtocol
 from patchbay.security import internal_log_error
 from patchbay.tools.handler import ToolHandler
+from patchbay.owner_identity import session_ref_salt
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class StdioMCPServer:
             "last_activity": now,
             "client_label": client_label,
         }
-        self._session_ref_salt = os.environ.get("PATCHBAY_SESSION_REF_SALT") or uuid.uuid4().hex
+        self._session_ref_salt = session_ref_salt(self.config)
 
     def request_context(self) -> RequestContext:
         self.session_data["last_activity"] = time.monotonic()
@@ -106,7 +107,13 @@ async def run_stdio(config_path: str | Path, *, client_label: str = "stdio", inp
     server = StdioMCPServer(load_config(config_path), client_label=client_label)
     input_stream = input_stream or sys.stdin
     output_stream = output_stream or sys.stdout
-    for raw_line in input_stream:
+    # A blocking iterator starves scheduled workers until the next client input.
+    iterator = iter(input_stream)
+    sentinel = object()
+    while True:
+        raw_line = await asyncio.to_thread(next, iterator, sentinel)
+        if raw_line is sentinel:
+            break
         line = raw_line.strip()
         if not line:
             continue

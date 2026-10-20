@@ -3259,8 +3259,8 @@ class JobExecutor:
         Returns:
             Command as list of strings
         """
-        if options is None:
-            options = {}
+        from patchbay.workers.model_options import pin_execution_options
+        options = pin_execution_options(options)
         if mode == "resume":
             return self._build_codex_resume_command(prompt, options)
         
@@ -3345,6 +3345,8 @@ class JobExecutor:
 
     def _build_codex_resume_command(self, prompt: str, options: Dict[str, Any]) -> list[str]:
         """Build `codex exec resume` with options before SESSION_ID/PROMPT."""
+        from patchbay.workers.model_options import pin_execution_options
+        options = pin_execution_options(options)
         security = self.config.get('security', {})
         session_id = str(options.get("resume_session_id") or "").strip()
         if not session_id:
@@ -3506,7 +3508,7 @@ class JobExecutor:
                 self._capture_job_descendants(
                     job_id,
                     int(getattr(process, "pid", 0) or 0),
-                    force_refresh=True,
+                    force_refresh=False,
                 )
                 session_started = self._observe_stdout_event(job_id, line, state)
                 if session_started and startup_gate is not None:
@@ -3973,7 +3975,9 @@ class JobExecutor:
             session_started = True
         else:
             session_started = False
-        self.job_manager.update_job_state(job_id, JobState.RUNNING, **updates)
+        self.job_manager.update_job_state(
+            job_id, JobState.RUNNING,
+            _telemetry=not (checkpoint or session_started or stdout_completion_observed), **updates)
         return session_started
 
     def _activity_updates_from_event(
@@ -4570,7 +4574,7 @@ class JobExecutor:
                 "exit_code": exit_code,
                 "public_message": "Codex could not run this worker because its current usage quota is exhausted.",
                 "manager_guidance": guidance,
-                "operator_action": "Retry the same worker after quota becomes available, or explicitly choose another suitable available model.",
+                "operator_action": "Retry the same Luna worker after quota becomes available; no model-family fallback is authorized.",
                 "retry_without_operator_action": True,
                 "retry_hint": retry_hint,
             }
@@ -4610,8 +4614,8 @@ class JobExecutor:
                 "category": "codex_model_unavailable",
                 "exit_code": exit_code,
                 "public_message": "Codex rejected the selected model before the worker could run.",
-                "manager_guidance": "Call codex_worker_options and retry with a model id returned by the current Codex runtime.",
-                "operator_action": "Choose a currently available Codex model.",
+                "manager_guidance": "Call codex_worker_options to inspect Luna availability; no other model family or older Luna is authorized.",
+                "operator_action": "Restore availability of the approved Luna selector; do not substitute another model.",
                 "retry_without_operator_action": True,
             }
         return None
@@ -5073,12 +5077,11 @@ class JobExecutor:
 
     async def cancel_all_running(self, reason: str = "Server shutting down") -> None:
         """Cancel every tracked subprocess and mark queued/running jobs terminal."""
-        for job_id, process in list(self.processes.items()):
+        async def stop_owned(job_id):
+            process = self.processes.get(job_id)
             job = self.job_manager.get_job(job_id)
-            if job is not None and job.state in {
-                JobState.COMPLETED,
-                JobState.FAILED,
-                JobState.CANCELLED,
+            if process is not None and job is not None and job.state in {
+                JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED,
             }:
                 if self._tracked_process_or_group_is_live(job_id, process):
                     await self._terminate_process(job_id, process)
@@ -5087,11 +5090,18 @@ class JobExecutor:
                     self.repo_locks.release_job(job_id)
                 else:
                     self._schedule_terminal_cleanup(job_id, process)
-                continue
-            await self.cancel_job(job_id, reason=reason)
-        for job_id, job in list(self.job_manager.jobs.items()):
-            if job.state in {JobState.PENDING, JobState.RUNNING}:
+                return
+            if process is not None or (job and job.state in {JobState.PENDING, JobState.RUNNING}):
                 await self.cancel_job(job_id, reason=reason)
+
+        # Initiate every owned cancellation together; one slow worker must not
+        # consume all other workers' shutdown budgets before they receive TERM.
+        job_ids = set(self.processes) | {job_id for job_id, job in self.job_manager.jobs.items()
+                                       if job.state in {JobState.PENDING, JobState.RUNNING}}
+        results = await asyncio.gather(*(stop_owned(job_id) for job_id in job_ids), return_exceptions=True)
+        for error in results:
+            if isinstance(error, BaseException):
+                logger.error("Owned shutdown remains unresolved: %s", type(error).__name__)
         pending_cleanup = [task for task in self.cleanup_tasks.values() if not task.done()]
         if pending_cleanup:
             _, still_pending = await asyncio.wait(

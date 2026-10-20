@@ -456,6 +456,10 @@ class HubWorkerAdapterV2:
         self._validate_group_repo_binding(args, route)
         if name == "patchbay_worker_start_batch":
             self._validate_shared_write_policy(args, route)
+            if route.work_group_id and isinstance(route.work_group.get("lanes"), Mapping):
+                for child in args["workers"]:
+                    if child["lane"] not in route.work_group["lanes"]:
+                        raise ValueError(f"Batch lane is not declared in the work group: {child['lane']}")
         elif name == "patchbay_worker_start":
             self._validate_single_start_policy(args, route)
 
@@ -466,6 +470,15 @@ class HubWorkerAdapterV2:
         if name == "patchbay_worker_wait":
             return await self._projection_wait(args=args, route=route, context=context)
         if name == "patchbay_worker_message":
+            store = getattr(self.broker, "store", None)
+            if store is not None and store.get_operation_by_idempotency(
+                tool=name, logical_target=self._logical_target(name, args, route),
+                idempotency_key=str(args.get("idempotency_key") or ""), principal_ref=route.principal_ref,
+            ) is not None:
+                try:
+                    return await self._create_single_operation(name=name, args=args, route=route, context=context)
+                except OperationBrokerConflict as error:
+                    return self._broker_conflict_result(error, route=route)
             active = await self._active_turn_projection(route=route, context=context)
             if active is not None:
                 return public_envelope(

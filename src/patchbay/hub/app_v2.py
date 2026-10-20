@@ -552,7 +552,7 @@ class HubRuntimeTargetPortV2:
             }
 
         readiness = self.runtime._derived_readiness(group)
-        if tool_name in _WORKER_MUTATION_TOOLS and readiness.get("status") != "ready":
+        if tool_name in _WORKER_MUTATION_TOOLS and tool_name != "patchbay_worker_stop" and readiness.get("status") != "ready":
             return public_envelope(
                 "blocked",
                 result={
@@ -751,7 +751,12 @@ class HubWorkerProjectionPortV2:
     ) -> dict[str, Any]:
         group_id = str(filters.get("work_group_id") or route.get("work_group_id") or "")
         values: list[tuple[int, dict[str, Any]]] = []
-        for entity in self.store.list_entities(WORKER_PROJECTION_ENTITY):
+        records = self.store.connection.execute(
+            "SELECT * FROM entity_records WHERE entity_type=? AND COALESCE(json_extract(record_json, '$.work_group_id'), '')=?",
+            (WORKER_PROJECTION_ENTITY, group_id),
+        ).fetchall() if group_id else None
+        entities = [self.store._entity_from_row(row) for row in records] if records is not None else self.store.list_entities(WORKER_PROJECTION_ENTITY)
+        for entity in entities:
             worker = deepcopy(entity["record"])
             if group_id and worker.get("work_group_id") != group_id:
                 continue
@@ -771,8 +776,12 @@ class HubWorkerProjectionPortV2:
         group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
         return {
             "values": values,
+            "snapshot_revision": (self.store.work_group_status_revision(group_id) if group_id else 0) + sum(item[0] for item in values),
             "group": deepcopy(group_entity["record"]) if group_entity else {},
-            "operations": self.runtime._operations_for_group(group_id) if group_id else [],
+            # Completion depends only on live/uncertain operations. Retained
+            # terminal history is available through the paginated status API.
+            "operations": [self.store.get_operation(operation_id) for operation_id in
+                           self.store.active_operation_ids_for_work_group(group_id)] if group_id else [],
         }
 
     def _query_result(
@@ -813,8 +822,8 @@ class HubWorkerProjectionPortV2:
         except (TypeError, ValueError):
             limit = 50
         page = values[start : start + limit]
-        projection_revision = max((item[0] for item in values), default=0)
-        all_workers = [item[1] for item in values]
+        projection_revision = int(source.get("snapshot_revision", sum(item[0] for item in source.get("values", []))))
+        all_workers = [item[1] for item in source.get("values", [])]
         workers = [item[1] for item in page]
         counts = {
             "total": len(values),
@@ -927,9 +936,15 @@ class HubWorkerProjectionPortV2:
         )
         started = time.monotonic()
         snapshot: dict[str, Any] = {}
+        last_store_revision = None
         while True:
-            snapshot = self._projection_snapshot(filters=filters, route=route)
-            result = self._query_result(filters=filters, route=route, snapshot=snapshot)
+            store_revision = self.store.connection.execute(
+                "SELECT v2_mutation_count FROM schema_metadata WHERE singleton=1"
+            ).fetchone()[0]
+            if store_revision != last_store_revision:
+                snapshot = self._projection_snapshot(filters=filters, route=route)
+                result = self._query_result(filters=filters, route=route, snapshot=snapshot)
+                last_store_revision = store_revision
             if int(result["projection_revision"]) > max(0, int(since_revision)):
                 break
             remaining = timeout - (time.monotonic() - started)

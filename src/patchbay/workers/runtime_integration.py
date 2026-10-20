@@ -105,6 +105,11 @@ class RuntimeIntegrationFixes:
         workspace = self._workspace_for_jobs(jobs)
         if workspace["mode"] == "read_only" or not workspace["available"]:
             return []
+        if not self._integration_baseline_revision(jobs):
+            # Legacy records can expose honest current dirt for inspection, but
+            # cannot certify integration: _candidate_snapshot still rejects a
+            # missing delivery baseline rather than guessing from current HEAD.
+            return porcelain_paths(self._execution_path_for_workspace(workspace))
         return list(self._candidate_snapshot(jobs).changed_files)
 
     def _git_untracked_files(self, base_repo: str) -> list[str]:

@@ -379,7 +379,7 @@ def _resolve_executable(command: str) -> str | None:
     expanded = str(Path(command).expanduser()) if any(sep in command for sep in ("/", "\\")) else command
     if any(sep in command for sep in ("/", "\\")):
         path = Path(expanded)
-        return str(path) if path.exists() and os.access(path, os.X_OK) else None
+        return str(path.resolve()) if path.exists() and os.access(path, os.X_OK) else None
     return shutil.which(command)
 
 

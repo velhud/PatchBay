@@ -1656,6 +1656,8 @@ def test_reassign_creates_successor_and_preserves_predecessor_worker_route(tmp_p
     assert successor["pinned_machine_id"] == "machine_new"
     assert successor["supersedes"] == old_group["work_group_id"]
     assert successor["worker_refs"] == []
+    assert successor["handoff_context"]["reports"][0]["fleet_worker_ref"] == old_worker_ref
+    assert successor["handoff_context"]["changes_transferred"] is False
     assert old_worker_ref in old_status["result"]["work_group"]["worker_refs"]
 
 

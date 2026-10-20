@@ -58,6 +58,7 @@ class Checks:
 
     def dispatch(self, *, operation_ids: list[str] | None = None) -> dict:
         """Explicit scheduler action. It never retries an uncertain execution."""
+        require(sys.platform == "linux", "BLOCKED_ENVIRONMENT", "Execution supervisors require Linux/WSL2; no unsupported platform fallback")
         launched, waiting = [], []
         if operation_ids is not None:
             require(1 <= len(operation_ids) <= 100, "INVALID_REQUEST", "Dispatch needs one to 100 existing operation IDs")

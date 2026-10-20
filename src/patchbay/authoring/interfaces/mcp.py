@@ -12,6 +12,7 @@ class MCP(_legacy.MCP):
         result = super().call(role, name, arguments)
         if name != "author_capabilities" or not isinstance(result, dict):
             return result
+        result = {key: value for key, value in result.items() if key != "instance_id"}
         qualification = result.get("qualification")
         if not isinstance(qualification, dict) or "instance_id" not in qualification:
             return result

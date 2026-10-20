@@ -62,7 +62,7 @@ For ChatGPT web, start an authenticated HTTPS tunnel and use the private Server 
 }
 ```
 
-Use the exact Luna selector returned by the installed catalog if it differs. When Luna is unavailable, choose and report a deliberate fallback; do not silently route or retry. Terra and Sol are explicit escalations, not ordinary defaults.
+Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
 5. Start durable named workers with colleague-quality briefs: purpose, current context, outcome, scope, constraints, non-goals, lane relationships, deliverables, and verification evidence.
 6. Continue the same worker with `codex_worker_message` when evidence is thin or correction is required.

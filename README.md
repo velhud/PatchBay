@@ -24,16 +24,9 @@ The detailed contract is in [Workflow modes and authority boundaries](docs/refer
 
 PatchBay exposes a local MCP server over Streamable HTTP or stdio. ChatGPT can open approved workspaces, appoint durable named workers, continue them by name, inspect reports and bounded evidence, and explicitly integrate accepted isolated work.
 
-The ordinary worker policy is explicit:
+Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
-- call `codex_worker_options` or `patchbay_worker_options` before model-sensitive work;
-- when the installed Codex catalog supports it, start ordinary workers with `model="gpt-6-luna"` and `reasoning_effort="high"`;
-- keep the effective model and effort on follow-up turns unless the manager deliberately changes them;
-- use Terra or Sol only as explicit escalations;
-- use Spark, GPT-5.4 Mini, GPT-5.4, or GPT-5.5 only as explicit availability, compatibility, or evidence-backed fallbacks;
-- never hide routing, fabricate catalog support, or silently retry with another model.
-
-PatchBay retains the configured catalog as the authority. The policy does not force an unsupported selector inside the runtime.
+Use the options tool to check observed availability. An unavailable selector is a blocker, never permission to substitute.
 
 ### Manager quick start
 

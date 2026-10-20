@@ -230,6 +230,10 @@ class PowerToolRunner:
         if mode == "full":
             return
 
+        # Validate the bytes that will execute before whitespace normalization.
+        # Newlines are shell command separators, not cosmetic spacing.
+        if "\n" in command or "\r" in command:
+            raise ValueError("Command is blocked in safe bash mode: multiline command")
         normalized = compact_command(command)
         for pattern in SAFE_BLOCKED_PATTERNS:
             if pattern.search(normalized):

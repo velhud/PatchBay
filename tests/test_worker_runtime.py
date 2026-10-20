@@ -493,16 +493,16 @@ async def test_start_worker_accepts_model_and_reasoning_effort(tmp_path):
         name="Deep Worker",
         brief="Inspect the repository architecture.",
         repo_path=config["repositories"]["default"],
-        model="gpt-5.5",
+        model="gpt-6-luna",
         reasoning_effort="high",
     )
     await asyncio.sleep(0)
 
     job = next(iter(manager.jobs.values()))
-    assert result["model"] == "gpt-5.5"
+    assert result["model"] == "gpt-6-luna"
     assert result["reasoning_effort"] == "high"
-    assert job.options["model"] == "gpt-5.5"
-    assert job.options[WORKER_MODEL_OPTION] == "gpt-5.5"
+    assert job.options["model"] == "gpt-6-luna"
+    assert job.options[WORKER_MODEL_OPTION] == "gpt-6-luna"
     assert job.options[WORKER_REASONING_EFFORT_OPTION] == "high"
     assert job.options["config_overrides"] == ['model_reasoning_effort="high"']
 
@@ -518,8 +518,8 @@ async def test_worker_message_inherits_or_overrides_execution_options(tmp_path):
         name="Continuity Worker",
         brief="Inspect the repository architecture.",
         repo_path=config["repositories"]["default"],
-        model="gpt-5.5",
-        reasoning_effort="medium",
+        model="gpt-6-luna",
+        reasoning_effort="high",
     )
     await asyncio.sleep(0)
     first_job = next(iter(manager.jobs.values()))
@@ -534,10 +534,10 @@ async def test_worker_message_inherits_or_overrides_execution_options(tmp_path):
     inherited = await runtime.message_worker(worker="Continuity Worker", message="Continue.")
     await asyncio.sleep(0)
     inherited_job = manager.get_job(executor.started[-1])
-    assert inherited["model"] == "gpt-5.5"
-    assert inherited["reasoning_effort"] == "medium"
-    assert inherited_job.options["model"] == "gpt-5.5"
-    assert inherited_job.options[WORKER_REASONING_EFFORT_OPTION] == "medium"
+    assert inherited["model"] == "gpt-6-luna"
+    assert inherited["reasoning_effort"] == "high"
+    assert inherited_job.options["model"] == "gpt-6-luna"
+    assert inherited_job.options[WORKER_REASONING_EFFORT_OPTION] == "high"
 
     manager.update_job_state(
         inherited_job.job_id,
@@ -554,7 +554,7 @@ async def test_worker_message_inherits_or_overrides_execution_options(tmp_path):
     await asyncio.sleep(0)
     override_job = manager.get_job(executor.started[-1])
     assert overridden["reasoning_effort"] == "xhigh"
-    assert override_job.options["model"] == "gpt-5.5"
+    assert override_job.options["model"] == "gpt-6-luna"
     assert override_job.options[WORKER_REASONING_EFFORT_OPTION] == "xhigh"
 
 

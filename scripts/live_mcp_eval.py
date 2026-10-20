@@ -319,7 +319,8 @@ def main() -> int:
             "pro_request_mcp_respond",
             pro_response_data["accepted"] is True
             and pro_response_data["dispatched"] is False
-            and "Response stored only" in pro_response_data["note"],
+            and "without worker dispatch" in pro_response_data["note"]
+            and pro_response_data["mirror_effect"]["state"] in {"disabled", "written", "deferred"},
         )
 
         local_response = _read_pro_response(request_id, env)

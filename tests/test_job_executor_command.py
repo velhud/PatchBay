@@ -32,7 +32,7 @@ def test_codex_exec_options_are_before_prompt(tmp_path):
         "change the code",
         str(tmp_path),
         {
-            "model": "gpt-5",
+            "model": "gpt-6-luna",
             "images": ["screen.png"],
             "features": {"enable": ["json"], "disable": ["web_search"]},
             "profile": "work",
@@ -135,7 +135,7 @@ def test_resume_jobs_put_options_before_session_and_prompt(tmp_path):
         str(tmp_path),
         {
             "resume_session_id": "session-123",
-            "model": "gpt-5",
+            "model": "gpt-6-luna",
             "images": ["screen.png"],
             "features": {"enable": ["json"], "disable": ["web_search"]},
             "json_events": True,

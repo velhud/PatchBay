@@ -210,6 +210,7 @@ def _load_model_catalog(config: Dict[str, Any]) -> tuple[list[Dict[str, Any]], s
     try:
         completed = subprocess.run(
             ["codex", "debug", "models"],
+            env={**os.environ, "CODEX_HOME": str(_codex_home(config))},
             capture_output=True,
             text=True,
             timeout=10,

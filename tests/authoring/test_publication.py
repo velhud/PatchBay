@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import json
 from pathlib import Path
 
@@ -30,6 +32,7 @@ def publishable(setup_author, tmp_path):
     return service, source, repo, task, lease, accepted, remote
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_exact_feature_publication_and_replay_leave_main_unchanged(setup_author, tmp_path):
     s, source, repo, task, lease, accepted, remote = publishable(setup_author, tmp_path)
     authority = {"token": lease["token"], "epoch": lease["epoch"]}
@@ -44,6 +47,7 @@ def test_exact_feature_publication_and_replay_leave_main_unchanged(setup_author,
     assert result["merged"] is False
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_new_revision_invalidates_prior_approval(setup_author, tmp_path):
     s, _, _, task, lease, _, remote = publishable(setup_author, tmp_path)
     authority = {"token": lease["token"], "epoch": lease["epoch"]}
@@ -54,6 +58,7 @@ def test_new_revision_invalidates_prior_approval(setup_author, tmp_path):
     assert git(remote, "for-each-ref", "--format=%(refname)", "refs/heads") == "refs/heads/main"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_target_moving_after_approval_blocks_publication(setup_author, tmp_path):
     s, source, _, task, lease, _, remote = publishable(setup_author, tmp_path)
     authority = {"token": lease["token"], "epoch": lease["epoch"]}
@@ -65,6 +70,7 @@ def test_target_moving_after_approval_blocks_publication(setup_author, tmp_path)
     assert error.value.code == "STALE_BASE"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_lost_push_terminal_response_is_reconciled(setup_author, tmp_path, monkeypatch):
     s, _, _, task, lease, _, remote = publishable(setup_author, tmp_path)
     authority = {"token": lease["token"], "epoch": lease["epoch"]}

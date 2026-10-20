@@ -1,6 +1,6 @@
 # Codex Model Routing Review — 2026-07-10
 
-Status: evidence-backed routing decision for PatchBay's seven documented Codex worker models. Recheck the live Codex catalog and usage dashboard before treating availability or credit rates as permanent.
+Status: SUPERSEDED historical record. The active policy requires gpt-6-luna with high (default), xhigh, or max for every delegated worker. No fallback is authorized. The following records the former evidence-backed routing decision for PatchBay's seven documented Codex worker models. Recheck the live Codex catalog and usage dashboard before treating availability or credit rates as permanent.
 
 ## Decision
 

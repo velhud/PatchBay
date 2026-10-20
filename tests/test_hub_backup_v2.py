@@ -888,6 +888,8 @@ def test_database_manifest_and_marker_publication_fsync_parent_directories(
     store, _operation = _seed_hub(source)
     store.close()
     with sqlite3.connect(source) as connection:
+        connection.execute("DROP INDEX operations_logical_target_idx")
+        connection.execute("DROP INDEX entity_work_group_idx")
         connection.execute("DROP TABLE operation_group_index")
         connection.execute(
             "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"
@@ -926,6 +928,8 @@ def test_pre_migration_marker_requires_current_validated_complete_backup(
     store, _operation = _seed_hub(source)
     store.close()
     with sqlite3.connect(source) as connection:
+        connection.execute("DROP INDEX operations_logical_target_idx")
+        connection.execute("DROP INDEX entity_work_group_idx")
         connection.execute("DROP TABLE operation_group_index")
         connection.execute(
             "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"
@@ -1007,6 +1011,8 @@ def test_marker_published_and_fsynced_before_process_crash_is_reused(
     store, _operation = _seed_hub(source)
     store.close()
     with sqlite3.connect(source) as connection:
+        connection.execute("DROP INDEX operations_logical_target_idx")
+        connection.execute("DROP INDEX entity_work_group_idx")
         connection.execute("DROP TABLE operation_group_index")
         connection.execute(
             "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"
@@ -1078,6 +1084,8 @@ def test_backup_and_restore_migrate_supported_older_hub_schema(tmp_path: Path) -
     store, operation = _seed_hub(source)
     store.close()
     with sqlite3.connect(source) as connection:
+        connection.execute("DROP INDEX operations_logical_target_idx")
+        connection.execute("DROP INDEX entity_work_group_idx")
         connection.execute("DROP TABLE operation_group_index")
         connection.execute(
             "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"

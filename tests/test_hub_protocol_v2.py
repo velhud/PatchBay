@@ -257,11 +257,9 @@ def test_initialize_is_manager_first_and_carries_frozen_contract_metadata():
     assert "cleanup_pending" in HUB_V2_INSTRUCTIONS
     assert "patchbay_worker_message" in HUB_V2_INSTRUCTIONS
     assert "patchbay_worker_options" in HUB_V2_INSTRUCTIONS
-    assert "Spark" in HUB_V2_INSTRUCTIONS
-    assert "GPT-5.4 Mini" in HUB_V2_INSTRUCTIONS
     assert "Luna" in HUB_V2_INSTRUCTIONS
-    assert "Terra" in HUB_V2_INSTRUCTIONS
-    assert "Sol medium is the normal default" in HUB_V2_INSTRUCTIONS
+    assert "No other model family" in HUB_V2_INSTRUCTIONS
+    assert "reasoning_effort='high'" in HUB_V2_INSTRUCTIONS
     assert "leave active work running" not in HUB_V2_INSTRUCTIONS
     assert "continuation-state packet" in HUB_V2_INSTRUCTIONS
     assert "repository and revision" in HUB_V2_INSTRUCTIONS

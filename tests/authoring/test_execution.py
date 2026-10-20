@@ -15,6 +15,8 @@ from patchbay.authoring.util import canonical
 from test_core import package_for, submit
 
 
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
+
 def wait_for(service, operation, *, timeout=40):
     operation_id = operation["id"] if isinstance(operation, dict) else operation
     deadline = time.monotonic() + timeout

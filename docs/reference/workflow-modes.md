@@ -28,7 +28,7 @@ model = gpt-6-luna
 reasoning_effort = high
 ```
 
-No hidden router may silently substitute another model. Terra and Sol are explicit escalations. Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5 are explicit fallbacks selected for availability, compatibility, or evidence.
+Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
 ### Recovery
 

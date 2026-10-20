@@ -42,34 +42,36 @@ class WorkspaceContext(_legacy.WorkspaceContext):
         oversized_line: int | None = None
         required_bytes: int | None = None
 
-        with target.open(
-            "r", encoding="utf-8", errors="strict", newline=""
-        ) as handle:
-            for line_number, line in enumerate(handle, start=1):
-                if line_number < start_line:
-                    continue
-                if line_number > end_line:
-                    break
-                clean = line[:-1] if line.endswith("\n") else line
-                clean = clean[:-1] if clean.endswith("\r") else clean
-                rendered = (
-                    f"{str(line_number).rjust(width)} | {_legacy.redact_text(clean)}"
-                )
-                encoded = rendered.encode("utf-8")
-                separator_bytes = 1 if selected else 0
-                if used_bytes + separator_bytes + len(encoded) > requested_max:
-                    if not selected and len(encoded) <= self.max_read_bytes:
-                        selected.append((line_number, rendered))
-                        used_bytes = len(encoded)
-                        oversized_line = line_number
-                        next_start_line = line_number + 1
-                    else:
-                        next_start_line = line_number
-                        if not selected:
-                            required_bytes = len(encoded)
-                    break
-                selected.append((line_number, rendered))
-                used_bytes += separator_bytes + len(encoded)
+        from patchbay.text_pages import bounded_lines
+        for line_number, clean, source_bytes in bounded_lines(target, self.max_read_bytes):
+            if line_number < start_line:
+                continue
+            if line_number > end_line:
+                break
+            if clean is None:
+                next_start_line = line_number
+                if not selected:
+                    required_bytes = source_bytes + width + 3
+                break
+            clean = clean[:-1] if clean.endswith("\r") else clean
+            rendered = (
+                f"{str(line_number).rjust(width)} | {_legacy.redact_text(clean)}"
+            )
+            encoded = rendered.encode("utf-8")
+            separator_bytes = 1 if selected else 0
+            if used_bytes + separator_bytes + len(encoded) > requested_max:
+                if not selected and len(encoded) <= self.max_read_bytes:
+                    selected.append((line_number, rendered))
+                    used_bytes = len(encoded)
+                    oversized_line = line_number
+                    next_start_line = line_number + 1
+                else:
+                    next_start_line = line_number
+                    if not selected:
+                        required_bytes = len(encoded)
+                break
+            selected.append((line_number, rendered))
+            used_bytes += separator_bytes + len(encoded)
 
         returned_end_line = selected[-1][0] if selected else start_line - 1
         result: Dict[str, Any] = {

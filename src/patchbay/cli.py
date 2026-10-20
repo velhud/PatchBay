@@ -153,7 +153,7 @@ def start_main(argv: Iterable[str] | None = None) -> int:
     prepared = _prepare_from_args(args, config)
     output_prepared = (
         prepared_with_revealed_token(prepared, os.environ)
-        if args.print_only and args.reveal_token
+        if args.reveal_token
         else prepared
     )
     if args.print_only and output_prepared["status"].get("auth", {}).get("token_returned"):
@@ -439,8 +439,8 @@ def pro_request_main(argv: Iterable[str] | None = None) -> int:
         manager = JobManager(config)
         executor = JobExecutor(config, manager)
         handler = ToolHandler(config, manager, executor)
-        result = asyncio.run(
-            handler.handle_tool_call(
+        async def dispatch_and_wait():
+            result = await handler.handle_tool_call(
                 "codex_pro_request_dispatch",
                 {
                     "request_id": parsed.request_id,
@@ -450,7 +450,11 @@ def pro_request_main(argv: Iterable[str] | None = None) -> int:
                     "workspace_mode": parsed.workspace_mode,
                 },
             )
-        )
+            if result.get("accepted"):
+                await asyncio.gather(*list(executor.tasks.values()))
+            return result
+
+        result = asyncio.run(dispatch_and_wait())
         _print_pro_request_result(result, json_output=parsed.json)
         return 0 if result.get("accepted") else 1
     if command == "close":
@@ -942,13 +946,13 @@ def _add_start_args(parser: argparse.ArgumentParser, *, include_runtime_flags: b
     parser.add_argument("--tunnel-mode", choices=["none", "local", "custom", "cloudflare", "cloudflare-named", "ngrok"])
     parser.add_argument("--hostname", help="Stable public hostname for ngrok or Cloudflare named tunnel.")
     parser.add_argument("--tunnel-name", help="Cloudflare named tunnel name.")
-    parser.add_argument("--cloudflared", default="cloudflared", help="cloudflared executable path.")
-    parser.add_argument("--ngrok", default="ngrok", help="ngrok executable path.")
+    parser.add_argument("--cloudflared", help="cloudflared executable path; omission preserves saved configuration.")
+    parser.add_argument("--ngrok", help="ngrok executable path; omission preserves saved configuration.")
     parser.add_argument("--cloudflare-config", help="cloudflared YAML config path.")
     parser.add_argument("--cloudflare-token-file", help="File containing a Cloudflare tunnel token.")
-    parser.add_argument("--cloudflare-token-env", default="CLOUDFLARE_TUNNEL_TOKEN", help="Environment variable containing a Cloudflare tunnel token.")
+    parser.add_argument("--cloudflare-token-env", help="Environment variable containing a Cloudflare tunnel token.")
     parser.add_argument("--ngrok-config", help="ngrok config file path.")
-    parser.add_argument("--tunnel-timeout-seconds", type=int, default=45, help="Timeout while waiting for local server and tunnel readiness.")
+    parser.add_argument("--tunnel-timeout-seconds", type=int, help="Timeout while waiting for local server and tunnel readiness; omission preserves configuration.")
     parser.add_argument("--save-profile", action="store_true", help="Save this workspace launch profile.")
     parser.add_argument("--no-profile", action="store_true", help="Ignore any saved profile for this workspace.")
     parser.add_argument("--direct-write", action=argparse.BooleanOptionalAction, default=None)
@@ -1025,17 +1029,19 @@ def _run_supervised_with_tunnel(
     auth_policy = build_auth_policy(config, environ=env)
     token_name = auth_policy.query_token_names[0]
 
+    cloudflared = tunnel_config.get("cloudflared")
+    ngrok = tunnel_config.get("ngrok")
     if mode in {"cloudflare", "cloudflare-named"}:
-        resolve_cloudflared(tunnel_config.get("cloudflared") or "cloudflared")
+        cloudflared = resolve_cloudflared(None if cloudflared == "cloudflared" else cloudflared)
     if mode == "ngrok":
-        resolve_ngrok(tunnel_config.get("ngrok") or "ngrok")
+        ngrok = resolve_ngrok(None if ngrok == "ngrok" else ngrok)
 
     spec = build_tunnel_spec(
         mode=mode,
         local_base_url=local_base,
         hostname=tunnel_config.get("hostname"),
-        cloudflared=tunnel_config.get("cloudflared") or "cloudflared",
-        ngrok=tunnel_config.get("ngrok") or "ngrok",
+        cloudflared=cloudflared or "cloudflared",
+        ngrok=ngrok or "ngrok",
         tunnel_name=tunnel_config.get("tunnel_name"),
         cloudflare_config=tunnel_config.get("cloudflare_config"),
         cloudflare_token_file=tunnel_config.get("cloudflare_token_file"),
@@ -1130,7 +1136,7 @@ def _run_supervised_with_tunnel(
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
             terminate_process(tunnel)
-            terminate_process(server)
+            terminate_process(server, timeout_seconds=45.0)
         finally:
             if sigterm_installed:
                 signal.signal(signal.SIGTERM, previous_sigterm)

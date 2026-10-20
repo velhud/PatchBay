@@ -163,13 +163,13 @@ def test_production_entrypoint_restart_eval(tmp_path):
     assert upgrade["edge_startup_refusal"]["refused"] is True
     assert upgrade["backup"]["source_unchanged"] is True
     assert upgrade["backup"]["pre_migration_backup"]["source_schema_version"] == 2
-    assert upgrade["backup"]["pre_migration_backup"]["target_schema_version"] == 3
+    assert upgrade["backup"]["pre_migration_backup"]["target_schema_version"] == 4
     assert upgrade["backup"]["immutable_before"] == upgrade["backup"]["immutable_after"]
     assert upgrade["older"]["schema_version"] == 2
     assert upgrade["older_edge"]["schema_version"] == 2
-    assert upgrade["migrated"]["schema_version"] == 3
+    assert upgrade["migrated"]["schema_version"] == 4
     assert upgrade["migrated_edge"]["schema_version"] == 3
-    assert upgrade["restarted"]["schema_version"] == 3
+    assert upgrade["restarted"]["schema_version"] == 4
     assert upgrade["restarted_edge"]["schema_version"] == 3
     assert upgrade["restored"]["schema_version"] == 2
     assert upgrade["restored_edge"]["schema_version"] == 2

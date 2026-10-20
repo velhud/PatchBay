@@ -105,7 +105,8 @@ mcp_protocol = MCPProtocol(config, tool_handler)
 # Maps session_id -> session data (can store per-session state if needed)
 sessions: Dict[str, Dict[str, Any]] = {}
 work_runs: Dict[str, Dict[str, Any]] = {}
-_SESSION_REF_SALT = os.environ.get("PATCHBAY_SESSION_REF_SALT") or uuid.uuid4().hex
+from patchbay.owner_identity import session_ref_salt
+_SESSION_REF_SALT = session_ref_salt(config)
 DEFAULT_WORK_RUN_IDLE_SECONDS = 900
 
 
@@ -417,6 +418,10 @@ async def mcp_endpoint(request: Request):
             headers={"Mcp-Session-Id": session_id}
         )
 
+    if not isinstance(message, dict):
+        return JSONResponse(
+            content={"jsonrpc": "2.0", "error": {"code": -32600, "message": "JSON-RPC message must be an object"}, "id": None},
+            status_code=400, headers={"Mcp-Session-Id": session_id})
     _apply_chatgpt_client_metadata(session_id, message)
     request_context = _request_context_for_session(session_id)
     

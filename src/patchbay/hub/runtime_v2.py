@@ -415,7 +415,7 @@ class HubRuntimeV2:
         code_record = enrollment["record"]
         now = self._clock()
         if code_record.get("used_at"):
-            raise ValueError("Enrollment code was already used")
+            raise ValueError("Enrollment code was already used; issue a fresh code if the response was lost")
         if _as_float(code_record.get("expires_at")) < now:
             raise ValueError("Enrollment code expired")
 
@@ -451,36 +451,30 @@ class HubRuntimeV2:
             "superseded_at": None,
             "superseded_by": "",
         }
+        changes = []
         if existing:
             old_generation = str(existing["record"].get("edge_generation") or "")
             old = self.store.get_entity(MACHINE_GENERATION_ENTITY, old_generation) if old_generation else None
             if old:
                 old_record = deepcopy(old["record"])
                 old_record.update({"superseded_at": now, "superseded_by": generation})
-                self.store.put_entity(
-                    MACHINE_GENERATION_ENTITY,
-                    old_generation,
-                    old_record,
-                    expected_revision=old["revision"],
-                )
-        self.store.put_entity(MACHINE_GENERATION_ENTITY, generation, generation_record)
-        self.store.put_entity(
-            MACHINE_ENTITY,
-            machine,
-            machine_record,
-            expected_revision=existing["revision"] if existing else 0,
-        )
+                changes.append({"entity_type": MACHINE_GENERATION_ENTITY, "entity_id": old_generation,
+                                "record": old_record, "expected_revision": old["revision"]})
         used = deepcopy(code_record)
         used.update({"used_at": now, "machine_id": machine, "edge_generation": generation})
-        self.store.put_entity(ENROLLMENT_ENTITY, code_value, used, expected_revision=enrollment["revision"])
-        self.store.append_event(
-            "machine.enrolled",
-            {"machine_id": machine, "edge_generation": generation},
-            entity_type=MACHINE_ENTITY,
-            entity_id=machine,
-        )
+        changes.extend([
+            {"entity_type": MACHINE_GENERATION_ENTITY, "entity_id": generation, "record": generation_record, "expected_revision": 0},
+            {"entity_type": MACHINE_ENTITY, "entity_id": machine, "record": machine_record,
+             "expected_revision": existing["revision"] if existing else 0},
+            {"entity_type": ENROLLMENT_ENTITY, "entity_id": code_value, "record": used, "expected_revision": enrollment["revision"]},
+        ])
         if workspaces:
-            self._persist_workspace_snapshot(machine_record, workspaces, projection_revision=0, received_at=now)
+            changes.extend(self._workspace_snapshot_changes(machine_record, workspaces, projection_revision=0, received_at=now))
+        # Validate all projections before one durable admission boundary. A
+        # failed batch consumes neither the enrollment code nor any credential.
+        self.store.put_entities_atomic(changes)
+        self.store.append_event("machine.enrolled", {"machine_id": machine, "edge_generation": generation},
+                                entity_type=MACHINE_ENTITY, entity_id=machine)
         return {
             "machine": self._public_machine(machine_record, now=now),
             "edge_generation": generation,
@@ -541,6 +535,7 @@ class HubRuntimeV2:
         resource_status: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         machine_record = self.authenticate_machine(machine_id, token, edge_generation=edge_generation)
+        self._drain_secondary_projection(machine_record)
         revision = _as_int(projection_revision, -1)
         if revision < 0:
             raise ValueError("projection_revision must be non-negative")
@@ -667,6 +662,9 @@ class HubRuntimeV2:
             "projection_gap": gap,
             "worker_projection_applied": projection_applied,
             "received_at": now,
+            "secondary_pending": True,
+            "secondary_base_snapshots": deepcopy(base_mutation_snapshots),
+            "secondary_pro_projection": self._pro_projection_outbox(projection or {}),
         }
         projection_changes = [
             *worker_changes,
@@ -693,22 +691,7 @@ class HubRuntimeV2:
         if saved_machine is None:
             raise HubStoreV2Conflict("machine_disappeared")
 
-        pro_request_adapter = self._adapters.get("pro_requests")
-        ingest_pro_requests = getattr(pro_request_adapter, "ingest_projection", None)
-        if projection is not None and callable(ingest_pro_requests):
-            ingest_pro_requests(
-                machine_record,
-                projection,
-                projection_revision=revision,
-                received_at=now,
-            )
-        for work_group_id, snapshot, source_operation_id in base_mutation_snapshots:
-            self.record_group_base_mutation_snapshot(
-                work_group_id=work_group_id,
-                snapshot=snapshot,
-                reason="shared_write_worker_turn_finished",
-                source_operation_id=source_operation_id,
-            )
+        self._drain_secondary_projection(saved_machine["record"])
         self.store.append_event(
             "machine.heartbeat",
             {
@@ -728,6 +711,57 @@ class HubRuntimeV2:
             "request_full_snapshot": bool(gap and projection_kind != "full"),
             "machine": self._public_machine(saved_machine["record"], now=now),
         }
+
+    @staticmethod
+    def _pro_projection_outbox(projection):
+        fields = {"request_id", "status", "revision", "created_at", "updated_at", "workspace_id",
+                  "workspace_ref", "repo_name", "priority", "kind", "response_exists",
+                  "origin_available_for_dispatch", "attachment_count"}
+        values = projection.get("pro_requests") or []
+        tombstones = projection.get("pro_request_tombstones") or []
+        if not isinstance(values, list) or not isinstance(tombstones, list):
+            raise ValueError("Pro Request projection entries and tombstones must be arrays")
+        records = []
+        for value in values:
+            if not isinstance(value, Mapping) or not isinstance(value.get("request_id"), str) or not value["request_id"].strip():
+                raise ValueError("Each Pro Request projection requires a request_id")
+            metadata = {key: deepcopy(value[key]) for key in fields if key in value}
+            for key, item in metadata.items():
+                if isinstance(item, str) and len(item) > 4096:
+                    raise ValueError("Pro Request projection metadata exceeds its field limit")
+                if item is not None and not isinstance(item, (str, int, float, bool)):
+                    raise ValueError("Pro Request projection metadata must be scalar")
+            records.append(metadata)
+        return {"pro_requests": records,
+                "pro_request_tombstones": [{"request_id": value["request_id"]} for value in tombstones
+                    if isinstance(value, Mapping) and isinstance(value.get("request_id"), str) and value["request_id"]],
+                "complete_pro_request_set": projection.get("complete_pro_request_set") is True}
+
+    def _drain_secondary_projection(self, machine):
+        """Finish the accepted snapshot before admitting a newer projection.
+
+        Its exact bounded metadata is journaled with the primary projection, so
+        a same-revision retry after interruption does not drop secondary work.
+        """
+        ref = stable_ref("edgeproj", machine["machine_id"], machine["edge_generation"], salt=self._identity_salt)
+        entity = self.store.get_entity(EDGE_PROJECTION_ENTITY, ref)
+        if entity is None or not entity["record"].get("secondary_pending"):
+            return
+        record = deepcopy(entity["record"])
+        projection = record["secondary_pro_projection"]
+        adapter = self._adapters.get("pro_requests")
+        ingest = getattr(adapter, "ingest_projection", None)
+        if callable(ingest):
+            ingest(machine, projection, projection_revision=record["projection_revision"], received_at=record["received_at"])
+        elif projection["pro_requests"] or projection["pro_request_tombstones"]:
+            raise HubStoreV2Conflict("secondary_pro_projection_adapter_unavailable")
+        for group_id, snapshot, source in record.get("secondary_base_snapshots", []):
+            self.record_group_base_mutation_snapshot(work_group_id=group_id, snapshot=snapshot,
+                reason="shared_write_worker_turn_finished", source_operation_id=source)
+        record["secondary_pending"] = False
+        record.pop("secondary_pro_projection", None)
+        record.pop("secondary_base_snapshots", None)
+        self.store.put_entity(EDGE_PROJECTION_ENTITY, ref, record, expected_revision=entity["revision"])
 
     # -- Workspace projections ------------------------------------------
 
@@ -791,7 +825,7 @@ class HubRuntimeV2:
                 workspace_ref=workspace_ref,
                 machine_id=machine_id,
                 edge_generation=edge_generation,
-                local_identity=repository_identity or local_path or aliases[0],
+                local_identity=local_path or repository_identity or aliases[0],
                 salt=self._identity_salt,
             )
             seen.add(projection_identity.projection_ref)
@@ -918,6 +952,8 @@ class HubRuntimeV2:
             machine_id = str(projection.get("machine_id") or "")
             machine = machines.get(machine_id)
             if not projection.get("active") or machine is None:
+                continue
+            if projection.get("edge_generation") != machine.get("edge_generation"):
                 continue
             if allowed and machine_id not in allowed:
                 continue
@@ -3046,6 +3082,7 @@ class HubRuntimeV2:
                 "participants": [identity.participant_ref],
                 "active_participant_ref": identity.participant_ref,
                 "carry_context": carry_context,
+                "handoff_context": self._successor_handoff_context(predecessor, carry_context),
                 "readiness": {"status": "pending", "reason": "strict_preflight_required"},
                 "routing": {
                     "mode": "explicit_machine" if machine_id else "availability_only",
@@ -3064,6 +3101,30 @@ class HubRuntimeV2:
             candidates=candidates,
             rejections=rejections,
         )
+
+    def _successor_handoff_context(self, predecessor, carry_context):
+        """Stage bounded report metadata, never pretend to move Edge artifacts."""
+        from patchbay.security import redact_text
+        context = {"predecessor_work_group_id": predecessor["work_group_id"],
+                   "mode": carry_context, "artifacts_transferred": False,
+                   "changes_transferred": False, "reports": []}
+        if carry_context == "none":
+            return context
+        workers = self._workers_for_group(predecessor["work_group_id"])
+        for worker in workers[:50]:
+            report = {key: worker.get(key) for key in
+                      ("fleet_worker_ref", "machine_id", "edge_generation", "edge_worker_id",
+                       "turn_state", "integration_state") if worker.get(key) is not None}
+            for key in ("name", "report_summary", "summary", "last_message"):
+                if isinstance(worker.get(key), str):
+                    report[key] = redact_text(worker[key][:4000])
+            context["reports"].append(report)
+        context["reports_truncated"] = len(workers) > 50
+        context["next_action"] = (
+            "Inspect predecessor workers for full reports. Retrieve and review artifacts explicitly "
+            "before applying changes on the successor; reassignment does not transfer files."
+        )
+        return context
 
     def close_work_group(
         self,
@@ -3620,6 +3681,7 @@ class HubRuntimeV2:
             "worker_count": worker_total,
             "worker_refs_truncated": len(worker_refs) < worker_total,
             "supersedes": group.get("supersedes") or "",
+            "handoff_context": deepcopy(group.get("handoff_context") or {}),
             "superseded_by": group.get("superseded_by") or "",
             "closure_dispositions": deepcopy(dict(group.get("closure_dispositions") or {})),
             "created_at": group.get("created_at"),

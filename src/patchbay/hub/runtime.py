@@ -962,17 +962,20 @@ class HubRuntime:
                 if command_id in payload.get("commands", {})
             ]
             active = [self.public_command(command) for command in commands if command and command.get("state") in {"queued", "running"}]
-            if active and not force:
+            active_lanes = [str(key) for key, lane in (group.get("lanes") or {}).items()
+                            if lane.get("status") in {"queued", "active", "quiet", "stale", "lost"}]
+            if (active or active_lanes) and not force:
                 return {
                     "accepted": False,
                     "error": "Work group still has active commands or workers.",
                     "active_commands": active,
+                    "active_lanes": active_lanes,
                     "recommended_next_action": "Wait, inspect, stop workers explicitly, or close with force=true if you are intentionally leaving work active.",
                 }
             now = time.time()
             final_status = "complete" if outcome_text.lower() in {"complete", "completed", "success", "done"} else "abandoned"
             group["status"] = final_status
-            if not active:
+            if not active and not active_lanes:
                 for lane in group.setdefault("lanes", {}).values():
                     if lane.get("status") in {"queued", "active", "quiet", "stale"}:
                         lane["status"] = "idle"

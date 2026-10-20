@@ -26,7 +26,7 @@ from patchbay.hub.sqlite_schema_contract import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 
 _SCHEMA_OBJECTS_BY_VERSION: dict[int, frozenset[tuple[str, str]]] = {
@@ -64,6 +64,7 @@ _SCHEMA_OBJECTS_BY_VERSION: dict[int, frozenset[tuple[str, str]]] = {
             ("index", "operation_group_index_group_operation_idx"),
         }
     ),
+    4: frozenset({("index", "operations_logical_target_idx"), ("index", "entity_work_group_idx")}),
 }
 
 OPERATION_GROUP_ASSOCIATION_ENTITY_TYPE = "hub.operation_group"
@@ -462,6 +463,9 @@ class HubStoreV2:
                 if current_version < 3:
                     self._apply_schema_v3()
                     current_version = 3
+                if current_version < 4:
+                    self._apply_schema_v4()
+                    current_version = 4
                 self._connection.execute(f"PRAGMA user_version={current_version}")
                 self._assert_schema_contract(self._connection, current_version)
                 self._ensure_identity(allow_bootstrap=allow_identity_bootstrap)
@@ -595,6 +599,8 @@ class HubStoreV2:
                 fixture._apply_schema_v2()
             if schema_version >= 3:
                 fixture._apply_schema_v3()
+            if schema_version >= 4:
+                fixture._apply_schema_v4()
             expected = schema_contract_snapshot(expected_connection)
         finally:
             expected_connection.close()
@@ -904,6 +910,11 @@ class HubStoreV2:
             "updated_at": float(row["updated_at"]),
         }
 
+    def _apply_schema_v4(self) -> None:
+        """Keep a group's status cost independent of unrelated retained history."""
+        self._connection.execute("CREATE INDEX operations_logical_target_idx ON operations(logical_target)")
+        self._connection.execute("CREATE INDEX entity_work_group_idx ON entity_records(entity_type, COALESCE(json_extract(record_json, '$.work_group_id'), ''))")
+
     @contextmanager
     def immediate_transaction(self, *, mark_mutation: bool = True) -> Iterator[sqlite3.Connection]:
         """Serialize a conflicting update with ``BEGIN IMMEDIATE``.
@@ -1076,7 +1087,7 @@ class HubStoreV2:
         self,
         work_group_id: str,
         *,
-        tool: str,
+        tool: str = "",
     ) -> list[str]:
         """Return active operations of one tool without walking group history.
 
@@ -1089,7 +1100,7 @@ class HubStoreV2:
 
         self._require_open()
         group_id = _clean_key(work_group_id, "work_group_id")
-        tool_name = _clean_key(tool, "tool")
+        tool_name = _clean_key(tool, "tool") if tool else ""
         active_states = sorted(OPERATION_STATES - TERMINAL_OPERATION_STATES)
         placeholders = ",".join("?" for _ in active_states)
         rows = self._connection.execute(
@@ -1097,7 +1108,7 @@ class HubStoreV2:
             SELECT operation.operation_id
             FROM operations AS operation INDEXED BY operations_state_created_idx
             WHERE operation.state IN ({placeholders})
-              AND operation.tool = ?
+              AND (? = '' OR operation.tool = ?)
               AND (
                   EXISTS (
                       SELECT 1
@@ -1124,6 +1135,7 @@ class HubStoreV2:
             """,
             [
                 *active_states,
+                tool_name,
                 tool_name,
                 group_id,
                 group_id,

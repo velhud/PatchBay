@@ -410,7 +410,7 @@ TOOL_CARD_HTML = r"""
       const live = data.liveness?.status || data.latest_turn?.progress || data.report || data.note;
       if (toolKey.includes("worker_start")) return displayText(name + " started", 150);
       if (toolKey.includes("worker_message")) return displayText("Message sent to " + name, 150);
-      if (toolKey.includes("worker_stop")) return displayText(name + " stopped", 150);
+      if (toolKey.includes("worker_stop")) return displayText(name + (data.stopped === true ? " stopped" : " stop not completed"), 150);
       if (toolKey.includes("worker_integrate")) return displayText(data.applied ? "Worker result applied" : (live || name), 150);
       return displayText(name + (live ? " - " + live : ""), 150);
     }

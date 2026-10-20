@@ -1,6 +1,8 @@
 """Recovered acceptance, crash, publication-continuation, and concurrency regressions."""
 from __future__ import annotations
 
+import sys
+
 import json
 import os
 import time
@@ -21,6 +23,7 @@ from test_core import package_for, submit
 from test_execution import wait_for
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_checks_replay_survives_later_candidate_but_new_stale_run_fails(setup_author, tmp_path):
     s, _, _, task, lease = setup_author
     op = Checks(s.store).submit(task["id"], revision=0, key="old", token=lease["token"], epoch=lease["epoch"], dispatch=False)
@@ -79,6 +82,7 @@ def test_repository_refresh_is_explicit_and_idempotent(setup_author):
     assert s.repositories.refresh(repo["id"], key="refresh")["commit"] == advanced
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_auto_check_acceptance_is_atomic_and_semantically_idempotent(setup_author, tmp_path):
     s, _, repo, _, _ = setup_author
     policy = repo["policy"]; policy["auto_check"] = True
@@ -96,6 +100,7 @@ def test_auto_check_acceptance_is_atomic_and_semantically_idempotent(setup_autho
     assert wait_for(s, accepted["checks_operation_id"])["state"] == "completed"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_backup_and_gc_preserve_immutable_receipts(setup_author, tmp_path):
     s, _, _, task, lease = setup_author
     package = package_for(s, task, tmp_path, {"app.py": "def add(a,b): return a+b\n"})
@@ -117,6 +122,7 @@ def test_backup_and_gc_preserve_immutable_receipts(setup_author, tmp_path):
     assert Checks(s.store).recover(run["id"])["state"] == "completed"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_integration_recovery_does_not_reapply_accepted_child(setup_author, tmp_path, monkeypatch):
     s, _, repo, first_task, first_lease = setup_author
     sources = []
@@ -146,6 +152,7 @@ def test_integration_recovery_does_not_reapply_accepted_child(setup_author, tmp_
     assert wait_for(s, run)["state"] == "completed"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
 def test_lost_launch_ownership_stays_fenced_and_is_not_restarted(setup_author, tmp_path):
     s, _, _, task, lease = setup_author
     op = Checks(s.store).submit(task["id"], revision=0, key="unknown", token=lease["token"], epoch=lease["epoch"], dispatch=False)

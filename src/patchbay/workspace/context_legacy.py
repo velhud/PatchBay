@@ -357,7 +357,8 @@ class WorkspaceContext:
         if record.abs_path.name != "SKILL.md" or record.abs_path.is_symlink():
             raise ValueError(f"Refusing to load non-skill file: {record.display_path}")
         total_bytes = record.abs_path.stat().st_size
-        raw = record.abs_path.read_bytes()[:max_bytes]
+        with record.abs_path.open("rb") as handle:
+            raw = handle.read(max_bytes)
         text = redact_text(raw.decode("utf-8", errors="replace"))
         truncated = total_bytes > len(raw)
         public = self._public_skill(record)
@@ -1224,7 +1225,8 @@ class WorkspaceContext:
             if self._skill_file_blocked(workspace, file_path):
                 continue
             try:
-                preview = file_path.read_bytes()[:16_000].decode("utf-8", errors="replace")
+                with file_path.open("rb") as handle:
+                    preview = handle.read(16_000).decode("utf-8", errors="replace")
             except OSError:
                 preview = ""
             name = self._frontmatter_value(preview, "name") or file_path.parent.name
@@ -1356,7 +1358,7 @@ class WorkspaceContext:
             args.extend(["-g", glob])
         for pattern in self.blocked_globs:
             args.extend(["-g", f"!{pattern}"])
-        args.extend([query, str(root)])
+        args.extend(["--", query, str(root)])
 
         try:
             completed = subprocess.run(
@@ -1439,6 +1441,8 @@ class WorkspaceContext:
             if len(matches) >= max_results:
                 break
             try:
+                # Enumeration is not authority to follow a file symlink.
+                path, _ = self.resolve_path(workspace, str(path))
                 self._assert_text_file(path, self.max_read_bytes)
                 for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                     hit = bool(matcher.search(line)) if matcher else query in line
@@ -1473,6 +1477,10 @@ class WorkspaceContext:
             yield root
             return
         for path in root.rglob("*"):
+            try:
+                path, _ = self.resolve_path(workspace, str(path))
+            except (ValueError, OSError):
+                continue
             rel = self._display_path(path.resolve(strict=False), workspace.root)
             if path.is_dir() or self.is_blocked_relative_path(rel):
                 continue
@@ -1628,7 +1636,8 @@ class WorkspaceContext:
             size = path.stat().st_size
             if size > max_bytes:
                 raise ValueError(f"File is too large ({size} bytes). Limit: {max_bytes} bytes.")
-        sample = path.read_bytes()[:4096]
+        with path.open("rb") as handle:
+            sample = handle.read(4096)
         if b"\0" in sample:
             raise ValueError("Refusing to read binary file")
         try:
@@ -1637,6 +1646,11 @@ class WorkspaceContext:
             raise ValueError("Refusing to read non-UTF-8 text file") from exc
 
     def _text_file_digest_and_line_count(self, path: Path) -> tuple[str, int]:
+        stat = path.stat()
+        key = (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        cache = getattr(self, "_file_digest_cache", {})
+        if key in cache:
+            return cache[key]
         digest = hashlib.sha256()
         size = 0
         newline_count = 0
@@ -1645,7 +1659,15 @@ class WorkspaceContext:
                 size += len(chunk)
                 newline_count += chunk.count(b"\n")
                 digest.update(chunk)
-        return digest.hexdigest(), max(1, newline_count + 1 if size or newline_count else 1)
+        observed = path.stat()
+        if (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns, observed.st_ctime_ns) != key[1:]:
+            raise ValueError("File changed while reading; retry against current content")
+        result = digest.hexdigest(), max(1, newline_count + 1 if size or newline_count else 1)
+        if len(cache) >= 128:
+            cache.pop(next(iter(cache)))
+        cache[key] = result
+        self._file_digest_cache = cache
+        return result
 
     def _clip_text_bytes(self, text: str, max_bytes: int) -> str:
         if max_bytes <= 0:

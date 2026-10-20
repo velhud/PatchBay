@@ -14,20 +14,20 @@ for descriptor in PRO_REQUEST_TOOLS:
     properties = descriptor["inputSchema"]["properties"]
     properties["model"] = {
         "type": "string",
+        "enum": ["gpt-6-luna"],
         "description": (
-            "Optional Codex model for target=new_worker, for example gpt-6-luna. "
-            "Omit to use the configured Codex default."
+            "Only gpt-6-luna is authorized for target=new_worker. Omission explicitly selects it."
         ),
     }
     properties["reasoning_effort"] = {
         "type": "string",
-        "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+        "enum": ["high", "xhigh", "max"],
         "description": (
             "Optional reasoning effort for target=new_worker. Use only a level supported by the chosen model."
         ),
     }
     descriptor["description"] += (
-        " For target=new_worker, model and reasoning_effort can pin the implementation lane instead of inheriting ambient defaults."
+        " For target=new_worker, execution explicitly uses gpt-6-luna and high effort by default; xhigh or max is allowed. No model fallback is permitted."
     )
     break
 

@@ -431,7 +431,7 @@ class JobManager:
             raise ValueError(f"Worker worktree path is outside worker root: {worktree_path}")
         return path
     
-    def update_job_state(self, job_id: str, state: JobState, **kwargs):
+    def update_job_state(self, job_id: str, state: JobState, *, _telemetry: bool = False, **kwargs):
         """Update job state and metadata"""
         with self._state_lock:
             if job_id not in self.jobs:
@@ -481,6 +481,7 @@ class JobManager:
                 ):
                     if getattr(job, protected, None) is not None:
                         kwargs.pop(protected, None)
+            previous_state = job.state
             job.state = state
 
             # Update timestamps
@@ -501,6 +502,10 @@ class JobManager:
                 self._normalize_terminal_job(job)
 
             logger.debug(f"Job {job_id} state updated: {state}")
+            if _telemetry and previous_state == state == JobState.RUNNING:
+                last = getattr(self, "_telemetry_persisted_at", {}).get(job_id, 0.0)
+                if time.monotonic() - last < 0.25:
+                    return
             self._persist_job(job)
 
     def transition_job_terminal(self, job_id: str, state: JobState, **kwargs) -> bool:
@@ -727,6 +732,7 @@ class JobManager:
             if self.jobs.get(job_id) is not job:
                 return False
             del self.jobs[job_id]
+            getattr(self, "_telemetry_persisted_at", {}).pop(job_id, None)
             self._delete_job_record(job_id)
         logger.info(f"Cleaned up job {job_id}")
         return True
@@ -793,6 +799,9 @@ class JobManager:
                 os.replace(temporary_path, path)
                 self._fsync_job_state_dir()
                 self._state_revision += 1
+                if not hasattr(self, "_telemetry_persisted_at"):
+                    self._telemetry_persisted_at = {}
+                self._telemetry_persisted_at[job.job_id] = time.monotonic()
             finally:
                 Path(temporary_path).unlink(missing_ok=True)
 

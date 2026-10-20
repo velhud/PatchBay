@@ -40,6 +40,8 @@ class ProRequestStore(_legacy.ProRequestStore):
     """Durable storage with cross-process compare/write exclusion."""
 
     def __init__(self, config: dict[str, Any]):
+        from patchbay.repo_locks import RepoMutationLockManager
+        self._mirror_locks = RepoMutationLockManager(config)
         super().__init__(config)
         self._process_lock_path = self.root / ".store.lock"
         self._revision_path = self.root / ".projection-revision"
@@ -152,7 +154,28 @@ class ProRequestStore(_legacy.ProRequestStore):
 
     def respond_request(self, **kwargs):
         with self._mutation_guard():
-            return super().respond_request(**kwargs)
+            self._last_mirror_effect = None
+            result = super().respond_request(**kwargs)
+            if result.get("accepted"):
+                result["mirror_effect"] = self._last_mirror_effect or {"state": "disabled"}
+                result["note"] = "Response stored without worker dispatch or implementation apply. The configured repository mirror effect is reported separately."
+            return result
+
+    def _write_mirror(self, repo_path, manifest, report_text, response_text):
+        from patchbay.repo_locks import RepoMutationBusy
+        from patchbay.security import redact_text
+        if self.config.get("pro_requests", {}).get("mirror_enabled", True) is False:
+            self._last_mirror_effect = {"state": "disabled"}
+            return
+        try:
+            with self._mirror_locks.hold_sync(repo_path, operation="pro_request_mirror"):
+                super()._write_mirror(repo_path, manifest, redact_text(report_text),
+                                      redact_text(response_text) if response_text is not None else None)
+            self._last_mirror_effect = {"state": "written", "path": manifest.get("mirror", {}).get("path")}
+        except RepoMutationBusy:
+            # Canonical private evidence is already durable; a busy optional
+            # mirror cannot claim it edited the checkout or lose that evidence.
+            self._last_mirror_effect = {"state": "deferred", "reason": "repo_busy"}
 
     def mark_dispatch_requested(self, **kwargs):
         with self._mutation_guard():

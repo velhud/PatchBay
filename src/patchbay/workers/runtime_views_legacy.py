@@ -204,32 +204,33 @@ class RuntimeViewFixes:
         oversized_line: int | None = None
         stopped = False
         try:
-            with target.open(
-                "r", encoding="utf-8", errors="strict", newline=""
-            ) as handle:
-                for line_number, line in enumerate(handle, start=1):
-                    total_lines = line_number
-                    if line_number < start:
-                        continue
-                    if requested_end is not None and line_number > requested_end:
-                        continue
-                    if stopped:
-                        continue
-                    clean = line[:-1] if line.endswith("\n") else line
-                    encoded = clean.encode("utf-8", errors="replace")
-                    separator = 1 if selected else 0
-                    if bytes_used + separator + len(encoded) > max_read:
-                        if not selected and len(encoded) <= max_allowed:
-                            selected.append((line_number, clean))
-                            bytes_used = len(encoded)
-                            oversized_line = line_number
-                            next_start_line = line_number + 1
-                        else:
-                            next_start_line = line_number
-                        stopped = True
-                        continue
-                    selected.append((line_number, clean))
-                    bytes_used += separator + len(encoded)
+            from patchbay.text_pages import bounded_lines
+            for line_number, clean, source_bytes in bounded_lines(target, max_allowed):
+                total_lines = line_number
+                if line_number < start:
+                    continue
+                if requested_end is not None and line_number > requested_end:
+                    continue
+                if stopped:
+                    continue
+                if clean is None:
+                    next_start_line = line_number
+                    stopped = True
+                    continue
+                encoded = clean.encode("utf-8", errors="replace")
+                separator = 1 if selected else 0
+                if bytes_used + separator + len(encoded) > max_read:
+                    if not selected and len(encoded) <= max_allowed:
+                        selected.append((line_number, clean))
+                        bytes_used = len(encoded)
+                        oversized_line = line_number
+                        next_start_line = line_number + 1
+                    else:
+                        next_start_line = line_number
+                    stopped = True
+                    continue
+                selected.append((line_number, clean))
+                bytes_used += separator + len(encoded)
         except UnicodeDecodeError:
             view.update(
                 {

@@ -467,6 +467,8 @@ def test_schema_v2_backfills_control_index_without_rewriting_entities(tmp_path):
     )
     store.connection.execute("DROP TABLE entity_control_index")
     store.connection.execute("DROP INDEX operations_state_created_idx")
+    store.connection.execute("DROP INDEX IF EXISTS operations_logical_target_idx")
+    store.connection.execute("DROP INDEX IF EXISTS entity_work_group_idx")
     store.connection.execute("DROP TABLE operation_group_index")
     store.connection.execute(
         "UPDATE schema_metadata SET schema_version = 1 WHERE singleton = 1"
@@ -499,6 +501,8 @@ def test_older_hub_schema_rejects_corrupt_index_even_with_valid_backup(tmp_path)
     with HubStoreV2(path):
         pass
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX IF EXISTS operations_logical_target_idx")
+        connection.execute("DROP INDEX IF EXISTS entity_work_group_idx")
         connection.execute("DROP TABLE operation_group_index")
         connection.execute("DROP INDEX operations_state_created_idx")
         connection.execute(
@@ -533,6 +537,8 @@ def test_schema_v3_backfills_operation_group_index_without_rewriting_entities(tm
         },
         expected_revision=0,
     )
+    store.connection.execute("DROP INDEX IF EXISTS operations_logical_target_idx")
+    store.connection.execute("DROP INDEX IF EXISTS entity_work_group_idx")
     store.connection.execute("DROP TABLE operation_group_index")
     store.connection.execute(
         "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"

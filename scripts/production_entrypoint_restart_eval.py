@@ -1623,6 +1623,8 @@ def _downgrade_upgrade_fixture_to_schema_two(path: Path) -> None:
             raise ProductionRestartEvalError(
                 "Seed Hub is missing the schema-3 operation-group index"
             )
+        connection.execute("DROP INDEX IF EXISTS operations_logical_target_idx")
+        connection.execute("DROP INDEX IF EXISTS entity_work_group_idx")
         connection.execute("DROP TABLE operation_group_index")
         connection.execute(
             "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"
@@ -2095,11 +2097,11 @@ def _real_upgrade_rehearsal(paths: FixturePaths) -> dict[str, Any]:
             and backup_created.get("source_unchanged")
             and marker.get("valid")
             and marker.get("source_schema_version") == 2
-            and marker.get("target_schema_version") == 3
+            and marker.get("target_schema_version") == 4
         ),
         "production_hub_cli_migrated_schema": bool(
-            migrated_before_edge.get("schema_version") == 3
-            and migrated_before_edge.get("user_version") == 3
+            migrated_before_edge.get("schema_version") == 4
+            and migrated_before_edge.get("user_version") == 4
             and migrated_before_edge.get("operation_group_index", {}).get("exists")
             and migrated_before_edge.get("operation_group_index", {}).get("rows", 0)
             > 0
@@ -2127,7 +2129,7 @@ def _real_upgrade_rehearsal(paths: FixturePaths) -> dict[str, Any]:
         "migrated_group_visible_through_production_mcp": migrated_group_id == group_id,
         "second_production_restart_preserved_ids_and_monotonic_state": (
             _hub_restart_state_is_monotonic(migrated, restarted)
-            and restarted.get("schema_version") == 3
+            and restarted.get("schema_version") == 4
             and restarted_group_id == group_id
         ),
         "second_edge_restart_preserved_ids_and_monotonic_state": bool(

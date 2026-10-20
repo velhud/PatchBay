@@ -811,7 +811,8 @@ TOOLS = [
                 "job_id": {
                     "type": "string",
                     "description": "Job ID returned by codex_plan_job or codex_apply_job.",
-                }
+                },
+                "takeover": {"type": "boolean", "default": False, "description": "Explicit user-authorized cross-owner cancellation."}
             },
             "required": ["job_id"],
         },
@@ -1839,8 +1840,8 @@ TOOL_OUTPUT_SCHEMAS = {
             "reference_id": {"type": "string"},
             "state": {"type": "string"},
             "mode": {"type": "string"},
-            "started_at": {"type": "number"},
-            "completed_at": {"type": "number"},
+            "started_at": {"type": ["number", "null"]},
+            "completed_at": {"type": ["number", "null"]},
             "message": {"type": "string"},
             "error": {"type": "string"},
         },

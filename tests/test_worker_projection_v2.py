@@ -401,8 +401,8 @@ def test_projection_snapshot_reports_changes_and_deterministic_content_revisions
 
     assert integrated["content_revision"] != first["content_revision"]
     assert change_scans == 2
-    assert integrated["workers"][0]["integration_state"] == "applied_to_checkout"
-    assert integrated["workers"][0]["review_disposition"] == "accepted"
+    assert integrated["workers"][0]["integration_state"] == "not_integrated"
+    assert integrated["workers"][0]["review_disposition"] == "unreviewed"
 
 
 def test_projection_snapshot_deduplicates_shared_checkout_scan_per_snapshot(tmp_path):

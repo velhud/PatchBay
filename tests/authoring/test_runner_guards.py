@@ -16,6 +16,8 @@ from patchbay.authoring.models import Check, Profile, TaskPolicy
 from test_execution import wait_for
 
 
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
+
 def configured(setup_author, name, checks, *, setup=None, **profile_options):
     service, source, _, _, _ = setup_author
     options = {"memory_mb": 256, "disk_mb": 128, "cpu": .25, **profile_options}

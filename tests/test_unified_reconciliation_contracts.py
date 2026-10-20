@@ -7,8 +7,8 @@ def test_manager_surfaces_share_one_explicit_luna_policy():
     for instructions in (SERVER_INSTRUCTIONS, HUB_V2_INSTRUCTIONS):
         assert "gpt-6-luna" in instructions
         assert "reasoning_effort='high'" in instructions
-    assert "do not follow either rule automatically" in SERVER_INSTRUCTIONS
-    assert "never route to them silently" in HUB_V2_INSTRUCTIONS
+    assert "Never substitute another family or older Luna" in SERVER_INSTRUCTIONS
+    assert "No other model family" in HUB_V2_INSTRUCTIONS
     assert MODEL_SELECTION_GUIDANCE["effective_default"]["model_id"] == "gpt-6-luna"
     assert MODEL_SELECTION_GUIDANCE["effective_default"]["reasoning_effort"] == "high"
-    assert "Never hide model routing" in MODEL_SELECTION_GUIDANCE["manager_rule"]
+    assert "Never substitute another family" in MODEL_SELECTION_GUIDANCE["manager_rule"]

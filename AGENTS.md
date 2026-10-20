@@ -13,17 +13,7 @@ Do not collapse the two workflows into one hidden routing layer. Shared Git/proc
 
 ## Current model policy
 
-Model choice is visible manager policy, not a hidden semantic router.
-
-- Call `codex_worker_options` or `patchbay_worker_options` for the relevant installed catalog state.
-- For ordinary new workers, explicitly pass `model="gpt-6-luna"` and `reasoning_effort="high"` when that selector is supported.
-- Use the exact Luna identifier returned by the installed catalog if it differs.
-- Keep effective model/effort on follow-up unless the manager deliberately changes them.
-- Terra and Sol are explicit escalations.
-- Spark, GPT-5.4 Mini, GPT-5.4, and GPT-5.5 are explicit availability, compatibility, or evidence-backed fallbacks.
-- Never silently retry, upgrade, downgrade, or fabricate catalog support. Report every fallback.
-
-The older Spark-first / automatic-Mini-fallback rule is superseded. Historical changelog or dated maintainer material may describe old policy but must not be treated as current instructions.
+Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
 ## Core engineering rules
 

@@ -263,6 +263,8 @@ def validate_close_dispositions(
         turn_state = str(worker.get("turn_state") or "none")
         liveness = str(worker.get("liveness") or "terminal")
         integration = str(worker.get("integration_state") or "not_applicable")
+        if disposition == "integrated" and integration != "applied_to_checkout":
+            blockers.append({"worker": worker_ref, "reason": "integrated_disposition_requires_delivery_evidence"})
         if turn_state in ACTIVE_TURN_STATES and disposition != "leave_running":
             blockers.append({"worker": worker_ref, "reason": "active_worker_requires_leave_running_or_stop"})
         if liveness in UNCERTAIN_LIVENESS:
