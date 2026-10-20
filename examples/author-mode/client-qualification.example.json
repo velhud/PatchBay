@@ -1,0 +1,9 @@
+{
+  "model": "Record the exact selected Pro model",
+  "client": "Record the exact ordinary-Chat client and tool catalog",
+  "account_label": "Local operator label, not billing credentials",
+  "ordinary_chat": false,
+  "write_supported": false,
+  "probe_description": "Record an actual successful authorized canary write in a disposable task before changing these booleans",
+  "observed_at": "Record the actual trial timestamp"
+}

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PatchBay · Author Mode</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header><div><span class="eyebrow">PATCHBAY</span><h1>Author Mode</h1></div><p>Pro writes. PatchBay verifies. You approve.</p></header>
+  <main>
+    <section id="connection" class="panel">
+      <h2>Connect to this author runtime</h2>
+      <form id="connect-form"><label>Runtime token<input id="token" type="password" autocomplete="off" required></label><button>Connect</button></form>
+      <p class="muted">Use <code>patchbay author token --role operator</code>. The token stays in this tab’s memory; it is not saved in browser storage.</p>
+    </section>
+    <div id="workspace" hidden>
+      <section class="runtime-strip"><span id="runtime-status"></span><button id="refresh" class="secondary">Refresh</button><button id="disconnect" class="secondary">Disconnect</button></section>
+      <div class="layout">
+        <aside class="panel">
+          <h2>Implementation tasks</h2>
+          <div id="task-list" class="task-list"></div>
+          <div class="pager"><button id="previous" class="secondary">Previous</button><button id="next" class="secondary">Next</button></div>
+          <details id="create-panel"><summary>Create a task</summary>
+            <form id="task-form"><label>Registered repository<select id="repository" required></select></label>
+              <label>Implementation goal<textarea id="goal" rows="4" required placeholder="Implement the behavior and regression tests…"></textarea></label>
+              <button>Create task</button></form>
+            <p class="muted">Register repositories and approved check profiles with the CLI first. A task cannot widen its repository policy.</p>
+          </details>
+        </aside>
+        <section class="panel" id="detail">
+          <div id="empty"><h2>Select a task</h2><p>Download its pinned source, give Pro the implementation task, then import the resulting change package here.</p></div>
+          <div id="task-detail" hidden>
+            <div class="detail-heading"><h2 id="task-title"></h2><span id="state" class="badge"></span></div>
+            <dl class="identities"><dt>Task</dt><dd id="task-id"></dd><dt>Revision</dt><dd id="revision"></dd><dt>Commit</dt><dd id="commit"></dd></dl>
+            <div class="actions"><button id="download-context">Download source context</button><button id="run-checks" class="secondary">Run approved checks</button><button id="download-feedback" class="secondary">Download feedback</button></div>
+            <section id="import-zone" class="import-zone" tabindex="0" aria-label="Implementation package drop zone">
+              <h3>Import implementation</h3><p>Drop a completed change-package ZIP here, or select it. Source is applied only to this task’s isolated candidate.</p>
+              <input id="package" type="file" accept=".zip,application/zip"><button id="import-package">Import and validate</button>
+            </section>
+            <section><div class="section-heading"><h3>Canonical verification</h3><button id="cancel" class="secondary" hidden>Cancel owned check</button></div>
+              <p id="verification"></p><div id="checks"></div></section>
+            <details><summary>Approved checks and writable scope</summary><pre id="policy"></pre></details>
+            <details id="diff-panel"><summary>Review exact source changes</summary><pre id="diff">Open to load a bounded diff.</pre></details>
+            <section class="publish-section"><h3>Publication</h3><p>Publish only the reviewed, verified commit to a feature branch. This never merges or changes the default branch.</p><button id="publish" disabled>Publish reviewed candidate</button><pre id="publications"></pre></section>
+            <details><summary>Last action and diagnostic evidence</summary><pre id="last-action"></pre></details>
+          </div>
+        </section>
+      </div>
+    </div>
+    <section id="notice" role="status" aria-live="polite"></section>
+  </main>
+  <footer>Independent deterministic authoring · No Codex worker delegation · Local checks, remote CI, and merge approval remain separate.</footer>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "profile": {
+    "id": "python-offline",
+    "backend": "docker",
+    "image": "patchbay-author-python:local",
+    "checks": [
+      {
+        "id": "unit",
+        "argv": ["python", "-m", "pytest", "tests", "-q", "--junitxml=.author-reports/unit.xml"],
+        "timeout_seconds": 3600,
+        "report": "junit",
+        "report_path": ".author-reports/unit.xml",
+        "min_tests": 1,
+        "allow_skipped": false
+      }
+    ],
+    "cpu": 1.0,
+    "memory_mb": 1024,
+    "disk_mb": 2048,
+    "setup_network": false
+  },
+  "writable_paths": ["**"],
+  "blocked_paths": [".author-reports/**"],
+  "auto_check": true,
+  "publication": {"enabled": false}
+}

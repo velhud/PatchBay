@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "patchbay"
 version = "0.1.0"
-description = "Route ChatGPT context into local Codex workers."
+description = "Route ChatGPT context into local Codex workers or independent deterministic Author Mode."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -46,8 +46,9 @@ Homepage = "https://github.com/velhud/PatchBay"
 Issues = "https://github.com/velhud/PatchBay/issues"
 
 [project.scripts]
-patchbay = "patchbay.cli:main"
+patchbay = "patchbay.entrypoint:main"
 patchbay-stdio = "patchbay.stdio:main"
+patchbay-author = "patchbay.authoring.interfaces.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -60,6 +61,10 @@ where = ["src"]
 patchbay = [
   "protocol/schemas/*.json",
   "py.typed",
+  "authoring/AGENTS.md",
+  "authoring/interfaces/ui/*.html",
+  "authoring/interfaces/ui/*.css",
+  "authoring/interfaces/ui/*.js",
   "donors/codexpro/**/*.css",
   "donors/codexpro/**/*.env",
   "donors/codexpro/**/*.html",
