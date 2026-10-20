@@ -3,9 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - chatgpt/patchbay-critical-fixes-20261019
+    branches: [main]
 
 jobs:
   python-smoke:
@@ -25,14 +23,3 @@ jobs:
       - run: python -m compileall src scripts tests
 
       - run: python -m pytest tests -q
-
-      - name: Package tested repair tree
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: PatchBay-repaired-source
-          path: |
-            .
-            !.git/**
-          include-hidden-files: true
-          retention-days: 1
