@@ -74,7 +74,9 @@ Hub/Edge deployments use the corresponding `patchbay_*` group, worker, workspace
 
 ## B. Author Mode
 
-Run Author Mode qualification and check execution on Linux or WSL2. The platform guard is intentional.
+Run Author Mode qualification and check execution on Linux or WSL2. The platform guard is intentional. For the first disposable ChatGPT trial, use the [fixture preparation guide](docs/authoring/ordinary-chat-trial.md); it prepares source, state and evidence templates without calling ChatGPT or qualifying a live connection.
+
+The default `.patchbay-author/` state directory and `results/` trial output are ignored by Git because they contain credentials and private evidence. Keep them outside public source exports and never force-add them.
 
 ```bash
 AUTHOR_HOME="$PWD/.patchbay-author"

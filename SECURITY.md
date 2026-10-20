@@ -66,6 +66,8 @@ Public tunnel modes are launcher-managed child processes. PatchBay does not auto
 - private prompt bodies
 - generated worktrees containing private code
 
+Author Mode keeps credentials, leases, task inputs and execution evidence in its private home. The documented repository-local `.patchbay-author/` home and `/results/` trial output are ignored by Git. Generated trial credentials in `private/principals.json` remain private even for disposable fixtures. Git ignore rules do not protect a directory that is force-added, uploaded separately, or included by a broad filesystem archive; export public source with `git archive`, and keep private state outside source artifacts.
+
 ## Known Pre-release Limits
 
 The local MCP path, real Codex plan job path, and direct tokenized public-tunnel MCP path are verified on disposable repos. Before public release, the project still needs disposable-repo verification for:

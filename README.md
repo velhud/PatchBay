@@ -102,6 +102,8 @@ The unified verification matrix is in [TESTING.md](TESTING.md). It separates:
 - production restart/upgrade rehearsal;
 - the optional real-Codex worker trial, which depends on a configured account and intentionally invokes workers.
 
+The published Linux candidate `f611a02a89c8154d93d424a715dba9716aed23fd` completed 1,203 tests with four skips and zero failures, with long checks and an immutable Docker image enabled. The separate bounded storage lab passed six cases. See the [Linux evidence and remaining qualification boundaries](docs/testing/linux-qualification-2026-10-20.md) and [prepared ordinary-Chat trial](docs/authoring/ordinary-chat-trial.md). Actual ChatGPT account/client/ingress behavior and reboot/power-loss qualification remain unrun.
+
 Do not infer qualification from a clean merge or from historical branch test counts.
 
 ## Documentation

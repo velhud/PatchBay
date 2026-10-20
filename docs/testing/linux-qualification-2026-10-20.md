@@ -6,6 +6,31 @@ and file hashes belong in the private execution record for the run. The original
 T01–T52 source register and its `NOT_RUN_IN_THIS_RESEARCH` statuses stay unchanged.
 Source maps and historical Mac results are not Linux execution receipts.
 
+## Published execution result
+
+The tested and published source is `f611a02a89c8154d93d424a715dba9716aed23fd`.
+The complete Linux suite, with `PATCHBAY_AUTHOR_LONG_TESTS=1` and a pinned
+immutable Docker image, finished with **1,203 passed, four skipped, zero failures**.
+Three skips exercise non-Linux boundaries; the fourth is the opt-in storage lab,
+which separately completed six cases. The canonical long check lasted 185.1177
+seconds. The full run's source identity remained unchanged and its checkout clean.
+
+The local MCP evaluator passed 27 checks; terminal reconciliation passed 38;
+Hub/Edge passed; Hub V2 passed 30; production restart and old-schema rehearsals
+passed 19 and 20 respectively. A fresh installation passed 15 CLI/state checks
+and matched all 155 installed Python files to the published source. An offline
+installed-wheel Author trial with Codex absent passed four cases, including a
+real failure/correction/pass loop, exports, recovery and timeout cleanup.
+
+Reviewed original scenario records qualify T12, T13, T15, T18 and T51 for their
+recorded deterministic fixtures. The formal register evaluation remains
+**INCOMPLETE: five PASS, zero FAIL, 45 NOT_RUN, two BLOCKED_ENVIRONMENT**.
+T16 and T38 need a disposable reboot/power-loss VM. Actual ordinary Chat cases
+remain unrun. No GitHub CI, production capacity, deployed endpoint, client
+qualification or universal durability claim follows from these local results.
+The private raw logs, JUnit, exact command vectors and artifact manifest were
+retained and independently read back. Do not publish those private records wholesale.
+
 ## Reproduced repairs
 
 - Resource admission previously read only the current cgroup. A disposable

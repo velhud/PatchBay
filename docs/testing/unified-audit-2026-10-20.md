@@ -4,6 +4,17 @@ This document maps the supplied October 18 public audit and October 19 Author
 implementation plan to the consolidated source. Test execution receipts belong
 to a specific commit; this source map alone is not a release qualification.
 
+## Current status
+
+The source-to-plan map below records the initial consolidated audit and its
+then-open acceptance boundaries. It is historical source traceability, not the
+current execution report. Main now includes both implementation histories and
+subsequent portable and Linux repairs. The published Linux source
+`f611a02a89c8154d93d424a715dba9716aed23fd` passed 1,203 tests with four skips;
+see [current Linux evidence and remaining boundaries](linux-qualification-2026-10-20.md).
+Actual ordinary Chat, production ingress, host reboot/power loss and production
+capacity remain separate qualification. PR creation and UI work are excluded.
+
 ## Modes and authorization
 
 - Manager/worker mode explicitly uses `gpt-6-luna`, with `high` by default and
@@ -15,10 +26,10 @@ to a specific commit; this source map alone is not a release qualification.
   context, packages, drafts, storage and read-only interfaces can be checked on
   macOS. Its Linux/WSL2 execution guard applies to both submit and dispatch,
   including automatically queued checks.
-- The October 20 operator instruction defers Linux, VM installation, cloud
-  execution and final Linux qualification. No default-branch merge is justified
-  by macOS results alone. Account-dependent Pro/ChatGPT writes and real model
-  trials remain separate from local deterministic tests.
+- The later October 20 instruction authorized Cloud Jack Linux verification and
+  direct main publication. That work is complete for the recorded local matrix.
+  Account-dependent Pro/ChatGPT writes and real model trials remain separate
+  from deterministic tests; no VM reboot or power-loss qualification is claimed.
 
 ## Public audit disposition
 
@@ -61,9 +72,9 @@ changes repair the consolidated runtime and remaining surface/recovery paths.
 GitPython is pinned consistently to 3.1.62 in both manifests, matching the
 maintainer release and the existing dependency PR's version. This is a direct
 manifest edit; no dependency branch is merged. The installed environment and
-full regression run must use that exact pin. GitHub's default-branch alerts
-remain until main actually receives an eligible update; a continuation-branch
-push does not clear them. This test suite is not a blanket advisory clearance
+full regression run must use that exact pin. The updated dependency is now on
+main. Current GitHub advisory status is a separate provider observation and is
+not inferred from this source map. This suite is not a blanket advisory clearance
 for every dependency or optional component.
 
 ## Author plan A00–A15 source map
@@ -97,9 +108,10 @@ macOS; Linux-dependent tests are marked explicitly. Optional long/Docker tests
 must be enabled in the Linux phase. Uncovered operational acceptance is listed
 above rather than inferred from the presence of implementation or test files.
 
-## Linux handoff
+## Reproducing Linux checks
 
-Use a Linux checkout of the published continuation commit and follow
+The initial handoff has been executed for the recorded Linux matrix. Use a
+Linux checkout of the published main candidate and follow
 `TESTING.md`. Verify both required ancestors and a clean checkout. Run the full
 suite, compile pass, deterministic MCP/Hub evaluators, production restart and
 old-schema rehearsal, installed entrypoints and independent Author init.

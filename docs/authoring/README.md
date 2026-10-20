@@ -6,6 +6,10 @@ client. The implementation and recovery model is defined by the source and
 tests; this documentation describes the operator sequence and the evidence
 needed to rely on it.
 
+- [Prepared ordinary-Chat trial](ordinary-chat-trial.md): reproducible disposable
+  fixture and private evidence templates; actual client observations stay unrun.
+- [Linux evidence](../testing/linux-qualification-2026-10-20.md): published
+  candidate results, repaired failures and remaining deployment/lab boundaries.
 - [Operations](operations.md): profile, authentication, ingress, recovery,
   backups, upgrades, rollback and retention.
 - [Qualification](qualification.md): runnable checks and the Linux lab fault
