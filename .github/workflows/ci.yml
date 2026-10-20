@@ -23,3 +23,14 @@ jobs:
       - run: python -m compileall src scripts tests
 
       - run: python -m pytest tests -q
+
+      - name: Package tested repair tree
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PatchBay-repaired-source
+          path: |
+            .
+            !.git/**
+          include-hidden-files: true
+          retention-days: 1
