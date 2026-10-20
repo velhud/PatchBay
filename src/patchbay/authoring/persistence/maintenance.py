@@ -85,12 +85,35 @@ class Maintenance:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 require(not output.is_symlink(), "INVALID_REQUEST", "Backup destination cannot be a symlink")
                 partial = output.with_name(output.name + ".part")
-                require(not partial.exists(), "INVALID_REQUEST", "A partial backup already occupies the destination")
-                with archive_path.open("rb") as source, partial.open("xb") as target:
-                    shutil.copyfileobj(source, target, 65536)
-                    target.flush(); os.fsync(target.fileno())
-                partial.chmod(0o600)
-                os.replace(partial, output); fsync_dir(output.parent)
+                require(not partial.exists() and not partial.is_symlink(), "INVALID_REQUEST",
+                        "A partial backup already occupies the destination")
+                partial_created = False
+                partial_identity = None
+                try:
+                    with archive_path.open("rb") as source, partial.open("xb") as target:
+                        partial_created = True
+                        created = os.fstat(target.fileno())
+                        partial_identity = (created.st_dev, created.st_ino)
+                        shutil.copyfileobj(source, target, 65536)
+                        target.flush(); os.fsync(target.fileno())
+                    partial.chmod(0o600)
+                    os.replace(partial, output)
+                    fsync_dir(output.parent)
+                except BaseException:
+                    # Exclusive open may fail on a pre-existing broken symlink
+                    # even though Path.exists() returned false. Remove only the
+                    # regular inode this invocation successfully created. After
+                    # replace succeeds that inode is at output, so a later
+                    # directory-fsync error cannot remove the published output.
+                    if partial_created and partial_identity is not None:
+                        try:
+                            current = partial.lstat()
+                            if (stat.S_ISREG(current.st_mode)
+                                    and (current.st_dev, current.st_ino) == partial_identity):
+                                partial.unlink()
+                        except FileNotFoundError:
+                            pass
+                    raise
                 return {"output": str(output), "files": len(files), "uncompressed_bytes": total,
                         "instance_id": manifest["instance_id"], "execution_workspaces_included": False}
 

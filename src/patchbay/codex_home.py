@@ -24,10 +24,8 @@ def resolve_codex_home(
 
 
 def codex_home_path_hint(path: Path) -> str:
-    """Return a human-safe path hint without raw config values."""
-    home = Path.home().resolve(strict=False)
-    try:
-        relative = path.resolve(strict=False).relative_to(home)
-    except ValueError:
-        return "configured_codex_home/" + path.name
-    return "~/" + str(relative)
+    """Name the conventional location without exposing configured subpaths."""
+    default = (Path.home() / ".codex").resolve(strict=False)
+    if path.resolve(strict=False).parent == default:
+        return "~/.codex/" + path.name
+    return "configured_codex_home/" + path.name

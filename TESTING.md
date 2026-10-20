@@ -47,6 +47,12 @@ python -m pytest tests -q
 
 Do not replace the full suite with historical branch counts.
 
+For Linux qualification, enable the real 185-second check with
+`PATCHBAY_AUTHOR_LONG_TESTS=1`. Supply `PATCHBAY_AUTHOR_DOCKER_IMAGE` only after
+preparing and inspecting an immutable local image. The strict Docker test uses
+`--pull=never`; an absent image remains an explicit exclusion. Host networking
+does not need to be disabled to run the container isolation regression.
+
 ## 4. Critical repair regressions
 
 ```bash
@@ -154,3 +160,25 @@ python -m pip check
 ```
 
 The [package coverage map](docs/authoring/coverage-map.md) keeps all original requirement identities. The [qualification guide](docs/authoring/qualification.md) defines evidence files and the disposable Linux fault lab. Unrun real-client cases stay unrun even when local contract tests pass.
+
+## Bounded Linux fixtures and ordinary Chat preparation
+
+The loopback HTTP/process regressions exercise endpoint restart, owned execution,
+admission blockers, measured control latency, cancellation, and rejected stale
+process identities without invoking a model or changing a shared service:
+
+```bash
+python -m pytest tests/authoring/test_linux_continuity.py \
+  tests/authoring/test_cgroup_capacity.py -q
+python scripts/author_storage_lab.py --raw-dir "$EVIDENCE_DIR/storage"
+python scripts/prepare_author_chat_trial.py --output-dir "$EVIDENCE_DIR/chat-trial"
+```
+
+The opt-in [storage lab](docs/authoring/storage-lab.md) mounts only a private
+64 MiB tmpfs with 2,048 inodes. Its default suite includes cheap backup failure
+regressions; actual exhaustion requires the lab runner and sudo. It never falls
+back to filling a host filesystem. The [Chat trial preparation](docs/authoring/ordinary-chat-trial.md)
+creates a disposable task/context and blank observations; it does not execute
+ordinary Chat or enable MCP writes. Use a new output directory for each exact
+candidate. See the [Linux qualification record](docs/testing/linux-qualification-2026-10-20.md)
+for evidence boundaries and the repaired failure classes.

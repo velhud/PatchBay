@@ -12,6 +12,7 @@ from ..models import Profile
 _MIB = 1024**2
 _HISTORY_LIMIT = 20
 _HISTORY_BYTES = 2 * _MIB
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
 
 
 def _read_text(path: Path) -> str | None:
@@ -47,20 +48,36 @@ def _cgroup_dirs() -> tuple[Path | None, Path | None, Path | None]:
         if ".." in rel.parts:
             continue
         if not controllers:
-            candidate = Path("/sys/fs/cgroup") / rel
+            candidate = _CGROUP_ROOT / rel
             if candidate.is_dir():
                 v2 = candidate
         else:
             names = set(controllers.split(","))
             if "cpu" in names:
-                candidate = Path("/sys/fs/cgroup/cpu") / rel
+                candidate = _CGROUP_ROOT / "cpu" / rel
                 if candidate.is_dir():
                     v1_cpu = candidate
             if "memory" in names:
-                candidate = Path("/sys/fs/cgroup/memory") / rel
+                candidate = _CGROUP_ROOT / "memory" / rel
                 if candidate.is_dir():
                     v1_memory = candidate
     return v2, v1_cpu, v1_memory
+
+
+def _hierarchy(directory: Path | None, mount: Path):
+    """Include inherited limits, stopping at the controller's visible mount.
+
+    An unlimited child remains subject to every ancestor. Ancestor usage also
+    includes siblings, so remaining capacity must use each limit's own usage.
+    Never walk into ordinary filesystem parents outside the controller mount.
+    """
+    if directory is None or not directory.is_relative_to(mount):
+        return
+    while True:
+        yield directory
+        if directory == mount:
+            return
+        directory = directory.parent
 
 
 def host_capacity() -> dict:
@@ -85,25 +102,32 @@ def host_capacity() -> dict:
 
     v2, v1_cpu, v1_memory = _cgroup_dirs()
     quota_info = None
-    quota_file = (v2 / "cpu.max") if v2 else (v1_cpu / "cpu.cfs_quota_us" if v1_cpu else None)
-    period_file = (v1_cpu / "cpu.cfs_period_us") if v1_cpu and not v2 else None
-    if quota_file:
+    cpu_mount = _CGROUP_ROOT if v2 else _CGROUP_ROOT / "cpu"
+    quota_capacity = None
+    for directory in _hierarchy(v2 or v1_cpu, cpu_mount):
         if v2:
-            raw = _read_text(quota_file)
+            raw = _read_text(directory / "cpu.max")
             try:
                 quota, period = raw.split()
-                quota_info = {"quota": quota, "period_us": int(period), "source": "cgroup-v2"}
-                if quota != "max" and int(period) > 0:
-                    cpu_values.append(float(quota) / int(period))
-                    cpu_sources.append("cgroup-v2-cpu.max")
+                info = {"quota": quota, "period_us": int(period), "source": "cgroup-v2"}
+                if quota_info is None:
+                    quota_info = info
+                if quota != "max" and int(quota) > 0 and int(period) > 0:
+                    capacity = int(quota) / int(period)
+                    if quota_capacity is None or capacity < quota_capacity:
+                        quota_capacity, quota_info = capacity, info
             except (AttributeError, ValueError):
                 pass
         else:
-            quota, period = _number(quota_file), _number(period_file) if period_file else None
+            quota, period = _number(directory / "cpu.cfs_quota_us"), _number(directory / "cpu.cfs_period_us")
             if quota is not None and period and quota > 0:
-                quota_info = {"quota_us": quota, "period_us": period, "source": "cgroup-v1"}
-                cpu_values.append(float(quota) / period)
-                cpu_sources.append("cgroup-v1-cpu.cfs_quota_us")
+                capacity = quota / period
+                if quota_capacity is None or capacity < quota_capacity:
+                    quota_capacity = capacity
+                    quota_info = {"quota_us": quota, "period_us": period, "source": "cgroup-v1"}
+    if quota_capacity is not None:
+        cpu_values.append(quota_capacity)
+        cpu_sources.append("cgroup-v2-cpu.max" if v2 else "cgroup-v1-cpu.cfs_quota_us")
 
     memory_available = None
     try:
@@ -113,24 +137,34 @@ def host_capacity() -> dict:
                 break
     except (OSError, ValueError, IndexError):
         pass
-    memory_limit = memory_current = None
-    if v2:
-        memory_limit = _number(v2 / "memory.max")
-        memory_current = _number(v2 / "memory.current")
-    elif v1_memory:
-        memory_limit = _number(v1_memory / "memory.limit_in_bytes")
-        memory_current = _number(v1_memory / "memory.usage_in_bytes")
+    memory_limit = memory_current = cgroup_remaining = None
+    memory_mount = _CGROUP_ROOT if v2 else _CGROUP_ROOT / "memory"
+    for directory in _hierarchy(v2 or v1_memory, memory_mount):
+        limit = _number(directory / ("memory.max" if v2 else "memory.limit_in_bytes"))
+        current = _number(directory / ("memory.current" if v2 else "memory.usage_in_bytes"))
+        if memory_current is None:
+            memory_current = current
         # v1 commonly uses a huge sentinel for an unlimited limit.
-        if memory_limit is not None and memory_limit >= 2**60:
-            memory_limit = None
-    cgroup_remaining = max(0, memory_limit - memory_current) if memory_limit is not None and memory_current is not None else None
+        if not v2 and limit is not None and limit >= 2**60:
+            limit = None
+        if limit is not None and current is not None:
+            remaining = max(0, limit - current)
+            if cgroup_remaining is None or remaining < cgroup_remaining:
+                cgroup_remaining, memory_limit, memory_current = remaining, limit, current
     memory_sources = ["proc-meminfo-MemAvailable"] if memory_available is not None else []
     if cgroup_remaining is not None:
         memory_available = min(memory_available, cgroup_remaining) if memory_available is not None else cgroup_remaining
         memory_sources.append("cgroup-memory-limit-minus-current")
 
-    pids_current = _number(v2 / "pids.current") if v2 else None
-    pids_limit = _number(v2 / "pids.max") if v2 else None
+    pids_current = pids_limit = pids_remaining = None
+    for directory in _hierarchy(v2, _CGROUP_ROOT):
+        limit, current = _number(directory / "pids.max"), _number(directory / "pids.current")
+        if pids_current is None:
+            pids_current = current
+        if limit is not None and current is not None:
+            remaining = max(0, limit - current)
+            if pids_remaining is None or remaining < pids_remaining:
+                pids_remaining, pids_limit, pids_current = remaining, limit, current
     cpu_capacity = min(cpu_values) if cpu_values else None
     return {"cpu_cores": cpu_capacity, "available_memory_bytes": memory_available,
             "memory_capacity_bytes": memory_limit, "memory_current_bytes": memory_current,

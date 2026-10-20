@@ -95,3 +95,26 @@ finally:
     op = Checks(s.store).submit(task["id"], revision=0, key="run", token=lease["token"], epoch=lease["epoch"])
     assert wait_for(s, op, timeout=60)["state"] == "completed"
     assert Feedback(s.store).get(task["id"])["receipt"]["environment"]["network_denied_during_checks"] is True
+
+
+@pytest.mark.skipif(not os.environ.get("PATCHBAY_AUTHOR_DOCKER_IMAGE"), reason="Requires an explicitly prepared local Docker image")
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires the Linux/WSL2 Author execution supervisor")
+def test_strict_docker_oom_is_observed_and_never_a_source_test_pass(setup_author):
+    s, source, _, _, _ = setup_author
+    # The allocation is confined to a container with a hard 64 MiB limit and
+    # no swap allowance. It must never be run as trusted-local host pressure.
+    profile = Profile(id="strict-oom", backend="docker", image=os.environ["PATCHBAY_AUTHOR_DOCKER_IMAGE"],
+                      cpu=.25, memory_mb=64, disk_mb=32,
+                      checks=[Check(id="bounded-oom", argv=["python", "-c", "value=bytearray(256*1024**2)"], timeout_seconds=30)])
+    repo = s.repositories.register("strict-oom", source, TaskPolicy(profile=profile))
+    task = s.tasks.create(repo["id"], "Classify a bounded container OOM honestly", key="oom-task")
+    lease = s.leases.claim(task["id"])
+    operation = Checks(s.store).submit(task["id"], revision=0, key="oom-run", token=lease["token"], epoch=lease["epoch"])
+    assert wait_for(s, operation, timeout=60)["state"] == "blocked"
+    feedback = Feedback(s.store).get(task["id"])
+    assert feedback["classification"] == "BLOCKED_ENVIRONMENT"
+    receipt = feedback["receipt"]
+    assert receipt["verification_receipt"]["outcome"] != "passed"
+    assert any(cause["code"] == "OOM_KILLED" for cause in receipt["failure_causes"])
+    assert receipt["checks"][0]["docker_state"]["oom_killed"] is True
+    assert receipt["cleanup"] == "proven"
