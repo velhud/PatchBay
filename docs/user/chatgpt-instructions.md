@@ -35,6 +35,20 @@ When the connector exposes `patchbay_*` tools, use the Hub workflow rather than 
 6. Use `patchbay_operation_status` for the exact operation when recovery is needed. Never expose internal reconciliation transitions.
 7. Close only after active or uncertain operations are terminal and every worker has a truthful disposition.
 
+When `patchbay_work_group_reassign` returns `handoff_context` with
+`context_mode="reports_and_changes"`, treat its bounded report list as an
+index. It does not transfer files or diffs, even if the requested mode includes
+`reports_and_changes`. Follow `required_changes_retrieval.actions` using the
+exact predecessor group ID and `fleet_worker_ref`: enumerate every worker by
+following `next_cursor`, read each needed report and changed-file inventory,
+then retrieve file contents through `view="file"` pages and verify the stable
+per-file SHA-256. Route each read directly to the predecessor ID; do not try to
+make a superseded group current again. Diff output may be truncated. Read predecessor content before
+giving selected material to the successor, and inspect the successor's own
+candidate and checks. If the predecessor route is unavailable or a response
+cannot be completed, report the retrieval blocker and do not claim that the
+content moved.
+
 A queued operation is accepted durable work, not proof of completed Edge execution. A wait timeout is not permission to answer as though the task finished.
 
 ### Shared-server behavior

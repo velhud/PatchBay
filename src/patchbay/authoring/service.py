@@ -10,6 +10,8 @@ from .tasks import Tasks
 from .snapshots import Snapshots
 from .revisions.leases import Leases
 from .revisions.materialize import Materializer
+from .recovery import Recovery
+from .packages.inbox import PackageInbox
 
 
 class AuthorService:
@@ -20,6 +22,8 @@ class AuthorService:
         self.leases = Leases(self.store)
         self.snapshots = Snapshots(self.store)
         self.materializer = Materializer(self.store)
+        self.recovery = Recovery(self.store)
+        self.inbox = PackageInbox(self.store, materializer=self.materializer)
 
     def capabilities(self) -> dict:
         return {"name": "patchbay-author", "version": "0.1.0", "schema_version": 1,
@@ -28,5 +32,7 @@ class AuthorService:
                 "execution_platform": "Linux/WSL2", "strict_backend": "docker-offline",
                 "trusted_local_is_a_sandbox": False, "model_delegation": False,
                 "account_usage_visibility": "unknown", "client_write_qualification": "explicit_record_required",
-                "default_branch_mutation": False, "automatic_merge": False,
+                "default_branch_mutation": False, "automatic_merge": False, "pull_request_creation": False,
+                "recognized_package_inbox": True, "watched_folder": "explicit_opt_in",
+                "recovery_contract": 1, "controller_continuation": "explicit_resume_required",
                 "unsupported": ["native-Windows-execution", "macOS-execution-supervision", "LFS/submodule/symlink mutation", "automatic model continuation"]}

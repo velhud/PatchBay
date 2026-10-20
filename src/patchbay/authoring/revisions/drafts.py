@@ -10,6 +10,7 @@ from ..models import TaskPolicy
 from ..packages.diff import from_commit
 from ..packages.validation import writable
 from ..persistence.gates import mutation
+from ..persistence.control import Control
 from ..persistence.locks import file_lock
 from ..repositories import Repositories
 from ..tasks import Tasks
@@ -35,6 +36,7 @@ class Drafts:
             observed = self.store.operation(op["id"])
             if observed["state"] == "completed":
                 return observed["result"]
+            Control(self.store).assert_admission(task_id)
             task = self.tasks.get(task_id)
             require(task["current_revision"] == expected_revision, "STALE_BASE", "The task candidate changed while this draft was being authored")
             if draft_id is None:
@@ -95,6 +97,7 @@ class Drafts:
             result = {"draft_id": draft_id, "task_id": task_id, "base_revision": expected_revision, "version": version, "commit": commit, "tree": tree, "accepted_revision": False}
             with self.store.transaction() as conn:
                 self.leases.assert_owned(task_id, token, epoch, conn=conn)
+                Control(self.store).assert_granted(task_id, conn=conn)
                 if expected_version == 0:
                     conn.execute("INSERT INTO drafts VALUES(?,?,?,?,?,?,'open',?,?)", (draft_id, task_id, expected_revision, version, tree, commit, op["created"], utc_now()))
                 else:
@@ -106,22 +109,14 @@ class Drafts:
             return result
 
     def read(self, draft_id: str, version: int, path: str, *, start_line: int = 1, max_lines: int = 200, max_bytes: int = 65536) -> dict:
-        require(type(version) is int and version > 0 and start_line >= 1 and 1 <= max_lines <= 1000 and 1 <= max_bytes <= 262144,
-                "INVALID_REQUEST", "Invalid draft read window")
+        from ..source_windows import read_window
+        require(type(version) is int and version > 0, "INVALID_REQUEST", "Invalid draft version")
         draft = self.store.one("SELECT * FROM drafts WHERE id=?", (draft_id,))
         snapshot = self.store.one("SELECT * FROM draft_versions WHERE draft_id=? AND version=?", (draft_id, version))
         task = self.tasks.get(draft["task_id"])
-        data = self.repositories.git(task["repository_id"]).read_file(snapshot["commit_oid"], safe_path(path))
-        lines = data.decode("utf-8").splitlines(keepends=True)
-        chosen, size = [], 0
-        for line in lines[start_line - 1:start_line - 1 + max_lines]:
-            if size + len(line.encode()) > max_bytes:
-                break
-            chosen.append(line); size += len(line.encode())
-        require(chosen or start_line > len(lines) or not lines, "RESOURCE_LIMIT", "One draft line exceeds the response budget")
-        next_line = start_line + len(chosen)
-        return {"draft_id": draft_id, "version": version, "commit": snapshot["commit_oid"], "path": path,
-                "sha256": digest(data), "text": "".join(chosen), "next_start_line": next_line if next_line <= len(lines) else None}
+        result = read_window(self.repositories.git(task["repository_id"]), snapshot["commit_oid"], path,
+                             start_line=start_line, max_lines=max_lines, max_bytes=max_bytes)
+        return {"draft_id": draft_id, "version": version, **result}
 
     @mutation
     def seal(self, draft_id: str, *, expected_version: int, key: str, token: str, epoch: int) -> dict:
@@ -135,7 +130,7 @@ class Drafts:
             if observed["state"] == "completed":
                 return observed["result"]
             child_key = "draft-seal-" + op["id"]
-            child = self.store.one("SELECT * FROM operations WHERE task_id=? AND kind='package.submit' AND idempotency_key=?", (task_id, child_key), required=False)
+            child = self.store.one("SELECT * FROM operations WHERE task_id=? AND kind='package.submit' AND idempotency_key=?", (task_id, self.store.scoped_key(child_key)), required=False)
             if child and child["state"] == "completed":
                 accepted = json.loads(child["result"])
             else:

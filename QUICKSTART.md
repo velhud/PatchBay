@@ -9,7 +9,7 @@ PatchBay has two complementary workflows. Do not mix their implementation author
 
 ```bash
 git fetch origin
-git checkout chatgpt/patchbay-unified-reconciliation-20261020
+git checkout main
 git pull --ff-only
 
 python3 -m venv .venv
@@ -78,8 +78,6 @@ Run Author Mode qualification and check execution on Linux or WSL2. The platform
 
 ```bash
 AUTHOR_HOME="$PWD/.patchbay-author"
-rm -rf "$AUTHOR_HOME"
-
 patchbay author --home "$AUTHOR_HOME" init
 patchbay-author --home "$AUTHOR_HOME" doctor
 ```
@@ -159,6 +157,6 @@ patchbay-author --home "$AUTHOR_HOME" publications TASK_ID
 
 Author Mode does not call manager/worker tools, import the worker runtime, or ask another model to repair failures. A failed check returns evidence to the same authoring loop.
 
-## Verify before merge
+## Verify the source and deployment
 
-Run the exact matrix in [TESTING.md](TESTING.md). Do not merge the consolidation PR until the combined commit has passed the required local Linux/WSL2 and repository-specific checks.
+Run the exact matrix in [TESTING.md](TESTING.md). Mac checks verify portable mechanics; Linux/WSL2 execution and the deployed ordinary-Chat route require their own qualification. No PR is created by the Author workflow. See [Author operations](docs/authoring/operations.md) for explicit inbox watch, recovery, pause, revocation and policy changes.

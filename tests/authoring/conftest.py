@@ -55,3 +55,9 @@ def setup_author(tmp_path):
         if not service.store.one("SELECT 1 FROM runs WHERE state IN ('launching','running','cancelling') LIMIT 1", required=False):
             break
         time.sleep(.1)
+
+
+def qualification_profile():
+    """Explicit synthetic client profile; never a live ordinary-Chat claim."""
+    return {"account_label": "disposable-fixture", "mode": "ordinary_chat", "role": "author",
+            "protocol": "2025-11-25", "ingress": "in-process-test", "plugin_version": "fixture"}

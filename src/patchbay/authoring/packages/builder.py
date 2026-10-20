@@ -91,11 +91,17 @@ def build(context: Path, edited: Path, output: Path, *, requested_checks: list[s
         for name in list(dirs):
             if (Path(directory) / name).is_symlink():
                 raise ValueError("Symlink directories are unsupported")
-            if name in excluded:
+            prefix = (Path(directory) / name).relative_to(edited).as_posix() + "/"
+            # Runtime caches are ignorable only when they are not pinned source.
+            # Pruning an inventoried directory would turn unchanged tracked bytes
+            # into implicit delete operations below.
+            if name in excluded and not any(p.startswith(prefix) for p in inventory):
                 dirs.remove(name)
         for name in files:
             candidate = Path(directory) / name
             path = _safe(candidate.relative_to(edited).as_posix())
+            if any(part in excluded for part in path.split("/")[:-1]) and path not in inventory:
+                continue
             if candidate.resolve() == output.resolve():
                 raise ValueError("Write the package outside the edited source tree")
             if candidate.is_symlink():

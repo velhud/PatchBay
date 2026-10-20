@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from .authority import current_identity, assert_operator
 from pathlib import Path
 
 from .errors import require
@@ -22,6 +23,10 @@ class Repositories:
     def get(self, repository: str) -> dict:
         require(isinstance(repository, str) and 0 < len(repository) <= 200, "INVALID_REQUEST", "Repository identity is required")
         row = self.store.one("SELECT * FROM repositories WHERE id=? OR name=?", (repository, repository))
+        scope = current_identity().task_ids
+        if scope is not None:
+            allowed = self.store.one("SELECT 1 FROM tasks WHERE repository_id=? AND id IN (" + ",".join("?" for _ in scope) + ") LIMIT 1", (row["id"], *scope), required=False)
+            require(allowed is not None, "FORBIDDEN", "Repository is outside this principal's task grants", status=403)
         row["policy"] = json.loads(row["policy"])
         return row
 
@@ -34,11 +39,28 @@ class Repositories:
 
     def list(self, *, limit: int = 50, offset: int = 0) -> list[dict]:
         require(1 <= limit <= 200 and offset >= 0, "INVALID_REQUEST", "Invalid repository page")
-        return self.store.rows("SELECT id,name,default_branch,object_format,created,updated FROM repositories ORDER BY created,id LIMIT ? OFFSET ?", (limit, offset))
+        scope = current_identity().task_ids
+        clause = " WHERE id IN (SELECT repository_id FROM tasks WHERE id IN (" + ",".join("?" for _ in scope) + "))" if scope is not None else ""
+        return self.store.rows("SELECT id,name,default_branch,object_format,created,updated FROM repositories" + clause + " ORDER BY created,id LIMIT ? OFFSET ?", (*scope, limit, offset) if scope is not None else (limit, offset))
 
     @mutation
     def register(self, name: str, source: Path, policy: TaskPolicy, *, remote: str | None = None,
-                 default_branch: str | None = None) -> dict:
+                 default_branch: str | None = None, key: str | None = None) -> dict:
+        assert_operator()
+        request = {"name": name, "source": str(Path(source).expanduser().resolve()),
+                   "policy": TaskPolicy.model_validate(policy).wire(), "remote": remote, "default_branch": default_branch}
+        operation, _ = self.store.begin_operation(kind="repository.register", key=key or "local-" + uuid.uuid4().hex,
+            fingerprint=fingerprint(request), payload=request)
+        with file_lock(self.store.home / ("locks/request-" + operation["id"])):
+            current = self.store.operation(operation["id"])
+            if current["state"] == "completed":
+                return self.get(current["result"]["repository_id"])
+            result = self._register(name, source, policy, remote=remote, default_branch=default_branch)
+            self.store.finish(operation["id"], "completed", result={"repository_id": result["id"]})
+            return result
+
+    def _register(self, name: str, source: Path, policy: TaskPolicy, *, remote: str | None = None,
+                  default_branch: str | None = None) -> dict:
         safe_id(name)
         source = Path(source).expanduser().resolve()
         require(source.is_dir() and not source.is_relative_to(self.store.home), "INVALID_REPOSITORY", "Register a repository outside author state")
@@ -77,6 +99,7 @@ class Repositories:
 
     @mutation
     def refresh(self, repository: str, *, key: str, from_remote: bool = False) -> dict:
+        assert_operator()
         row = self.get(repository)
         request = {"repository_id": row["id"], "from_remote": from_remote}
         op, _ = self.store.begin_operation(kind="repository.refresh", task_id=row["id"], key=key,

@@ -33,7 +33,8 @@ def qualify(profile: Profile, run_root: Path) -> tuple[Profile, dict]:
         information["execution_trust"] = "operator-trusted source; not an adversarial sandbox or network-denial guarantee"
         information["environment_digest"] = fingerprint(information)
         return profile, information
-    require(profile.image and shutil.which("docker"), "BLOCKED_ENVIRONMENT", "Docker backend needs an installed engine and an explicitly prepared image")
+    require(profile.image, "BLOCKED_ENVIRONMENT", "Docker backend needs an explicitly prepared image")
+    require(shutil.which("docker"), "MISSING_EXECUTABLE", "Docker executable is unavailable")
     require("," not in str(run_root) and "\n" not in str(run_root), "BLOCKED_ENVIRONMENT", "Docker bind paths contain unsupported characters")
     try:
         probe = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", profile.image],
@@ -60,7 +61,15 @@ def command(profile: Profile, check: Check, workspace: Path, run_root: Path, *,
     env = base_environment(home)
     if profile.backend == "trusted-local":
         env.update(profile.environment)
+        executable = check.argv[0]
+        found = shutil.which(executable, path=env.get("PATH")) if "/" not in executable else executable
+        if not found or ("/" in executable and not os.path.exists(found)):
+            raise AuthorError("MISSING_EXECUTABLE", f"Approved check executable is unavailable: {executable[:300]}")
+        if "/" in executable and not os.access(found, os.X_OK):
+            raise AuthorError("EXECUTABLE_NOT_RUNNABLE", f"Approved check executable lacks execute permission: {executable[:300]}")
         return list(check.argv), cwd, env
+    if not shutil.which("docker", path=env.get("PATH")):
+        raise AuthorError("MISSING_EXECUTABLE", "Docker executable is unavailable")
     require(profile.image is not None, "BLOCKED_ENVIRONMENT", "Docker image is not configured")
     argv = ["docker", "run", "--name", container_name, "--pull=never", "--read-only",
             "--network", "bridge" if stage == "setup" and profile.setup_network else "none",
@@ -77,6 +86,26 @@ def command(profile: Profile, check: Check, workspace: Path, run_root: Path, *,
     argv.append(profile.image)
     argv.extend(check.argv)
     return argv, run_root, env
+
+
+def inspect_container(name: str) -> dict:
+    """Read bounded Docker state before cleanup, preserving honest absence."""
+    require(re.fullmatch(r"pba-[a-z0-9-]+", name), "INVALID_REQUEST", "Invalid owned container name")
+    try:
+        result = subprocess.run(["docker", "inspect", "--format", "{{json .State}}", name],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=base_environment(Path("/nonexistent")), timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"state": "unavailable", "reason": type(exc).__name__}
+    if result.returncode:
+        return {"state": "unavailable", "reason": "inspect_failed", "exit_code": result.returncode}
+    try:
+        state = json.loads(result.stdout[:65536])
+    except (ValueError, UnicodeDecodeError):
+        return {"state": "unavailable", "reason": "invalid_inspect_output"}
+    return {"state": "observed", "oom_killed": bool(state.get("OOMKilled")),
+            "exit_code": state.get("ExitCode"), "status": state.get("Status"),
+            "error": str(state.get("Error") or "")[:1000]}
 
 
 def cleanup_container(name: str) -> dict:

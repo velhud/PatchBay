@@ -13,7 +13,7 @@ suite includes them automatically).
 
 ```bash
 git fetch origin
-git checkout chatgpt/patchbay-unified-reconciliation-20261020
+git checkout main
 git pull --ff-only
 
 git status --short
@@ -82,7 +82,6 @@ patchbay-author --help
 python -m patchbay.authoring.interfaces.cli --help
 
 AUTHOR_HOME="$PWD/.patchbay-author-verify"
-rm -rf "$AUTHOR_HOME"
 patchbay author --home "$AUTHOR_HOME" init
 patchbay-author --home "$AUTHOR_HOME" doctor
 patchbay-author --home "$AUTHOR_HOME" token --role reader
@@ -142,4 +141,16 @@ Record separately:
 - unresolved repository defects, with logs or evidence paths;
 - whether the installed `patchbay`, `patchbay-stdio`, and `patchbay-author` entrypoints resolve to this checkout.
 
-Do not merge the consolidation PR while required checks remain unexplained or while the branch contains uncommitted local corrections.
+Record deployment qualification separately from source publication. No PR creation or UI changes are required by this matrix.
+
+## Package completeness and client contracts
+
+Run the portable package regressions and evaluators before deployment:
+
+```bash
+python scripts/author_requirements_eval.py --json
+python scripts/author_interface_eval.py --json
+python -m pip check
+```
+
+The [package coverage map](docs/authoring/coverage-map.md) keeps all original requirement identities. The [qualification guide](docs/authoring/qualification.md) defines evidence files and the disposable Linux fault lab. Unrun real-client cases stay unrun even when local contract tests pass.

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import os
 import secrets
 import shutil
@@ -13,7 +15,8 @@ from pathlib import Path
 
 from ..errors import AuthorError, require
 from ..models import RuntimeLimits
-from ..util import atomic_write, canonical, fsync_dir, safe_id, strict_json, utc_now
+from ..util import atomic_write, canonical, fingerprint as digest_fingerprint, fsync_dir, safe_id, strict_json, utc_now
+from ..authority import assert_task_scope, current_identity, current_request_id
 from .blobs import Blobs
 from .schema import SCHEMA, SCHEMA_VERSION
 
@@ -111,17 +114,31 @@ class Store:
 
     def begin_operation(self, *, kind: str, key: str, fingerprint: str, payload: dict,
                         task_id: str | None = None, revision: int | None = None, initialize=None) -> tuple[dict, bool]:
-        require(isinstance(key, str) and 0 < len(key) <= 200 and "\x00" not in key,
+        identity = current_identity()
+        assert_task_scope(task_id or None, identity)
+        stored_key = self.scoped_key(key, identity=identity) if isinstance(key, str) else key
+        is_scoped_key = (not identity.legacy and isinstance(stored_key, str)
+                         and re.fullmatch(r"principal-[0-9a-f]{24}:[0-9a-f]{64}", stored_key) is not None
+                         and stored_key == key)
+        require(isinstance(key, str) and 0 < len(key) <= 200 or is_scoped_key,
                 "INVALID_REQUEST", "A bounded idempotency key is required")
+        require(isinstance(key, str) and "\x00" not in key, "INVALID_REQUEST", "Invalid idempotency key")
+        journal_fingerprint = self.scoped_fingerprint(fingerprint, identity=identity)
+        payload = dict(payload)
+        if not identity.legacy:
+            payload.setdefault("_principal_id", identity.principal_id)
+        request_id = current_request_id()
+        if request_id is not None:
+            payload.setdefault("_request_id", request_id)
         task_id = task_id or ""
         with self.transaction() as conn:
-            row = conn.execute("SELECT * FROM operations WHERE task_id=? AND kind=? AND idempotency_key=?", (task_id, kind, key)).fetchone()
+            row = conn.execute("SELECT * FROM operations WHERE task_id=? AND kind=? AND idempotency_key=?", (task_id, kind, stored_key)).fetchone()
             if row:
-                require(row["fingerprint"] == fingerprint, "IDEMPOTENCY_CONFLICT", "Idempotency key was already used for different semantics")
+                require(row["fingerprint"] == journal_fingerprint, "IDEMPOTENCY_CONFLICT", "Idempotency key was already used for different semantics")
                 return dict(row), False
             now = utc_now()
-            operation = {"id": "op_" + uuid.uuid4().hex, "task_id": task_id, "kind": kind, "idempotency_key": key,
-                         "fingerprint": fingerprint, "revision": revision, "state": "queued", "phase": "accepted",
+            operation = {"id": "op_" + uuid.uuid4().hex, "task_id": task_id, "kind": kind, "idempotency_key": stored_key,
+                         "fingerprint": journal_fingerprint, "revision": revision, "state": "queued", "phase": "accepted",
                          "payload": canonical(payload).decode(), "result": None, "error": None, "owner_identity": None,
                          "cancel_requested": 0, "created": now, "updated": now}
             columns = list(operation)
@@ -130,6 +147,26 @@ class Store:
                 initialize(conn, operation)
             self.event(conn, "operation.accepted", task_id, {"operation_id": operation["id"], "kind": kind})
             return operation, True
+
+    @staticmethod
+    def scoped_key(key: str, *, identity=None) -> str:
+        """Map a public logical key to a principal-local durable journal key."""
+        identity = identity or current_identity()
+        if identity.legacy:
+            return key
+        scope = hashlib.sha256(identity.principal_id.encode("utf-8")).hexdigest()[:24]
+        prefix = "principal-" + scope + ":"
+        if isinstance(key, str) and re.fullmatch(re.escape(prefix) + r"[0-9a-f]{64}", key):
+            return key
+        return prefix + hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def scoped_fingerprint(value: str, *, identity=None) -> str:
+        """Bind an operation's caller fingerprint to its authenticated principal."""
+        identity = identity or current_identity()
+        if identity.legacy:
+            return value
+        return digest_fingerprint({"principal_id": identity.principal_id, "request": value})
 
     def finish(self, operation_id: str, state: str, *, result=None, error=None) -> dict:
         require(state in TERMINAL, "INVALID_REQUEST", "Expected a terminal operation state")
@@ -146,14 +183,71 @@ class Store:
 
     def operation(self, operation_id: str) -> dict:
         safe_id(operation_id)
-        return self.public_operation(self.one("SELECT * FROM operations WHERE id=?", (operation_id,)))
+        row = self.one("SELECT * FROM operations WHERE id=?", (operation_id,))
+        assert_task_scope(row["task_id"] or None)
+        return self.public_operation(row)
 
     @staticmethod
-    def public_operation(row: dict) -> dict:
+    def operation_summary_columns() -> str:
+        """Keep large history values inside SQLite instead of loading each page."""
+        fields = "id,task_id,kind,revision,state,phase,created,updated,cancel_requested"
+        payload = "json_object('_request_id',json_extract(payload,'$._request_id'),'_admission',json_extract(payload,'$._admission')) AS payload"
+        parts = [fields, payload]
+        identities = ("id", "task_id", "revision", "operation_id", "request_operation_id", "commit", "tree",
+                      "classification", "receipt_sha", "bundle_sha", "blob_sha", "context_id", "code", "state")
+        for field in ("result", "error"):
+            size = "length(CAST(" + field + " AS BLOB))"
+            values = []
+            for key in identities:
+                kind = "json_type(" + field + ",'$." + key + "')"
+                value = "json_extract(" + field + ",'$." + key + "')"
+                values.append("'" + key + "',CASE WHEN " + kind + "='text' THEN substr(" + value + ",1,1000) WHEN " + kind + " IN ('integer','real','true','false') THEN " + value + " ELSE NULL END")
+            projected = "json_object(" + ",".join(values) + ")"
+            parts.extend(["CASE WHEN " + size + ">8192 THEN " + projected + " ELSE " + field + " END AS " + field,
+                          size + " AS _" + field + "_bytes", size + ">8192 AS _" + field + "_partial"])
+        return ",".join(parts)
+
+    @staticmethod
+    def public_operation(row: dict, *, summary: bool = False) -> dict:
         keys = ("id", "task_id", "kind", "revision", "state", "phase", "created", "updated", "cancel_requested")
         result = {key: row.get(key) for key in keys}
+        try:
+            payload = json.loads(row["payload"]) if isinstance(row.get("payload"), str) else row.get("payload")
+            request_id = payload.get("_request_id") if isinstance(payload, dict) else None
+            if isinstance(request_id, str):
+                result["request_id"] = request_id
+            if isinstance(payload, dict) and isinstance(payload.get("_admission"), dict) and row.get("state") == "queued":
+                result["admission"] = {key: value for key, value in payload["_admission"].items() if key != "identity"}
+        except (ValueError, TypeError):
+            pass
         for key in ("result", "error"):
             result[key] = json.loads(row[key]) if isinstance(row.get(key), str) else row.get(key)
+        def public(value):
+            if isinstance(value, dict):
+                return {k: public(v) for k, v in value.items()
+                        if k not in {"token", "lease_token", "instance_id", "authorization"} and not k.startswith("_private")}
+            if isinstance(value, list):
+                return [public(item) for item in value]
+            return value
+        result = public(result)
+        if summary:
+            for field in ("result", "error"):
+                value = result.get(field)
+                if row.get("_" + field + "_partial"):
+                    result[field + "_partial"] = True
+                    result[field + "_bytes"] = row["_" + field + "_bytes"]
+                    result["detail_read"] = {"tool": "author_operation_status", "arguments": {"operation_id": row["id"]}}
+                    continue
+                encoded = canonical(value)
+                if len(encoded) > 8192:
+                    result[field] = {key: item for key, item in value.items()
+                        if key in {"id", "task_id", "revision", "operation_id", "request_operation_id", "commit", "tree",
+                                   "classification", "receipt_sha", "bundle_sha", "blob_sha", "context_id", "code", "state"}
+                        and isinstance(item, (str, int, float, bool, type(None)))
+                        and len(canonical(item)) <= 1000} if isinstance(value, dict) else {}
+                    result[field + "_partial"] = True
+                    result[field + "_bytes"] = len(encoded)
+                    result["detail_read"] = {"tool": "author_operation_status", "arguments": {"operation_id": row["id"]}}
         return result
 
     def reference(self, conn, owner: str, *hashes: str) -> None:

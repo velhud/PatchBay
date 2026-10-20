@@ -55,7 +55,7 @@ class Integration:
                 conn.execute("UPDATE operations SET payload=?,state='running',phase='combining',updated=? WHERE id=?", (canonical(payload).decode(), utc_now(), op["id"]))
             child_key = "integration-package-" + op["id"]
             child = self.store.one("SELECT * FROM operations WHERE task_id=? AND kind='package.submit' AND idempotency_key=?",
-                                   (task["id"], child_key), required=False)
+                                   (task["id"], self.store.scoped_key(child_key)), required=False)
             if child and child["state"] == "completed":
                 accepted = json.loads(child["result"])
             else:

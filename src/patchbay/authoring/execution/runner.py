@@ -10,7 +10,9 @@ from pathlib import Path
 from ..errors import AuthorError, require
 from ..models import Profile, TaskPolicy
 from ..persistence.gates import mutation
+from ..persistence.control import Control
 from ..persistence.locks import file_lock
+from ..persistence.requests import replayable
 from ..persistence.store import Store, TERMINAL
 from ..revisions.leases import Leases
 from ..tasks import Tasks
@@ -41,6 +43,7 @@ class Checks:
         with file_lock(self.store.home / ("locks/task-" + task_id)):
             def initialize(conn, operation):
                 self.leases.assert_owned(task_id, token, epoch, conn=conn)
+                Control(self.store).assert_admission(task_id, conn=conn)
                 current = conn.execute("SELECT current_revision FROM tasks WHERE id=?", (task_id,)).fetchone()[0]
                 require(current == revision, "STALE_BASE", "Task changed while checks were submitted")
                 conn.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,'queued','not_required',NULL,?,?)",
@@ -74,11 +77,13 @@ class Checks:
             for row in pending:
                 active = self.store.rows("SELECT * FROM runs WHERE state IN ('launching','running','cancelling','unknown_execution') OR cleanup='unresolved'")
                 if any(other["task_id"] == row["task_id"] and (other["state"] == "unknown_execution" or other["cleanup"] == "unresolved") for other in active):
+                    self._record_wait(row["id"], "task_execution_fenced")
                     waiting.append({"operation_id": row["id"], "reason": "task_execution_fenced"})
                     continue
                 profile = Profile.model_validate(json.loads(row["profile"]))
                 fits, admission = can_admit(self.store, profile, active)
                 if not fits:
+                    self._record_wait(row["id"], "resource_budget", admission)
                     waiting.append({"operation_id": row["id"], "reason": "resource_budget", "admission": admission})
                     continue
                 root = self.store.home / "runs" / row["id"]
@@ -90,6 +95,7 @@ class Checks:
                         root.rmdir()
                         continue
                     conn.execute("UPDATE operations SET state='running',phase='launching',updated=? WHERE id=?", (utc_now(), row["id"]))
+                    self.store.event(conn, "checks.launching", row["task_id"], {"operation_id": row["id"]})
                 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(root),
                        "PYTHONPATH": str(Path(__file__).resolve().parents[3]), "PYTHONDONTWRITEBYTECODE": "1"}
                 try:
@@ -107,11 +113,34 @@ class Checks:
                 require(record is not None, "EXECUTION_UNKNOWN", "Could not establish supervisor identity; launch gate remains closed")
                 with self.store.transaction() as conn:
                     conn.execute("UPDATE operations SET owner_identity=?,updated=? WHERE id=?", (canonical(record).decode(), utc_now(), row["id"]))
+                    self.store.event(conn, "checks.supervisor_owned", row["task_id"], {"operation_id": row["id"]})
                 atomic_write(root / "launch.json", canonical({"operation_id": row["id"], "supervisor": record}))
                 launched.append(row["id"])
         return {"launched": launched, "waiting": waiting}
 
+    def _record_wait(self, operation_id: str, reason: str, admission: dict | None = None) -> None:
+        """Cache meaningful admission blockers; unchanged polling writes nothing."""
+        details = {"reason": reason, "admission": admission}
+        # Free-memory/disk samples fluctuate; transitions depend on actual gates
+        # and reservations, not on an unchanged scheduler heartbeat.
+        identity = fingerprint({"reason": reason, "gates": (admission or {}).get("gates"),
+                                "reservation": (admission or {}).get("reservation"),
+                                "active_jobs": (admission or {}).get("active_jobs")})
+        with self.store.transaction() as conn:
+            row = conn.execute("SELECT task_id,state,payload FROM operations WHERE id=?", (operation_id,)).fetchone()
+            require(row is not None, "NOT_FOUND", "Queued operation is unavailable")
+            if row["state"] != "queued":
+                return
+            payload = json.loads(row["payload"])
+            if payload.get("_admission", {}).get("identity") == identity:
+                return
+            payload["_admission"] = {**details, "identity": identity, "observed_at": utc_now()}
+            conn.execute("UPDATE operations SET phase='waiting_for_admission',payload=?,updated=? WHERE id=? AND state='queued'",
+                         (canonical(payload).decode(), utc_now(), operation_id))
+            self.store.event(conn, "checks.admission_wait", row["task_id"], {"operation_id": operation_id, "reason": reason})
+
     @mutation
+    @replayable("checks.cancel")
     def cancel(self, operation_id: str, *, token: str, epoch: int) -> dict:
         run = self.store.one("SELECT * FROM runs WHERE id=?", (operation_id,))
         self.leases.assert_owned(run["task_id"], token, epoch)
@@ -154,6 +183,7 @@ class Checks:
 
     def log(self, operation_id: str, filename: str, *, offset: int = 0, limit: int = 65536) -> dict:
         safe_id(operation_id)
+        self.store.operation(operation_id)  # Enforce the authenticated task scope before reading bytes.
         require(filename == "supervisor.log" or __import__("re").fullmatch(r"[0-9]{3}-(stdout|stderr)\.log", filename),
                 "INVALID_REQUEST", "Invalid log name")
         row = self.store.one("SELECT receipt_sha FROM runs WHERE id=?", (operation_id,))

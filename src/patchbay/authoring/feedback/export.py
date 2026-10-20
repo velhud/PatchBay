@@ -9,6 +9,7 @@ from pathlib import Path
 from ..errors import require
 from ..packages.builder import _write_zip
 from ..persistence.gates import mutation
+from ..persistence.requests import replayable
 from ..repositories import Repositories
 from ..snapshots import Snapshots
 from ..tasks import Tasks
@@ -39,8 +40,12 @@ class Feedback:
             result["next_action"] = "Inspect the existing operation; do not infer success or relaunch an uncertain execution"
             return result
         receipt = json.loads(self.store.blobs.read(run["receipt_sha"]))
-        require(receipt["commit"] == candidate["commit_oid"] and receipt["tree"] == candidate["tree_oid"]
-                and receipt["policy_digest"] == task["policy_digest"], "EVIDENCE_INVALID", "Stored feedback does not match the requested candidate")
+        require(receipt["commit"] == candidate["commit_oid"] and receipt["tree"] == candidate["tree_oid"],
+                "EVIDENCE_INVALID", "Stored feedback does not match the requested candidate")
+        if receipt["policy_digest"] != task["policy_digest"]:
+            return {**result, "receipt_sha": run["receipt_sha"], "receipt": receipt,
+                    "historical_classification": receipt["classification"], "evidence_current": False,
+                    "next_action": "Policy changed. Retain this historical receipt and run newly approved checks before review"}
         result.update(classification=receipt["classification"], receipt_sha=run["receipt_sha"], receipt=receipt,
                       verification_receipt=receipt["verification_receipt"],
                       next_action="Review this exact candidate for publication" if receipt["classification"] == "READY_FOR_REVIEW" else "Implement corrections against the current pinned context and return a new change package")
@@ -86,6 +91,7 @@ class Feedback:
         return "\n".join(lines) + "\n"
 
     @mutation
+    @replayable("feedback.export")
     def export(self, task_id: str, *, revision: int | None = None) -> dict:
         result = self.get(task_id, revision=revision)
         context = Snapshots(self.store).export(task_id, revision=result["revision"])

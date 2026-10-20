@@ -15,6 +15,7 @@ from patchbay.authoring.interfaces.auth import Access
 from patchbay.authoring.interfaces.cli import local_lease, parser, run
 from patchbay.authoring.interfaces.mcp import MCP
 from patchbay.authoring.models import Check, Profile, TaskPolicy
+from conftest import qualification_profile
 from test_core import package_for, submit
 from test_execution import wait_for
 
@@ -55,6 +56,7 @@ def test_author_capabilities_do_not_project_private_instance_id(setup_author):
     service, _, _, _, _ = setup_author
     Access(service.store).qualify(
         {
+            **qualification_profile(),
             "model": "test-double",
             "client": "unit-test",
             "ordinary_chat": True,

@@ -991,7 +991,7 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
                     "allowed_machine_ids": _string_array("Optional successor placement allow-list."),
                     "required_tags": _string_array("Require all listed successor machine tags."),
                     "carry_context": _string(
-                        "Stage up to 50 bounded report metadata entries in successor handoff_context. Full reports, artifacts, and changes require explicit retrieval and review; no files or sessions are transferred, including reports_and_changes.",
+                        "Stage up to 50 bounded report metadata entries in successor handoff_context. For reports_and_changes, the result also supplies exact predecessor group/worker routes and required patchbay_worker_inspect argument templates for report, changes, and bounded file reads. Call those routes to retrieve complete required content; no files or diffs are transferred by this action, and retrieved content still needs controller review.",
                         enum=("reports", "reports_and_changes", "none"),
                     ),
                     "idempotency_key": deepcopy(IDEMPOTENCY_KEY_SCHEMA),

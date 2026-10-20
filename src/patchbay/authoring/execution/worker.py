@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import sys
@@ -47,7 +48,8 @@ def run(home: Path, operation_id: str) -> int:
         if row["state"] not in {"launching", "running", "cancelling"}:
             return 0
         task = Tasks(store).get(row["task_id"])
-        receipt = new_receipt(store, row, task["policy_digest"])
+        admitted = json.loads(store.one("SELECT payload FROM operations WHERE id=?", (operation_id,))["payload"])
+        receipt = new_receipt(store, row, admitted.get("policy", task["policy_digest"]))
         profile = Profile.model_validate(json.loads(row["profile"]))
         required = {check.id for check in profile.checks if check.required}
         workspace = root / "source"
@@ -69,6 +71,10 @@ def run(home: Path, operation_id: str) -> int:
                              (environment["environment_digest"], utc_now(), operation_id))
                 conn.execute("UPDATE operations SET phase=CASE WHEN cancel_requested=1 THEN 'cancelling' ELSE 'verifying' END,updated=? WHERE id=?",
                              (utc_now(), operation_id))
+                current = conn.execute("SELECT phase,cancel_requested FROM operations WHERE id=?", (operation_id,)).fetchone()
+                store.event(conn, "checks.supervisor_started", row["task_id"],
+                            {"operation_id": operation_id, "phase": current["phase"],
+                             "cancel_requested": bool(current["cancel_requested"])})
             selected = set(json.loads(store.one("SELECT payload FROM operations WHERE id=?", (operation_id,))["payload"])["selected"])
             def cancelled():
                 return bool(store.one("SELECT cancel_requested FROM operations WHERE id=?", (operation_id,))["cancel_requested"])
@@ -92,7 +98,27 @@ def run(home: Path, operation_id: str) -> int:
                     for name in ("stdout", "stderr"):
                         raw[name]["sha256"] = store.blobs.put_file(root / raw[name]["file"], limit=profile.log_bytes)
                     result = evaluate(store, profile, check, workspace, raw)
+                    result["stage"] = stage
                     receipt[stage].append(result)
+                    run_usage = receipt["resource_usage"]
+                    check_usage = raw.get("resource_usage", {})
+                    run_usage["samples"] += int(check_usage.get("samples") or 0)
+                    methods = set(filter(None, (run_usage.get("method") or "").split(";")))
+                    methods.update(filter(None, (check_usage.get("method") or "").split(";")))
+                    run_usage["method"] = ";".join(sorted(methods)) or None
+                    rss_methods = set(filter(None, (run_usage.get("rss_method") or "").split(";")))
+                    rss_methods.update(filter(None, (check_usage.get("rss_method") or "").split(";")))
+                    run_usage["rss_method"] = ";".join(sorted(rss_methods)) or None
+                    for field, label in (("cpu_cores_peak", "CPU"), ("rss_bytes_peak", "RSS"),
+                                         ("pids_peak", "PID"), ("disk_bytes_peak", "disk")):
+                        value = check_usage.get(field)
+                        if value is not None:
+                            previous = run_usage.get(field)
+                            run_usage[field] = value if previous is None else max(previous, value)
+                            if label in run_usage["unavailable"]:
+                                run_usage["unavailable"].remove(label)
+                    run_usage["observation_state"] = "observed" if not run_usage["unavailable"] else (
+                        "partial" if run_usage["samples"] else "unavailable")
                     observed = source_changes(workspace, expected, profile.allowed_outputs, commit=row["commit_oid"])
                     receipt["source_changes_during_checks"] = observed
                     # Preserve the first mutation: later checks cannot restore bytes and erase its evidence.
@@ -105,7 +131,12 @@ def run(home: Path, operation_id: str) -> int:
                 if stop:
                     break
         except BaseException as exc:
-            receipt["error"] = {"code": getattr(exc, "code", "EXECUTOR_ERROR"), "message": str(exc)[:4000], "type": type(exc).__name__}
+            code = getattr(exc, "code", None)
+            if isinstance(exc, FileNotFoundError) or (isinstance(exc, OSError) and exc.errno == errno.ENOENT):
+                code = "MISSING_EXECUTABLE"
+            elif isinstance(exc, OSError) and exc.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}:
+                code = "DISK_EXHAUSTED"
+            receipt["error"] = {"code": code or "EXECUTOR_ERROR", "message": str(exc)[:4000], "type": type(exc).__name__}
         finally:
             if subreaper_ready:
                 try:

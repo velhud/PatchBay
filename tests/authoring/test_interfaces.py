@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from patchbay.authoring.interfaces.auth import Access
 from patchbay.authoring.interfaces.http import create_app
 from patchbay.authoring.interfaces.mcp import MCP
+from conftest import qualification_profile
 from test_core import package_for
 
 
@@ -33,7 +34,7 @@ def test_read_only_mcp_catalog_and_forged_mutation_refusal(setup_author):
     s, _, repo, task, _ = setup_author
     protocol = MCP(s)
     names = [tool["name"] for tool in protocol.tools("reader")]
-    assert len(names) == 7 and all(name.startswith("author_") for name in names)
+    assert len(names) == 11 and all(name.startswith("author_") for name in names)
     assert not any(name.startswith("codex_") for name in names)
     before = s.store.one("SELECT COUNT(*) AS count FROM operations")["count"]
     result = protocol.handle("reader", {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
@@ -46,8 +47,8 @@ def test_read_only_mcp_catalog_and_forged_mutation_refusal(setup_author):
 def test_mcp_write_gate_is_separate_from_runtime_role(setup_author):
     s, _, _, task, _ = setup_author
     protocol = MCP(s)
-    assert len(protocol.tools("operator")) == 7
-    Access(s.store).qualify({"model": "test-double", "client": "unit-test", "ordinary_chat": True,
+    assert len(protocol.tools("operator")) == 11
+    Access(s.store).qualify({**qualification_profile(), "model": "test-double", "client": "unit-test", "ordinary_chat": True,
                             "write_supported": True, "probe_description": "Disposable test fixture only, not a live Pro qualification",
                             "observed_at": "fixture"}, actor="test-operator")
     tools = {tool["name"]: tool for tool in protocol.tools("author")}
@@ -56,7 +57,7 @@ def test_mcp_write_gate_is_separate_from_runtime_role(setup_author):
     assert tools["author_submit_package"]["_meta"]["openai/fileParams"] == ["artifact_file"]
     native = tools["author_submit_package"]["inputSchema"]["$defs"]["NativeFile"]
     assert {"download_url", "file_id", "mime_type", "file_name"} == set(native["properties"])
-    assert len(protocol.tools("reader")) == 7
+    assert len(protocol.tools("reader")) == 11
 
 
 def test_http_import_uses_same_candidate_core_and_reader_cannot_write(setup_author, tmp_path):

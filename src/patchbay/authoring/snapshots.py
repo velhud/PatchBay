@@ -9,6 +9,7 @@ from .errors import require
 from .packages.builder import _write_zip
 from .persistence.gates import mutation
 from .persistence.locks import file_lock
+from .persistence.requests import replayable
 from .persistence.storage import StorageBudget
 from .repositories import Repositories
 from .tasks import Tasks
@@ -23,6 +24,7 @@ class Snapshots:
         self.tasks, self.repositories = Tasks(store), Repositories(store)
 
     @mutation
+    @replayable("context.export")
     def export(self, task_id: str, *, revision: int | None = None, paths: list[str] | None = None) -> dict:
         task = self.tasks.get(task_id)
         revision = task["current_revision"] if revision is None else revision
@@ -77,55 +79,55 @@ class Snapshots:
             return self.store.one("SELECT * FROM contexts WHERE id=?", (context_id,))
 
     def read(self, context_id: str, path: str, *, start_line: int = 1, max_lines: int = 200, max_bytes: int = 65536) -> dict:
-        require(start_line >= 1 and 1 <= max_lines <= 1000 and 1 <= max_bytes <= 262144, "INVALID_REQUEST", "Invalid file window")
+        from .source_windows import read_window
         context = self.store.one("SELECT * FROM contexts WHERE id=?", (context_id,))
         task = self.tasks.get(context["task_id"])
-        data = self.repositories.git(task["repository_id"]).read_file(context["commit_oid"], safe_path(path))
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            return {"context_id": context_id, "path": path, "binary": True, "sha256": digest(data), "bytes": len(data), "next_action": "Use the pinned context archive for binary bytes"}
-        lines = text.splitlines(keepends=True)
-        selected, size, position = [], 0, start_line - 1
-        while position < len(lines) and len(selected) < max_lines:
-            line = lines[position]
-            if size + len(line.encode()) > max_bytes:
-                require(selected, "RESOURCE_LIMIT", "One source line exceeds the response budget; use the context archive")
-                break
-            selected.append(line)
-            size += len(line.encode())
-            position += 1
-        return {"context_id": context_id, "commit": context["commit_oid"], "path": path, "sha256": digest(data),
-                "start_line": start_line, "text": "".join(selected), "total_lines": len(lines),
-                "next_start_line": position + 1 if position < len(lines) else None}
+        result = read_window(self.repositories.git(task["repository_id"]), context["commit_oid"], path,
+                             start_line=start_line, max_lines=max_lines, max_bytes=max_bytes)
+        return {"context_id": context_id, **result}
 
     def search(self, context_id: str, query: str, *, limit: int = 50, offset: int = 0) -> dict:
-        require(isinstance(query, str) and 0 < len(query) <= 1000 and 1 <= limit <= 200 and offset >= 0,
+        from .source_windows import lines
+        require(isinstance(query, str) and 0 < len(query) <= 1000 and 1 <= limit <= 200 and type(offset) is int and offset >= 0,
                 "INVALID_REQUEST", "Invalid literal search request")
         context = self.store.one("SELECT * FROM contexts WHERE id=?", (context_id,))
         task = self.tasks.get(context["task_id"])
         git = self.repositories.git(task["repository_id"])
         entries = sorted(git.entries(context["commit_oid"]).items())
-        matches, scanned, scanned_bytes = [], offset, 0
-        for position in range(offset, len(entries)):
+        # Offset is an opaque monotonic (file, source-line) coordinate. Keeping it
+        # numeric preserves old clients while allowing continuation inside a file.
+        stride = 2**32
+        first, after_line = divmod(offset, stride)
+        require(first <= len(entries), "INVALID_REQUEST", "Search cursor is outside the pinned inventory")
+        matches, scanned, scanned_bytes, next_offset = [], 0, 0, None
+        for position in range(first, len(entries)):
+            if scanned and (scanned_bytes >= 16 * 1024**2 or scanned >= 500):
+                next_offset = position * stride
+                break
             path, entry = entries[position]
+            scanned += 1
             if entry["mode"] not in {"100644", "100755"}:
-                scanned = position + 1
                 continue
-            data = git.blob(entry["oid"])
-            scanned_bytes += len(data)
-            if scanned_bytes > 16 * 1024**2 or position - offset >= 500:
-                break
+            file_matches = []
             try:
-                lines = data.decode("utf-8").splitlines()
+                with git.open_blob(entry["oid"]) as stream:
+                    for number, preview, size, found in lines(stream, preview_bytes=2000, query=query):
+                        scanned_bytes += size
+                        if position == first and number <= after_line:
+                            continue
+                        if found:
+                            file_matches.append({"path": path, "line": number, "text": preview.rstrip("\r\n"),
+                                                 "truncated": size > len(preview.encode("utf-8"))})
+                            if len(matches) + len(file_matches) >= limit:
+                                next_offset = position * stride + number
+                                break
+                matches.extend(file_matches)
             except UnicodeDecodeError:
-                scanned = position + 1
+                # No partial results from a file falsely represented as UTF-8.
                 continue
-            for number, line in enumerate(lines, 1):
-                if query in line and len(matches) < limit:
-                    matches.append({"path": path, "line": number, "text": line[:2000]})
-            scanned = position + 1
-            if len(matches) >= limit:
+            if next_offset is not None:
                 break
-        return {"context_id": context_id, "matches": matches, "scanned_files": scanned - offset,
-                "partial": scanned < len(entries), "next_offset": scanned if scanned < len(entries) else None}
+        return {"context_id": context_id, "commit": context["commit_oid"], "matches": matches,
+                "scanned_files": scanned, "scanned_bytes": scanned_bytes,
+                "partial": next_offset is not None, "next_offset": next_offset,
+                "cursor_contract": "pinned-file-line-v2"}

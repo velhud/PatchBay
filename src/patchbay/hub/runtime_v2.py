@@ -3103,27 +3103,112 @@ class HubRuntimeV2:
         )
 
     def _successor_handoff_context(self, predecessor, carry_context):
-        """Stage bounded report metadata, never pretend to move Edge artifacts."""
+        """Stage bounded report metadata and explicit routes to source content."""
         from patchbay.security import redact_text
-        context = {"predecessor_work_group_id": predecessor["work_group_id"],
-                   "mode": carry_context, "artifacts_transferred": False,
-                   "changes_transferred": False, "reports": []}
+        context = {
+            "predecessor_work_group_id": predecessor["work_group_id"],
+            "predecessor_machine_id": predecessor.get("pinned_machine_id"),
+            "predecessor_edge_generation": predecessor.get("pinned_edge_generation"),
+            "mode": carry_context,
+            "context_mode": carry_context,
+            "artifacts_transferred": False,
+            "changes_transferred": False,
+            "reports": [],
+        }
         if carry_context == "none":
             return context
         workers = self._workers_for_group(predecessor["work_group_id"])
         for worker in workers[:50]:
             report = {key: worker.get(key) for key in
                       ("fleet_worker_ref", "machine_id", "edge_generation", "edge_worker_id",
-                       "turn_state", "integration_state") if worker.get(key) is not None}
+                       "work_group_id", "workspace_ref", "turn_state", "integration_state",
+                       "content_revision", "content_sha256", "edge_projection_revision",
+                       "received_at", "base_revision", "worker_base_revision")
+                      if worker.get(key) is not None}
             for key in ("name", "report_summary", "summary", "last_message"):
                 if isinstance(worker.get(key), str):
                     report[key] = redact_text(worker[key][:4000])
             context["reports"].append(report)
         context["reports_truncated"] = len(workers) > 50
         context["next_action"] = (
-            "Inspect predecessor workers for full reports. Retrieve and review artifacts explicitly "
-            "before applying changes on the successor; reassignment does not transfer files."
+            "Use required_changes_retrieval.actions against the exact predecessor group and worker identities "
+            "to read reports and changed-file contents. Reassignment transfers no files or diffs."
         )
+        if carry_context == "reports_and_changes":
+            context["required_changes_retrieval"] = {
+                "status": "actions_available",
+                "content_transferred": False,
+                "predecessor_work_group_id": predecessor["work_group_id"],
+                "predecessor_machine_id": predecessor.get("pinned_machine_id"),
+                "predecessor_edge_generation": predecessor.get("pinned_edge_generation"),
+                "actions": [
+                    {
+                        "purpose": "enumerate all predecessor workers; follow cursor until absent",
+                        "tool_name": "patchbay_worker_list",
+                        "arguments": {
+                            "work_group_id": predecessor["work_group_id"],
+                            "limit": 50,
+                        },
+                        "cursor_rule": "Use each returned next_cursor as cursor on the next call. Stop only when next_cursor is absent; do not treat the staged 50-report list as complete when reports_truncated is true.",
+                    },
+                    {
+                        "purpose": "read one predecessor worker report",
+                        "tool_name": "patchbay_worker_inspect",
+                        "arguments_template": {
+                            "work_group_id": predecessor["work_group_id"],
+                            "fleet_worker_ref": "exact fleet_worker_ref from predecessor worker list",
+                            "view": "report",
+                        },
+                    },
+                    {
+                        "purpose": "read the predecessor worker changed-file inventory",
+                        "tool_name": "patchbay_worker_inspect",
+                        "arguments_template": {
+                            "work_group_id": predecessor["work_group_id"],
+                            "fleet_worker_ref": "exact fleet_worker_ref from predecessor worker list",
+                            "view": "changes",
+                        },
+                    },
+                    {
+                        "purpose": "read exact report artifact content in bounded line pages",
+                        "tool_name": "patchbay_worker_inspect",
+                        "arguments_template": {
+                            "work_group_id": predecessor["work_group_id"],
+                            "fleet_worker_ref": "exact fleet_worker_ref from predecessor worker list",
+                            "view": "file",
+                            "file_path": "exact file_path from report_artifacts or worker_report_files in report result",
+                            "start_line": 1,
+                            "max_bytes": 100000,
+                        },
+                        "page_rule": "Retain each returned sha256 and total_lines. Continue with returned next_start_line until absent and require truncated=false. If the file is binary or not available as worker_workspace content, report that retrieval limitation explicitly.",
+                    },
+                    {
+                        "purpose": "read exact changed-file content in bounded line pages",
+                        "tool_name": "patchbay_worker_inspect",
+                        "arguments_template": {
+                            "work_group_id": predecessor["work_group_id"],
+                            "fleet_worker_ref": "exact fleet_worker_ref from predecessor worker list",
+                            "view": "file",
+                            "file_path": "exact path string from changed_files in changes result",
+                            "start_line": 1,
+                            "max_bytes": 100000,
+                        },
+                        "page_rule": "Retain each returned sha256 and total_lines. Continue with returned next_start_line until absent, then reread the first page and confirm the sha256 is unchanged. A missing next_start_line does not substitute for checking truncated=false.",
+                    },
+                    {
+                        "purpose": "optionally inspect a bounded per-file diff",
+                        "tool_name": "patchbay_worker_inspect",
+                        "arguments_template": {
+                            "work_group_id": predecessor["work_group_id"],
+                            "fleet_worker_ref": "exact fleet_worker_ref from predecessor worker list",
+                            "view": "diff",
+                            "file_path": "exact path string from changed_files in changes result",
+                        },
+                        "limitation": "Diff output may be truncated. Use paged file reads plus the changes inventory when complete content is required.",
+                    },
+                ],
+                "review_rule": "These actions retrieve source content from the predecessor Edge. They do not import it into the successor, authorize changes, or transfer workspaces. The controller must verify exact identities, revisions, completeness and content before providing selected material to successor work.",
+            }
         return context
 
     def close_work_group(

@@ -1,8 +1,40 @@
 """Schema 1. Positional revision/run columns are a versioned internal contract."""
 SCHEMA_VERSION = 1
+STATE_CLOCK_MARKER = "state_clock:installed"
+STATE_CLOCK_GLOBAL = "state_clock:global"
+STATE_CLOCK_PREFIX = "state_clock:task:"
+STATE_CLOCK_TRIGGERS = (
+    """CREATE TRIGGER IF NOT EXISTS operations_state_clock_insert AFTER INSERT ON operations BEGIN
+        INSERT INTO metadata(key,value) VALUES('state_clock:global','1')
+        ON CONFLICT(key) DO UPDATE SET value=CAST(metadata.value AS INTEGER)+1;
+        INSERT INTO metadata(key,value)
+        SELECT 'state_clock:task:'||NEW.task_id,'1' WHERE NEW.task_id<>''
+        ON CONFLICT(key) DO UPDATE SET value=CAST(metadata.value AS INTEGER)+1;
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS operations_state_clock_update AFTER UPDATE ON operations BEGIN
+        INSERT INTO metadata(key,value) VALUES('state_clock:global','1')
+        ON CONFLICT(key) DO UPDATE SET value=CAST(metadata.value AS INTEGER)+1;
+        INSERT INTO metadata(key,value)
+        SELECT 'state_clock:task:'||OLD.task_id,'1' WHERE OLD.task_id<>''
+        ON CONFLICT(key) DO UPDATE SET value=CAST(metadata.value AS INTEGER)+1;
+        INSERT INTO metadata(key,value)
+        SELECT 'state_clock:task:'||NEW.task_id,'1' WHERE NEW.task_id<>'' AND NEW.task_id<>OLD.task_id
+        ON CONFLICT(key) DO UPDATE SET value=CAST(metadata.value AS INTEGER)+1;
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS operations_state_clock_delete AFTER DELETE ON operations BEGIN
+        INSERT INTO metadata(key,value) VALUES('state_clock:global','1')
+        ON CONFLICT(key) DO UPDATE SET value=CAST(metadata.value AS INTEGER)+1;
+        INSERT INTO metadata(key,value)
+        SELECT 'state_clock:task:'||OLD.task_id,'1' WHERE OLD.task_id<>''
+        ON CONFLICT(key) DO UPDATE SET value=CAST(metadata.value AS INTEGER)+1;
+    END""",
+)
+
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO metadata(key,value) VALUES('state_clock:installed','1');
+INSERT INTO metadata(key,value) VALUES('state_clock:global','0');
 CREATE TABLE repositories(
  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, source TEXT NOT NULL,
  remote TEXT, default_branch TEXT NOT NULL, object_format TEXT NOT NULL,
@@ -61,4 +93,4 @@ CREATE INDEX operations_state ON operations(state,created);
 CREATE INDEX runs_task_revision ON runs(task_id,revision,created);
 CREATE INDEX tasks_updated ON tasks(updated);
 CREATE INDEX contexts_task ON contexts(task_id,revision);
-"""
+""" + ";\n".join(STATE_CLOCK_TRIGGERS)

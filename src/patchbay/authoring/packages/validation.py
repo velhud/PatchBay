@@ -69,6 +69,8 @@ def validate(package, *, task: dict, revision: dict, context: dict, git, read_pa
             require(path not in entries, "STALE_BASE", "Create target already exists", path=path)
         else:
             content = before(path, operation.before_sha256, operation.before_mode)
+            require(not content.startswith(b"version https://git-lfs.github.com/spec/v1\n"),
+                    "UNSUPPORTED_FILE", "LFS pointer mutation requires an LFS-aware workflow", path=path)
         if operation.op in {"create", "replace"}:
             changes[path] = (read_payload(package.payloads[operation.payload]), operation.mode)
             final_paths.add(path)

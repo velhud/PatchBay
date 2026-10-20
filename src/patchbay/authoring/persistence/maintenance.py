@@ -10,6 +10,7 @@ import stat
 import tempfile
 import zipfile
 from pathlib import Path
+from ..authority import assert_operator
 
 from ..errors import AuthorError, require
 from ..repositories import Repositories
@@ -17,6 +18,7 @@ from ..util import atomic_write, canonical, digest, fsync_dir, safe_id, safe_pat
 from .locks import file_lock
 from .store import Store, TERMINAL
 from .schema import SCHEMA_VERSION
+from .requests import replayable
 
 
 class Maintenance:
@@ -27,7 +29,9 @@ class Maintenance:
         active = self.store.one("SELECT 1 FROM runs WHERE state NOT IN ('completed','failed','blocked','timed_out','cancelled') OR cleanup IN ('pending','unresolved') LIMIT 1", required=False)
         require(not active, "MAINTENANCE_BLOCKED", "Resolve or finish active/uncertain checks before state maintenance")
 
+    @replayable("maintenance.backup")
     def backup(self, output: Path) -> dict:
+        assert_operator()
         output = Path(output).expanduser().absolute()
         require(not output.resolve().is_relative_to(self.store.home), "INVALID_REQUEST", "Backups must be outside author runtime state")
         self._quiescent()
@@ -92,6 +96,7 @@ class Maintenance:
 
     @staticmethod
     def restore(archive_path: Path, destination: Path) -> Store:
+        assert_operator()
         destination = Path(destination).expanduser().absolute()
         require(not destination.exists() and not destination.is_symlink(), "ALREADY_INITIALIZED", "Restore destination must be new")
         require(Path(archive_path).is_file() and not Path(archive_path).is_symlink(), "INVALID_BACKUP", "Backup must be a regular archive")
@@ -158,7 +163,9 @@ class Maintenance:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
 
+    @replayable("maintenance.gc")
     def gc(self, *, minimum_age_seconds: int = 3600) -> dict:
+        assert_operator()
         require(type(minimum_age_seconds) is int and minimum_age_seconds >= 60, "INVALID_REQUEST", "Garbage collection needs at least a 60-second age guard")
         self._quiescent()
         removed_blobs, removed_runs, removed_temporary = 0, 0, 0

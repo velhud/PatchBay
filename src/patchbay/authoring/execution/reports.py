@@ -33,13 +33,25 @@ def evaluate(store, profile: Profile, check: Check, workspace: Path, raw: dict) 
     result = {"id": check.id, "required": check.required, "argv": check.argv,
               "report_kind": check.report, **raw, "verification": "incomplete"}
     if raw.get("cleanup", {}).get("state") not in {"proven", "not_required"}:
-        result["reason"] = "cleanup_unresolved"
+        result.update(reason="cleanup_unresolved", failure_kind="EXECUTION_UNKNOWN")
         return result
     if raw["state"] != "completed":
-        result["reason"] = raw["state"]
+        code = raw.get("error", {}).get("code")
+        kind_map = {"MISSING_EXECUTABLE": "MISSING_EXECUTABLE", "DOCKER_UNAVAILABLE": "DOCKER_UNAVAILABLE",
+                    "EXECUTABLE_NOT_RUNNABLE": "EXECUTABLE_NOT_RUNNABLE",
+                    "PID_LIMIT_EXCEEDED": "PID_LIMIT_EXCEEDED",
+                    "OOM_KILLED": "OOM_KILLED", "DISK_EXHAUSTED": "DISK_EXHAUSTED",
+                    "TERMINATED_137_CAUSE_UNKNOWN": "TERMINATION_CAUSE_UNKNOWN",
+                    "DISK_BUDGET_EXCEEDED": "DISK_BUDGET_EXCEEDED",
+                    "DISK_ACCOUNTING_INCOMPLETE": "DISK_ACCOUNTING_INCOMPLETE"}
+        result.update(reason=code or raw["state"], failure_kind=kind_map.get(code, "CHECK_EXECUTION_FAILED"))
         return result
     if raw["exit_code"] != 0:
-        result.update(verification="failed", reason="nonzero_exit")
+        if raw.get("signal") == 9 and not raw.get("error"):
+            result.update(verification="failed", reason="signal_9_cause_unknown",
+                          failure_kind="TERMINATION_CAUSE_UNKNOWN")
+        else:
+            result.update(verification="failed", reason="nonzero_exit", failure_kind="CHECK_EXIT_NONZERO")
     elif check.report == "exit":
         result["verification"] = "passed"
         return result
@@ -69,16 +81,26 @@ def evaluate(store, profile: Profile, check: Check, workspace: Path, raw: dict) 
                                      "text": (node.text or "")[:6000]})
         result["failures"] = failures
         if raw["exit_code"] != 0 or counts["failed"] or counts["errors"]:
-            result.update(verification="failed", reason="test_failure")
+            result.update(verification="failed", reason="test_failure", failure_kind="TEST_FAILURE")
+        elif counts["tests"] == 0:
+            result.update(verification="incomplete", reason="zero_tests", failure_kind="ZERO_TESTS")
         elif counts["tests"] < check.min_tests:
-            result.update(verification="incomplete", reason="insufficient_collected_tests")
+            result.update(verification="incomplete", reason="insufficient_collected_tests", failure_kind="INSUFFICIENT_TESTS")
         elif counts["skipped"] and not check.allow_skipped:
-            result.update(verification="incomplete", reason="skipped_tests_not_qualified")
+            result.update(verification="incomplete", reason="skipped_tests_not_qualified", failure_kind="SKIPPED_TESTS")
         else:
             result["verification"] = "passed"
     except (AuthorError, OSError, ET.ParseError, ValueError) as exc:
         # Keep a nonzero exit as failed even when the report parser also fails.
         result["verification"] = "failed" if raw["exit_code"] != 0 else "incomplete"
-        result["reason"] = getattr(exc, "code", "EVIDENCE_INVALID")
+        code = getattr(exc, "code", None)
+        if isinstance(exc, ET.ParseError):
+            result.update(reason="malformed_report", failure_kind="REPORT_PARSE_ERROR")
+        elif code == "EVIDENCE_MISSING":
+            result.update(reason="missing_report", failure_kind="REPORT_MISSING")
+        elif code == "RESOURCE_LIMIT":
+            result.update(reason="report_size_limit", failure_kind="REPORT_RESOURCE_LIMIT")
+        else:
+            result.update(reason=code or "EVIDENCE_INVALID", failure_kind="REPORT_INVALID")
         result["report_error"] = str(exc)[:2000]
     return result

@@ -53,7 +53,6 @@ Author Mode qualification and execution are intentionally guarded for Linux or W
 
 ```bash
 AUTHOR_HOME="$PWD/.patchbay-author"
-rm -rf "$AUTHOR_HOME"
 
 patchbay author --home "$AUTHOR_HOME" init
 patchbay-author --home "$AUTHOR_HOME" doctor
@@ -61,6 +60,10 @@ patchbay-author --home "$AUTHOR_HOME" token --role reader
 ```
 
 The full register → task → claim → context → apply → check → feedback → approve → publish flow is in [QUICKSTART.md](QUICKSTART.md).
+
+Recovery is available through `author_recover_task` and `patchbay-author recovery TASK_ID` without starting a model or a check. Explicit inbox import or an opted-in folder watch routes recognized packages through the same validator. Durable retry keys, writer epochs, current-policy receipts, bounded source windows, and operator pause/revocation protect the loop across disconnected requests. See the [Author operations contract](docs/authoring/operations.md) and [package evidence map](docs/authoring/coverage-map.md).
+
+Author MCP exposes eleven read tools; a qualified author profile adds nine writes, and a separately qualified operator profile adds approval and publication. Qualification binds the exact runtime, schemas, role, client route, and output profile. The compatibility output profile remains the default; concise structured output requires its own observed client qualification. No PR creation or automatic merge is part of this workflow.
 
 ## Installation and entrypoints
 

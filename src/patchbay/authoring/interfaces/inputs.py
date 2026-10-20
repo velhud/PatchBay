@@ -14,6 +14,7 @@ class Empty(Contract):
 class Page(Contract):
     limit: StrictInt = Field(25, ge=1, le=200)
     offset: StrictInt = Field(0, ge=0)
+    cursor: str | None = Field(None, max_length=64)
 
 
 class TaskRef(Contract):
@@ -30,12 +31,33 @@ class Register(Contract):
     policy: TaskPolicy
     remote: str | None = Field(None, max_length=4096)
     default_branch: str | None = Field(None, max_length=500)
+    key: str | None = Field(None, min_length=1, max_length=200)
 
 
 class RefreshRepository(Contract):
     repository: str
     key: str = Field(min_length=1, max_length=200)
     from_remote: bool = False
+
+
+class InboxScan(Contract):
+    folder: str = Field(min_length=1, max_length=4096)
+    stability_seconds: float = Field(1.0, ge=0, le=30)
+    max_files: StrictInt = Field(25, ge=1, le=25)
+    offset: StrictInt = Field(0, ge=0, le=10000)
+
+
+class InboxImport(Contract):
+    path: str = Field(min_length=1, max_length=4096)
+    key: str = Field(min_length=1, max_length=200)
+
+
+class InboxGrant(Contract):
+    task_id: str = Field(pattern=r"^task_[0-9a-f]{32}$")
+    token: str = Field(min_length=16, max_length=512)
+    epoch: StrictInt = Field(ge=1)
+    auto_validate: bool
+    key: str = Field(min_length=1, max_length=200)
 
 
 class CreateTask(Contract):
@@ -49,6 +71,7 @@ class Claim(TaskRef):
     label: str = Field("author", min_length=1, max_length=200)
     token: str | None = Field(None, min_length=16, max_length=512)
     takeover: bool = False
+    key: str = Field(min_length=1, max_length=200)
 
 
 class Leased(TaskRef):
@@ -59,6 +82,7 @@ class Leased(TaskRef):
 class ExportContext(TaskRef):
     revision: StrictInt | None = Field(None, ge=0)
     paths: list[str] | None = Field(None, max_length=20000)
+    key: str = Field(min_length=1, max_length=200)
 
 
 class ReadFile(Contract):
@@ -145,6 +169,28 @@ class CheckRequest(Leased):
 class Cancel(OperationRef):
     token: str = Field(min_length=16, max_length=512)
     epoch: StrictInt = Field(ge=1)
+    key: str = Field(min_length=1, max_length=200)
+
+
+class ExportFeedback(TaskRef):
+    revision: StrictInt | None = Field(None, ge=0)
+    key: str = Field(min_length=1, max_length=200)
+
+
+class RecentOperations(TaskRef):
+    limit: StrictInt = Field(50, ge=1, le=200)
+    offset: StrictInt = Field(0, ge=0)
+    cursor: str | None = Field(None, max_length=64)
+
+
+class ReadLog(OperationRef):
+    filename: str = Field(min_length=1, max_length=100)
+    offset: StrictInt = Field(0, ge=0)
+    limit: StrictInt = Field(65536, ge=1, le=262144)
+
+
+class PublicationPreview(TaskRef):
+    revision: StrictInt = Field(ge=0)
 
 
 class Approval(Leased):
@@ -158,3 +204,16 @@ class Publish(Contract):
     key: str = Field(min_length=1, max_length=200)
     token: str = Field(min_length=16, max_length=512)
     epoch: StrictInt = Field(ge=1)
+
+
+class Control(Contract):
+    task_id: str | None = Field(None, pattern=r"^task_[0-9a-f]{32}$")
+    key: str = Field(min_length=1, max_length=200)
+    actor: str = Field(min_length=1, max_length=200)
+
+
+class UpdatePolicy(TaskRef):
+    policy: TaskPolicy
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    key: str = Field(min_length=1, max_length=200)
+    actor: str = Field(min_length=1, max_length=200)

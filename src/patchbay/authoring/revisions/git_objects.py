@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..errors import AuthorError, require
@@ -77,6 +78,26 @@ class Git:
         require(size <= limit, "RESOURCE_LIMIT", "Git object exceeds the content budget")
         return self.run(["cat-file", "blob", oid])
 
+    @contextmanager
+    def open_blob(self, oid: str, *, limit: int = 128 * 1024**2):
+        """Stream immutable bytes without allocating the object's complete size."""
+        require(re.fullmatch(r"[0-9a-f]{" + str(self.oid_length) + r"}", oid), "INVALID_REQUEST", "Invalid Git blob identity")
+        size = int(self.text(["cat-file", "-s", oid]))
+        require(size <= limit, "RESOURCE_LIMIT", "Git object exceeds the content budget")
+        process = subprocess.Popen(["git", "-C", str(self.root), "cat-file", "blob", oid],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_environment(self.root))
+        try:
+            yield process.stdout
+        finally:
+            process.stdout.close()
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
     def read_file(self, commit: str, path: str) -> bytes:
         entry = self.entries(commit).get(safe_path(path))
         require(entry is not None, "NOT_FOUND", "File is absent from the pinned revision", path=path)
@@ -93,6 +114,13 @@ class Git:
         Path(index_name).unlink()
         env = {"GIT_INDEX_FILE": index_name}
         try:
+            original_entries = self.entries(parent) if replacements else {}
+            for path in replacements:
+                old = original_entries.get(path)
+                if old and old["mode"] in {"100644", "100755"}:
+                    with self.open_blob(old["oid"]) as stream:
+                        require(not stream.read(64).startswith(b"version https://git-lfs.github.com/spec/v1\n"),
+                                "UNSUPPORTED_FILE", "LFS pointer mutation requires an LFS-aware workflow", path=path)
             self.run(["read-tree", parent], env=env)
             updates = []
             for path, replacement in sorted(replacements.items()):
@@ -102,11 +130,24 @@ class Git:
                 else:
                     content, mode = replacement
                     require(mode in {"100644", "100755"}, "UNSUPPORTED_FILE", "Unsupported candidate mode")
+                    require(not content.startswith(b"version https://git-lfs.github.com/spec/v1\n"),
+                            "UNSUPPORTED_FILE", "LFS pointer mutation requires an LFS-aware workflow", path=path)
                     oid = self.text(["hash-object", "-w", "--stdin"], data=content)
                     updates.append((mode + " " + oid + "\t" + path).encode() + b"\0")
             if updates:
                 self.run(["update-index", "-z", "--index-info"], data=b"".join(updates), env=env)
             tree = self.text(["write-tree"], env=env)
+            if replacements:
+                # Inspect both source and result attributes: changing attributes
+                # in the same package cannot silently bypass LFS rejection.
+                names = b"".join(path.encode() + b"\0" for path in sorted(replacements))
+                for source_tree in (parent, tree):
+                    self.run(["read-tree", source_tree], env=env)
+                    attrs = self.run(["check-attr", "--cached", "-z", "--stdin", "filter"], data=names, env=env)
+                    records = attrs.split(b"\0")
+                    for index in range(0, len(records) - 2, 3):
+                        require(records[index + 2] != b"lfs", "UNSUPPORTED_FILE",
+                                "LFS-managed file mutation requires an LFS-aware workflow", path=records[index].decode())
             metadata = {"GIT_AUTHOR_NAME": "PatchBay Author", "GIT_AUTHOR_EMAIL": "patchbay-author@localhost",
                         "GIT_COMMITTER_NAME": "PatchBay Author", "GIT_COMMITTER_EMAIL": "patchbay-author@localhost",
                         "GIT_AUTHOR_DATE": f"{int(created)} +0000", "GIT_COMMITTER_DATE": f"{int(created)} +0000"}

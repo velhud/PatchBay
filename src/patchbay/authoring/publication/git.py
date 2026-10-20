@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+from ..authority import assert_operator
 from pathlib import Path
 
 from ..errors import AuthorError, require
 from ..feedback.export import Feedback
 from ..models import TaskPolicy
 from ..persistence.gates import mutation
+from ..persistence.control import Control
 from ..persistence.locks import file_lock
 from ..repositories import Repositories
 from ..revisions.git_objects import invoke
@@ -50,10 +52,12 @@ class Publisher:
 
     def _candidate(self, task_id: str, revision: int) -> tuple[dict, dict, TaskPolicy, dict]:
         task = self.tasks.get(task_id)
+        Control(self.store).assert_granted(task_id)
         require(task["current_revision"] == revision, "STALE_APPROVAL", "Only the current task candidate can receive new publication authority")
         candidate = self.tasks.revision(task_id, revision)
         policy = TaskPolicy.model_validate(task["policy"])
         require(policy.publication.enabled, "POLICY_DENIED", "Publication is not enabled for this task")
+        require(not policy.publication.draft_pr, "POLICY_DENIED", "PR creation is disabled; use exact authorized Git publication without a PR")
         require(not policy.publication.signing_required, "PUBLICATION_BLOCKED", "This release cannot produce the repository's required signed candidate commit")
         unresolved = self.store.one("SELECT 1 FROM runs WHERE task_id=? AND (state IN ('launching','running','cancelling','unknown_execution') OR cleanup='unresolved') LIMIT 1", (task_id,), required=False)
         require(not unresolved, "EXECUTION_UNKNOWN", "Task execution or cleanup must be resolved before publication")
@@ -84,6 +88,7 @@ class Publisher:
 
     @mutation
     def approve(self, task_id: str, revision: int, *, actor: str, key: str, token: str, epoch: int) -> dict:
+        assert_operator(task_id)
         require(isinstance(actor, str) and 0 < len(actor) <= 200, "INVALID_REQUEST", "An approval actor is required")
         with file_lock(self.store.home / ("locks/task-" + task_id)):
             self.leases.assert_owned(task_id, token, epoch)
@@ -96,7 +101,17 @@ class Publisher:
             approval_id = "approval_" + op["id"][3:]
             existing = self.store.one("SELECT * FROM approvals WHERE id=?", (approval_id,), required=False)
             if existing:
-                result = {"approval_id": approval_id, "task_id": task_id, "revision": existing["revision"], "commit": existing["commit_oid"]}
+                task = self.tasks.get(task_id)
+                require(task["policy_digest"] == existing["policy_digest"], "STALE_APPROVAL", "Retained approval belongs to an earlier policy")
+                repo = self.repositories.get(task["repository_id"])
+                policy = TaskPolicy.model_validate(task["policy"])
+                result = {"approval_id": approval_id, "task_id": task_id, "revision": existing["revision"],
+                          "commit": existing["commit_oid"], "tree": existing["tree_oid"],
+                          "policy_digest": existing["policy_digest"], "receipt_sha": existing["receipt_sha"],
+                          "branch": policy.publication.branch_prefix + task_id, "base_branch": repo["default_branch"],
+                          "remote_head": existing["remote_head"], "target_head": existing["target_head"],
+                          "publication_ready": not bool(existing["revoked"]), "merge_authorized": False,
+                          "actor": existing["actor"]}
                 self.store.finish(op["id"], "completed", result=result)
                 return result
             preview = self.preview(task_id, revision)
@@ -118,6 +133,7 @@ class Publisher:
     def apply(self, approval_id: str, *, key: str, token: str, epoch: int) -> dict:
         approval = self.store.one("SELECT * FROM approvals WHERE id=?", (approval_id,))
         task_id = approval["task_id"]
+        assert_operator(task_id)
         self.leases.assert_owned(task_id, token, epoch)
         request = {"approval_id": approval_id, "commit": approval["commit_oid"], "receipt_sha": approval["receipt_sha"]}
         op, _ = self.store.begin_operation(kind="publication.apply", task_id=task_id, key=key,
@@ -149,6 +165,8 @@ class Publisher:
                     conn.execute("INSERT OR IGNORE INTO publications VALUES(?,?,?,?,?,?,?,'prepared',NULL,?,?)",
                                  (op["id"], approval_id, task_id, approval["commit_oid"], branch, repo["remote"], approval["remote_head"], utc_now(), utc_now()))
                     conn.execute("UPDATE operations SET state='running',phase='remote_preflight',updated=? WHERE id=?", (utc_now(), op["id"]))
+                    self.store.event(conn, "publication.preflight_started", task_id,
+                                     {"operation_id": op["id"], "phase": "remote_preflight"})
                 if current != approval["commit_oid"]:
                     if current:
                         # Fetch only this object into the author mirror, never the operator checkout.
@@ -157,6 +175,7 @@ class Publisher:
                         ancestor = invoke(git.root, ["merge-base", "--is-ancestor", current, approval["commit_oid"]], check=False)
                         require(ancestor.returncode == 0, "REMOTE_CHANGED", "Publication would rewrite remote history")
                     self.leases.assert_owned(task_id, token, epoch)
+                    Control(self.store).assert_granted(task_id)
                     ref = "refs/heads/" + branch
                     # An explicit expected-head lease closes the read/push race.
                     # The ancestry gate above forbids non-fast-forward history rewrites.
@@ -168,16 +187,12 @@ class Publisher:
                 with self.store.transaction() as conn:
                     conn.execute("UPDATE publications SET state='pushed',updated=? WHERE id=?", (utc_now(), op["id"]))
                     conn.execute("UPDATE operations SET phase='pushed',updated=? WHERE id=?", (utc_now(), op["id"]))
+                    self.store.event(conn, "publication.pushed", task_id,
+                                     {"operation_id": op["id"], "phase": "pushed"})
                 pr, ci = None, {"state": "not_configured"}
                 if policy.publication.github_repository:
                     require(policy.publication.allow_external_ci, "POLICY_DENIED", "Downstream GitHub workflows were not authorized")
                     client = self.github or GitHubClient(policy.publication.github_repository)
-                    if policy.publication.draft_pr:
-                        body = ("Pro-authored implementation delivered by PatchBay Author Mode.\n\n"
-                                "Exact commit: `" + approval["commit_oid"] + "`\n\nTree: `" + approval["tree_oid"] +
-                                "`\n\nLocal receipt: `" + approval["receipt_sha"] + "`\n\n" + task["goal"][:20000] +
-                                "\n\nCanonical local checks passed for this exact candidate. This draft does not assert combined integration, live-provider qualification, deployment, or merge approval.")
-                        pr = client.ensure_draft(branch, repo["default_branch"], approval["commit_oid"], title=task["goal"].splitlines()[0], body=body)
                     try:
                         ci = client.ci(approval["commit_oid"], policy.publication.required_ci)
                     except AuthorError as exc:
@@ -188,6 +203,8 @@ class Publisher:
                 with self.store.transaction() as conn:
                     conn.execute("UPDATE publications SET state='published',pull_request=?,updated=? WHERE id=?",
                                  (canonical(pr).decode() if pr else None, utc_now(), op["id"]))
+                    self.store.event(conn, "publication.completed", task_id,
+                                     {"operation_id": op["id"], "phase": "published"})
                 self.store.finish(op["id"], "completed", result=result)
                 return result
             except AuthorError as exc:

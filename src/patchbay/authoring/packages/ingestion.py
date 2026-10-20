@@ -51,11 +51,13 @@ class NativeDownloader:
         try:
             with os.fdopen(descriptor, "wb") as target:
                 opener = build_opener(Redirect())
-                with opener.open(Request(url, headers={"User-Agent": "PatchBay-Author/0.1"}), timeout=30) as source:
+                with opener.open(Request(url, headers={"User-Agent": "PatchBay-Author/0.1"}), timeout=10) as source:
                     self.validate_url(source.geturl())
                     while True:
-                        require(time.monotonic() - started <= 120, "FILE_UNAVAILABLE", "Native transfer exceeded its total deadline")
-                        chunk = source.read(65536)
+                        require(time.monotonic() - started <= 45, "FILE_UNAVAILABLE", "Native transfer exceeded its bounded transfer budget; use a fresh reference or manual upload")
+                        # read1 returns available bytes rather than waiting to
+                        # fill 64 KiB while a slow stream evades the total check.
+                        chunk = (getattr(source, "read1", None) or source.read)(65536)
                         if not chunk:
                             break
                         size += len(chunk)

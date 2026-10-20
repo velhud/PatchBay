@@ -16,6 +16,7 @@ from ..execution.runner import Checks
 from ..feedback.export import Feedback
 from ..models import RuntimeLimits, TaskPolicy
 from ..persistence.maintenance import Maintenance
+from ..persistence.control import Control
 from ..persistence.store import Store, TERMINAL
 from ..publication.git import Publisher
 from ..publication.integration import Integration
@@ -72,6 +73,7 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--policy", type=Path, required=True)
     cmd.add_argument("--remote")
     cmd.add_argument("--default-branch")
+    cmd.add_argument("--key")
     sub.add_parser("repositories")
     cmd = sub.add_parser("refresh")
     cmd.add_argument("repository")
@@ -81,6 +83,7 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("repository")
     cmd.add_argument("--goal", required=True)
     cmd.add_argument("--base", default="HEAD")
+    cmd.add_argument("--dirty-path", action="append", help="Explicitly capture only these dirty paths without changing the source checkout")
     cmd.add_argument("--key", required=True)
     cmd = sub.add_parser("tasks")
     cmd.add_argument("--offset", type=int, default=0)
@@ -88,11 +91,13 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("task_id")
     cmd.add_argument("--label", default="operator")
     cmd.add_argument("--takeover", action="store_true")
+    cmd.add_argument("--key")
     cmd = sub.add_parser("context")
     cmd.add_argument("task_id")
     cmd.add_argument("--output", type=Path, required=True)
     cmd.add_argument("--path", action="append")
     cmd.add_argument("--revision", type=int)
+    cmd.add_argument("--key")
     cmd = sub.add_parser("apply")
     cmd.add_argument("task_id")
     cmd.add_argument("package", type=Path)
@@ -111,6 +116,7 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("task_id")
     cmd.add_argument("--output", type=Path)
     cmd.add_argument("--markdown", action="store_true")
+    cmd.add_argument("--key")
     cmd = sub.add_parser("diff")
     cmd.add_argument("task_id")
     cmd.add_argument("--revision", type=int)
@@ -140,21 +146,76 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--key", required=True)
     cmd = sub.add_parser("backup")
     cmd.add_argument("output", type=Path)
+    cmd.add_argument("--key")
     cmd = sub.add_parser("restore")
     cmd.add_argument("archive", type=Path)
     cmd = sub.add_parser("gc")
     cmd.add_argument("--minimum-age", type=int, default=3600)
+    cmd.add_argument("--key")
     sub.add_parser("doctor")
     cmd = sub.add_parser("token")
     cmd.add_argument("--role", choices=["operator", "author", "reader"], required=True)
+    cmd = sub.add_parser("token-issue")
+    cmd.add_argument("principal_id")
+    cmd.add_argument("--role", choices=["operator", "author", "reader"], required=True)
+    cmd.add_argument("--task", action="append", dest="task_ids")
+    cmd.add_argument("--key", required=True)
+    cmd = sub.add_parser("token-revoke")
+    cmd.add_argument("credential_id")
+    cmd.add_argument("--key", required=True)
+    sub.add_parser("upgrade-state")
     cmd = sub.add_parser("qualify-client")
     cmd.add_argument("evidence", type=Path)
     cmd.add_argument("--actor", required=True)
+    cmd.add_argument("--key")
     cmd = sub.add_parser("serve")
     cmd.add_argument("--host", default="127.0.0.1")
     cmd.add_argument("--port", type=int, default=8788)
     cmd.add_argument("--run-scheduler", action="store_true")
     cmd.add_argument("--allow-origin", action="append", default=[])
+    cmd.add_argument("--output-profile", choices=["compat-full-v1", "structured-summary-v2"], default="compat-full-v1")
+    cmd = sub.add_parser("recovery")
+    cmd.add_argument("task_id")
+    cmd = sub.add_parser("operations")
+    cmd.add_argument("task_id")
+    cmd.add_argument("--offset", type=int, default=0)
+    cmd.add_argument("--limit", type=int, default=50)
+    cmd.add_argument("--cursor")
+    sub.add_parser("inbox")
+    cmd = sub.add_parser("inbox-import")
+    cmd.add_argument("package", type=Path)
+    cmd.add_argument("--key", required=True)
+    cmd = sub.add_parser("inbox-approve")
+    cmd.add_argument("operation_id")
+    cmd.add_argument("--key", required=True)
+    cmd = sub.add_parser("inbox-grant")
+    cmd.add_argument("task_id")
+    cmd.add_argument("--key", required=True)
+    cmd.add_argument("--auto-validate", action="store_true")
+    cmd = sub.add_parser("inbox-revoke")
+    cmd.add_argument("task_id")
+    cmd.add_argument("--key", required=True)
+    for name in ("inbox-scan", "inbox-watch"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("folder", type=Path)
+        cmd.add_argument("--stability-seconds", type=float, default=1.0)
+        cmd.add_argument("--max-files", type=int, default=25)
+        if name == "inbox-watch":
+            cmd.add_argument("--poll-seconds", type=float, default=2.0)
+            cmd.add_argument("--cycles", type=int, default=0, help="Zero watches until explicitly stopped")
+    sub.add_parser("control-status")
+    cmd = sub.add_parser("policy")
+    cmd.add_argument("task_id")
+    cmd.add_argument("--policy", type=Path, required=True)
+    cmd.add_argument("--expected-digest", required=True)
+    cmd.add_argument("--actor", required=True)
+    cmd.add_argument("--key", required=True)
+    for name in ("pause", "resume", "revoke-task", "restore-task"):
+        cmd = sub.add_parser(name)
+        if name.endswith("-task"):
+            cmd.add_argument("task_id")
+        cmd.add_argument("--key", required=True)
+        cmd.add_argument("--actor", required=True)
     return p
 
 
@@ -164,6 +225,7 @@ def local_lease(
     *,
     label: str = "operator",
     takeover: bool = False,
+    key: str | None = None,
 ) -> dict:
     service.tasks.get(task_id)
     path = service.store.home / "operator-leases" / (task_id + ".json")
@@ -173,11 +235,20 @@ def local_lease(
         "Operator lease cache must not be a symbolic link",
     )
     old = strict_json(path.read_bytes()) if path.is_file() else {}
+    if key:
+        prior = service.store.one("SELECT payload,result FROM operations WHERE task_id=? AND kind='lease.claim' AND idempotency_key=? AND state='completed'", (task_id, service.store.scoped_key(key)), required=False)
+        if prior:
+            request = json.loads(prior["payload"])
+            require(request["label"] == label and request["takeover"] == takeover, "IDEMPOTENCY_CONFLICT", "Lease request key has different semantics")
+            saved = json.loads(prior["result"])
+            atomic_write(path, canonical(saved))
+            return {"token": saved["token"], "epoch": saved["epoch"]}
     lease = service.leases.claim(
         task_id,
         label=label,
         token=old.get("token"),
         takeover=takeover,
+        key=key,
     )
     atomic_write(path, canonical(lease))
     return {"token": lease["token"], "epoch": lease["epoch"]}
@@ -253,6 +324,7 @@ def run(args) -> object:
             TaskPolicy.model_validate(strict_json(args.policy.read_bytes())),
             remote=args.remote,
             default_branch=args.default_branch,
+            key=args.key,
         )
         return {
             key: result[key]
@@ -267,10 +339,15 @@ def run(args) -> object:
             from_remote=args.from_remote,
         )
     if command == "task":
+        base = args.base
+        if args.dirty_path:
+            require(base == "HEAD", "INVALID_REQUEST", "Explicit dirty capture starts from the source HEAD")
+            from ..dirty import DirtySnapshots
+            base = DirtySnapshots(store).capture(args.repository, args.dirty_path, key="dirty-" + args.key)["commit"]
         return service.tasks.create(
             args.repository,
             args.goal,
-            base=args.base,
+            base=base,
             key=args.key,
         )
     if command == "tasks":
@@ -281,6 +358,7 @@ def run(args) -> object:
             args.task_id,
             label=args.label,
             takeover=args.takeover,
+            key=args.key,
         )
         return {"task_id": args.task_id, "lease_saved": True}
     if command == "context":
@@ -288,6 +366,7 @@ def run(args) -> object:
             args.task_id,
             revision=args.revision,
             paths=args.path,
+            key=args.key,
         )
         return {
             "context_id": context["id"],
@@ -330,7 +409,7 @@ def run(args) -> object:
     if command == "feedback":
         feedback = Feedback(store)
         if args.output:
-            result = feedback.export(args.task_id)
+            result = feedback.export(args.task_id, key=args.key)
             return {
                 **result,
                 **copy_blob(store, result["blob_sha"], args.output),
@@ -410,18 +489,71 @@ def run(args) -> object:
         atomic_write(lease_path, canonical(lease))
         return result
     if command == "backup":
-        return Maintenance(store).backup(args.output)
+        return Maintenance(store).backup(args.output, key=args.key)
     if command == "gc":
-        return Maintenance(store).gc(minimum_age_seconds=args.minimum_age)
+        return Maintenance(store).gc(minimum_age_seconds=args.minimum_age, key=args.key)
     if command == "doctor":
         return {**service.capabilities(), "integrity": store.integrity()}
     if command == "token":
         return strict_json((store.home / "tokens.json").read_bytes())[args.role]
+    if command == "token-issue":
+        return Access(store).issue(args.principal_id, args.role, args.task_ids, key=args.key)
+    if command == "token-revoke":
+        return Access(store).revoke(args.credential_id, key=args.key)
+    if command == "upgrade-state":
+        from ..persistence.state_clock import install
+        return install(store)
     if command == "qualify-client":
         return Access(store).qualify(
             strict_json(args.evidence.read_bytes()),
             actor=args.actor,
+            key=args.key,
         )
+    if command == "recovery":
+        return service.recovery.get(args.task_id)
+    if command == "operations":
+        return service.recovery.operations(args.task_id, limit=args.limit, offset=args.offset, cursor=args.cursor)
+    if command == "inbox":
+        return service.inbox.pending()
+    if command == "inbox-import":
+        return service.inbox.ingest(args.package, key=args.key)
+    if command == "inbox-approve":
+        operation = store.operation(args.operation_id)
+        return service.inbox.approve(args.operation_id, key=args.key, **local_lease(service, operation["task_id"]))
+    if command == "inbox-grant":
+        return service.inbox.grant(args.task_id, auto_validate=args.auto_validate, key=args.key, **local_lease(service, args.task_id))
+    if command == "inbox-revoke":
+        return service.inbox.revoke(args.task_id, key=args.key)
+    if command in {"inbox-scan", "inbox-watch"}:
+        require(0 <= args.stability_seconds <= 30, "INVALID_REQUEST", "Completion interval must be between zero and 30 seconds")
+        if command == "inbox-scan":
+            return service.inbox.scan(args.folder, stability_seconds=args.stability_seconds, max_files=args.max_files)
+        require(1 <= args.poll_seconds <= 60 and args.cycles >= 0, "INVALID_REQUEST", "Watch interval/cycle count is invalid")
+        # Only this explicit command opts in. Durable inbox operations/grants
+        # survive this watcher stopping; nothing controls a model or a UI.
+        cycles, scan_offset = 0, 0
+        while args.cycles == 0 or cycles < args.cycles:
+            result = service.inbox.scan(args.folder, stability_seconds=args.stability_seconds, max_files=args.max_files, offset=scan_offset)
+            scan_offset = result["next_offset"] or 0
+            cycles += 1
+            print(json.dumps({"watch_cycle": cycles, **result}), flush=True)
+            if args.cycles == 0 or cycles < args.cycles:
+                time.sleep(args.poll_seconds)
+        return {"watch_cycles": cycles, "stopped": True}
+    if command == "control-status":
+        return Control(store).status()
+    if command == "policy":
+        from ..policy import Policies
+        return Policies(store).update(args.task_id, strict_json(args.policy.read_bytes()),
+            expected_digest=args.expected_digest, actor=args.actor, key=args.key)
+    if command in {"pause", "resume", "revoke-task", "restore-task"}:
+        control = Control(store)
+        method = {"pause": control.pause, "resume": control.resume, "revoke-task": control.revoke,
+                  "restore-task": control.restore_grant}[command]
+        values = {"key": args.key, "actor": args.actor}
+        if command.endswith("-task"):
+            values["task_id"] = args.task_id
+        return method(**values)
     if command == "serve":
         import uvicorn
 
@@ -433,6 +565,7 @@ def run(args) -> object:
                 expected_instance=args.expected_instance,
                 scheduler=args.run_scheduler,
                 allowed_origins=tuple(args.allow_origin),
+                output_profile=args.output_profile,
             ),
             host=args.host,
             port=args.port,
