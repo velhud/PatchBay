@@ -58,10 +58,13 @@ changes repair the consolidated runtime and remaining surface/recovery paths.
 | C5: reassignment context | Successor contains an actual bounded handoff of up to 50 worker report metadata/summary entries with predecessor identities. Full reports, artifacts and diffs require explicit retrieval/review. `reports_and_changes` does not transfer files; both result and tool description say so. Automatic cross-machine artifact migration is not implemented or claimed. |
 | C6/C7/C8/C9: contracts and accounting | Doctor uses the runtime's exact schema contract; Pro mutation descriptors require the runtime revision precondition; group-targeted Pro mutations persist group association; batch lanes validate against declared group lanes. Hub contract, store and adapter suites apply. |
 
-The dependency-maintenance findings and the separate dependency PR are not
-silently merged into this reconciliation. The pinned environment must be
-reviewed independently before a release; passing this test suite is not an
-advisory clearance or proof that every dependency use is safe.
+GitPython is pinned consistently to 3.1.62 in both manifests, matching the
+maintainer release and the existing dependency PR's version. This is a direct
+manifest edit; no dependency branch is merged. The installed environment and
+full regression run must use that exact pin. GitHub's default-branch alerts
+remain until main actually receives an eligible update; a continuation-branch
+push does not clear them. This test suite is not a blanket advisory clearance
+for every dependency or optional component.
 
 ## Author plan A00–A15 source map
 
