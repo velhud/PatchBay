@@ -1,9 +1,11 @@
 name: Author Mode validation
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - 'author-mode/implementation-*'
+      - 'chatgpt/patchbay-unified-reconciliation-*'
   pull_request:
     paths:
       - 'src/patchbay/authoring/**'
