@@ -7,9 +7,10 @@ requirements, reliability work and Linux qualification repairs. The tested Linux
 source is `f611a02a89c8154d93d424a715dba9716aed23fd`; subsequent documentation
 and ignore-rule maintenance does not change that tested Python source.
 Publication uses direct main commits. No PR creation or UI work is part of this
-reconciliation. No older branch or dependency branch is included in retirement.
+reconciliation. The final branch policy is main plus branches whose latest commit
+is dated 21 July 2026 or earlier; newer branches are retired after preservation.
 
-## Four recent branches reviewed
+## Initial four recent branches reviewed
 
 | Branch | Pinned tip | Disposition |
 | --- | --- | --- |
@@ -28,11 +29,26 @@ local cached refs still named their tips. The two remaining export refs can be
 removed without adding obsolete export workflows or creating artificial source
 merges. The four selected histories are retained in the verified bundle.
 
-All existing Dependabot and older remote branches are preserved unchanged. The
-recent `dependabot/pip/gitpython-3.1.62` ref was also already absent remotely; its
-local cached name is not evidence of a live branch. Main already pins GitPython
-3.1.62 consistently. No dependency ref is merged, recreated, deleted or updated
-by this reconciliation.
+## Remaining branches under the three-month cutoff
+
+The final instruction applies to every non-main branch newer than 21 July 2026,
+including dependency branches. It supersedes the earlier four-branch selection.
+
+| Branch | Pinned tip | Disposition |
+| --- | --- | --- |
+| `chatgpt-source-export-20261018` | `3172689a14c5a4dcdc384fd268bbb8f874625f2a` | Three unique export/link commits; no application code to import. |
+| `chatgpt/patchbay-audit-fixes-20261018` | `6d4a594f25fe08b6a710f6998e0e91a9fc52c27c` | Four unique commits propose an older runtime override. Main retains the stronger critical-repair implementation; activating the override would bypass it. |
+| `dependabot/github_actions/actions/setup-python-7` | `5f017b246501e58fc087059f6cfb67c0493eda28` | July 25 CI dependency proposal; archived without importing an unqualified action-version change. |
+| `dependabot/github_actions/github/codeql-action-4.37.3` | `15d9bdff0ccc4655e57f9e4663a32dd74f275902` | August 1 CI dependency proposal; archived without importing an unqualified action-version change. |
+
+All four complete histories are preserved in a second verified private Git
+bundle before removing their remote refs. No application change is lost or
+replaced. Eight older remote branches, including older dependency branches,
+retain their exact object identities. The final live remote set is main plus
+those eight branches, with no non-main tip newer than 21 July 2026.
+
+The already-absent `dependabot/pip/gitpython-3.1.62` ref is not recreated. Main
+already pins GitPython 3.1.62 consistently.
 
 ## Incorporated implementation
 
@@ -84,7 +100,8 @@ identifier was found. Generic quoted-token and tokenized-URL scans also produced
 Authentication, credential preparation, public-path hints and artifact export
 configuration were checked alongside these scans.
 This is a bounded public-exposure review, not a proof that every vulnerability
-is absent or a clearance of older retained branches.
+is absent or a clearance of older retained branches. The later cutoff cleanup
+changes documentation and refs only; it does not import any additional source.
 
 The documented `.patchbay-author/` home and repository-root `results/` output
 are now ignored because they can contain credentials, leases, raw evidence and
