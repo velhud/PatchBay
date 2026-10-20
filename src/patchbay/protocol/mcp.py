@@ -10,6 +10,12 @@ from patchbay.protocol.context import RequestContext
 from patchbay.protocol.resources import TOOL_CARD_URI, list_resources, read_resource, tool_cards_enabled
 from patchbay.pro_requests.tool_surface import install_pro_request_tool_surface
 from patchbay.security import internal_log_error, public_error_message
+from patchbay.desktop_tasks import desktop_tasks_enabled
+from patchbay.desktop_task_tool_surface import (
+    DESKTOP_TASK_START_TOOL_NAME,
+    DESKTOP_TASK_STATUS_TOOL_NAME,
+    install_desktop_task_tool_surface,
+)
 from patchbay.workers.tool_surface import install_worker_tool_surface
 
 logger = logging.getLogger(__name__)
@@ -23,6 +29,8 @@ WORKER_RESULT_TOOLS = {
     "codex_worker_inspect",
     "codex_worker_integrate",
     "codex_worker_stop",
+    DESKTOP_TASK_START_TOOL_NAME,
+    DESKTOP_TASK_STATUS_TOOL_NAME,
 }
 
 
@@ -2003,6 +2011,17 @@ install_pro_request_tool_surface(
     output_schemas=TOOL_OUTPUT_SCHEMAS,
 )
 
+install_desktop_task_tool_surface(
+    tools=TOOLS,
+    tools_by_name=TOOLS_BY_NAME,
+    public_tool_names=PUBLIC_TOOL_NAMES,
+    tool_modes=TOOL_MODE_CANONICAL,
+    open_world_tools=OPEN_WORLD_TOOLS,
+    non_idempotent_tools=NON_IDEMPOTENT_TOOLS,
+    invocation_status=TOOL_INVOCATION_STATUS,
+    output_schemas=TOOL_OUTPUT_SCHEMAS,
+)
+
 
 def _tool_title(tool_name: str) -> str:
     words = tool_name.removeprefix("codex_").split("_")
@@ -2415,6 +2434,8 @@ def tool_is_available(config: Dict[str, Any], external_tool_name: str, *, mode: 
 
 def runtime_capability_enabled(config: Dict[str, Any], canonical_tool_name: str) -> bool:
     """Return whether runtime config can actually execute this canonical tool."""
+    if canonical_tool_name in {DESKTOP_TASK_START_TOOL_NAME, DESKTOP_TASK_STATUS_TOOL_NAME}:
+        return desktop_tasks_enabled(config)
     power = config.get("power_tools")
     power_tools = power if isinstance(power, dict) else {}
 
@@ -2712,6 +2733,12 @@ class MCPProtocol:
         )
 
     def _worker_tool_result_text(self, result: Dict[str, Any], tool_name: str) -> str:
+        if tool_name in {DESKTOP_TASK_START_TOOL_NAME, DESKTOP_TASK_STATUS_TOOL_NAME}:
+            target = str(result.get("target") or "Desktop task")
+            state = str(result.get("state") or "failed")
+            if result.get("error_code"):
+                return f"Desktop task {target} · {state} · {result['error_code']}"
+            return f"Desktop task {target} · {state}. Full bounded result is in structuredContent."
         name = str(result.get("name") or result.get("worker") or result.get("summary") or _tool_display_id(tool_name))
         state = str(result.get("state") or result.get("status") or "")
         status_line = str(result.get("status_line") or "")

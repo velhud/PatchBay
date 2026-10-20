@@ -8,6 +8,30 @@ It supports three primary modes:
 - named worker mode, where ChatGPT starts and continues durable Codex colleagues by human name;
 - Codex controller mode, where ChatGPT starts local Codex jobs and inspects status, results, diffs, and session refs.
 
+When the operator explicitly enables the experimental Desktop task bridge,
+use `codex_desktop_task_start` and then `codex_desktop_task_status` for a
+pre-registered Desktop alias. Manual aliases require the Desktop
+archive/unarchive handoff and an idle/unloaded task first. A private alias may
+use the verified app-server handoff mode to perform that sequence locally;
+PatchBay still verifies idle/notLoaded readiness. Start is a
+local durable receipt, not a normal named-worker call. Start waits only for a
+short local startup handshake: immediate writer/archive, missing-task, auth,
+or model failures are returned in the start receipt, while a genuinely running
+turn remains asynchronous. Status monitors the local process and returns the
+bounded answer when complete. On
+`active_writer` or `archived_thread`, recover the state in Desktop and retry
+with a new receipt id.
+For a completed receipt, use the status response's `report` and
+`report_next_offset` fields to reassemble a longer sanitized report with
+`report_offset`; never ask for raw CLI output. A private target configured with
+`output_format: markdown` will show the same ordinary Markdown report in its
+Desktop transcript.
+For the private `MTP Luna` alias, send the ordinary target, receipt, and
+prompt fields without a sandbox override. Its local policy supplies the
+default `danger-full-access` mode, and status reports the effective mode for
+the receipt. Do not ask Web Sol to change that local policy; it remains a
+PatchBay operator setting.
+
 In Hub/edge deployments, the same copied Server URL exposes the exact 31-tool
 Hub manager surface instead of the older single-machine `codex_*` surface. At
 the beginning of a Hub session, verify the full catalog and confirm that fleet,
@@ -186,7 +210,7 @@ to a verified result:
 - GPT-5.4 Mini is Spark's immediate fallback. Use it when Spark is unavailable, its preview quota is depleted, or Spark's smaller context/reliability is insufficient for the assignment. Do not abandon the lane: continue or retry the same assignment with Mini.
 - GPT-5.4 and GPT-5.5 are availability, compatibility, or evidence-backed regression fallbacks. Prefer Terra for ordinary price-performance and Sol for authority unless a task-specific evaluation favors an older model.
 
-For worker teams, the normal pattern is Luna for compact lanes, Terra for the main serious lanes, and Sol at medium effort for final authority or unusually hard synthesis. Escalate Sol above medium only from concrete difficulty, risk, or failed evidence, not merely because the lane is called architecture or review. `max` is a deep exceptional single-agent effort. Codex CLI `0.144.1` exposes `ultra` for models such as Terra and Sol; it may automatically delegate subtasks inside one worker, but it is an intentionally expensive exceptional mode rather than a routine quality setting. Explicit named PatchBay workers remain preferred when the manager needs visible lanes, independent reports, separate worktrees, or controlled integration.
+For worker teams, the normal pattern is Luna for compact lanes, Terra for the main serious lanes, and Sol at medium effort for final authority or unusually hard synthesis. Escalate Sol above medium only from concrete difficulty, risk, or failed evidence, not merely because the lane is called architecture or review. `max` is a deep exceptional single-agent effort. The current local Codex CLI `0.153.4` exposes `ultra` for models such as Terra and Sol; earlier compatibility evidence used `0.144.1`. It may automatically delegate subtasks inside one worker, but it is an intentionally expensive exceptional mode rather than a routine quality setting. Explicit named PatchBay workers remain preferred when the manager needs visible lanes, independent reports, separate worktrees, or controlled integration.
 
 ## Single-Machine Endpoint And Connector Setup
 

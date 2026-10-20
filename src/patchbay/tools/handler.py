@@ -33,6 +33,7 @@ from patchbay.security import (
 )
 from patchbay.workspace.context import WorkspaceContext
 from patchbay.workers.runtime import WorkerRuntime
+from patchbay.desktop_tasks import DesktopTaskClient, DesktopTaskError
 
 logger = logging.getLogger(__name__)
 _CURRENT_REQUEST_CONTEXT: ContextVar[RequestContext] = ContextVar(
@@ -90,6 +91,7 @@ class ToolHandler:
         self.artifact_store = ArtifactStore(config)
         self.pro_request_store = ProRequestStore(config)
         self.worker_runtime = WorkerRuntime(config, job_manager, job_executor, repo_locks=self.repo_locks)
+        self.desktop_task_client = DesktopTaskClient.from_config(config, job_manager, job_executor)
         # Track interactive conversations
         self.conversations: Dict[str, Dict[str, Any]] = {}
     
@@ -151,6 +153,8 @@ class ToolHandler:
             "codex_worker_inspect": self._codex_worker_inspect,
             "codex_worker_integrate": self._codex_worker_integrate,
             "codex_worker_stop": self._codex_worker_stop,
+            "codex_desktop_task_start": self._codex_desktop_task_start,
+            "codex_desktop_task_status": self._codex_desktop_task_status,
             "codex_pro_request_list": self._codex_pro_request_list,
             "codex_pro_request_read": self._codex_pro_request_read,
             "codex_pro_request_claim": self._codex_pro_request_claim,
@@ -305,6 +309,55 @@ class ToolHandler:
             takeover=bool(args.get("takeover", False)),
             takeover_reason=args.get("takeover_reason", ""),
         )
+
+    async def _codex_desktop_task_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Start one durable, alias-only Desktop task receipt."""
+        if self.desktop_task_client is None:
+            return {
+                "ok": False,
+                "state": "failed",
+                "error_code": "disabled",
+                "error": "Desktop task continuation is disabled; configure a private desktop_tasks.targets_file and enable it explicitly.",
+            }
+        try:
+            return await self.desktop_task_client.start(
+                target=args.get("target"),
+                receipt_id=args.get("receipt_id"),
+                prompt=args.get("prompt"),
+                timeout_ms=args.get("timeout_ms"),
+                permission_mode=args.get("permission_mode"),
+            )
+        except DesktopTaskError as error:
+            return {
+                "ok": False,
+                "state": "failed",
+                "error_code": "invalid_request",
+                "error": str(error),
+            }
+
+    async def _codex_desktop_task_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read one durable, alias-only Desktop task receipt."""
+        if self.desktop_task_client is None:
+            return {
+                "ok": False,
+                "state": "failed",
+                "error_code": "disabled",
+                "error": "Desktop task continuation is disabled; configure a private desktop_tasks.targets_file and enable it explicitly.",
+            }
+        try:
+            return await self.desktop_task_client.status(
+                target=args.get("target"),
+                receipt_id=args.get("receipt_id"),
+                report_offset=args.get("report_offset"),
+                report_limit=args.get("report_limit"),
+            )
+        except DesktopTaskError as error:
+            return {
+                "ok": False,
+                "state": "failed",
+                "error_code": "invalid_request",
+                "error": str(error),
+            }
 
     async def _codex_worker_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List durable workers without exposing backend ids or private paths."""

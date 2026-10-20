@@ -180,6 +180,72 @@ def test_resume_jobs_can_ignore_user_config(tmp_path):
     assert cmd.index("--ignore-user-config") < cmd.index("resume")
 
 
+def test_desktop_resume_can_use_private_cli_and_skip_git_repo_check(tmp_path):
+    executor = make_executor(tmp_path)
+
+    cmd = executor._build_codex_command(
+        "resume",
+        "continue the Desktop task",
+        str(tmp_path),
+        {
+            "_desktop_task": True,
+            "_desktop_task_codex_bin": "/private/bin/codex",
+            "skip_git_repo_check": True,
+            "profile": "desktop-test",
+            "resume_session_id": "00000000-0000-7000-8000-000000000001",
+            "_codex_cwd": str(tmp_path),
+        },
+    )
+
+    assert cmd[0:2] == ["/private/bin/codex", "exec"]
+    assert "--skip-git-repo-check" in cmd
+    assert cmd[cmd.index("--profile") + 1] == "desktop-test"
+    assert cmd.index("--profile") < cmd.index("resume")
+    assert cmd.index("--skip-git-repo-check") < cmd.index("resume")
+    assert cmd[-2:] == ["00000000-0000-7000-8000-000000000001", "-"]
+
+
+def test_desktop_resume_uses_canonical_full_access_permission_mode(tmp_path):
+    executor = make_executor(tmp_path)
+
+    cmd = executor._build_codex_command(
+        "resume",
+        "one turn",
+        str(tmp_path),
+        {
+            "_desktop_task": True,
+            "sandbox": "danger-full-access",
+            "_desktop_task_permission_mode_effective": "danger-full-access",
+            "resume_session_id": "00000000-0000-7000-8000-000000000001",
+            "_codex_cwd": str(tmp_path),
+        },
+    )
+
+    assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+    assert cmd.index("--sandbox") < cmd.index("resume")
+
+
+def test_desktop_markdown_resume_keeps_json_events_without_schema(tmp_path):
+    executor = make_executor(tmp_path)
+
+    cmd = executor._build_codex_command(
+        "resume",
+        "render Markdown",
+        str(tmp_path),
+        {
+            "_desktop_task": True,
+            "_desktop_task_output_format": "markdown",
+            "resume_session_id": "00000000-0000-7000-8000-000000000001",
+            "structured_output": True,
+            "json_events": True,
+        },
+    )
+
+    assert "--json" in cmd
+    assert "--output-schema" not in cmd
+    assert cmd[-2:] == ["00000000-0000-7000-8000-000000000001", "-"]
+
+
 def test_resume_jobs_require_session_id(tmp_path):
     executor = make_executor(tmp_path)
 

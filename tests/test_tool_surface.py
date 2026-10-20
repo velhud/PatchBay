@@ -295,6 +295,7 @@ def test_readonly_tools_are_marked_readonly():
         "codex_worker_inbox",
         "codex_worker_start",
         "codex_worker_message",
+        "codex_desktop_task_start",
         "codex_worker_integrate",
         "codex_worker_stop",
         "codex_pro_request_claim",

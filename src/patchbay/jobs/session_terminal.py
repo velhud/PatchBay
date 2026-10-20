@@ -94,6 +94,7 @@ class CodexSessionTerminalObserver:
     def _resolve_exact_session_file(self) -> Path | None:
         home = resolve_codex_home(self.config)
         candidates: list[Path] = []
+        active_candidates: list[Path] = []
         for root in (home / "sessions", home / "archived_sessions"):
             if not root.exists():
                 continue
@@ -107,9 +108,41 @@ class CodexSessionTerminalObserver:
                     continue
                 if self._file_declares_session(resolved):
                     candidates.append(resolved)
-        if len(candidates) != 1:
-            return None
-        return candidates[0]
+                    # A resumed Desktop task can have more than one rollout
+                    # file declaring the same logical session id. Select a
+                    # unique file that contains activity from this process's
+                    # start boundary; retain the old fail-closed behavior when
+                    # two candidate rollouts are active or the evidence is
+                    # otherwise ambiguous.
+                    if self._file_has_activity_after(resolved):
+                        active_candidates.append(resolved)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(active_candidates) == 1:
+            return active_candidates[0]
+        return None
+
+    def _file_has_activity_after(self, source: Path) -> bool:
+        """Return whether one declared session file has post-start records.
+
+        Codex may retain an aborted rollout and append a later resumed turn to
+        a second file with the same logical Desktop thread id. This bounded
+        streaming scan compares only record timestamps/types; it never loads
+        or exposes the session transcript.
+        """
+
+        try:
+            with source.open("rb") as handle:
+                for raw_line in handle:
+                    value = self._decode_line(raw_line)
+                    if not isinstance(value, dict) or value.get("type") == "session_meta":
+                        continue
+                    timestamp = self._timestamp(value.get("timestamp"))
+                    if timestamp is not None and timestamp + 1.0 >= self.not_before:
+                        return True
+        except OSError:
+            return False
+        return False
 
     def _file_declares_session(self, source: Path) -> bool:
         try:

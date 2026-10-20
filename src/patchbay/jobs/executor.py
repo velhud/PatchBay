@@ -25,6 +25,7 @@ from patchbay.codex_home import resolve_codex_home
 from patchbay.jobs.manager import (
     JobManager,
     JobState,
+    SERVER_SHUTDOWN_CANCELLATION_ERROR,
     terminal_cleanup_pending,
     terminal_cleanup_recovery_required,
 )
@@ -77,6 +78,9 @@ _DISCOVERY_NOT_PROVIDED = object()
 # Killing it earlier destroys the strongest proof and leaves the job correctly
 # fail-closed, but unnecessarily recovery-pending.
 _SUPERVISOR_CLEANUP_GRACE_FLOOR_SECONDS = cleanup_proof_budget_seconds()
+_SUPERVISOR_CLEANUP_UNPROVEN_RE = re.compile(
+    r"^patchbay-supervisor-cleanup-unproven-v2:(\d+):(\d+)$"
+)
 
 _CODEX_STARTUP_LOCKS: Dict[tuple[int, str], asyncio.Lock] = {}
 
@@ -232,6 +236,17 @@ class JobExecutor:
         cleanup_reconciled: list[str] = []
 
         for job_id, job in list(self.job_manager.jobs.items()):
+            # A listener restart records a shutdown cancellation before it
+            # stops the old executor.  Recover only when the exact session
+            # observer proves that the semantic turn completed earlier; all
+            # other terminal states retain first-terminal-wins semantics.
+            if (
+                job.state == JobState.CANCELLED
+                and str(job.error or "") == SERVER_SHUTDOWN_CANCELLATION_ERROR
+                and self._recover_completed_session(job, event_loop=event_loop)
+            ):
+                recovered_completed.append(job_id)
+                job = self.job_manager.get_job(job_id) or job
             if job.state in {
                 JobState.COMPLETED,
                 JobState.FAILED,
@@ -366,12 +381,26 @@ class JobExecutor:
         *,
         event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> bool:
-        """Recover a persisted running job whose exact Codex session is terminal."""
+        """Recover a durable job whose exact Codex session is terminal.
+
+        Terminal cancellation recovery is limited to the server-shutdown
+        record and requires session completion evidence timestamped before the
+        cancellation.  This keeps user cancellation and ambiguous late
+        completion fail-closed.
+        """
+        is_shutdown_cancel = (
+            getattr(job, "state", None) == JobState.CANCELLED
+            and str(getattr(job, "error", "") or "")
+            == SERVER_SHUTDOWN_CANCELLATION_ERROR
+            and getattr(job, "terminal_source", None) == "manager_cancellation"
+        )
         if getattr(job, "state", None) in {
             JobState.COMPLETED,
             JobState.FAILED,
-            JobState.CANCELLED,
-        }:
+        } or (
+            getattr(job, "state", None) == JobState.CANCELLED
+            and not is_shutdown_cancel
+        ):
             return False
         options = getattr(job, "options", None)
         resume_session_id = (
@@ -398,7 +427,6 @@ class JobExecutor:
             if current.state in {
                 JobState.COMPLETED,
                 JobState.FAILED,
-                JobState.CANCELLED,
             }:
                 self.job_manager.transition_job_terminal(
                     job.job_id,
@@ -411,20 +439,36 @@ class JobExecutor:
             result = self._result_from_session_message(
                 snapshot.final_message, result_file
             )
-            # Recovery has no surviving in-process lease. Establish the
-            # turnstile before terminal state is visible to another process.
-            if job.job_id not in self._terminal_cleanup_completed:
-                self._ensure_cleanup_repo_block(job)
-            transitioned = self._transition_job_terminal_with_cleanup(
-                job.job_id,
-                JobState.COMPLETED,
-                result=result,
-                terminal_source=snapshot.source,
-                terminal_observed_at=snapshot.observed_at or time.time(),
-                wrapper_cleanup_outcome="cleanup_pending",
-                last_heartbeat_at=time.time(),
-                last_event="session_task_complete_recovered",
-            )
+            if current.state == JobState.CANCELLED:
+                if not is_shutdown_cancel:
+                    return False
+                recovered = self.job_manager.recover_shutdown_completed_job(
+                    job.job_id,
+                    result=result,
+                    terminal_source=snapshot.source,
+                    terminal_observed_at=snapshot.observed_at or time.time(),
+                    wrapper_cleanup_outcome="cleanup_pending",
+                    last_heartbeat_at=time.time(),
+                    last_event="session_task_complete_recovered",
+                )
+                if not recovered:
+                    return False
+                transitioned = True
+            else:
+                # Recovery has no surviving in-process lease. Establish the
+                # turnstile before terminal state is visible to another process.
+                if job.job_id not in self._terminal_cleanup_completed:
+                    self._ensure_cleanup_repo_block(job)
+                transitioned = self._transition_job_terminal_with_cleanup(
+                    job.job_id,
+                    JobState.COMPLETED,
+                    result=result,
+                    terminal_source=snapshot.source,
+                    terminal_observed_at=snapshot.observed_at or time.time(),
+                    wrapper_cleanup_outcome="cleanup_pending",
+                    last_heartbeat_at=time.time(),
+                    last_event="session_task_complete_recovered",
+                )
         if not transitioned:
             return False
 
@@ -1284,6 +1328,133 @@ class JobExecutor:
             last_heartbeat_at=time.time(),
         )
         return False
+
+    def reconcile_stale_terminal_cleanup(self, job_id: str) -> bool:
+        """Release one terminal Desktop receipt after a fresh stale-proof check.
+
+        Darwin's supervisor deliberately leaves an uncertainty sentinel and a
+        cleanup barrier when descendant ownership cannot be proven.  A later
+        explicit Desktop-task start may retry only after the operator has
+        recovered the Desktop handoff.  This method accepts that recovery only
+        when a fresh process-table observation proves the supervisor, sentinel,
+        process group, descendants, and inherited PatchBay marker are all gone.
+        An incomplete observation remains fail-closed; the uncertainty proof
+        file is retained as evidence.
+        """
+
+        with self._terminal_cleanup_transition_lock:
+            job = self.job_manager.get_job(job_id)
+            if job is None or not terminal_cleanup_pending(
+                getattr(job, "wrapper_cleanup_outcome", "")
+            ):
+                return False
+            if job.state not in {
+                JobState.COMPLETED,
+                JobState.FAILED,
+                JobState.CANCELLED,
+            }:
+                return False
+            if not self._stale_supervisor_absence_proven(job):
+                return False
+            self._complete_terminal_cleanup(
+                job_id, "stale_supervisor_reconciled"
+            )
+            return True
+
+    def _stale_supervisor_absence_proven(self, job: Any) -> bool:
+        """Return true only when an unproven supervisor is now fully absent."""
+
+        if not self._supervisor_cleanup_contract_installed(job):
+            return False
+        options = dict(getattr(job, "options", None) or {})
+        proof_path = str(options.get(_JOB_PROCESS_SUPERVISOR_PROOF_OPTION) or "")
+        try:
+            record = Path(proof_path).read_text(encoding="ascii").strip()
+        except (OSError, UnicodeDecodeError):
+            return False
+        match = _SUPERVISOR_CLEANUP_UNPROVEN_RE.fullmatch(record)
+        if match is None:
+            return False
+        supervisor_pid, sentinel_pid = (int(value) for value in match.groups())
+        recorded_pid = getattr(job, "process_pid", None)
+        if not isinstance(recorded_pid, int) or recorded_pid != supervisor_pid:
+            return False
+        if self._process_pid_is_live(supervisor_pid):
+            return False
+        if self._process_pid_is_live(sentinel_pid):
+            if not self._reconcile_orphaned_cleanup_sentinel(job, sentinel_pid):
+                return False
+        if self._process_pid_is_live(sentinel_pid):
+            return False
+        process = self.processes.get(str(getattr(job, "job_id", "") or ""))
+        if process is not None and getattr(process, "returncode", None) is None:
+            return False
+        group_liveness = self._process_group_liveness(
+            int(getattr(job, "process_pgid", 0) or 0)
+        )
+        if group_liveness is not False:
+            return False
+        marked = self._job_marked_process_pids(
+            str(getattr(job, "job_id", "") or ""), force_refresh=True
+        )
+        if marked is None or marked:
+            return False
+        return self._tracked_descendant_liveness(
+            str(getattr(job, "job_id", "") or "")
+        ) is False
+
+    def _reconcile_orphaned_cleanup_sentinel(
+        self, job: Any, sentinel_pid: int
+    ) -> bool:
+        """Retire only a marker-bound, isolated orphan cleanup sentinel.
+
+        The uncertainty sentinel is deliberately the last ownership witness
+        left by the supervisor.  Killing it is safe only after a fresh marker
+        scan identifies exactly that PID, the recorded process group and
+        tracked descendants are absent, and the sentinel's own ``setsid``
+        boundary is observable.  Any incomplete or ambiguous observation
+        remains fail-closed.
+        """
+
+        job_id = str(getattr(job, "job_id", "") or "")
+        marked = self._job_marked_process_pids(job_id, force_refresh=True)
+        if marked != {sentinel_pid}:
+            return False
+        if self._tracked_descendant_liveness(job_id) is not False:
+            return False
+        group_liveness = self._process_group_liveness(
+            int(getattr(job, "process_pgid", 0) or 0)
+        )
+        if group_liveness is not False:
+            return False
+        getpgid = getattr(os, "getpgid", None)
+        getsid = getattr(os, "getsid", None)
+        if not callable(getpgid) or not callable(getsid):
+            return False
+        try:
+            if getpgid(sentinel_pid) != sentinel_pid:
+                return False
+            if getsid(sentinel_pid) != sentinel_pid:
+                return False
+        except (OSError, ProcessLookupError):
+            return False
+        logger.info(
+            "Retiring orphaned cleanup sentinel for completed job %s after "
+            "marker and isolated-session proof",
+            job_id,
+        )
+        try:
+            os.kill(sentinel_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
+        except (PermissionError, OSError):
+            return False
+        deadline = time.monotonic() + min(
+            max(_SUPERVISOR_CLEANUP_GRACE_FLOOR_SECONDS, 1.0), 5.0
+        )
+        while self._process_pid_is_live(sentinel_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return not self._process_pid_is_live(sentinel_pid)
 
     def _schedule_recorded_terminal_cleanup(self, job_id: str) -> None:
         """Move restart cleanup off the Edge request/event-loop thread."""
@@ -2376,7 +2547,15 @@ class JobExecutor:
             configured = 600.0
         return max(0.0, configured)
 
-    def _job_timeout_seconds(self) -> Optional[float]:
+    def _job_timeout_seconds(self, job: Any = None) -> Optional[float]:
+        job_options = getattr(job, "options", None)
+        if isinstance(job_options, dict) and job_options.get("_desktop_task"):
+            try:
+                desktop_timeout_ms = int(job_options.get("_desktop_task_timeout_ms") or 0)
+            except (TypeError, ValueError):
+                desktop_timeout_ms = 0
+            if desktop_timeout_ms > 0:
+                return desktop_timeout_ms / 1000.0
         configured = self.config.get("server", {}).get("job_timeout_seconds", 1800)
         if configured is None:
             return None
@@ -2733,7 +2912,7 @@ class JobExecutor:
             stderr_log = self.job_logs_dir / f"{job_id}_stderr.log"
             result_file = self.job_logs_dir / f"{job_id}_result.json"
             
-            timeout = self._job_timeout_seconds()
+            timeout = self._job_timeout_seconds(job)
             startup_gate = await self._acquire_codex_startup_gate(job_id)
 
             if self._job_launch_blocked(job_id):
@@ -3292,7 +3471,7 @@ class JobExecutor:
         exec_cwd = options.get("_codex_cwd")
         if exec_cwd:
             cmd.extend(['--cd', str(exec_cwd)])
-        
+
         # Structured output
         if options.get('structured_output', True):
             cmd.extend(['--output-schema', str(self.schema_path)])
@@ -3350,7 +3529,12 @@ class JobExecutor:
         if not session_id:
             raise ValueError("resume_session_id is required for resume jobs")
 
-        cmd = ['codex', 'exec']
+        codex_bin = (
+            str(options.get("_desktop_task_codex_bin") or "codex")
+            if options.get("_desktop_task")
+            else "codex"
+        )
+        cmd = [codex_bin, 'exec']
         sandbox = options.get('sandbox') or security.get('default_sandbox', 'read-only')
 
         if options.get('dangerously_bypass'):
@@ -3364,6 +3548,12 @@ class JobExecutor:
         if exec_cwd:
             cmd.extend(['--cd', str(exec_cwd)])
 
+        if options.get("profile"):
+            cmd.extend(['--profile', str(options['profile'])])
+
+        if options.get("_desktop_task") and options.get("skip_git_repo_check"):
+            cmd.append("--skip-git-repo-check")
+
         if options.get('full_auto', False):
             # Current Codex CLI versions no longer expose the historical
             # --full-auto flag. Keep accepting the option for compatibility,
@@ -3373,7 +3563,15 @@ class JobExecutor:
         if options.get("ignore_user_config"):
             cmd.append("--ignore-user-config")
 
-        if options.get('structured_output', True):
+        # Desktop markdown reports still use JSON lifecycle events, but the
+        # final agent message must remain ordinary Markdown.  The private
+        # target option only affects Desktop jobs; all other structured jobs
+        # retain the historical schema-constrained command.
+        use_desktop_markdown = (
+            options.get("_desktop_task")
+            and options.get("_desktop_task_output_format") == "markdown"
+        )
+        if options.get('structured_output', True) and not use_desktop_markdown:
             cmd.extend(['--output-schema', str(self.schema_path)])
 
         if options.get('json_events', True):
@@ -4552,6 +4750,80 @@ class JobExecutor:
             "rate limit exceeded for your account",
             "you have no weighted tokens left",
         )
+        if (
+            "active writer" in normalized
+            or "already has an active writer" in normalized
+            or "already owns the writer" in normalized
+        ):
+            return {
+                "category": "active_writer",
+                "exit_code": exit_code,
+                "public_message": (
+                    "Codex could not resume the Desktop task because another client still owns its writer."
+                ),
+                "manager_guidance": (
+                    "Recover the task handoff in Codex Desktop: archive it there, unarchive it there, "
+                    "leave it idle/unloaded, and retry with a new receipt_id."
+                ),
+                "operator_action": (
+                    "Use Desktop for the archive/unarchive recovery, then retry with a new receipt_id."
+                ),
+                "retry_without_operator_action": False,
+            }
+        if (
+            "archived" in normalized
+            and any(marker in normalized for marker in ("thread", "session", "task"))
+        ):
+            return {
+                "category": "archived_thread",
+                "exit_code": exit_code,
+                "public_message": "Codex could not resume the Desktop task because it is still archived.",
+                "manager_guidance": (
+                    "Recover the archive state in Codex Desktop: refresh if needed, archive and unarchive "
+                    "there, leave the task idle/unloaded, and retry with a new receipt_id."
+                ),
+                "operator_action": (
+                    "Use Desktop for the archive/unarchive recovery, then retry with a new receipt_id."
+                ),
+                "retry_without_operator_action": False,
+            }
+        # A Desktop task can be replaced or removed while its human alias is
+        # still present in the private targets file. Codex reports that
+        # condition before it can emit a normal lifecycle result. Keep this
+        # pattern narrow so an unrelated missing repository file is not
+        # mistaken for a stale Desktop alias.
+        missing_task = re.search(
+            r"(?:session|thread|task)\b[^\n\r]{0,96}\b(?:not found|does not exist|unknown)"
+            r"|\b(?:not found|does not exist|unknown)\b[^\n\r]{0,96}\b(?:session|thread|task)",
+            normalized,
+        )
+        if missing_task or any(
+            marker in normalized
+            for marker in (
+                "no session found",
+                "no thread found",
+                "no task found",
+                "could not find session",
+                "could not find thread",
+                "could not find task",
+            )
+        ):
+            return {
+                "category": "desktop_task_not_found",
+                "exit_code": exit_code,
+                "public_message": (
+                    "Codex could not find the configured Desktop task; the private alias may be stale."
+                ),
+                "manager_guidance": (
+                    "Confirm the replacement task title in Codex Desktop, update the private mode-0600 "
+                    "targets file locally, restart PatchBay, and retry with a new receipt_id. "
+                    "Do not expose the raw task id to Web."
+                ),
+                "operator_action": (
+                    "Remap the private alias to the current Desktop task and restart PatchBay before retrying."
+                ),
+                "retry_without_operator_action": False,
+            }
         if any(marker in normalized for marker in usage_limit_markers):
             retry_match = re.search(
                 r"(?:try again|retry|resets?)(?:\s+(?:at|after|in))?\s*[:=-]?\s*([^\n\r\"}]{1,80})",

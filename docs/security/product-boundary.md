@@ -28,7 +28,33 @@ The goal is maximum useful capability with explicit control.
 | Handoff watcher | Plan becomes local execution | Explicit local command, dry-run, status artifacts |
 | Public tunnel | Internet-exposed MCP endpoint | Token required, no `--no-auth`, rotation, warnings |
 | Session history | Private transcript exposure | Default off, metadata first, bounded reads |
+| Codex Desktop task bridge | Continue a pre-existing Desktop task through local CLI | Explicit opt-in, private alias allowlist, mode-0600 targets, manual Desktop writer/archive handoff or a per-alias verified app-server handoff, bounded receipts, no session-file mutation |
 | Hub to Edge operations | Duplicate, stale, or cross-version effects | Durable idempotency, immutable attempt contracts, fencing tokens, payload hashes, lease reconciliation, and current-session authentication |
+
+The experimental Codex Desktop task bridge is a separate opt-in boundary. Its
+targets file is private and maps human aliases to private Desktop session
+settings. Public calls cannot supply raw task ids, paths, model/profile values,
+or arbitrary commands. Desktop remains the owner of archive state and the
+transcript viewer; PatchBay starts and monitors only the bounded local CLI
+turn. A private `handoff_mode: app_server` alias may request archive,
+unarchive, and idle/notLoaded verification only through its configured
+absolute Unix socket; socket discovery and CLI archive/unarchive fallbacks are
+disabled. Start applies a private per-alias prompt limit (12,000 Unicode
+characters by default, 16,000 hard cap) and a short local startup handshake so
+immediate active-writer, stale-archive, missing-task, auth, or model failures
+are returned as failed receipts rather than appearing queued.
+Completed Desktop reports are sanitized before being stored: paths below the
+configured target workspace are made repository-relative, other local paths,
+configured private values, secret-like content, and internal UUIDs are
+redacted, and the durable report is capped at 200,000 Unicode characters with
+12,000-character status chunks. The visible Desktop transcript remains the
+native Codex surface; PatchBay does not rewrite it.
+Each alias may privately allow a bounded set of canonical Codex sandbox modes
+and choose a default. A public start request can select one allowed mode for
+that receipt only; PatchBay persists requested/effective values in the durable
+job options and returns them in receipt/status responses. The request cannot
+change the alias allowlist or default, and the executor reasserts the selected
+mode immediately before `resume`.
 
 Hub transport identity has two deliberate layers. The current Edge-session
 contract authenticates the live connection, while every claimed attempt and

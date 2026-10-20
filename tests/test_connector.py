@@ -94,6 +94,31 @@ def test_connector_status_reports_fail_closed_tunnel_without_token():
     assert "http_auth" in failed
 
 
+def test_connector_status_validates_opt_in_desktop_targets_without_exposing_ids(tmp_path):
+    targets = tmp_path / "targets.json"
+    targets.write_text(
+        '{"targets":{"MTP Luna":{"thread_id":"00000000-0000-7000-8000-000000000001"}}}\n',
+        encoding="utf-8",
+    )
+    targets.chmod(0o600)
+    config = base_config()
+    config["desktop_tasks"] = {"enabled": True, "targets_file": str(targets)}
+
+    status = connector_status(config, environ={})
+
+    check = next(item for item in status["checks"] if item["name"] == "desktop_tasks")
+    assert check["status"] == "pass"
+    assert "1 private alias" in check["detail"]
+    assert "00000000" not in json.dumps(status)
+
+    targets.chmod(0o644)
+    invalid = connector_status(config, environ={})
+    failed = next(item for item in invalid["checks"] if item["name"] == "desktop_tasks")
+    assert invalid["ready"] is False
+    assert failed["status"] == "fail"
+    assert "mode 0600" in failed["detail"]
+
+
 def test_doctor_script_json_output():
     env = dict(os.environ)
     for name in ["PATCHBAY_HTTP_TOKEN", "PATCHBAY_TOKEN"]:

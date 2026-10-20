@@ -31,7 +31,8 @@ dependencies = [
   "pyyaml==6.0.2",
   "gitpython==3.1.50",
   "pydantic==2.9.2",
-  "python-multipart==0.0.32"
+  "python-multipart==0.0.32",
+  "websockets>=13,<18"
 ]
 
 [project.optional-dependencies]

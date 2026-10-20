@@ -75,6 +75,27 @@ For local-only MCP clients, no token is required by default. If `PATCHBAY_HTTP_T
 
 The launcher supervises the local server and tunnel process together. It validates tunnel binaries before use. Install Cloudflare Tunnel explicitly with `patchbay install-cloudflared`, or install/configure `ngrok` yourself and use `patchbay ngrok --hostname <reserved-domain>`. Use `--tool-mode worker` first so ChatGPT sees the worker-first surface instead of the full power-user catalog.
 
+For the opt-in experimental path that continues a pre-existing Codex Desktop
+task, configure `desktop_tasks` with a private mode-0600 targets file and use
+the manual Desktop archive/unarchive handoff described in
+[docs/worker-bridge/desktop-task-bridge.md](docs/worker-bridge/desktop-task-bridge.md).
+Targets may set the private `handoff_mode` to `app_server` with an absolute
+socket for a supervised Codex app-server (`codex app-server --listen unix://`)
+using the same Codex home/task store to automate that handoff. The Desktop
+app's Electron IPC socket is not a supported endpoint;
+manual mode remains the default. Targets may set the private `output_format` to `markdown` for a normal
+Markdown response in the visible Desktop task. The status tool returns that
+sanitized report in bounded chunks; use `report_offset` and `report_limit` for
+later chunks. The public prompt schema allows up to 16,000 Unicode characters;
+the default private alias limit is 12,000 and can be lowered per target. Start
+waits up to three seconds for an immediate CLI startup failure before leaving
+a healthy long turn asynchronous.
+For Web Sol calls to the private `MTP Luna` alias, omit sandbox overrides and
+send the ordinary target, receipt, and prompt fields. Its private local
+policy supplies the default `danger-full-access` mode; status reports the
+effective mode for each receipt. Other aliases may retain their own private
+operator policy.
+
 OpenAI's Apps SDK docs describe the ChatGPT connector flow as: enable Developer Mode, create a connector, paste an HTTPS `/mcp` URL, then open a new chat and add the connector from the `+` / More menu. References:
 
 - [OpenAI Apps SDK quickstart: Add your app to ChatGPT](https://developers.openai.com/apps-sdk/quickstart#add-your-app-to-chatgpt)

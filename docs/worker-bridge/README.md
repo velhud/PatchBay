@@ -4,6 +4,11 @@ Status: durable named workers, isolated worker worktrees, peer-worker context, a
 
 This directory defines the worker layer for `patchbay`.
 
+The separate experimental Desktop-task continuation adapter is documented in
+[desktop-task-bridge.md](desktop-task-bridge.md). It is disabled by default,
+uses the durable job executor, and is intentionally not part of the named
+worker identity/message contract.
+
 The current application exposes a local Streamable HTTP MCP bridge that lets ChatGPT inspect configured repositories, launch local Codex jobs, and manage named Codex workers. The worker layer makes the normal product abstraction human: ChatGPT briefs named local Codex colleagues, continues them by name, imports generated files or zips as artifact context, inspects reports and diffs, passes bounded context between workers, previews integration, and explicitly applies accepted work through exact git mechanics.
 
 The intended ChatGPT posture is active management, not one-shot delegation and not direct manual repository reading. For non-trivial work, ChatGPT should first decide which worker or worker team to appoint. Named workers are continuing specialists. For important work, ChatGPT should ask workers for durable report files or changed-file evidence, inspect results, then use `codex_worker_message` for follow-up questions when reports are thin, contradictory, missing validation, or need another worker's context. Direct read/search tools remain available for orientation, focused verification, exact line/diff checks, and tiny exceptions, but broad investigation and implementation should flow through workers.

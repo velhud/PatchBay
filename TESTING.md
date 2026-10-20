@@ -33,10 +33,21 @@ PYTHONDONTWRITEBYTECODE=1 python scripts/real_mcp_worker_trial.py --include-safe
 PYTHONDONTWRITEBYTECODE=1 python scripts/external_chatgpt_style_validation.py --json
 ```
 
+The opt-in Desktop task bridge has focused coverage for alias/configuration
+privacy, durable receipt restart/recovery, idempotency, per-alias prompt
+limits, startup failure handshakes, semantic completion
+after a nonzero wrapper exit, writer/archive failure classification, the
+official app-server archive/unarchive/read handoff sequence, and the public
+tool surface:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_desktop_tasks.py tests/test_tool_surface.py tests/test_job_executor_command.py
+```
+
 Current verified Codex CLI baseline:
 
 ```text
-codex-cli 0.144.1
+codex-cli 0.153.4
 ```
 
 The unit suite verifies:
@@ -86,6 +97,22 @@ patchbay start --root /absolute/path/to/allowed/repo --tool-mode worker --print-
 patchbay start --root /absolute/path/to/allowed/repo --tool-mode worker --print-only --json
 patchbay stdio --config config.yaml
 ```
+
+On macOS, an optional user LaunchAgent can keep the local listener available
+across login and unexpected process exits. Validate the installed service
+without printing its private config or tunnel URL:
+
+```bash
+launchctl print "gui/$(id -u)/com.patchbay.local"
+curl --fail --silent --show-error http://127.0.0.1:8000/status >/dev/null
+```
+
+For a restart check, record the listener PID from local process inspection,
+send that process `SIGKILL`, and verify that a new listener becomes healthy.
+Use the existing MCP self-test and a read-only status request for a completed
+receipt to confirm that durable state remains available. Do not dispatch a new
+worker merely to test service restart. The public tunnel is an independent
+process and should return a non-502 response once the local listener is ready.
 
 Expected output includes readiness checks, the local MCP URL, a redacted ChatGPT Server URL preview when token auth is enabled, a ChatGPT setup guide, and no raw token value. JSON output should include `setup_guide` with `chatgpt_steps`, `operator_commands`, `controls`, `warnings`, and profile metadata.
 
@@ -170,7 +197,7 @@ For execution changes, run a disposable real-Codex plan job through MCP. The exp
 5. call `codex_get_result`;
 6. confirm a clean structured summary and `session_ref` when Codex returns one.
 
-Current final validation recorded Codex CLI `0.144.1` and confirmed PatchBay parses the current JSONL `item.completed` / `agent_message` result shape. Worker verification should always record the current local `codex --version`.
+Current final validation recorded Codex CLI `0.153.4` and confirmed PatchBay parses the current JSONL `item.completed` / `agent_message` result shape. Older external validation notes may retain `0.144.1` as historical evidence. Worker verification should always record the current local `codex --version`.
 
 ## Real Codex Worker Continuity
 

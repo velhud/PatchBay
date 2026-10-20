@@ -126,6 +126,54 @@ paths when resolution fails.
 | `codex_interactive_reply` | Start async Codex continuation job | keep, strengthen | Marked mutating/open-world; uses session repo metadata when available. |
 | `codex_get_config` | Return redacted config/capabilities | keep | Does not expose raw local config, private paths, or hidden feature details. |
 
+### Experimental Codex Desktop task tools
+
+These tools are absent unless `desktop_tasks.enabled` is explicitly true and
+the configured absolute, existing regular targets file passes the private
+mode-0600 check and contains valid unique aliases/task ids. They
+continue a pre-existing Desktop task through a durable local CLI receipt. The
+start tool is mutating/open-world/non-idempotent and performs a bounded
+three-second startup handshake: immediate CLI failures are returned as failed
+receipts, while a healthy long turn remains asynchronous. The status tool is
+read-only/idempotent and reads local process state. Both accept
+only a human alias and receipt id. Manual aliases require the Desktop-native
+archive/unarchive handoff; a private alias may instead opt into the official
+Codex app-server archive/unarchive/read sequence through a mode-0600 private
+socket setting. PatchBay never edits session files, discovers sockets, or uses
+CLI archive/unarchive fallbacks. It exposes no raw task ids and returns no
+unbounded or unstructured CLI output. A completed receipt may include `cleanup_pending` and a bounded
+machine-readable cleanup warning when fail-closed process cleanup still needs
+operator recovery. The required Desktop handoff and active-writer/archive
+recovery are documented in
+[the compatibility note](../worker-bridge/desktop-task-bridge.md).
+
+Targets use `output_format: structured` by default. A private target may opt
+into `output_format: markdown`, which omits the CLI output schema so the
+visible Desktop task receives Luna's ordinary Markdown final message while
+PatchBay still consumes JSON lifecycle events. Completed status responses
+include a sanitized `report` chunk and `report_format`. The durable report is
+capped at 200,000 Unicode characters; each response is capped at 12,000
+characters. Pass `report_offset` and `report_limit` to retrieve later chunks.
+Responses also include `report_total_length`, `report_next_offset`,
+`report_complete`, and `report_capped`. Structured mode renders every schema
+field into the report so files, tests, risks, and follow-up details are not
+silently omitted.
+
+The public start schema accepts at most 16,000 Unicode characters. A private
+target may set `max_prompt_length` to a lower value; the default is 12,000.
+The optional `permission_mode` field accepts the canonical Codex values
+`read-only`, `workspace-write`, and `danger-full-access`. The private alias
+allowlist decides whether a requested one-turn mode is accepted; omission uses
+the alias default. Start and status responses include
+`permission_mode_requested` and `permission_mode_effective`, and the durable
+receipt stores both for audit/restart recovery. A request cannot change the
+private allowlist or default.
+
+| Tool | Mutability | Role |
+| --- | --- | --- |
+| `codex_desktop_task_start` | mutating/open-world/non-idempotent | Queue one bounded turn for an allowlisted Desktop task and return its receipt. |
+| `codex_desktop_task_status` | read-only/idempotent | Read queued/running/completed/failed local receipt state, the bounded final answer, and paged sanitized report chunks. |
+
 ## Natural-Language Worker Tools
 
 PatchBay includes durable natural-language workers summarized in [../worker-bridge/README.md](../worker-bridge/README.md). These tools are the preferred durable delegation path when ChatGPT wants to manage an ongoing named Codex colleague without exposing job ids, session ids, branch names, or private paths.
@@ -286,7 +334,7 @@ Model-selection guidance is not a hard router. It should help ChatGPT manage wor
 - GPT-5.6 Sol is the highest-authority lane for innovation, creative architecture, difficult synthesis, unresolved problems, sensitive/final judgment, and the hardest implementation or review lanes. Medium is the normal Sol effort. Above-medium Sol is rare and should follow concrete difficulty or consequence: serious bugs, sensitive development, unusually costly mistakes, or evidence that medium is insufficient. Reserve max/ultra for exceptional escalation; ultra may consume roughly 5-10x medium tokens depending on task difficulty.
 - Spark is the preferred first choice over GPT-5.4 Mini for bounded small-worker assignments it can handle because it is dramatically faster and uses a separate research-preview quota. GPT-5.4 Mini is the immediate fallback when Spark is unavailable, depleted, or too context-constrained; continue or retry the same assignment rather than abandoning the lane.
 - GPT-5.4 and GPT-5.5 remain availability, compatibility, or evidence-backed regression fallbacks.
-- Optimize expected subscription use to a verified result, not nominal cost per turn. Codex CLI `0.144.1` exposes `ultra` as a reasoning effort on supported models such as Terra and Sol; it may automatically delegate inside one worker. Prefer explicit named PatchBay workers when visible lanes, reports, worktrees, or integration control matter.
+- Optimize expected subscription use to a verified result, not nominal cost per turn. The current local Codex CLI `0.153.4` exposes `ultra` as a reasoning effort on supported models such as Terra and Sol; older compatibility evidence used `0.144.1`. It may automatically delegate inside one worker. Prefer explicit named PatchBay workers when visible lanes, reports, worktrees, or integration control matter.
 
 Worker file inspection:
 

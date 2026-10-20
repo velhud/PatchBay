@@ -13,7 +13,7 @@ Recommended Codex CLI baseline for the current branch:
 
 ```bash
 codex --version
-# codex-cli 0.144.1
+# codex-cli 0.153.4
 ```
 
 Install dependencies:
@@ -48,6 +48,45 @@ server:
 app:
   tool_mode: worker
   widget_domain: https://web-sandbox.oaiusercontent.com
+
+# Disabled by default. Enable only for a private, disposable Desktop task.
+# The targets file must be an existing regular file with mode 0600 (or stricter),
+# use an absolute path, contain valid unique targets, and must not be committed.
+# Desktop owns archive/unarchive and writer handoff.
+desktop_tasks:
+  enabled: false
+  targets_file: /private/path/to/desktop-task-targets.json
+  codex_bin: codex
+  timeout_ms: 1800000
+  retention_hours: 24
+  # Wait this long for immediate CLI startup failures before returning a
+  # queued/running receipt. Safe range: 100..10000 ms; default: 3000.
+  startup_handshake_ms: 3000
+  # structured preserves the machine-readable result contract. markdown
+  # leaves the final Desktop agent message as ordinary Markdown.
+  # output_format: structured
+
+# Optional private target fields in desktop-task-targets.json:
+#   "handoff_mode": "manual"          # default; Desktop archive -> unarchive is operator-driven
+#   "handoff_mode": "app_server"      # opt-in official app-server handoff
+#   "app_server_socket": "/private/path/to/codex-app-server.sock"
+#   "sandbox": "workspace-write"      # legacy/default sandbox field
+#   "allowed_permission_modes": ["workspace-write", "danger-full-access"]
+#   "default_permission_mode": "workspace-write"
+# app_server mode requires an absolute Unix socket for a supervised Codex
+# app-server using the same Codex home/task store. `codex app-server
+# --listen unix://` is the supported local setup. Do not point this at the
+# Desktop app's Electron IPC socket. PatchBay does not discover sockets or use
+# CLI archive/unarchive fallbacks, and a failed or interrupted handoff requires
+# a new receipt after local recovery.
+
+# In the private targets JSON, max_prompt_length defaults to 12000 Unicode
+# characters and is capped at 16000. It is per alias; the public MCP schema
+# advertises only the 16000-character hard cap.
+
+# Sanitized Desktop reports are capped at 200,000 Unicode characters. Status
+# returns at most 12,000 characters per report chunk; use report_offset and
+# report_limit for later chunks after a completed receipt.
 
 auth:
   enabled: false
@@ -158,6 +197,36 @@ pro_requests:
 ```
 
 Blank logging paths resolve outside the checkout under `PATCHBAY_HOME/runtime` when `PATCHBAY_HOME` is set, otherwise under `~/.patchbay/runtime`. Set explicit paths only when you deliberately want repo-local or custom runtime state.
+
+### Keeping a local macOS listener available
+
+For a long-lived local connector, install the optional per-user LaunchAgent
+after the private runtime config and Desktop target allowlist are ready:
+
+```bash
+PYTHONPATH=src python scripts/install_macos_launch_agent.py \
+  --config /private/path/to/desktop-trial.yaml \
+  --patchbay-home /private/path/to/patchbay-home \
+  --log-dir /private/path/to/patchbay-home/runtime/logs/launchd \
+  --python /private/path/to/venv/bin/python \
+  --codex-bin /opt/homebrew/bin/codex
+```
+
+The installer writes a mode-0600 plist under the current user's
+`~/Library/LaunchAgents`, uses `RunAtLoad` and `KeepAlive`, and runs as the
+logged-in user with a narrow executable path. It does not use `sudo`, create a
+system daemon, alter the private config, or expose target IDs. Standard output
+and error go to the supplied private log directory. Re-run the command after
+changing the checkout, Python environment, or runtime config; it replaces only
+the installer-owned label. `launchctl print gui/$(id -u)/com.patchbay.local`
+shows the loaded service.
+
+The managed tunnel remains a separate process. Verify both the local listener
+and the tunnel after installation, and treat a tunnel-side 502 as a transport
+or local-listener readiness failure until the local service is healthy. A
+Desktop task that owns the writer still requires the Desktop-native
+archive/unarchive handoff before a new continuation; launchd cannot resolve
+that ownership state.
 
 `audit_file` is compact metadata. `job_logs_dir` stores bounded/redacted Codex
 stdout, stderr, and result artifacts. `job_state_dir` stores durable job state

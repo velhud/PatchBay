@@ -58,7 +58,8 @@ Verification performed for the current hybrid implementation:
 - PatchBay `python scripts/live_mcp_eval.py --json --exercise-terminal-reconciliation`: passed through a real loopback MCP server. The final structured report was visible while wrapper cleanup remained pending; integration stayed blocked; the parent and descendant process were alive during the protected interval and both were proven reaped before completion.
 - PatchBay `python scripts/live_hub_edge_eval.py --json`: passed for the compatibility Hub/Edge routing surface.
 - PatchBay `python scripts/live_hub_v2_eval.py --json`: passed three consecutive final-candidate runs through real loopback TCP for both MCP managers and two Edge runners, with the exact 31-tool manager catalog, identifier-rich startup fallbacks, two isolated manager groups, a pinned five-worker team, truthful aggregate batch state, same-worker follow-up, stale-preview replacement, explicit integration, isolated poisoned-receipt fairness, lost-result restart recovery, persistent history, and authoritative group closure.
-- Codex CLI: current local validation recorded `0.144.1`.
+- Codex CLI: current local validation recorded `0.153.4`.
+- Experimental Codex Desktop task bridge: human-gated disposable Web-to-Desktop acceptance passed; High-mode Web Sol waited for approval, then the alias-only start/status receipt returned the bounded final answer and remained available for status inspection. The bridge remains opt-in and disabled by default.
 - Real read-only worker continuity eval `scripts/worker_phase1_eval.py --timeout 600`: passed.
 - Real isolated writing worker continuity eval `scripts/worker_phase2_eval.py --timeout 900`: passed.
 - Real multi-worker peer-context eval `scripts/worker_phase3_eval.py --timeout 900`: passed.

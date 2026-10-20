@@ -20,7 +20,7 @@
   <img alt="Status: pre-release verified" src="https://img.shields.io/badge/status-pre--release%20verified-orange">
   <img alt="MCP: Streamable HTTP and stdio" src="https://img.shields.io/badge/MCP-HTTP%20%2B%20stdio-blue">
   <img alt="Runtime: Python and FastAPI" src="https://img.shields.io/badge/runtime-Python%20%2B%20FastAPI-3776AB">
-  <img alt="Codex CLI baseline: 0.144.1" src="https://img.shields.io/badge/Codex%20CLI-0.144.1-black">
+  <img alt="Codex CLI baseline: 0.153.4" src="https://img.shields.io/badge/Codex%20CLI-0.153.4-black">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
@@ -133,6 +133,7 @@ It is especially useful when you:
 | **Artifacts** | Import ChatGPT-generated files or zip packages into worker context |
 | **Repository boundary** | Allowed roots, path guard, tokenized public access, tool modes, and mutation locks |
 | **Advanced loops** | Pro Escalation requests, local handoff scripts, Codex job control, review jobs, resume/interactive flows |
+| **Experimental Desktop continuation** | Opt-in alias-only durable receipts for a manually handed-off Codex Desktop task, or a private verified app-server handoff, with bounded startup failure reporting and paged reports; see [the Desktop task bridge](docs/worker-bridge/desktop-task-bridge.md) |
 
 The full public tool surface is documented in [docs/reference/public-tool-surface.md](docs/reference/public-tool-surface.md). Additional operational details moved out of the root README are in [docs/reference/tool-surface-and-worker-details.md](docs/reference/tool-surface-and-worker-details.md).
 
@@ -164,6 +165,10 @@ Start PatchBay against a local repository with the worker-first tool surface:
 ```bash
 patchbay start --root /path/to/repo --tool-mode worker
 ```
+
+An experimental Desktop-task bridge is available only when explicitly enabled
+with a private mode-0600 targets file; its handoff and recovery sequence is
+documented in [docs/worker-bridge/desktop-task-bridge.md](docs/worker-bridge/desktop-task-bridge.md).
 
 For ChatGPT web, start PatchBay with an HTTPS tunnel and a private tokenized Server URL:
 
@@ -238,9 +243,9 @@ See [TESTING.md](TESTING.md), [docs/testing/evals.md](docs/testing/evals.md), an
 
 | Area | Status |
 | --- | --- |
-| Codex CLI baseline | Current local verification recorded `codex-cli 0.144.1` |
+| Codex CLI baseline | Current local verification recorded `codex-cli 0.153.4` |
 | Python checks | `compileall` passes |
-| Test suite | Current repair candidate: `955 passed, 4 skipped` on macOS and `958 passed, 1 skipped` in the production Linux environment (the same 959-test inventory with platform-specific skips) |
+| Test suite | Current local repair candidate: `999 passed, 13 skipped` (9 warnings) |
 | Live local MCP probe | `scripts/live_mcp_eval.py --json` passes against a disposable repo |
 | Pro Escalation request loop | Unit tests and live MCP probe cover create/list/read/claim/respond/dispatch paths |
 | Named worker continuity eval | `scripts/worker_phase1_eval.py --timeout 600` passes real Codex start/restart/continue |

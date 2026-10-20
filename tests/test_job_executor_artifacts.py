@@ -208,6 +208,39 @@ async def test_parse_codex_agent_message_content_list_jsonl(tmp_path):
     assert checkpoint["evidence_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_parse_desktop_markdown_agent_message_without_raw_jsonl(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    result_file = tmp_path / "result.json"
+    markdown = "# Visible report\n\n- first\n- second"
+    stdout = (
+        json.dumps({"type": "thread.started", "thread_id": "session-markdown"})
+        + "\n"
+        + json.dumps(
+            {"type": "item.completed", "item": {"type": "agent_message", "text": markdown}}
+        )
+        + "\n"
+        + json.dumps({"type": "turn.completed"})
+        + "\n"
+    ).encode("utf-8")
+
+    result = await executor._parse_result(
+        stdout,
+        result_file,
+        {
+            "structured_output": True,
+            "json_events": True,
+            "_desktop_task_output_format": "markdown",
+        },
+    )
+
+    assert result["summary"] == markdown
+    assert "thread.started" not in result["summary"]
+    assert "item.completed" not in result["summary"]
+
+
 def test_stdout_event_observer_tracks_live_status_counters_and_command_phase(tmp_path):
     config = make_config(tmp_path)
     manager = JobManager(config)

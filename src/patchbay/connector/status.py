@@ -26,6 +26,7 @@ def connector_status(
     repo_config = _mapping(config.get("repositories"))
     power_config = _mapping(config.get("power_tools"))
     app_config = _mapping(config.get("app"))
+    desktop_task_config = _mapping(config.get("desktop_tasks"))
 
     auth_error = None
     try:
@@ -90,6 +91,32 @@ def connector_status(
         "warn" if bash_mode == "full" else "pass",
         bash_mode,
     )
+
+    if desktop_task_config.get("enabled") is True:
+        # Validate the private allowlist during doctor/startup as well as when
+        # the tool handler is built. This turns a bad path, permissions, or
+        # malformed replacement entry into a local readiness failure instead
+        # of letting a tunnel expose an opaque downstream error.
+        try:
+            from patchbay.desktop_tasks import load_desktop_targets
+
+            targets = load_desktop_targets(Path(str(desktop_task_config.get("targets_file") or "")))
+        except (OSError, TypeError, ValueError):
+            _check(
+                checks,
+                "desktop_tasks",
+                "fail",
+                "enabled but the private targets file is missing, malformed, or not mode 0600",
+            )
+        else:
+            _check(
+                checks,
+                "desktop_tasks",
+                "pass",
+                f"enabled with {len(targets)} private alias registration(s)",
+            )
+    else:
+        _check(checks, "desktop_tasks", "pass", "disabled")
 
     allowed_roots = [Path(str(path)).expanduser() for path in repo_config.get("allowed") or []]
     existing = [path for path in allowed_roots if path.exists()]
