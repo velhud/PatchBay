@@ -46,15 +46,26 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    result = worker_option_menu({"power_tools": {"codex_home": str(codex_home)}}, model="gpt-5.5")
+    result = worker_option_menu(
+        {"power_tools": {"codex_home": str(codex_home)}},
+        model="gpt-5.5",
+    )
 
     assert result["source"] == "codex_debug_models"
     assert result["codex_version"] == "codex-cli 0.test"
     assert result["default_model"] == "gpt-5.5"
     assert result["selected_model"]["id"] == "gpt-5.5"
     guidance = result["model_selection_guidance"]
-    assert "hard router" in guidance["summary"]
+    assert "not a hidden router" in guidance["summary"]
+    assert guidance["effective_default"] == {
+        "model_family": "GPT-5.6 Luna",
+        "model_id": "gpt-6-luna",
+        "reasoning_effort": "high",
+        "scope": "ordinary worker starts and new-worker Pro dispatch",
+        "availability_rule": guidance["effective_default"]["availability_rule"],
+    }
     ladder = {item["model_family"]: item for item in guidance["default_ladder"]}
+    assert list(ladder)[0] == "GPT-5.6 Luna"
     assert set(ladder) == {
         "Spark",
         "GPT-5.4 Mini",
@@ -64,20 +75,16 @@ def test_worker_option_menu_uses_codex_debug_models(monkeypatch, tmp_path):
         "GPT-5.6 Terra",
         "GPT-5.6 Sol",
     }
-    assert "Preferred first-choice small worker" in ladder["Spark"]["role"]
-    assert "Prefer it over GPT-5.4 Mini" in ladder["Spark"]["role"]
-    assert "fall back immediately to GPT-5.4 Mini" in ladder["Spark"]["caveats"]
-    assert "automatic operational fallback" in ladder["GPT-5.4 Mini"]["caveats"]
-    assert "choose Spark first" in guidance["manager_rule"]
-    assert "legacy serious-worker fallback" in ladder["GPT-5.4"]["role"]
-    assert "Legacy frontier fallback" in ladder["GPT-5.5"]["role"]
-    assert "Default compact standard worker" in ladder["GPT-5.6 Luna"]["role"]
-    assert "Default serious worker" in ladder["GPT-5.6 Terra"]["role"]
-    assert "Highest-authority worker" in ladder["GPT-5.6 Sol"]["role"]
-    assert "medium as Sol's normal" in ladder["GPT-5.6 Sol"]["reasoning"]
-    assert "5-10x" in ladder["GPT-5.6 Sol"]["caveats"]
+    assert "Effective default" in ladder["GPT-5.6 Luna"]["role"]
+    assert "high by default" in ladder["GPT-5.6 Luna"]["reasoning"]
+    assert "not the effective default" in ladder["Spark"]["role"]
+    assert "Do not choose Spark first" in ladder["Spark"]["caveats"]
+    assert "Do not silently retry" in ladder["GPT-5.4 Mini"]["caveats"]
+    assert "model='gpt-6-luna'" in guidance["manager_rule"]
+    assert "reasoning_effort='high'" in guidance["manager_rule"]
+    assert "Never hide model routing" in guidance["manager_rule"]
+    assert "installed Codex catalog" in guidance["summary"]
     assert "verified correct result" in guidance["cost_rule"]
-    assert "0.144.1 exposes ultra as a reasoning_effort" in guidance["ultra_note"]
     assert "explicit named PatchBay workers remain preferred" in guidance["ultra_note"]
     assert result["selected_model"]["reasoning_efforts"] == [
         {"effort": "low", "description": "Fast"},
