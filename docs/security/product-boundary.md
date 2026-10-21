@@ -48,7 +48,11 @@ attributable child identities, and the per-job environment marker. A process
 that deliberately creates a detached session and erases that marker can evade
 macOS cleanup discovery. Run adversarial or intentionally marker-stripping code
 on a Linux VM/container boundary rather than relying on PatchBay cleanup as a
-security boundary. Ordinary Codex workers remain fully supported on macOS.
+security boundary. Ordinary Codex workers can run on macOS, but a short-lived
+child may exit before PatchBay captures its process identity. Since that child
+could have created an unobserved descendant, cleanup remains unproven and the
+repository stays fenced. Conclusive macOS cleanup for ordinary workers is not
+qualified until the live-worker gate in `TESTING.md` passes.
 
 The supervisor never publishes absence before the target launch gate and
 tracker boundary are established. Cleanup proof is fsync-durable, terminal

@@ -129,6 +129,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "stable": stable_main,
         "install-cloudflared": install_cloudflared_main,
         "stdio": stdio_main,
+        "cleanup-recover": cleanup_recover_main,
         "pro-request": pro_request_main,
         "hub": hub_main,
         "edge": edge_main,
@@ -216,6 +217,38 @@ def doctor_main(argv: Iterable[str] | None = None) -> int:
     status = connector_status(config, public_base_url=args.public_base_url, reveal_token=args.reveal_token)
     print(format_doctor_json(status) if args.json else format_doctor_text(status))
     return 0 if status["ready"] else 1
+
+
+def cleanup_recover_main(argv: Iterable[str] | None = None) -> int:
+    """Review or record explicit operator quiescence for one terminal job."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Review a terminal supervisor-cleanup blocker offline. Default is a "
+            "assessment only; --apply records an operator attestation and never signals processes."
+        )
+    )
+    parser.add_argument("--config", default=default_config_path(), help="Path to config.yaml.")
+    parser.add_argument("--job-id", required=True, help="Exact durable PatchBay job id.")
+    parser.add_argument("--operator", required=True, help="Named operator identity recorded in the private audit receipt.")
+    parser.add_argument("--apply", action="store_true", help="Record the explicit local recovery attestation after all checks pass.")
+    from patchbay.jobs.cleanup_recovery import CONFIRMATION, recover_cleanup
+
+    parser.add_argument(
+        "--confirm-quiescence",
+        default="",
+        help=f"Required with --apply: {CONFIRMATION}",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    config = load_config(args.config)
+    result = recover_cleanup(
+        config,
+        args.job_id,
+        operator=args.operator,
+        apply=args.apply,
+        confirmation=args.confirm_quiescence,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 
 def setup_main(argv: Iterable[str] | None = None) -> int:
@@ -1287,6 +1320,7 @@ Usage:
   patchbay setup
   patchbay start --root <repo> --tool-mode worker
   patchbay doctor --json
+  patchbay cleanup-recover --job-id <id> --operator <name> [--apply --confirm-quiescence <statement>]
   patchbay settings list
   patchbay pro-request list
   patchbay hub start --config config.yaml

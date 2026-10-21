@@ -1157,7 +1157,7 @@ def test_portable_marker_scan_requires_environment_suffix_and_fails_closed_on_ch
     monkeypatch.setattr(
         executor,
         "_portable_process_rows",
-        lambda *, include_environment: (
+        lambda *, include_environment, pid=None: (
             expanded_rows if include_environment else plain_rows
         ),
     )

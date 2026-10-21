@@ -710,6 +710,10 @@ def _worker_progress(app: HubAppV2, group_id: str) -> dict[str, Any]:
                 "turn_count": worker.get("turn_count"),
                 "turn_state": worker.get("turn_state"),
                 "integration_state": worker.get("integration_state"),
+                "can_message": worker.get("can_message"),
+                "cleanup_pending": worker.get("cleanup_pending"),
+                "cleanup_unresolved": worker.get("cleanup_unresolved"),
+                "liveness": deepcopy(worker.get("liveness") or {}),
             }
             for worker in _workers(app, group_id)
         ],
@@ -1214,6 +1218,15 @@ async def run_live_hub_v2_eval(
         )
 
         reader_before = next(worker for worker in projected_workers if worker["name"] == "Reader")
+        await _wait_until(
+            lambda: next(
+                worker for worker in _workers(app, group_id) if worker["name"] == "Reader"
+            ).get("can_message")
+            is True,
+            phase="reader_follow_up_readiness",
+            timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: _worker_progress(app, group_id),
+        )
         messaged = await mcp.call(
             "patchbay_worker_message",
             {
@@ -1221,6 +1234,47 @@ async def run_live_hub_v2_eval(
                 "fleet_worker_ref": reader_before["fleet_worker_ref"],
                 "message": "Confirm the same repository evidence in a follow-up turn.",
                 "idempotency_key": "live-v2-reader-message",
+            },
+        )
+        message_operation_id = str(
+            (messaged.get("operation") or {}).get("operation_id") or ""
+        )
+        _check(
+            report,
+            "reader_follow_up_operation_created",
+            bool(message_operation_id)
+            and messaged.get("status") in {"ok", "pending"},
+            {"status": messaged.get("status"), "operation_id_present": bool(message_operation_id)},
+        )
+        await _wait_until(
+            lambda: str(
+                (app.store.get_operation(message_operation_id) or {}).get("state") or ""
+            )
+            in _TERMINAL_OPERATIONS,
+            phase="reader_follow_up_operation_terminal",
+            timeout_seconds=_OPERATION_PROGRESS_TIMEOUT_SECONDS,
+            diagnostics=lambda: {
+                "operation": app.store.get_operation(message_operation_id),
+                **_worker_progress(app, group_id),
+            },
+        )
+        message_outcome = await mcp.call(
+            "patchbay_operation_status",
+            {"operation_id": message_operation_id, "include_result": True},
+        )
+        message_result = message_outcome.get("result") or {}
+        message_domain_result = message_result.get("domain_result") or message_result
+        _check(
+            report,
+            "reader_follow_up_accepted",
+            message_outcome.get("status") == "ok"
+            and message_domain_result.get("accepted") is True,
+            {
+                "dispatch_status": messaged.get("status"),
+                "operation_status": message_outcome.get("status"),
+                "accepted": message_domain_result.get("accepted"),
+                "reason": message_domain_result.get("reason"),
+                "recommended_next_action": message_domain_result.get("recommended_next_action"),
             },
         )
         await _wait_until(

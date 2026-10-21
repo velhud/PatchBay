@@ -2,9 +2,12 @@
 
 The supervisor is deliberately tiny and dependency-free.  PatchBay starts it
 behind a parent-controlled launch gate, records the supervisor PID/PGID, and
-only then lets it fork the real Codex command.  Linux child-subreaper semantics
-and Darwin kqueue process tracking keep detached descendants attributable even
-when they create a new session and remove PatchBay's environment marker.
+only then lets it fork the real Codex command. Linux child-subreaper semantics
+provide descendant tracking. Darwin uses kqueue fork notifications, process
+censuses, process-start identities, and the per-job marker, but cannot losslessly
+track every child across a fork/reap race. A marker-stripped detached descendant
+may therefore remain undiscovered on Darwin; uncertain cleanup must stay
+unproven and fenced.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.util
+import json
 import os
 import select
 import signal
@@ -33,6 +37,26 @@ _KQ_EV_ERROR = 0x4000
 _JOB_PROCESS_MARKER_ENV = "PATCHBAY_JOB_MARKER"
 _QUIESCENT_SCANS = 3
 _QUIESCENT_SCAN_SECONDS = 0.02
+_CLEANUP_DIAGNOSTIC_VERSION = 1
+_CLEANUP_REASON_CODES = frozenset(
+    {
+        "kqueue_unavailable",
+        "kqueue_setup_failed",
+        "root_process_identity_unavailable",
+        "kqueue_poll_failed",
+        "kqueue_trackerr",
+        "tracked_child_identity_unavailable",
+        "fork_child_census_incomplete",
+        "fork_child_identity_unavailable",
+        "child_tracker_registration_failed",
+        "descendant_census_incomplete",
+        "marker_census_incomplete",
+        "subreaper_unavailable",
+        "owned_children_remain_after_kill_grace",
+        "supervisor_exception",
+        "unclassified_cleanup_unproven",
+    }
+)
 
 
 def cleanup_proof_budget_seconds(platform_name: str = sys.platform) -> float:
@@ -249,15 +273,18 @@ class _DarwinTracker:
         self._queue = None
         self._native_child_tracking: bool | None = None
         self.tracking_uncertain = False
+        self.reason_codes: set[str] = set()
         self.fork_seen = False
         self.job_marker = str(os.environ.get(_JOB_PROCESS_MARKER_ENV) or "").strip()
         root_identity = _process_identity(root_pid)
         self.tracked: dict[int, str] = (
             {root_pid: root_identity} if root_identity else {}
         )
+        if sys.platform == "darwin" and not root_identity:
+            self.mark_uncertain("root_process_identity_unavailable")
         if not hasattr(select, "kqueue"):
             if sys.platform == "darwin":
-                self.tracking_uncertain = True
+                self.mark_uncertain("kqueue_unavailable")
             return
         try:
             queue = select.kqueue()
@@ -265,11 +292,18 @@ class _DarwinTracker:
             self._register(root_pid, require_native_tracking=True)
         except (AttributeError, OSError):
             if sys.platform == "darwin":
-                self.tracking_uncertain = True
+                self.mark_uncertain("kqueue_setup_failed")
             if self._queue is not None:
                 self._queue.close()
                 self._queue = None
             return
+
+    def mark_uncertain(self, reason_code: str) -> None:
+        """Record only a fixed diagnostic code; never retain process data."""
+        if reason_code not in _CLEANUP_REASON_CODES:
+            raise ValueError("Unknown cleanup diagnostic reason code")
+        self.tracking_uncertain = True
+        self.reason_codes.add(reason_code)
 
     def _register(self, pid: int, *, require_native_tracking: bool = False) -> None:
         queue = self._queue
@@ -349,13 +383,13 @@ class _DarwinTracker:
         try:
             events = queue.control(None, 256, max(0.0, timeout))
         except (OSError, ValueError):
-            self.tracking_uncertain = True
+            self.mark_uncertain("kqueue_poll_failed")
             return
         for event in events:
             pid = int(event.ident)
             flags = int(event.fflags)
             if flags & getattr(select, "KQ_NOTE_TRACKERR", 0):
-                self.tracking_uncertain = True
+                self.mark_uncertain("kqueue_trackerr")
             if flags & getattr(select, "KQ_NOTE_CHILD", 0):
                 # NOTE_TRACK installs the same event on descendants before the
                 # child can execute user code. This is the lossless Darwin
@@ -364,7 +398,7 @@ class _DarwinTracker:
                 if identity:
                     self.tracked[pid] = identity
                 else:
-                    self.tracking_uncertain = True
+                    self.mark_uncertain("tracked_child_identity_unavailable")
             if flags & select.KQ_NOTE_FORK:
                 self.fork_seen = True
                 if not self._native_child_tracking:
@@ -375,11 +409,11 @@ class _DarwinTracker:
                     # processes, not hostile code expected to erase that marker.
                     children = self._children(pid)
                     if children is None:
-                        self.tracking_uncertain = True
+                        self.mark_uncertain("fork_child_census_incomplete")
                     for child_pid in children or set():
                         identity = _process_identity(child_pid)
                         if not identity:
-                            self.tracking_uncertain = True
+                            self.mark_uncertain("fork_child_identity_unavailable")
                             continue
                         if self.tracked.get(child_pid) == identity:
                             continue
@@ -387,7 +421,7 @@ class _DarwinTracker:
                         try:
                             self._register(child_pid)
                         except OSError:
-                            self.tracking_uncertain = True
+                            self.mark_uncertain("child_tracker_registration_failed")
             if flags & select.KQ_NOTE_EXIT:
                 self.tracked.pop(pid, None)
 
@@ -422,7 +456,7 @@ def _owned_pids(supervisor_pid: int, tracker: _DarwinTracker) -> set[int]:
     tracker.poll(0)
     observed = _descendants(supervisor_pid)
     if observed is None:
-        tracker.tracking_uncertain = True
+        tracker.mark_uncertain("descendant_census_incomplete")
     owned = {
         pid
         for pid, identity in tracker.tracked.items()
@@ -437,7 +471,7 @@ def _owned_pids(supervisor_pid: int, tracker: _DarwinTracker) -> set[int]:
     marked = _marker_pids(tracker.job_marker)
     if marked is None:
         if sys.platform == "darwin" and tracker.fork_seen:
-            tracker.tracking_uncertain = True
+            tracker.mark_uncertain("marker_census_incomplete")
     else:
         owned.update(marked)
         for pid in marked:
@@ -539,6 +573,7 @@ def _terminate_owned(supervisor_pid: int, tracker: _DarwinTracker) -> bool:
             continue
         _signal_pids(owned, signal.SIGKILL)
         if time.monotonic() >= deadline:
+            tracker.reason_codes.add("owned_children_remain_after_kill_grace")
             return False
         tracker.poll(min(0.02, max(0.0, deadline - time.monotonic())))
         _reap_children()
@@ -617,7 +652,10 @@ def _write_supervisor_state(path_value: str, record: str) -> None:
 
 
 def _write_cleanup_uncertainty(
-    path_value: str, supervisor_pid: int, sentinel_pid: int
+    path_value: str,
+    supervisor_pid: int,
+    sentinel_pid: int,
+    reason_codes: Iterable[str] = (),
 ) -> None:
     """Persist a fail-closed terminal record without claiming descendants are gone."""
 
@@ -644,6 +682,55 @@ def _write_cleanup_uncertainty(
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+    # Diagnostic evidence is deliberately separate from the stable proof
+    # grammar and is best-effort: a write failure must never affect the
+    # fail-closed sentinel or repository-lock ownership contract.
+    try:
+        _write_cleanup_diagnostic(path, reason_codes)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _write_cleanup_diagnostic(
+    proof_path: Path, reason_codes: Iterable[str]
+) -> None:
+    reasons = sorted(set(reason_codes))
+    if not reasons:
+        reasons = ["unclassified_cleanup_unproven"]
+    if any(reason not in _CLEANUP_REASON_CODES for reason in reasons):
+        raise ValueError("Unknown cleanup diagnostic reason code")
+    platform_name = (
+        "darwin"
+        if sys.platform == "darwin"
+        else "linux"
+        if sys.platform.startswith("linux")
+        else "other"
+    )
+    payload = {
+        "format_version": _CLEANUP_DIAGNOSTIC_VERSION,
+        "platform": platform_name,
+        "outcome": "cleanup_unproven",
+        "reason_codes": reasons,
+    }
+    path = proof_path.with_name(f"{proof_path.name}.diagnostic.json")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def _fsync_directory(path: Path) -> None:
@@ -660,6 +747,7 @@ def _spawn_cleanup_uncertainty_sentinel(
     supervisor_pid: int,
     *,
     repo_lock_fd: int = -1,
+    reason_codes: Iterable[str] = (),
 ) -> int:
     """Fail closed while descendant ownership cannot be proven.
 
@@ -674,7 +762,9 @@ def _spawn_cleanup_uncertainty_sentinel(
 
     sentinel_pid = os.fork()
     if sentinel_pid != 0:
-        _write_cleanup_uncertainty(path_value, supervisor_pid, sentinel_pid)
+        _write_cleanup_uncertainty(
+            path_value, supervisor_pid, sentinel_pid, reason_codes
+        )
         return sentinel_pid
 
     # The sentinel must not keep the supervisor's stdout/stderr pipes open;
@@ -784,7 +874,7 @@ def supervise(
             if previous_mask is not None:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         if sys.platform.startswith("linux") and not subreaper_installed:
-            tracker.tracking_uncertain = True
+            tracker.mark_uncertain("subreaper_unavailable")
         while True:
             tracker.poll(0.02)
             try:
@@ -799,6 +889,7 @@ def supervise(
                         cleanup_proof_path,
                         supervisor_pid,
                         repo_lock_fd=repo_lock_fd,
+                        reason_codes=tracker.reason_codes,
                     )
                 return _exit_code(status)
     except _StopRequested as requested:
@@ -812,12 +903,14 @@ def supervise(
                     cleanup_proof_path,
                     supervisor_pid,
                     repo_lock_fd=repo_lock_fd,
+                    reason_codes=tracker.reason_codes,
                 )
         else:
             _write_cleanup_proof(cleanup_proof_path, supervisor_pid)
         return 128 + requested.signum
     except BaseException:
         if tracker is not None:
+            tracker.reason_codes.add("supervisor_exception")
             if _terminate_owned(supervisor_pid, tracker):
                 _write_cleanup_proof(cleanup_proof_path, supervisor_pid)
             else:
@@ -825,6 +918,7 @@ def supervise(
                     cleanup_proof_path,
                     supervisor_pid,
                     repo_lock_fd=repo_lock_fd,
+                    reason_codes=tracker.reason_codes,
                 )
         else:
             # The target was never released (fork/tracker construction failed),

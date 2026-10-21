@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import json
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
-from ..errors import require
+from ..errors import AuthorError, require
 from ..models import TaskPolicy
 from ..packages.diff import from_commit
 from ..packages.validation import writable
 from ..persistence.gates import mutation
 from ..persistence.control import Control
 from ..persistence.locks import file_lock
+from ..persistence.store import TERMINAL
 from ..repositories import Repositories
 from ..tasks import Tasks
 from ..util import canonical, digest, fingerprint, safe_id, safe_path, utc_now
@@ -24,6 +26,24 @@ class Drafts:
         self.store = store
         self.tasks, self.repositories, self.leases = Tasks(store), Repositories(store), Leases(store)
 
+    @staticmethod
+    def _replay_result(observed: dict, *, message: str) -> dict | None:
+        if observed["state"] == "completed":
+            return observed["result"]
+        require(observed["state"] not in TERMINAL, "OPERATION_FAILED", message,
+                previous=observed.get("error"))
+        return None
+
+    @contextmanager
+    def _durable_rejection(self, operation_id: str):
+        try:
+            yield
+        except AuthorError as error:
+            observed = self.store.operation(operation_id)
+            if observed["state"] not in TERMINAL:
+                self.store.finish(operation_id, "failed", error=error.as_dict())
+            raise
+
     @mutation
     def apply(self, task_id: str, *, expected_revision: int, expected_version: int, edits: list[dict],
               key: str, token: str, epoch: int, draft_id: str | None = None) -> dict:
@@ -32,10 +52,11 @@ class Drafts:
         request = {"task_id": task_id, "expected_revision": expected_revision, "expected_version": expected_version,
                    "draft_id": draft_id, "edits": edits}
         op, _ = self.store.begin_operation(kind="draft.apply", task_id=task_id, key=key, fingerprint=fingerprint(request), payload=request, revision=expected_revision)
-        with file_lock(self.store.home / ("locks/task-" + task_id)):
+        with file_lock(self.store.home / ("locks/task-" + task_id)), self._durable_rejection(op["id"]):
             observed = self.store.operation(op["id"])
-            if observed["state"] == "completed":
-                return observed["result"]
+            replay = self._replay_result(observed, message="This draft update was rejected; correct the cause and use a new idempotency key")
+            if replay is not None:
+                return replay
             Control(self.store).assert_admission(task_id)
             task = self.tasks.get(task_id)
             require(task["current_revision"] == expected_revision, "STALE_BASE", "The task candidate changed while this draft was being authored")
@@ -125,10 +146,11 @@ class Drafts:
         self.leases.assert_owned(task_id, token, epoch)
         request = {"draft_id": draft_id, "expected_version": expected_version}
         op, _ = self.store.begin_operation(kind="draft.seal", task_id=task_id, key=key, fingerprint=fingerprint(request), payload=request, revision=draft["base_revision"])
-        with file_lock(self.store.home / ("locks/task-" + task_id)):
+        with file_lock(self.store.home / ("locks/task-" + task_id)), self._durable_rejection(op["id"]):
             observed = self.store.operation(op["id"])
-            if observed["state"] == "completed":
-                return observed["result"]
+            replay = self._replay_result(observed, message="This draft seal was rejected; correct the cause and use a new idempotency key")
+            if replay is not None:
+                return replay
             child_key = "draft-seal-" + op["id"]
             child = self.store.one("SELECT * FROM operations WHERE task_id=? AND kind='package.submit' AND idempotency_key=?", (task_id, self.store.scoped_key(child_key)), required=False)
             if child and child["state"] == "completed":

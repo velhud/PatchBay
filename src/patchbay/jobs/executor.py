@@ -66,6 +66,10 @@ _JOB_PROCESS_SUPERVISOR_PROOF_OPTION = "_job_process_supervisor_cleanup_proof"
 _JOB_PROCESS_SUPERVISOR_LAUNCHING_OPTION = "_job_process_supervisor_launching"
 _JOB_PROCESS_SUPERVISOR_SPAWNED_OPTION = "_job_process_supervisor_spawned"
 _JOB_PROCESS_SUPERVISOR_VERSION = 3
+_OPERATOR_CLEANUP_CONFIRMATION = (
+    "I independently verified that every tracked process has exited and no "
+    "detached same-job process remains active."
+)
 _JOB_DESCENDANT_IDENTITIES_OPTION = "_job_descendant_process_identities_v1"
 _JOB_DESCENDANT_UNTRUSTED_OPTION = "_job_descendant_untrusted_live_v1"
 _JOB_DESCENDANT_SCAN_UNCERTAIN_OPTION = "_job_descendant_scan_uncertain_v1"
@@ -1854,20 +1858,73 @@ class JobExecutor:
         if pid > 0:
             if proof == f"patchbay-supervisor-cleanup-v2:{pid}":
                 return True
-            return bool(
+            native_proof = bool(
                 proof == f"patchbay-supervisor-gated-v3:{pid}"
                 and not self._process_pid_is_live(pid)
             )
-        matched = re.fullmatch(r"patchbay-supervisor-cleanup-v2:(\d+)", proof)
-        gated = re.fullmatch(r"patchbay-supervisor-gated-v3:(\d+)", proof)
-        if matched is None and gated is None:
-            return False
-        proof_pid = int((matched or gated).group(1))
-        # The supervisor is still behind its parent launch gate if PatchBay
-        # crashes before PID persistence. It writes this job-private proof and
-        # exits without releasing the target; trust it only after that PID is no
-        # longer live. PID reuse can delay recovery but cannot forge absence.
-        return proof_pid > 0 and not self._process_pid_is_live(proof_pid)
+            if native_proof:
+                return True
+        else:
+            matched = re.fullmatch(r"patchbay-supervisor-cleanup-v2:(\d+)", proof)
+            gated = re.fullmatch(r"patchbay-supervisor-gated-v3:(\d+)", proof)
+            if matched is not None or gated is not None:
+                proof_pid = int((matched or gated).group(1))
+                # The supervisor is still behind its parent launch gate if PatchBay
+                # crashes before PID persistence. It writes this job-private proof and
+                # exits without releasing the target; trust it only after that PID is no
+                # longer live. PID reuse can delay recovery but cannot forge absence.
+                return proof_pid > 0 and not self._process_pid_is_live(proof_pid)
+
+        recovery_path = str(
+            options.get("_job_supervisor_operator_recovery_receipt") or ""
+        )
+        if recovery_path:
+            recovery_file = Path(recovery_path).expanduser()
+            expected_log_dir = Path(self.job_logs_dir).expanduser().resolve()
+            try:
+                if (
+                    recovery_file.is_symlink()
+                    or recovery_file.resolve(strict=True).parent != expected_log_dir
+                ):
+                    return False
+                recovery_stat = recovery_file.stat()
+                if (
+                    not recovery_file.is_file()
+                    or recovery_stat.st_uid != os.getuid()
+                    or (recovery_stat.st_mode & 0o777) != 0o600
+                    or recovery_stat.st_size > 64 * 1024
+                ):
+                    return False
+            except OSError:
+                return False
+            try:
+                recovery = json.loads(recovery_file.read_text(encoding="utf-8"))
+                proof_bytes = Path(path_value).read_bytes()
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                return False
+            sentinel_match = re.fullmatch(
+                rf"patchbay-supervisor-cleanup-unproven-v2:{pid}:(\d+)", proof
+            )
+            return bool(
+                sentinel_match is not None
+                and recovery.get("schema") == "patchbay-operator-cleanup-recovery-v1"
+                and recovery.get("job_id") == job_id
+                and recovery.get("supervisor_pid") == pid
+                and recovery.get("sentinel_pid") == int(sentinel_match.group(1))
+                and recovery.get("cleanup_proof_sha256")
+                == hashlib.sha256(proof_bytes).hexdigest()
+                and recovery.get("process_group_empty") is True
+                and recovery.get("job_marker_census_empty") is True
+                and recovery.get("tracked_descendants_absent") is True
+                and recovery.get("repository_lock_available") is True
+                and recovery.get("disposition")
+                == "operator_attested_quiescence"
+                and isinstance(recovery.get("operator"), str)
+                and recovery.get("operator")
+                and recovery.get("operator_confirmation")
+                == _OPERATOR_CLEANUP_CONFIRMATION
+            )
+        return False
 
     def _supervisor_cleanup_uncertain(
         self,
@@ -2259,11 +2316,15 @@ class JobExecutor:
         self,
         *,
         include_environment: bool,
+        pid: int | None = None,
     ) -> Optional[dict[int, tuple[str, str]]]:
         command = ["ps"]
         if include_environment:
             command.append("eww")
-        command.extend(["-axo", "pid=,stat=,command="])
+        if pid is None:
+            command.extend(["-axo", "pid=,stat=,command="])
+        else:
+            command.extend(["-p", str(pid), "-o", "pid=,stat=,command="])
         try:
             observed = subprocess.run(
                 command,
@@ -2288,13 +2349,13 @@ class JobExecutor:
 
         marker_token = f"{_JOB_PROCESS_MARKER_ENV}={self._job_process_marker(job_id)}"
         marked_pids: set[int] = set()
-        scan_complete = True
+        uncertain_pids: set[int] = set()
         for pid in set(plain_rows).union(expanded_rows):
             plain = plain_rows.get(pid)
             expanded = expanded_rows.get(pid)
             if plain is None or expanded is None:
                 if self._portable_pid_exists(pid):
-                    scan_complete = False
+                    uncertain_pids.add(pid)
                 continue
             plain_state, plain_command = plain
             expanded_state, expanded_command = expanded
@@ -2305,13 +2366,52 @@ class JobExecutor:
             elif expanded_command.startswith(f"{plain_command} "):
                 environment_suffix = expanded_command[len(plain_command) + 1 :]
             else:
-                scan_complete = False
+                # The full-system queries are separate snapshots. A process
+                # can exec or rewrite argv between them, so resolve only this
+                # PID with adjacent queries before treating the scan as unknown.
+                uncertain_pids.add(pid)
                 continue
             if marker_token in environment_suffix.split():
                 marked_pids.add(pid)
+
+        if len(uncertain_pids) > 64:
+            return None
+        for pid in sorted(uncertain_pids):
+            resolved = False
+            for _attempt in range(2):
+                plain_probe = self._portable_process_rows(
+                    include_environment=False, pid=pid
+                )
+                expanded_probe = self._portable_process_rows(
+                    include_environment=True, pid=pid
+                )
+                if plain_probe is None or expanded_probe is None:
+                    continue
+                plain = plain_probe.get(pid)
+                expanded = expanded_probe.get(pid)
+                if plain is None or expanded is None:
+                    if not self._portable_pid_exists(pid):
+                        resolved = True
+                        break
+                    continue
+                if plain[0].startswith("Z") or expanded[0].startswith("Z"):
+                    resolved = True
+                    break
+                if expanded[1] == plain[1]:
+                    environment_suffix = ""
+                elif expanded[1].startswith(f"{plain[1]} "):
+                    environment_suffix = expanded[1][len(plain[1]) + 1 :]
+                else:
+                    continue
+                if marker_token in environment_suffix.split():
+                    marked_pids.add(pid)
+                resolved = True
+                break
+            if not resolved:
+                return None
         if marked_pids:
             return marked_pids
-        return set() if scan_complete else None
+        return set()
 
     def _signal_job_marked_processes(self, job_id: str, sig: signal.Signals) -> bool:
         members = self._job_marked_process_pids(job_id, force_refresh=True)
@@ -3120,7 +3220,49 @@ class JobExecutor:
                 
                 result = redact_sensitive_output(result)
                 
-                if (
+                stdout_lines = [
+                    line for line in stdout.decode("utf-8", errors="replace").splitlines()
+                    if line.strip()
+                ]
+                explicit_turn_failure = self._json_event_type_seen(
+                    stdout_lines, "turn.failed"
+                )
+                failure = (
+                    self._classify_codex_failure(stdout, stderr, process.returncode)
+                    if process.returncode not in (None, 0) or explicit_turn_failure
+                    else None
+                )
+                if failure:
+                    # A session task_complete record can be written even when
+                    # the CLI turn failed before producing a final message.
+                    # A recognized process-level failure is stronger evidence
+                    # than that generic session completion signal.
+                    result = self._attach_failure_diagnostic(result, failure)
+                    result.setdefault("failure_diagnostic", {})["prior_completion_source"] = (
+                        capture.terminal_source
+                        if capture.semantic_terminal_seen
+                        else ""
+                    )
+                    self._write_result_file(result_file, result)
+                    self._transition_job_terminal_with_cleanup(
+                        job_id,
+                        JobState.FAILED,
+                        result=result,
+                        error=failure["public_message"],
+                        exit_code=process.returncode,
+                        terminal_source="codex_process_failed",
+                        terminal_observed_at=time.time(),
+                        _authoritative_process_failure=True,
+                        last_heartbeat_at=time.time(),
+                        wrapper_cleanup_outcome="cleanup_pending",
+                    )
+                    logger.error(
+                        "Job %s failed: exit code %s (%s)",
+                        job_id,
+                        process.returncode,
+                        failure["category"],
+                    )
+                elif (
                     process.returncode == 0
                     or capture.semantic_terminal_seen
                     or capture.stdout_turn_completed_seen
@@ -3149,14 +3291,8 @@ class JobExecutor:
                     )
                     logger.info(f"Job {job_id} completed successfully")
                 else:
-                    failure = self._classify_codex_failure(stdout, stderr, process.returncode)
-                    if failure:
-                        result = self._attach_failure_diagnostic(result, failure)
-                        self._write_result_file(result_file, result)
                     error_message = (
-                        failure.get("public_message")
-                        if failure
-                        else f"Codex process failed with exit code {process.returncode}. Inspect local job logs for details."
+                        f"Codex process failed with exit code {process.returncode}. Inspect local job logs for details."
                     )
                     self._transition_job_terminal_with_cleanup(
                         job_id,
@@ -4547,7 +4683,23 @@ class JobExecutor:
     def _classify_codex_failure(self, stdout: bytes, stderr: bytes, exit_code: Optional[int]) -> Dict[str, Any] | None:
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
-        combined = f"{stderr_text}\n{stdout_text}"
+        structured_failure_messages: list[str] = []
+        explicit_turn_failed = False
+        for line in stdout_text.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("type") not in {"error", "turn.failed"}:
+                continue
+            explicit_turn_failed = explicit_turn_failed or event.get("type") == "turn.failed"
+            message = event.get("message")
+            if isinstance(message, str):
+                structured_failure_messages.append(message)
+            detail = event.get("error")
+            if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+                structured_failure_messages.append(detail["message"])
+        combined = f"{stderr_text}\n" + "\n".join(structured_failure_messages)
         normalized = combined.lower()
         usage_limit_markers = (
             "usage limit",
@@ -4609,6 +4761,20 @@ class JobExecutor:
                 "operator_action": "Open or trust the workspace for Codex, or configure the job to run in a valid repository.",
                 "retry_without_operator_action": False,
             }
+        if "model" in normalized and any(
+            marker in normalized for marker in ("not supported", "unsupported")
+        ):
+            return {
+                "category": "codex_model_unsupported",
+                "exit_code": exit_code,
+                "public_message": "Codex does not support the selected model for this account or CLI configuration.",
+                "manager_guidance": (
+                    "Inspect the installed Codex CLI and its account-specific model support. Keep this worker's requested "
+                    "model unchanged; do not retry until the unsupported configuration has been corrected."
+                ),
+                "operator_action": "Restore support for the approved Luna selector on this CLI/account, then retry the same worker.",
+                "retry_without_operator_action": False,
+            }
         if "unknown model" in normalized or "model not found" in normalized or "invalid model" in normalized:
             return {
                 "category": "codex_model_unavailable",
@@ -4617,6 +4783,18 @@ class JobExecutor:
                 "manager_guidance": "Call codex_worker_options to inspect Luna availability; no other model family or older Luna is authorized.",
                 "operator_action": "Restore availability of the approved Luna selector; do not substitute another model.",
                 "retry_without_operator_action": True,
+            }
+        if explicit_turn_failed:
+            return {
+                "category": "codex_turn_failed",
+                "exit_code": exit_code,
+                "public_message": "Codex reported that the worker turn failed before producing a successful result.",
+                "manager_guidance": (
+                    "Inspect the preserved worker stdout and stderr for the exact failure. Do not treat a session task_complete "
+                    "record or generic missing-final-message text as successful work."
+                ),
+                "operator_action": "Resolve the reported Codex failure and retry the same authorized worker task.",
+                "retry_without_operator_action": False,
             }
         return None
 
@@ -4636,7 +4814,7 @@ class JobExecutor:
         guidance = str(failure.get("manager_guidance") or "").strip()
         if guidance and guidance not in notes:
             payload["notes"] = f"{notes}\n\n{guidance}".strip() if notes else guidance
-        return payload
+        return redact_sensitive_output(payload)
 
     def _latest_agent_message_result(self, lines: list[str]) -> Optional[Dict[str, Any]]:
         """Return the latest agent message as a result-shaped payload."""

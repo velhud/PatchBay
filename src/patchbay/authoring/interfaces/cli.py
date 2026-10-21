@@ -129,6 +129,20 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("dispatch")
     cmd = sub.add_parser("recover")
     cmd.add_argument("operation_id")
+    cmd = sub.add_parser(
+        "resolve-unknown-execution",
+        help="Locally attest exact quiescence for one immutable unknown Author execution",
+    )
+    cmd.add_argument("operation_id")
+    cmd.add_argument("--operator", required=True, help="Named operator identity recorded in private audit evidence.")
+    cmd.add_argument("--reason", required=True, help="Brief manual reason for closing the admission fence; historical outcome remains unknown.")
+    cmd.add_argument("--apply", action="store_true", help="Record the explicit operator disposition after all checks pass; default is assessment only.")
+    from ..operator_resolution import ATTESTATION, LEGACY_CONTINUITY_ATTESTATION
+    cmd.add_argument(
+        "--attest-quiescence", default="",
+        help=("Required with --apply; provide the exact statement matching the evidence source. "
+              f"Native lifecycle: {ATTESTATION} Legacy continuity: {LEGACY_CONTINUITY_ATTESTATION}"),
+    )
     cmd = sub.add_parser("approve")
     cmd.add_argument("task_id")
     cmd.add_argument("--actor", required=True)
@@ -314,6 +328,19 @@ def run(args) -> object:
     if args.command == "restore":
         store = Maintenance.restore(args.archive, args.home)
         return {"restored": True, **store.integrity()}
+
+    if args.command == "resolve-unknown-execution":
+        # This local recovery boundary needs only the Author store. Do not
+        # initialize the broader service graph or any HTTP/MCP interface.
+        from ..operator_resolution import OperatorResolution
+        store = Store(args.home, expected_instance=args.expected_instance)
+        return OperatorResolution(store).resolve(
+            args.operation_id,
+            operator=args.operator,
+            reason=args.reason,
+            apply=args.apply,
+            attestation=args.attest_quiescence,
+        )
 
     service = AuthorService(args.home, expected_instance=args.expected_instance)
     store, command = service.store, args.command

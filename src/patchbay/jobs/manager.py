@@ -516,6 +516,27 @@ class JobManager:
             job = self.jobs.get(job_id)
             if job is None:
                 raise ValueError(f"Unknown job: {job_id}")
+            authoritative_process_failure = bool(
+                kwargs.pop("_authoritative_process_failure", False)
+            )
+            if (
+                authoritative_process_failure
+                and job.state == JobState.COMPLETED
+                and state == JobState.FAILED
+                and str(kwargs.get("terminal_source") or "") == "codex_process_failed"
+                and job.terminal_source in {"session_task_complete", "stdout_turn_completed"}
+            ):
+                # Preserve first-terminal-wins for cancellation and ordinary
+                # races. A recognized failure from the exact Codex process is
+                # the narrow exception to a generic semantic completion claim.
+                job.state = JobState.FAILED
+                job.completed_at = time.time()
+                for key, value in kwargs.items():
+                    if hasattr(job, key):
+                        setattr(job, key, value)
+                self._normalize_terminal_job(job)
+                self._persist_job(job)
+                return True
             if (
                 state in {JobState.FAILED, JobState.CANCELLED}
                 and job.state in (JobState.PENDING, JobState.RUNNING)

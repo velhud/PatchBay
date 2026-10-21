@@ -1754,11 +1754,27 @@ class WorkerRuntime:
                 else:
                     lines.append("Bounded diff: no diff available for this worker.")
                 if detail == "review":
-                    lines.append(
-                        "Review note: this is review-grade peer context. Use the report, changed-file list, "
-                        "and bounded diff as the review surface; worker files are not mounted into this worker's "
-                        "checkout unless they have been explicitly integrated or supplied as artifacts."
-                    )
+                    workspace = self._workspace_for_jobs(jobs)
+                    if workspace["available"]:
+                        candidate_root = self._execution_path_for_workspace(workspace)
+                        lines.extend(
+                            [
+                                "Candidate source identity:",
+                                f"Workspace mode: {workspace['mode']}",
+                                f"Workspace path: {candidate_root}",
+                                f"Base revision: {workspace.get('base_revision') or 'unknown'}",
+                            ]
+                        )
+                        lines.append(
+                            "Review note: this is review-grade peer context. Use the report, changed-file list, "
+                            "bounded diff, and exact candidate workspace above; inspect the candidate files there "
+                            "when the diff does not provide enough context."
+                        )
+                    else:
+                        lines.append(
+                            "Review note: the candidate workspace is unavailable. Review only the supplied "
+                            "report, changed-file list, and bounded diff, and state this limitation."
+                        )
             block = "\n".join(lines).strip()
             sections.append(block)
             used_bytes += len(block.encode("utf-8", errors="replace"))
@@ -2326,7 +2342,9 @@ class WorkerRuntime:
         ]
         report_summary = self._projection_report_summary(jobs)
         checkpoint_summary = self._latest_checkpoint_summary(jobs)
-        cleanup_pending = self._terminal_cleanup_pending_for_jobs(jobs)
+        cleanup_blocker = self._workspace_cleanup_blocker_for_jobs(jobs)
+        cleanup_pending = cleanup_blocker["cleanup_pending"]
+        cleanup_unresolved = cleanup_blocker["cleanup_unresolved"]
         cleanup_recovery_required = (
             self._terminal_cleanup_recovery_required_for_jobs(jobs)
         )
@@ -2363,9 +2381,10 @@ class WorkerRuntime:
                 session_id
                 and workspace["available"]
                 and turn_state not in {"queued", "starting", "working"}
-                and not cleanup_pending
+                and not cleanup_blocker["blocked"]
             ),
             "cleanup_pending": cleanup_pending,
+            "cleanup_unresolved": cleanup_unresolved,
             "cleanup_recovery_required": cleanup_recovery_required,
             "turn_count": len(jobs),
             "report_summary": report_summary,
@@ -3173,6 +3192,7 @@ class WorkerRuntime:
             "suggested_action": liveness.get("suggested_action"),
             "status_line": view.get("status_line"),
             "can_message_now": view.get("can_message_now"),
+            "cleanup_unresolved": view.get("cleanup_unresolved"),
             "can_queue_message": view.get("can_queue_message"),
             "followup_mode": view.get("followup_mode"),
             "active_steering_supported": view.get("active_steering_supported"),
@@ -3210,6 +3230,9 @@ class WorkerRuntime:
             "has_session",
             "can_message",
             "can_message_now",
+            "cleanup_pending",
+            "cleanup_unresolved",
+            "cleanup_recovery_required",
             "can_queue_message",
             "queued_message_count",
             "can_message_reason",
@@ -4498,7 +4521,9 @@ class WorkerRuntime:
         model, reasoning_effort = self._worker_execution_choices(jobs)
         latest_checkpoints = self._latest_checkpoints_for_jobs(jobs)
         latest_partial_note = self._latest_partial_note_for_jobs(jobs)
-        cleanup_pending = self._terminal_cleanup_pending_for_jobs(jobs)
+        cleanup_blocker = self._workspace_cleanup_blocker_for_jobs(jobs)
+        cleanup_pending = cleanup_blocker["cleanup_pending"]
+        cleanup_unresolved = cleanup_blocker["cleanup_unresolved"]
         cleanup_recovery_required = (
             self._terminal_cleanup_recovery_required_for_jobs(jobs)
         )
@@ -4506,7 +4531,7 @@ class WorkerRuntime:
             state not in {"starting", "working"}
             and bool(session_id)
             and workspace_available
-            and not cleanup_pending
+            and not cleanup_blocker["blocked"]
         )
         liveness = self._liveness_for_job(latest, session_id=session_id, latest_partial_note=latest_partial_note)
 
@@ -4540,9 +4565,11 @@ class WorkerRuntime:
                 has_session=bool(session_id),
                 workspace_available=workspace_available,
                 cleanup_pending=cleanup_pending,
+                cleanup_unresolved=cleanup_unresolved,
                 cleanup_recovery_required=cleanup_recovery_required,
             ),
             "cleanup_pending": cleanup_pending,
+            "cleanup_unresolved": cleanup_unresolved,
             "cleanup_recovery_required": cleanup_recovery_required,
             "followup_mode": "next_turn_after_completion",
             "active_steering_supported": False,
@@ -4660,6 +4687,7 @@ class WorkerRuntime:
         has_session: bool,
         workspace_available: bool,
         cleanup_pending: bool = False,
+        cleanup_unresolved: bool = False,
         cleanup_recovery_required: bool = False,
     ) -> str:
         if state in {"starting", "working"}:
@@ -4670,6 +4698,8 @@ class WorkerRuntime:
                 if cleanup_recovery_required
                 else "terminal_cleanup_pending"
             )
+        if cleanup_unresolved:
+            return "runtime_cleanup_pending"
         if not has_session:
             return "no_resumable_codex_session"
         if not workspace_available:

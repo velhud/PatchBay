@@ -47,6 +47,21 @@ python -m pytest tests -q
 
 Do not replace the full suite with historical branch counts.
 
+### macOS process-cleanup qualification
+
+The macOS supervisor uses kqueue fork notifications and later process censuses;
+it does not have lossless descendant tracking across a child fork/reap race.
+The Linux rapid marker-stripping detached-descendant test skips on macOS and
+does not qualify Darwin cleanup. A macOS full-suite pass alone is therefore not
+evidence that ordinary Codex worker cleanup is conclusive. Before claiming that
+support, run a successful ordinary Codex worker against a disposable repository
+and verify that its durable terminal result has proven cleanup, no uncertainty
+sentinel remains, and the repository lock is released. Any
+`cleanup_unproven` result, including `fork_child_identity_unavailable`, fails
+this cleanup gate and must remain fenced; never turn missing child identity
+into an absence proof. Record the macOS and Codex CLI versions and the cleanup
+proof outcome with the qualification evidence.
+
 For Linux qualification, enable the real 185-second check with
 `PATCHBAY_AUTHOR_LONG_TESTS=1`. Supply `PATCHBAY_AUTHOR_DOCKER_IMAGE` only after
 preparing and inspecting an immutable local image. The strict Docker test uses
@@ -75,7 +90,23 @@ Run on Linux or WSL2. The execution guard is part of the Author contract.
 ```bash
 python -m pytest tests/authoring -q
 python -m pytest tests/authoring/test_reconciliation_contracts.py -q
+python -m pytest tests/authoring/test_drafts_maintenance.py -q
+python -m pytest tests/authoring/test_docker_lifecycle.py \
+  tests/authoring/test_operator_resolution.py -q
 ```
+
+Draft rejection coverage verifies that apply/seal validation errors become
+terminal, same-key retries preserve and report the original error, and a
+queued operation created by an older runtime is revalidated and terminalized
+by an exact normal replay.
+
+Docker lifecycle coverage includes delayed create acknowledgement, bounded
+output, check deadlines, cancellation before start and during attachment, and
+exact-ID cleanup. Operator-resolution coverage keeps historical unknown
+receipts immutable, rejects incomplete/live/mismatched evidence, checks the
+deployment identity guard, and verifies local-only idempotent resolution.
+Run the actual offline Docker and ordinary-Chat cancellation trials as separate
+deployment checks; simulated lifecycle regressions alone do not qualify them.
 
 Exercise installed entrypoints and independent state:
 
@@ -133,6 +164,17 @@ python scripts/real_mcp_worker_trial.py \
 ```
 
 Evidence is written under `.local/validation/real_mcp_trial/` by default. Use `--worker-timeout`, `--request-timeout`, `--keep-temp`, or `--output-dir` as needed.
+
+Before a live run, confirm the exact approved model appears in the deployed
+CLI's account-specific catalog (`codex debug models` and
+`codex_worker_options`). CLI 0.163.0 has been exercised with `gpt-6-luna`;
+successful login and a general self-test do not prove model support.
+Inspect process events and exit status as well as the final worker report.
+An explicit failed turn must remain failed even if the session also records
+generic completion. A successful final report that discusses an error, or an
+unclassified wrapper exit after genuine completion, must not be relabeled as a
+model failure. The corresponding process/session regressions are in
+`tests/test_job_executor_cancellation.py` and `tests/test_session_terminal.py`.
 
 ## 9. Result record
 

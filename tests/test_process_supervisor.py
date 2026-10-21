@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from patchbay.jobs import process_supervisor
 from patchbay.jobs.process_supervisor import cleanup_proof_budget_seconds
 
 try:
@@ -29,6 +31,68 @@ SUPERVISOR_SCRIPT = (
 def test_cleanup_proof_budget_covers_bounded_darwin_discovery_path():
     assert cleanup_proof_budget_seconds("darwin") >= 22.0
     assert cleanup_proof_budget_seconds("linux") == 6.0
+
+
+def test_unproven_cleanup_writes_bounded_private_diagnostic_without_changing_proof(
+    tmp_path,
+):
+    proof_file = tmp_path / "worker.proof"
+    process_supervisor._write_cleanup_uncertainty(
+        str(proof_file),
+        12345,
+        12346,
+        {"marker_census_incomplete", "descendant_census_incomplete"},
+    )
+
+    assert proof_file.read_text(encoding="ascii") == (
+        "patchbay-supervisor-cleanup-unproven-v2:12345:12346\n"
+    )
+    diagnostic = proof_file.with_name(f"{proof_file.name}.diagnostic.json")
+    payload = json.loads(diagnostic.read_text(encoding="ascii"))
+    assert payload == {
+        "format_version": 1,
+        "platform": (
+            "darwin"
+            if sys.platform == "darwin"
+            else "linux"
+            if sys.platform.startswith("linux")
+            else "other"
+        ),
+        "outcome": "cleanup_unproven",
+        "reason_codes": [
+            "descendant_census_incomplete",
+            "marker_census_incomplete",
+        ],
+    }
+    assert diagnostic.stat().st_mode & 0o777 == 0o600
+    assert "12345" not in diagnostic.read_text(encoding="ascii")
+    assert "12346" not in diagnostic.read_text(encoding="ascii")
+    with pytest.raises(ValueError, match="Unknown cleanup diagnostic reason code"):
+        process_supervisor._write_cleanup_diagnostic(proof_file, ["untrusted-payload"])
+
+
+def test_darwin_tracker_records_separate_census_failure_reasons(monkeypatch):
+    tracker = process_supervisor._DarwinTracker.__new__(
+        process_supervisor._DarwinTracker
+    )
+    tracker._queue = None
+    tracker.tracking_uncertain = False
+    tracker.reason_codes = set()
+    tracker.fork_seen = True
+    tracker.job_marker = "fixture-marker"
+    tracker.tracked = {}
+    monkeypatch.setattr(process_supervisor.sys, "platform", "darwin")
+    monkeypatch.setattr(process_supervisor, "_descendants", lambda _pid: None)
+    monkeypatch.setattr(process_supervisor, "_marker_pids", lambda _marker: None)
+
+    assert process_supervisor._owned_pids(99999, tracker) == set()
+    assert tracker.tracking_uncertain is True
+    assert tracker.reason_codes == {
+        "descendant_census_incomplete",
+        "marker_census_incomplete",
+    }
+    with pytest.raises(ValueError, match="Unknown cleanup diagnostic reason code"):
+        tracker.mark_uncertain("secret-value")
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin ps discovery path")
@@ -284,6 +348,15 @@ while not path.exists() and time.time() < deadline:
             assert proof_text.startswith(prefix)
             sentinel_pid = int(proof_text.removeprefix(prefix))
             assert _pid_live(sentinel_pid)
+            diagnostic = json.loads(
+                proof_file.with_name(
+                    f"{proof_file.name}.diagnostic.json"
+                ).read_text(encoding="ascii")
+            )
+            assert diagnostic["outcome"] == "cleanup_unproven"
+            assert diagnostic["reason_codes"]
+            assert set(diagnostic["reason_codes"]) <= process_supervisor._CLEANUP_REASON_CODES
+            assert str(child_pid) not in json.dumps(diagnostic)
             if fcntl is not None:
                 contender = lock_path.open("a+b")
                 try:

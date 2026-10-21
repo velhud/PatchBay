@@ -2306,3 +2306,44 @@ async def test_cleanup_workspace_preserves_worktree_while_codex_runtime_is_unres
 
     assert retried["workspace_cleaned"] is True
     assert not worktree_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_terminal_job_with_live_executor_cleanup_is_not_message_ready(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+
+    started = await runtime.start_worker(
+        name="Finishing Implementer",
+        brief="Complete the first turn.",
+        repo_path=config["repositories"]["default"],
+    )
+    job = manager.get_job(executor.started[0])
+    manager.update_job_state(
+        job.job_id,
+        JobState.COMPLETED,
+        result={"summary": "The report is durable."},
+        session_id="session-finishing-cleanup",
+        wrapper_cleanup_outcome="process_exited",
+    )
+    executor.runtime_liveness_snapshot = lambda _job_id: {
+        "executor_task_alive": True,
+        "process_alive": False,
+        "runtime_alive": True,
+    }
+
+    view = await runtime.inspect_worker(
+        worker=started["worker_id"],
+        view="report",
+    )
+    projected = runtime._worker_projection(runtime._jobs_for_worker(started["worker_id"]))
+
+    assert view["liveness"]["turn_state"] == "completed"
+    assert view["cleanup_pending"] is False
+    assert view["cleanup_unresolved"] is True
+    assert view["can_message_now"] is False
+    assert view["can_message_reason"] == "runtime_cleanup_pending"
+    assert projected["cleanup_unresolved"] is True
+    assert projected["can_message"] is False

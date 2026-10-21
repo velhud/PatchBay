@@ -1,5 +1,10 @@
 # Ordinary Chat artifact trial preparation
 
+For the later disposable live coding trials and the defects they exposed, see
+[live ordinary-Chat reliability repairs](../repairs/2026-10-21-live-trial-repairs.md).
+Those observations do not fill in this preparer's blank qualification templates
+or qualify a different runtime, client, account or route.
+
 `scripts/prepare_author_chat_trial.py` creates a disposable source repository,
 independent Author home, task, immutable context ZIP, task-scoped author and
 reader principals, and blank ordinary-Chat observation files. It is setup only:

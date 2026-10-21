@@ -53,6 +53,19 @@ For ChatGPT web, start an authenticated HTTPS tunnel and use the private Server 
 1. Call `codex_self_test`.
 2. Open or discover the repository with `codex_open_workspace` or `codex_list_workspaces`.
 3. Call `codex_worker_options` once for the relevant installed catalog state.
+
+Check `worker_model_available` before dispatch. An installed CLI and a valid
+login alone do not establish support for the selected model. Codex CLI 0.163.0
+was verified with the exact `gpt-6-luna` selector; an older CLI can reject it
+even with the same signed-in account. Use the installed account-specific catalog
+and a disposable real-worker trial to verify the deployed runtime. Correct an
+unsupported CLI/account configuration before retrying the same named worker;
+do not substitute a different model or treat a missing final report as success.
+Install the complete official CLI package, including its companion execution
+hosts and resources. Copying only the standalone executable can pass version
+and model checks while leaving shell execution unavailable. Verify an actual
+read-only command in the disposable worker trial before starting coding work.
+
 4. For an ordinary worker, explicitly pass:
 
 ```json
@@ -69,6 +82,37 @@ Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_eff
 7. Wait at the returned cadence. Quiet work and a wait timeout are not proof of failure.
 8. Inspect reports first. Use direct file/diff tools for orientation, focused verification, contradictions, risky changes, or explicit user requests—not as the default broad implementation loop.
 9. Preview isolated integration before applying it. Integration does not commit and does not delete the worker worktree.
+
+If a terminal job reports `cleanup_blocked_untrusted_process_identity`, do not
+blindly retry or remove the durable fence. Stop the local PatchBay server first,
+then inspect one exact job with the offline operator command. It defaults to an
+assessment that does not change job state or receipts; applying requires an explicit quiescence attestation
+under the named operator identity and never signals processes:
+
+```bash
+patchbay cleanup-recover --config /path/to/config.yaml --job-id <exact-job-id> --operator <name>
+patchbay cleanup-recover --config /path/to/config.yaml --job-id <exact-job-id> --operator <name> \
+  --apply --confirm-quiescence 'I independently verified that every tracked process has exited and no detached same-job process remains active.'
+```
+
+Recovery refuses live or inconclusive PID, process-group, marker, descendant,
+server, or repository-lock evidence. On Darwin the OS cannot retrospectively
+identify a fully detached process that removed PatchBay's job marker; the
+private receipt records this limit and the operator attestation separately from
+the supervisor's original unproven receipt.
+
+An unproven-cleanup sentinel intentionally remains alive and holds the
+repository lock. It ignores TERM and INT, and `cleanup-recover` never signals
+processes, so an active sentinel must be dispositioned by the operator before
+the command can pass its sentinel and lock checks. Do this only after the
+server is stopped and independent evidence establishes that no tracked or
+detached same-job process remains. A persisted PID alone is not identity: when
+the record has no process-birth identity, independently match the live process
+to this job's sentinel using current OS process evidence, the exact job marker,
+and its matching supervisor proof. Never signal a stale or recycled PID; if
+that exact match cannot be established, leave the cleanup blocker in place.
+After the verified sentinel exits and releases the lock, rerun the read-only
+assessment before applying the operator attestation.
 
 Hub/Edge deployments use the corresponding `patchbay_*` group, worker, workspace, Pro Request, and operation tools. One user task is one durable group; its workers remain pinned to one machine unless explicitly reassigned.
 

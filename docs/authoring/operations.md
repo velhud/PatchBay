@@ -41,6 +41,16 @@ operations retain it through materialization/recovery. Native downloads use a
 45-second transfer budget and 10-second socket waits; this leaves local margin
 but does not qualify DNS, proxies, serialization, or a deployed ingress deadline.
 
+Draft apply and seal validation failures are durable terminal operation
+results. The first call returns its specific validation error and records the
+operation as failed. Replaying the same exact request with the same idempotency
+key returns `OPERATION_FAILED` with the original error in `previous`; it does
+not retry the mutation. After correcting the request, use a new idempotency
+key. For a previously accepted but still queued draft operation from an older
+runtime, replay the exact original request and key through the normal Author
+service so current lease, task, and path policy checks can resolve it. Never
+edit operation state directly or substitute a new request under the old key.
+
 Keep the deployment on loopback unless a specific remote route is required.
 For a remote route, terminate TLS at a named trusted proxy, disable request
 body/access logging that could retain bearer tokens or private file names, and
@@ -167,6 +177,48 @@ supervisor/process identity from durable ownership records; never trust a PID
 alone. If ownership or the effect cannot be proved, keep it fenced and request
 explicit operator reconciliation. Do not blind-rerun, signal a recycled PID,
 or clear an unresolved cleanup marker.
+
+### Explicitly resolving a proven-quiescent unknown execution
+
+The Linux-only local CLI includes an operator resolution command for the narrow
+case where the original execution outcome must remain unknown but the
+admission fence can be released after a complete quiescence assessment. It
+does not start an executor, signal a process, remove a container, or call an
+HTTP/MCP route. Its default invocation is assessment only; it may create lock
+files but does not mutate the run, operation, or receipt:
+
+```bash
+patchbay-author --home "$PATCHBAY_AUTHOR_HOME" resolve-unknown-execution OPERATION_ID \
+  --operator "Named operator" \
+  --reason "Close admission after independent quiescence review"
+```
+
+Run with the same trusted Docker wrapper and `PATH` as the execution service;
+a different endpoint must fail its recorded daemon identity check. A missing
+immutable container ID remains fenced; a name-only absence query is insufficient.
+
+Review the returned identity and Docker evidence. Apply is a separate explicit
+choice and requires the exact statement printed by `--help` for the evidence
+source. Record the bounded manual reason with `--reason`. The command rechecks the operation under maintenance, task, and run
+locks. It requires a fresh successful Docker daemon identity and exact
+container query, exact recorded process identities and groups to be absent or
+zombie-only, and no other active or uncertain run. Native lifecycle evidence
+must include acknowledged full container IDs and daemon identities. Older
+runs without that journal require a separate, private
+`legacy-docker-observation.json` bound to the immutable receipt and run
+records, including explicit operator attestation of engine continuity and no
+in-flight create request. Missing, inconsistent, or inconclusive evidence
+leaves the run fenced.
+
+An applied resolution writes a separate mode-0600 audit record and a completed
+resolution operation. It preserves the original receipt bytes, classification,
+result, and error; the historical outcome remains `EXECUTION_UNKNOWN`. The
+original operation/run become `blocked` with phase `operator_resolved` and
+cleanup disposition `operator_attested` only to release admission. This is
+not a success, failure, cancellation, or claim that execution did not occur,
+and it does not retry the task. The host census cannot prove that arbitrary
+work escaped every recorded process group, so the named operator attestation
+remains an explicit trust boundary.
 
 ## Backup, upgrade and rollback
 

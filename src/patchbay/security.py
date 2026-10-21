@@ -95,11 +95,41 @@ SECRET_PATTERNS = [
     (
         re.compile(
             r"(?i)\b([A-Za-z0-9_]*(?:token|secret|password|credential|auth)[A-Za-z0-9_]*[\"']?\s*[:=]\s*)"
-            r"(?!true\b|false\b|null\b)[^\"'\s,}&]+"
+            r"(?!true\b|false\b|null\b)"
+            r"(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s,}&]+)"
         ),
         r"\1[REDACTED_POSSIBLE_SECRET]",
     ),
 ]
+
+SAFE_SOURCE_PATTERNS = (
+    # Preserve only complete, recognized numeric fencing-counter increments.
+    re.compile(
+        r"(?i)\b(?:lease_token|fencing_token)\s*=\s*"
+        r"(?:lease_token|fencing_token)\s*\+\s*\d+"
+        r"(?=[ \t]*(?:[,);]|\n|$|WHERE\b))"
+    ),
+    # Preserve a token field copied from a matching quoted mapping key.
+    re.compile(
+        r"(?i)\b(?:lease_token|fencing_token|token)[\"']?\s*[:=]\s*"
+        r"""[A-Za-z_]\w*\s*\[\s*(?P<quote>['"])"""
+        r"(?:lease_token|fencing_token|token)(?P=quote)\s*\]"
+        r"(?=[ \t]*(?:[,);}]|\n|$))"
+    ),
+    # Preserve common annotations only in colon-based type syntax.
+    re.compile(
+        r"(?i)\b(?:lease_token|fencing_token|token)\s*:\s*"
+        r"(?:int|str|bool|float|bytes|Any|None|Optional|Union|list|dict|tuple|set|Sequence|Mapping|Iterable)"
+        r"(?:\[[ \t]*(?:int|str|bool|float|bytes|Any|None|Optional|Union|list|dict|tuple|set|Sequence|Mapping|Iterable)"
+        r"(?:[ \t]*[,|][ \t]*(?:int|str|bool|float|bytes|Any|None|Optional|Union|list|dict|tuple|set|Sequence|Mapping|Iterable))*[ \t]*\])?"
+        r"(?=[ \t]*(?:[,)=;]|\n|$))"
+    ),
+    # Preserve SQL bind markers only for numeric fencing fields.
+    re.compile(
+        r"(?i)\b(?:lease_token|fencing_token)\s*=\s*(?:\?|\$\d+|%s)"
+        r"(?=[ \t]*(?:[,);]|\n|$|AND\b|OR\b))"
+    ),
+)
 
 
 def validate_allowed_path(path: str, allowed_roots: list[str]) -> Path:
@@ -119,8 +149,21 @@ def validate_allowed_path(path: str, allowed_roots: list[str]) -> Path:
 def redact_text(value: str) -> str:
     """Redact likely secrets from text."""
     redacted = value
+    protected_source: list[str] = []
+    marker_prefix = "\x00PATCHBAY_SAFE_SOURCE_"
+    while marker_prefix in redacted:
+        marker_prefix += "_"
+    for pattern in SAFE_SOURCE_PATTERNS:
+        def protect(match: re.Match[str]) -> str:
+            marker = f"{marker_prefix}{len(protected_source)}\x00"
+            protected_source.append(match.group(0))
+            return marker
+
+        redacted = pattern.sub(protect, redacted)
     for pattern, replacement in SECRET_PATTERNS:
         redacted = pattern.sub(replacement, redacted)
+    for index, source in enumerate(protected_source):
+        redacted = redacted.replace(f"{marker_prefix}{index}\x00", source)
     return redacted
 
 

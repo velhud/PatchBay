@@ -163,11 +163,17 @@ async def test_peer_review_context_includes_diff_and_visibility_note(tmp_path):
     await asyncio.sleep(0)
     implementer_job = manager.get_job(executor.started[-1])
     worktree = Path(implementer_job.worktree_path)
-    (worktree / "review-me.txt").write_text("review-grade-change\n", encoding="utf-8")
+    (worktree / "review-me.py").write_text(
+        "lease_token = lease_token + 1\n"
+        "token: int\n"
+        "lease_token = row['lease_token']\n"
+        "password = 'fixture-secret-value'\n",
+        encoding="utf-8",
+    )
     manager.update_job_state(
         implementer_job.job_id,
         JobState.COMPLETED,
-        result={"summary": "Created review-me.txt", "files_changed": ["review-me.txt"]},
+        result={"summary": "Created review-me.py", "files_changed": ["review-me.py"]},
         session_id="session-review-target",
         exit_code=0,
     )
@@ -185,9 +191,15 @@ async def test_peer_review_context_includes_diff_and_visibility_note(tmp_path):
 
     assert reviewer["context_detail"] == "review"
     assert "Bounded diff:" in reviewer_job.prompt
-    assert "+review-grade-change" in reviewer_job.prompt
+    assert "+lease_token = lease_token + 1" in reviewer_job.prompt
+    assert "+token: int" in reviewer_job.prompt
+    assert "+lease_token = row['lease_token']" in reviewer_job.prompt
+    assert "[REDACTED_POSSIBLE_SECRET]" in reviewer_job.prompt
+    assert "fixture-secret-value" not in reviewer_job.prompt
     assert "Review note:" in reviewer_job.prompt
-    assert str(worktree) not in reviewer_job.prompt
+    assert "Candidate source identity:" in reviewer_job.prompt
+    assert f"Workspace path: {worktree}" in reviewer_job.prompt
+    assert f"Base revision: {implementer_job.options['_worker_base_revision']}" in reviewer_job.prompt
 
 
 @pytest.mark.asyncio

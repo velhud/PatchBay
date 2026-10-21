@@ -8,6 +8,7 @@ import pytest
 
 from patchbay.jobs.executor import JobExecutor, STALE_RUNNING_JOB_ERROR
 from patchbay.jobs.manager import JobManager, JobState
+from patchbay.jobs.session_terminal import SessionTerminalSnapshot
 
 
 def make_config(tmp_path):
@@ -742,3 +743,209 @@ async def test_codex_usage_limit_is_classified_without_blaming_patchbay(tmp_path
     assert job.result["failure_diagnostic"]["retry_without_operator_action"] is True
     assert "11:46 PM" in job.result["failure_diagnostic"]["retry_hint"]
     assert "not a PatchBay" in job.result["notes"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_model_failure_overrides_generic_session_completion(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job(
+        "plan", "unsupported model", config["repositories"]["default"], {}
+    )
+    session_id = "session-unsupported-model"
+    observer_ready = tmp_path / "session-terminal-observed"
+    model_error = (
+        "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."
+    )
+    events = [
+        {"type": "thread.started", "thread_id": session_id},
+        {"type": "turn.started"},
+        {"type": "error", "message": model_error},
+        {"type": "turn.failed", "error": {"message": model_error}},
+    ]
+    script = (
+        "import json,os,sys,time\n"
+        f"print(json.dumps({events[0]!r}), flush=True)\n"
+        f"deadline=time.time()+5; marker={str(observer_ready)!r}\n"
+        "while not os.path.exists(marker) and time.time()<deadline: time.sleep(.01)\n"
+        f"for event in {events[1:]!r}: print(json.dumps(event), flush=True)\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setattr(
+        executor,
+        "_build_codex_command",
+        lambda *args, **kwargs: [sys.executable, "-u", "-c", script],
+    )
+
+    class CompletedSessionObserver:
+        def poll(self):
+            observer_ready.touch(exist_ok=True)
+            return SessionTerminalSnapshot(
+                completed=True,
+                observed_at=time.time(),
+                final_message="",
+                source="session_task_complete",
+            )
+
+    monkeypatch.setattr(
+        executor,
+        "_session_terminal_observer",
+        lambda *args, **kwargs: CompletedSessionObserver(),
+    )
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=10)
+
+    job = manager.get_job(job_id)
+    result_file = tmp_path / "logs" / "jobs" / f"{job_id}_result.json"
+    persisted = json.loads(result_file.read_text(encoding="utf-8"))
+    assert observer_ready.exists()
+    assert job.state == JobState.FAILED
+    assert job.exit_code == 1
+    assert job.terminal_source == "codex_process_failed"
+    assert "does not support the selected model" in job.error
+    assert job.result["failure_diagnostic"]["category"] == "codex_model_unsupported"
+    assert job.result["failure_diagnostic"]["retry_without_operator_action"] is False
+    assert job.result["failure_diagnostic"]["prior_completion_source"] == "session_task_complete"
+    assert persisted["failure_diagnostic"]["category"] == "codex_model_unsupported"
+    assert persisted["failure_diagnostic"]["retry_without_operator_action"] is False
+
+
+@pytest.mark.asyncio
+async def test_successful_report_can_discuss_model_and_quota_errors(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job(
+        "plan", "discuss error text", config["repositories"]["default"], {}
+    )
+    report = {
+        "summary": "The report explains why gpt-6-luna is unsupported and how a usage limit differs.",
+        "detailed_report": "These phrases describe the test subject, not this worker's execution.",
+        "evidence": ["successful fixture run"],
+        "files_changed": [],
+        "commands_run": [],
+        "tests_run": ["fixture"],
+        "notes": "No usage limit was reached.",
+        "risks": [],
+        "open_questions": [],
+        "next_steps": [],
+    }
+    events = [
+        {"type": "thread.started", "thread_id": "session-successful-discussion"},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_report",
+                "type": "agent_message",
+                "status": "completed",
+                "text": json.dumps(report),
+            },
+        },
+        {"type": "turn.completed"},
+    ]
+    script = (
+        "import json,sys\n"
+        f"for event in {events!r}: print(json.dumps(event), flush=True)\n"
+        "sys.exit(0)\n"
+    )
+    monkeypatch.setattr(
+        executor,
+        "_build_codex_command",
+        lambda *args, **kwargs: [sys.executable, "-u", "-c", script],
+    )
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=10)
+
+    job = manager.get_job(job_id)
+    assert job.state == JobState.COMPLETED
+    assert job.result["summary"] == report["summary"]
+    assert "failure_diagnostic" not in job.result
+
+
+@pytest.mark.asyncio
+async def test_quota_retry_guidance_cannot_leak_credentials_into_result_notes(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job("plan", "quota diagnostic privacy", config["repositories"]["default"], {})
+    sensitive_value = "private-fixture-canary-value"
+    message = f"Usage limit reached. Retry: token={sensitive_value}"
+    events = [{"type": "turn.failed", "error": {"message": message}}]
+    script = (
+        "import json,sys\n"
+        f"for event in {events!r}: print(json.dumps(event), flush=True)\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setattr(
+        executor, "_build_codex_command",
+        lambda *args, **kwargs: [sys.executable, "-u", "-c", script],
+    )
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=10)
+
+    job = manager.get_job(job_id)
+    persisted = (tmp_path / "logs" / "jobs" / f"{job_id}_result.json").read_text()
+    assert job.state == JobState.FAILED
+    assert job.result["failure_diagnostic"]["category"] == "codex_usage_limit"
+    assert "Reported retry guidance" in job.result["notes"]
+    assert sensitive_value not in json.dumps(job.result)
+    assert sensitive_value not in persisted
+    assert "[REDACTED_POSSIBLE_SECRET]" in job.result["notes"]
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_survives_unclassified_late_wrapper_failure(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = JobExecutor(config, manager)
+    job_id = manager.create_job(
+        "plan", "late wrapper failure", config["repositories"]["default"], {}
+    )
+    report = {
+        "summary": "The requested fixture change is complete.",
+        "detailed_report": "The worker produced a valid final result before the wrapper failed.",
+        "evidence": ["completed-turn fixture"],
+        "files_changed": [],
+        "commands_run": [],
+        "tests_run": ["fixture"],
+        "notes": "The later process exit had no recognized Codex turn failure.",
+        "risks": [],
+        "open_questions": [],
+        "next_steps": [],
+    }
+    events = [
+        {"type": "thread.started", "thread_id": "session-late-wrapper-failure"},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_report",
+                "type": "agent_message",
+                "status": "completed",
+                "text": json.dumps(report),
+            },
+        },
+        {"type": "turn.completed"},
+    ]
+    script = (
+        "import json,sys\n"
+        f"for event in {events!r}: print(json.dumps(event), flush=True)\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setattr(
+        executor,
+        "_build_codex_command",
+        lambda *args, **kwargs: [sys.executable, "-u", "-c", script],
+    )
+
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=10)
+
+    job = manager.get_job(job_id)
+    assert job.state == JobState.COMPLETED
+    assert job.terminal_source == "stdout_turn_completed"
+    assert job.result["summary"] == report["summary"]
+    assert "failure_diagnostic" not in job.result
