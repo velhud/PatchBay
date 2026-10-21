@@ -2703,7 +2703,7 @@ class MCPProtocol:
         """Return compact human-visible text without duplicating large structured payloads."""
         if tool_name in WORKER_RESULT_TOOLS:
             return self._worker_tool_result_text(result, tool_name)
-        rendered = json.dumps(result, indent=2)
+        rendered = json.dumps(result, separators=(",", ":"))
         if len(rendered) <= MAX_MCP_TEXT_RESULT_CHARS:
             return rendered
         keys = ", ".join(sorted(str(key) for key in result.keys())[:20])

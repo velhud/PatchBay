@@ -21,6 +21,11 @@ class TaskRef(Contract):
     task_id: str = Field(pattern=r"^task_[0-9a-f]{32}$")
 
 
+class RecoveryRef(TaskRef):
+    """Bound recent-history size in a recovery read without hiding active work."""
+    operation_limit: StrictInt = Field(20, ge=1, le=200)
+
+
 class OperationRef(Contract):
     operation_id: str = Field(pattern=r"^op_[0-9a-f]{32}$")
 

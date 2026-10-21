@@ -5,6 +5,14 @@ This map covers all Author plan work items `A00–A15`, all registered Author sc
 
 ## Current completion additions
 
+The tables retain their source-pinned baseline assessments. Later
+[Linux qualification](../testing/linux-qualification-2026-10-20.md),
+[ordinary-Chat coding and cancellation trials](../repairs/2026-10-21-live-trial-repairs.md)
+and [context-response checks](../repairs/2026-10-21-context-efficiency.md)
+have separate evidence and limits; historical `unrun` wording below is not a
+current verdict on those later runs. None of those records supplies all 52
+per-case research acceptance receipts or proves Pro compatibility.
+
 The final code adds named principal credentials and task-scoped reads/writes, renewal/revocation, principal-bound epochs and replay keys, cross-principal operator recovery of the original package operation, persisted scan grants, bounded ingress/backoff/correlation, explicit dirty overlays and policy CAS, and indexed transactional operation clocks. Relevant portable tests are `test_principals.py`, `test_http_principal_contracts.py`, `test_ingress.py`, `test_source_policy_requirements.py`, `test_recovery_cursor_capacity.py` and `test_state_clock.py`. These additions close the identified source omissions; deployed Linux, physical fault, and actual ordinary-Chat acceptance remain separate qualification work. The full mutation inventory and explicit state upgrade are in [operations](operations.md). No UI work or PR creation is included.
 
 ## Source pins

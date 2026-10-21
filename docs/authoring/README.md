@@ -7,7 +7,11 @@ tests; this documentation describes the operator sequence and the evidence
 needed to rely on it.
 
 - [Prepared ordinary-Chat trial](ordinary-chat-trial.md): reproducible disposable
-  fixture and private evidence templates; actual client observations stay unrun.
+  fixture and private evidence templates.
+- [Recorded ordinary-Chat repairs and evidence](../repairs/2026-10-21-live-trial-repairs.md):
+  actual Author coding, checks, correction and cancellation trials, with limits.
+- [Using ChatGPT for heavy tasks](../user/chatgpt-heavy-tasks.md): choose direct
+  authoring or worker delegation, prepare scope and recover durable work.
 - [Linux evidence](../testing/linux-qualification-2026-10-20.md): published
   candidate results, repaired failures and remaining deployment/lab boundaries.
 - [Operations](operations.md): profile, authentication, ingress, recovery,

@@ -89,6 +89,14 @@ Roles are explicit (`operator`, `author`, `reader`). Qualification output omits 
 
 Core capabilities include repository registration, task creation/listing, leases, deterministic context export, package application, checks, operation status/cancel/recovery, feedback/diff/logs, approval, publication/listing, integration tasks, backup/restore/GC/doctor, tokens, qualification, and HTTP serving.
 
+`author_recover_task` accepts `operation_limit`, a strict integer from 1 to 200
+with a default of 20 recent operations. Active and uncertain operations have a
+separate counted section even when they predate that history window. Respect
+all partial flags and use `author_recent_operations` cursor pages for complete
+history. The domain/CLI recovery default remains 50. Full text plus structured
+content remains the default MCP output; `structured-summary-v2` requires its
+own observed client qualification and keeps full payloads in `structuredContent`.
+
 ## Result and safety contracts
 
 - JSON-RPC requests are validated before dispatch.

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from patchbay.hub import live_v2
 from patchbay.hub.live_v2 import _wait_until, run_live_hub_v2_eval_sync
 from patchbay.hub.tool_surface import HUB_V2_TOOL_NAMES
 
@@ -87,3 +90,99 @@ def test_live_hub_v2_eval_report(tmp_path):
         "same_worker_continues_after_hub_edge_restart",
         "hub_and_edge_history_survive_restart",
     }
+
+
+def test_live_hub_v2_fairness_waits_for_local_outbox_ack(tmp_path, monkeypatch):
+    original_post_json = live_v2._FakeNetworkTransport.post_json
+
+    async def delay_poison_phase_responses(
+        self, path, payload, *, token="", timeout_seconds=None
+    ):
+        response = await original_post_json(
+            self, path, payload, token=token, timeout_seconds=timeout_seconds
+        )
+        if self.poison_receipt_id:
+            # Hub state can be visible to projection readers before the Edge
+            # resumes from this response and records its local outbox ACK.
+            await asyncio.sleep(0.6)
+        return response
+
+    monkeypatch.setattr(
+        live_v2._FakeNetworkTransport,
+        "post_json",
+        delay_poison_phase_responses,
+    )
+    report = run_live_hub_v2_eval_sync(tmp_path)
+
+    assert report["status"] == "passed", report
+    fairness = next(
+        check
+        for check in report["checks"]
+        if check["name"] == "poisoned_receipt_does_not_starve_newer_results"
+    )
+    assert fairness["passed"] is True
+    assert fairness["details"]["pending_receipts"] == 1
+    assert fairness["details"]["later_workers_completed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_deterministic_executor_releases_process_free_terminal_cleanup(tmp_path):
+    repo = live_v2._create_repo(tmp_path / "repo")
+    config = live_v2._edge_config(tmp_path, repo, "executor-state")
+    manager = live_v2.JobManager(config)
+    job_id = manager.create_job("plan", "Complete deterministic fixture", str(repo))
+    executor = live_v2._DeterministicCodexExecutor(config, manager)
+    manager.update_job_state(job_id, live_v2.JobState.RUNNING)
+
+    prior_task = asyncio.create_task(asyncio.Event().wait())
+    executor.tasks[job_id] = prior_task
+    executor._refresh_runtime_liveness_cache()
+    assert executor.runtime_liveness_snapshot(job_id)["executor_task_alive"] is True
+
+    executor.tasks.pop(job_id)
+    prior_task.cancel()
+    await asyncio.gather(prior_task, return_exceptions=True)
+    completed_task = executor.schedule_job(job_id)
+    await completed_task
+    await asyncio.sleep(0)
+
+    job = manager.get_job(job_id)
+    assert job is not None
+    assert job.state == live_v2.JobState.COMPLETED
+    assert job.wrapper_cleanup_outcome == "process_not_live_after_terminal"
+    snapshot = executor.runtime_liveness_snapshot(job_id)
+    assert snapshot["executor_task_alive"] is False
+    assert snapshot["process_alive"] is False
+    assert snapshot["runtime_alive"] is False
+
+
+@pytest.mark.asyncio
+async def test_deterministic_executor_preserves_existing_cleanup_fence(tmp_path):
+    repo = live_v2._create_repo(tmp_path / "repo")
+    config = live_v2._edge_config(tmp_path, repo, "executor-state")
+    manager = live_v2.JobManager(config)
+    job_id = manager.create_job("plan", "Keep unresolved cleanup fenced", str(repo))
+    manager.update_job_state(
+        job_id,
+        live_v2.JobState.PENDING,
+        wrapper_cleanup_outcome="cleanup_unproven",
+    )
+    executor = live_v2._DeterministicCodexExecutor(config, manager)
+    lease = await executor.repo_locks.acquire(
+        str(repo), operation="fixture_cleanup_fence"
+    )
+    executor.repo_locks.bind_to_job(job_id, lease)
+
+    try:
+        completed_task = executor.schedule_job(job_id)
+        await completed_task
+        await asyncio.sleep(0)
+
+        job = manager.get_job(job_id)
+        assert job is not None
+        assert job.state == live_v2.JobState.COMPLETED
+        assert job.wrapper_cleanup_outcome == "cleanup_unproven"
+        assert job_id not in executor._terminal_cleanup_completed
+        assert lease.released is False
+    finally:
+        executor.repo_locks.release_job(job_id)

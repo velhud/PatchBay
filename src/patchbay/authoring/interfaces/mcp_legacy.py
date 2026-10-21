@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from pydantic import ValidationError
 
 from ..errors import AuthorError, require
@@ -25,7 +26,7 @@ CATALOG = [
     ("author_search", I.Search, "Perform a bounded literal source search at an immutable context identity. Results explicitly indicate partial coverage.", False),
     ("author_get_feedback", I.FeedbackPage, "Read canonical check evidence for the requested task revision. Missing or unknown evidence is never a pass.", False),
     ("author_operation_status", I.OperationRef, "Observe one durable operation without launching, reconciling, cancelling, or retrying any work.", False),
-    ("author_recover_task", I.TaskRef, "Recover a current factual task capsule, active and uncertain effects, ownership, evidence and required judgment. Pure read; do not replace or replay existing work.", False),
+    ("author_recover_task", I.RecoveryRef, "Recover a current factual task capsule, active and uncertain effects, ownership, evidence and required judgment. Recent history defaults to 20 operations; use author_recent_operations pages for the full history. Pure read; do not replace or replay existing work.", False),
     ("author_recent_operations", I.RecentOperations, "Discover recent accepted task operations after a lost response or operation ID. Continue with the returned versioned cursor; stale pages fail explicitly.", False),
     ("author_read_log", I.ReadLog, "Read a bounded page of an owned operation's retained log. Follow byte offsets; truncation never means complete original output.", False),
     ("author_publication_preview", I.PublicationPreview, "Read exact checked candidate and remote publication preconditions. Does not approve, push, create a PR or merge.", False),
@@ -151,8 +152,7 @@ class MCP:
                         CONTRACTS[params["name"]].model_validate(payload)
                     except ValidationError as exc:
                         raise AuthorError("INVALID_OUTPUT", "The server result violated its published output contract; no success is asserted") from exc
-                    summary = {key: payload[key] for key in ("task_id", "id", "state", "revision", "classification", "next_offset") if key in payload}
-                    text = {"tool": params["name"], **summary} if self.output_profile == "structured-summary-v2" else payload
+                    text = _summary_text(params["name"], payload) if self.output_profile == "structured-summary-v2" else payload
                     result = {"content": [{"type": "text", "text": json.dumps(text, ensure_ascii=False)}],
                               "structuredContent": payload, "isError": False}
                     require(len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= 8 * 1024**2,
@@ -167,3 +167,78 @@ class MCP:
             return {"jsonrpc": "2.0", "id": request_id, "result": result}
         except AuthorError as exc:
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": exc.message, "data": exc.as_dict()}}
+
+
+_SUMMARY_FIELDS = (
+    "task_id", "id", "operation_id", "request_operation_id", "revision", "version", "commit", "tree",
+    "context_id", "draft_id", "path", "sha256", "blob_sha", "receipt_sha", "state", "phase", "status",
+    "classification", "next_action", "required_judgment", "next_offset", "next_start_line", "start_line",
+    "total_lines", "bytes", "observed_bytes", "has_more", "partial", "truncated", "result_partial",
+    "error_partial", "result_bytes", "error_bytes", "operation_count", "operations_partial",
+    "active_operation_count", "active_operations_partial", "total_check_results", "total", "cursor", "watermark",
+)
+_SUMMARY_TEXT_MAX = 512
+
+
+def _bounded_summary_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str) and len(value.encode("utf-8")) > _SUMMARY_TEXT_MAX:
+        raw = value.encode("utf-8")[:_SUMMARY_TEXT_MAX]
+        while raw:
+            try:
+                return raw.decode("utf-8"), True
+            except UnicodeDecodeError:
+                raw = raw[:-1]
+        return "", True
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value, False
+    return None, False
+
+
+def _summary_text(name: str, payload: dict) -> dict[str, Any]:
+    """Expose bounded identity/progress metadata while keeping full content structured."""
+    summary = {"tool": name}
+    truncated = []
+    for key in _SUMMARY_FIELDS:
+        if key not in payload:
+            continue
+        value, was_truncated = _bounded_summary_value(payload[key])
+        if isinstance(payload[key], (str, int, float, bool)) or payload[key] is None:
+            summary[key] = value
+            if was_truncated:
+                truncated.append(key)
+    error = payload.get("error")
+    if isinstance(error, dict):
+        error_summary = {}
+        for key in ("code", "message"):
+            if key in error and isinstance(error[key], str):
+                error_summary[key], was_truncated = _bounded_summary_value(error[key])
+                if was_truncated:
+                    truncated.append("error." + key)
+        if error_summary:
+            summary["error_summary"] = error_summary
+    recovery = payload if name == "author_recover_task" else payload.get("recovery") if name == "author_get_task" else None
+    if isinstance(recovery, dict):
+        references = {}
+        for collection in ("operations", "active_operations"):
+            for operation in recovery.get(collection, []):
+                if not isinstance(operation, dict) or not (operation.get("result_partial") or operation.get("error_partial")):
+                    continue
+                operation_id = operation.get("id")
+                if not isinstance(operation_id, str):
+                    continue
+                references[operation_id] = {
+                    "operation_id": operation_id,
+                    "result_partial": bool(operation.get("result_partial")),
+                    "result_bytes": operation.get("result_bytes"),
+                    "error_partial": bool(operation.get("error_partial")),
+                    "error_bytes": operation.get("error_bytes"),
+                    "read_tool": "author_operation_status",
+                }
+        refs = list(references.values())
+        if refs:
+            summary["operation_detail_reads"] = refs[:20]
+            if len(refs) > 20:
+                summary["operation_detail_reads_truncated"] = True
+    if truncated:
+        summary["summary_truncated_fields"] = truncated
+    return summary

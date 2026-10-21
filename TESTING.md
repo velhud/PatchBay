@@ -128,6 +128,25 @@ Also verify that importing `patchbay.authoring.interfaces.cli` does not import `
 
 A macOS run that stops at the explicit Linux/WSL2 guard is a platform qualification result, not proof of five independent defects. Do not remove the guard to make that run pass.
 
+### Context and response efficiency
+
+```bash
+python -m pytest tests/test_mcp_compact_text_serialization.py \
+  tests/authoring/test_context_output_efficiency.py -q
+python scripts/author_interface_eval.py --json
+```
+
+Check source/error/page metadata round trips, recovery with an unresolved
+operation older than its recent-history window, full-history pagination,
+strict limits, and absence of instruction reinsertion in routine results.
+Measure UTF-8 bytes separately from tokens or model behavior. The Author
+compatibility output remains the default. Before enabling
+`structured-summary-v2`, observe an ordinary ChatGPT client reading complete
+source, logs and errors from `structuredContent`, then record qualification
+for that exact source, catalog, role, route and output profile. Changing Author
+source or schema invalidates the old write qualification; refresh metadata
+and qualify the updated route rather than copying an old receipt.
+
 ## 6. Deterministic local evaluators
 
 These evaluators use disposable local state and do not require ChatGPT to select tools naturally:
@@ -138,6 +157,12 @@ python scripts/live_mcp_eval.py --json --exercise-terminal-reconciliation
 python scripts/live_hub_edge_eval.py --json
 python scripts/live_hub_v2_eval.py --json
 ```
+
+`tests/test_live_hub_v2_eval.py` also delays poison-phase responses across a
+projection cadence. It verifies that Hub-visible completion is followed by
+the exact Edge-local outbox acknowledgement state before fairness is asserted.
+Timeouts still fail with diagnostics; a completed worker alone is not that
+acknowledgement proof.
 
 The MCP evaluator supports `--tool-mode worker|standard|full|minimal`, `--timeout`, `--keep-temp`, and `--verbose` for focused diagnosis.
 

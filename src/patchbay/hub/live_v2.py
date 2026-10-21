@@ -119,6 +119,25 @@ class _DeterministicCodexExecutor(JobExecutor):
             session_id=session_id,
             exit_code=0,
         )
+        if (
+            self.processes.get(job_id) is None
+            and not self._terminal_cleanup_has_active_owner(job_id)
+            and not job.wrapper_cleanup_outcome
+            and not any(
+                getattr(job, field, None) is not None
+                for field in (
+                    "launch_started_at",
+                    "process_started_at",
+                    "process_pid",
+                    "process_pgid",
+                    "process_identity",
+                )
+            )
+        ):
+            self._complete_terminal_cleanup(
+                job_id, "process_not_live_after_terminal"
+            )
+            self._refresh_runtime_liveness_cache()
 
 
 class _LiveEdgeHandler:
@@ -1323,15 +1342,28 @@ async def run_live_hub_v2_eval(
                 "idempotency_key": "live-v2-fairness-batch",
             },
         )
-        await _wait_until(
-            lambda: bool(pinned_edge.transport.poison_receipt_id)
-            and len(_workers(app, group_id)) == 5
-            and sum(
-                worker.get("turn_state") == "completed"
-                for worker in _workers(app, group_id)
-                if str(worker.get("name") or "").startswith("Fairness ")
+
+        def fairness_progress_with_poison_pending() -> bool:
+            poison_receipt_id = pinned_edge.transport.poison_receipt_id
+            workers = _workers(app, group_id)
+            pending_receipt_ids = [
+                str(receipt.get("receipt_id") or "")
+                for receipt in pinned_edge.journal.list_pending_outbox()
+            ]
+            return (
+                bool(poison_receipt_id)
+                and len(workers) == 5
+                and sum(
+                    worker.get("turn_state") == "completed"
+                    for worker in workers
+                    if str(worker.get("name") or "").startswith("Fairness ")
+                )
+                >= 2
+                and pending_receipt_ids == [poison_receipt_id]
             )
-            >= 2,
+
+        await _wait_until(
+            fairness_progress_with_poison_pending,
             phase="poisoned_receipt_fairness",
             timeout_seconds=_EDGE_PROGRESS_TIMEOUT_SECONDS,
             diagnostics=lambda: {

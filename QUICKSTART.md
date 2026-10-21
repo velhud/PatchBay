@@ -5,6 +5,11 @@ PatchBay has two complementary workflows. Do not mix their implementation author
 - **Manager/worker mode:** ChatGPT Pro coordinates; local Codex workers implement and execute.
 - **Author Mode:** ChatGPT Pro writes source; PatchBay deterministically transports, validates, materializes, checks, and returns evidence. It never initializes a Codex worker.
 
+For a task brief you can use directly in ChatGPT, see the
+[heavy-task guide](docs/user/chatgpt-heavy-tasks.md). The operator prepares the
+repository scope once; the guide distinguishes direct coding from delegation
+and records what still needs client or deployment qualification.
+
 ## Install the candidate
 
 ```bash

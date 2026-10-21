@@ -19,6 +19,9 @@ The workflows share repository, Git, process, storage, validation, and evidence 
 | State | Worker/job/worktree and optional Hub/Edge state | Independent Author home, leases, tasks, revisions, operations, approvals, and publications |
 
 The detailed contract is in [Workflow modes and authority boundaries](docs/reference/workflow-modes.md).
+For a practical first task, use the [ChatGPT heavy-task guide](docs/user/chatgpt-heavy-tasks.md),
+with separate prompts for direct Author coding and worker delegation and explicit
+limits on what the recorded trials establish.
 
 ## Manager/worker mode
 

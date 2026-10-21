@@ -13,13 +13,12 @@ Direct read/search/git tools remain available for orientation, worker briefing, 
 1. Call `codex_self_test`.
 2. Call `codex_open_workspace`, or use `codex_list_workspaces(query=..., discover=true)` when the exact path is unknown.
 3. Call `codex_worker_options` for the installed catalog state.
-4. For ordinary workers, explicitly pass `model="gpt-6-luna"` and `reasoning_effort="high"` when supported. Use the exact returned Luna identifier if it differs.
-Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
-6. Start named workers with complete colleague-quality briefs.
-7. Continue the same worker with `codex_worker_message` when correction or deeper evidence is needed.
-8. Use `codex_worker_wait`, status, list, and inspect at the returned cadence. Quiet work is normal.
-9. Inspect reports before raw files or diffs. Preview isolated integration before applying it.
-10. Stop only deliberately. Integration does not commit and does not delete the worktree.
+4. For ordinary workers, explicitly pass `model="gpt-6-luna"` and `reasoning_effort="high"` (`xhigh` or `max` are also supported). Check availability first; an unavailable Luna is a blocker.
+5. Start named workers with complete colleague-quality briefs.
+6. Continue the same worker with `codex_worker_message` when correction or deeper evidence is needed.
+7. Use `codex_worker_wait`, status, list, and inspect at the returned cadence. Quiet work is normal.
+8. Inspect reports before raw files or diffs. Preview isolated integration before applying it.
+9. Stop only deliberately. Integration does not commit and does not delete the worktree.
 
 Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
@@ -85,3 +84,8 @@ For manager workers, include purpose, current state, outcome, scope, constraints
 For Author packages, include only declared deterministic content. Keep package paths relative and manifest-bound. Do not encode instructions to launch models, mutate unrelated repositories, or escape the candidate root.
 
 In both modes, report exact verification and distinguish checks actually run from checks still required.
+
+See [heavy-task setup and copy/paste prompts](chatgpt-heavy-tasks.md) for choosing
+between direct Author coding and worker delegation. Read these instructions once
+when orienting a conversation; routine status calls do not need the whole guide
+pasted back into the task.

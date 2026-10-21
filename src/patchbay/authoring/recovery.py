@@ -51,10 +51,21 @@ class Recovery:
             revision = dict(conn.execute("SELECT * FROM revisions WHERE task_id=? AND number=?", (task_id, task["current_revision"])).fetchone())
             watermark = conn.execute("SELECT COALESCE(MAX(seq),0) FROM events WHERE task_id=?", (task_id,)).fetchone()[0]
             recent = [dict(r) for r in conn.execute("SELECT " + self.store.operation_summary_columns() + " FROM operations WHERE task_id=? ORDER BY created DESC,id DESC LIMIT ?", (task_id, operation_limit))]
-            # Active/uncertain work must never be lost behind a page of old exports.
-            active = [dict(r) for r in conn.execute("SELECT " + self.store.operation_summary_columns() + " FROM operations WHERE task_id=? AND state NOT IN ('completed','failed','blocked','timed_out','cancelled') ORDER BY created,id LIMIT 201", (task_id,))]
+            # Prioritize unresolved effects and checks, even beyond a large backlog.
+            # Classification below uses the entire active set, not this projection.
+            active = [dict(r) for r in conn.execute("SELECT " + self.store.operation_summary_columns() + " FROM operations WHERE task_id=? AND state NOT IN ('completed','failed','blocked','timed_out','cancelled') ORDER BY CASE WHEN state IN ('unknown_execution','publication_unknown') THEN 0 WHEN kind='checks.run' AND state!='queued' THEN 1 WHEN kind='checks.run' THEN 2 ELSE 3 END,created,id LIMIT 200", (task_id,))]
             count = conn.execute("SELECT COUNT(*) FROM operations WHERE task_id=?", (task_id,)).fetchone()[0]
-            active_count = conn.execute("SELECT COUNT(*) FROM operations WHERE task_id=? AND state NOT IN ('completed','failed','blocked','timed_out','cancelled')", (task_id,)).fetchone()[0]
+            active_counts = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(state IN ('unknown_execution','publication_unknown')) AS uncertain, "
+                "SUM(kind='checks.run' AND state NOT IN ('unknown_execution','publication_unknown')) AS checks, "
+                "SUM(kind='checks.run' AND state NOT IN ('queued','unknown_execution','publication_unknown')) AS started_checks "
+                "FROM operations WHERE task_id=? AND state NOT IN ('completed','failed','blocked','timed_out','cancelled')",
+                (task_id,)).fetchone()
+            active_count = active_counts["total"]
+            uncertain_count = active_counts["uncertain"] or 0
+            check_count = active_counts["checks"] or 0
+            started_check_count = active_counts["started_checks"] or 0
             lease = conn.execute("SELECT label,epoch,expires FROM leases WHERE task_id=?", (task_id,)).fetchone()
             contexts = [dict(r) for r in conn.execute("SELECT id,revision,commit_oid,bundle_sha,created FROM contexts WHERE task_id=? AND revision=? ORDER BY created DESC LIMIT 10", (task_id, task["current_revision"]))]
             run = conn.execute("SELECT id,state,cleanup,receipt_sha,profile_digest,environment_digest FROM runs WHERE task_id=? AND revision=? ORDER BY created DESC,id DESC LIMIT 1", (task_id, task["current_revision"])).fetchone()
@@ -66,13 +77,11 @@ class Recovery:
             drafts = [dict(r) for r in conn.execute("SELECT id,version,base_revision,commit_oid,state FROM drafts WHERE task_id=? AND state='open' ORDER BY updated DESC LIMIT 10", (task_id,))]
             controls = {r["key"]: json.loads(r["value"]) for r in conn.execute("SELECT key,value FROM metadata WHERE key IN ('author.control.state','author.control.task.'||?)", (task_id,))}
         policy = json.loads(task["policy"])
-        unresolved = [r for r in active if r["state"] in {"unknown_execution", "publication_unknown"}]
-        active_checks = [r for r in active if r["kind"] == "checks.run" and r["state"] not in TERMINAL]
         run = dict(run) if run else None
-        if unresolved or (run and run["cleanup"] == "unresolved"):
+        if uncertain_count or (run and run["cleanup"] == "unresolved"):
             state, judgment = "awaiting_controller", "Reconcile the existing uncertain operation; never relaunch or infer success"
-        elif active_checks:
-            if all(row["state"] == "queued" for row in active_checks):
+        elif check_count:
+            if not started_check_count:
                 state, judgment = "awaiting_resources", "Checks are accepted and queued; inspect their cached admission blockers instead of resubmitting or claiming execution started"
             else:
                 state, judgment = "executing", "Observe the existing accepted checks; no new model decision is running locally"
@@ -88,9 +97,9 @@ class Recovery:
         else:
             state, judgment = "awaiting_input", "Obtain pinned context and deliver actual implementation or run approved checks on the current candidate"
         if controls.get("author.control.task." + task_id, {}).get("granted") is False:
-            if unresolved or (run and run["cleanup"] == "unresolved"):
+            if uncertain_count or (run and run["cleanup"] == "unresolved"):
                 judgment += "; the grant is also revoked, so restoring it alone does not resolve execution uncertainty"
-            elif active_checks:
+            elif check_count:
                 judgment += "; the grant is revoked, but this accepted execution remains owned and was not cancelled"
             elif pending_inbox:
                 judgment += "; the task grant is revoked, so an operator must restore authority before package approval can take effect"

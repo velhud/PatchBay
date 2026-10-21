@@ -172,6 +172,13 @@ task/revision/lease ownership, then inspecting the relevant candidate,
 operation, evidence and next required decision. An event notification or
 process completion does not wake or complete a Chat conversation.
 
+MCP `author_recover_task` returns 20 recent operations by default; set
+`operation_limit` to an integer from 1 to 200 when another window is useful.
+Active and uncertain effects remain separately visible, with counts and partial
+flags. Use `author_recent_operations` versioned cursor pages to retrieve older
+history. The local CLI/domain recovery default stays 50. Read-only recovery
+does not reconcile, retry or release an execution fence.
+
 For an unknown execution, preserve the run directory and journal. Establish
 supervisor/process identity from durable ownership records; never trust a PID
 alone. If ownership or the effect cannot be proved, keep it fenced and request
