@@ -2,6 +2,12 @@
 
 ## Portable checks
 
+The [MCP interface contract](../reference/mcp-interface-contract.md) defines
+selector, role, version, result-fault and exact-client qualification cases.
+Deterministic protocol fixtures are local evidence only. Schema, instructions,
+runtime and the shared version helper participate in Author qualification
+identity, so upgrading these files requires a fresh observed route binding.
+
 Run from the repository root:
 
 ```bash

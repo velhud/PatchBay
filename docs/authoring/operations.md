@@ -349,8 +349,17 @@ not load every large historical result into Python. These are coverage
 indicators, never permission to treat a summary as complete source/evidence.
 
 The complete MCP result envelope is limited to 8 MiB, including the text copy
-and structured output. Oversize responses fail explicitly with `RESOURCE_LIMIT`
-and returned effect identities. `effect_returned=true` means a mutation already
-returned locally; the wire-size error does not undo it or authorize a new key.
-Recover the original operation and use smaller pages or an operator artifact
-export. The compatibility output profile remains the default.
+and structured output. Oversize responses fail with `RESOURCE_LIMIT` and the
+boundary `effect_result_too_large` for writes or `read_result_too_large` for
+reads. An invalid output has `INVALID_OUTPUT` and the corresponding
+`effect_may_exist_result_invalid` or `read_result_invalid` boundary. No success
+is asserted. Safe identities come from validated requests and authorized durable
+readback, never arbitrary fields of the bad result. Follow `recovery_actions`
+and the `original_key` where returned; a wire fault neither undoes an effect nor
+authorizes a new key. Request smaller pages or use an existing operator artifact.
+Compatibility fields `effect_returned` and `result_identity` remain, with the
+identity now restricted to trusted readback. The former marks a returned
+mutating handler, not proof that an effect succeeded.
+New exports remain writes. The compatibility output profile stays the default.
+See the [MCP interface contract](../reference/mcp-interface-contract.md) for
+selectors, bounded input diagnostics, roles and supported protocol versions.

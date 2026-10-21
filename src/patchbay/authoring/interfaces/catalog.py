@@ -27,8 +27,12 @@ def identity(output_profile: str = OUTPUT_PROFILE) -> dict[str, str]:
     from .outputs import CONTRACTS
     from .instructions import READ_ONLY, WRITABLE
     root = Path(__file__).parents[1]
-    stamps = tuple((p.relative_to(root).as_posix(), p.stat().st_mtime_ns, p.stat().st_size, p.stat().st_ctime_ns, p.stat().st_ino)
-                   for p in sorted(root.rglob("*.py")))
+    sources = [(p.relative_to(root).as_posix(), p) for p in sorted(root.rglob("*.py"))]
+    # Bind the independent shared negotiation helper too; a change to it must
+    # invalidate Author qualification just like a subtree runtime change.
+    sources.append(("../mcp_versions.py", root.parent / "mcp_versions.py"))
+    stamps = tuple((name, p.stat().st_mtime_ns, p.stat().st_size, p.stat().st_ctime_ns, p.stat().st_ino)
+                   for name, p in sources)
     specs = [{"name": name, "description": description, "inputSchema": model.model_json_schema(),
               "outputSchema": CONTRACTS[name].model_json_schema(), "mutates": write}
              for name, model, description, write in CATALOG]

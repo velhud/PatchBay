@@ -2,11 +2,13 @@
 import copy
 import inspect
 import json
+from patchbay.mcp_versions import PREFERRED_MCP_VERSION, select_mcp_version
 import logging
 import re
 from typing import Any, Dict, Optional
 
 from patchbay.protocol.context import RequestContext
+from patchbay.protocol.result_text import decision_text
 from patchbay.protocol.resources import TOOL_CARD_URI, list_resources, read_resource, tool_cards_enabled
 from patchbay.pro_requests.tool_surface import install_pro_request_tool_surface
 from patchbay.security import internal_log_error, public_error_message
@@ -2617,8 +2619,11 @@ class MCPProtocol:
     ) -> Dict[str, Any]:
         """Handle initialize request."""
         logger.info("MCP session initialized")
+        version = select_mcp_version(params.get("protocolVersion", PREFERRED_MCP_VERSION))
+        if context is not None and context.session_data is not None:
+            context.session_data["protocol_version"] = version
         return {
-            "protocolVersion": params.get("protocolVersion", "2025-11-25"),
+            "protocolVersion": version,
             "serverInfo": self.server_info,
             "capabilities": self.capabilities,
             "instructions": SERVER_INSTRUCTIONS,
@@ -2709,10 +2714,16 @@ class MCPProtocol:
         keys = ", ".join(sorted(str(key) for key in result.keys())[:20])
         return (
             f"{_tool_display_id(tool_name)} returned structured content ({len(rendered)} JSON chars). "
-            f"Top-level fields: {keys}. Full payload is in structuredContent."
+            f"Top-level fields: {keys}. Full payload is in structuredContent. " + decision_text(result)
         )
 
     def _worker_tool_result_text(self, result: Dict[str, Any], tool_name: str) -> str:
+        text = self._worker_orientation_text(result, tool_name)
+        # The floor is independent of the prose: refusals, partial reads and
+        # cleanup uncertainty must survive even when the normal tail is huge.
+        return text[:900] + " | " + decision_text(result) + " | Full evidence: structuredContent and existing exact pages."
+
+    def _worker_orientation_text(self, result: Dict[str, Any], tool_name: str) -> str:
         name = str(result.get("name") or result.get("worker") or result.get("summary") or _tool_display_id(tool_name))
         state = str(result.get("state") or result.get("status") or "")
         status_line = str(result.get("status_line") or "")
@@ -2732,7 +2743,7 @@ class MCPProtocol:
             summary = str(team.get("summary") or f"{result.get('count', 0)} workers listed")
             return f"{summary}. Full worker list is in structuredContent."
         if result.get("stop_confirmation_required"):
-            return f"Stop confirmation required for {name}. Wait longer or call codex_worker_stop with force=true."
+            return f"Stop has not been carried out for {name}. Obtain the required authorized stop decision or continue observing. Force requires authority for this owned workload; stop does not authorize discarding files."
         pieces = [piece for piece in [name, state, status_line, note] if piece]
         if not pieces:
             pieces = [f"{_tool_display_id(tool_name)} result ready"]

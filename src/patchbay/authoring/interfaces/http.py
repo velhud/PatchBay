@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from patchbay.mcp_versions import validate_mcp_version_header
 
 from ..errors import AuthorError, require
 from ..execution.runner import Checks
@@ -393,6 +394,11 @@ def create_app(home: Path, *, expected_instance: str | None = None, scheduler: b
 
     @app.post("/mcp")
     async def mcp(request: Request):
+        try:
+            validate_mcp_version_header(request.headers.get("MCP-Protocol-Version"))
+        except ValueError as error:
+            return JSONResponse({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32602, "message": str(error)}}, status_code=400)
         result = await asyncio.to_thread(protocol.handle, request.state.role, strict_json(await request.body()))
         return Response(status_code=202) if result is None else JSONResponse(result)
 

@@ -8,6 +8,7 @@ This implementation follows the MCP specification for Streamable HTTP transport:
 - Standard request/response semantics
 """
 import asyncio
+from patchbay.mcp_versions import validate_mcp_version_header
 import json
 import logging
 import os
@@ -422,6 +423,13 @@ async def mcp_endpoint(request: Request):
         return JSONResponse(
             content={"jsonrpc": "2.0", "error": {"code": -32600, "message": "JSON-RPC message must be an object"}, "id": None},
             status_code=400, headers={"Mcp-Session-Id": session_id})
+    try:
+        validate_mcp_version_header(request.headers.get("MCP-Protocol-Version"), negotiated=(
+            sessions[session_id].get("protocol_version") if message.get("method") != "initialize" else None))
+    except ValueError as error:
+        return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"),
+                             "error": {"code": -32602, "message": str(error)}},
+                            status_code=400, headers={"Mcp-Session-Id": session_id})
     _apply_chatgpt_client_metadata(session_id, message)
     request_context = _request_context_for_session(session_id)
     

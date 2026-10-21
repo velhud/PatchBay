@@ -121,6 +121,13 @@ assessment before applying the operator attestation.
 
 Hub/Edge deployments use the corresponding `patchbay_*` group, worker, workspace, Pro Request, and operation tools. One user task is one durable group; its workers remain pinned to one machine unless explicitly reassigned.
 
+The complete canonical Hub export has 31 tools. A scoped trial or tools loaded
+for one message is a different observation; diagnose missing actions using the
+selected route, permissions and a complete contract capture. See the
+[MCP interface contract](docs/reference/mcp-interface-contract.md) for version
+negotiation and result-fault recovery. Compact text preserves decisions;
+consume the exact structured source/log pages before claiming complete review.
+
 ## B. Author Mode
 
 Run Author Mode qualification and check execution on Linux or WSL2. The platform guard is intentional. For the first disposable ChatGPT trial, use the [fixture preparation guide](docs/authoring/ordinary-chat-trial.md); it prepares source, state and evidence templates without calling ChatGPT or qualifying a live connection.
@@ -207,6 +214,13 @@ patchbay-author --home "$AUTHOR_HOME" publications TASK_ID
 ```
 
 Author Mode does not call manager/worker tools, import the worker runtime, or ask another model to repair failures. A failed check returns evidence to the same authoring loop.
+
+A reader can recover tasks and read existing context, draft, feedback and logs.
+Creating a new export requires a qualified writer or operator. For MCP source
+reads, select `context_id` alone, or `draft_id` with its exact positive
+`draft_version`. Recovery exposes existing IDs and draft versions. After
+`INVALID_OUTPUT` or a response-size error, follow the returned read-only recovery
+actions and original retry key before attempting another mutation.
 
 ## Verify the source and deployment
 

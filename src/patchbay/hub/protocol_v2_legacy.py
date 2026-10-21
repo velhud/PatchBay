@@ -6,8 +6,10 @@ owns every domain decision and operation result.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import math
+import re
 from copy import deepcopy
 from typing import Any, Mapping, Protocol, runtime_checkable
 
@@ -19,16 +21,25 @@ from patchbay.hub.tool_surface import (
     HUB_V2_MANIFEST_HASH,
     HUB_V2_SCHEMA_HASH,
     HUB_V2_TOOLS_BY_NAME,
+    HUB_V2_MUTATING_TOOL_NAMES,
     get_hub_v2_tools,
     validate_hub_v2_registry,
 )
 from patchbay.protocol.context import RequestContext
+from patchbay.protocol.result_text import decision_text
+from patchbay.mcp_versions import PREFERRED_MCP_VERSION, select_mcp_version
 from patchbay.security import redact_sensitive_output
+from patchbay.hub.store_v2 import HubStoreV2
 
 logger = logging.getLogger(__name__)
 
+
+class _ResultContractFault(Exception):
+    def __init__(self, data: dict):
+        self.data = data
+
 HUB_V2_SERVER_VERSION = "0.1.0"
-HUB_V2_DEFAULT_MCP_VERSION = "2025-11-25"
+HUB_V2_DEFAULT_MCP_VERSION = PREFERRED_MCP_VERSION
 
 HUB_V2_INSTRUCTIONS = """
 PatchBay Hub V2 lets ChatGPT manage durable Codex worker teams. Act as manager,
@@ -356,6 +367,11 @@ class HubProtocolV2:
             return self._error_response(has_id, msg_id, -32601, str(error))
         except _InvalidRequest as error:
             return self._error_response(has_id, msg_id, -32602, str(error))
+        except _ResultContractFault as error:
+            response = self._error_response(has_id, msg_id, -32603, "Internal processing error")
+            if response is not None:
+                response["error"]["data"] = error.data
+            return response
         except Exception:
             logger.exception("Hub V2 protocol internal fault")
             return self._error_response(has_id, msg_id, -32603, "Internal processing error")
@@ -380,9 +396,12 @@ class HubProtocolV2:
         *,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
-        protocol_version = params.get("protocolVersion", HUB_V2_DEFAULT_MCP_VERSION)
-        if not isinstance(protocol_version, str) or not protocol_version:
-            raise _InvalidRequest("initialize.protocolVersion must be a non-empty string")
+        try:
+            protocol_version = select_mcp_version(params.get("protocolVersion", HUB_V2_DEFAULT_MCP_VERSION))
+        except ValueError as error:
+            raise _InvalidRequest(str(error)) from error
+        if context is not None and context.session_data is not None:
+            context.session_data["protocol_version"] = protocol_version
         return {
             "protocolVersion": protocol_version,
             "serverInfo": deepcopy(self.server_info),
@@ -431,9 +450,12 @@ class HubProtocolV2:
             output = await self.handler.handle_tool_call(name, deepcopy(arguments), context=context)
         else:
             output = await self.handler.handle_tool_call(name, deepcopy(arguments))  # type: ignore[call-arg]
-        validate_hub_v2_tool_output(name, output)
-        envelope = redact_sensitive_output(deepcopy(dict(output)))
-        validate_hub_v2_tool_output(name, envelope)
+        try:
+            validate_hub_v2_tool_output(name, output)
+            envelope = redact_sensitive_output(deepcopy(dict(output)))
+            validate_hub_v2_tool_output(name, envelope)
+        except _HandlerContractError as error:
+            raise _ResultContractFault(self._result_fault_data(name, arguments, output, context)) from error
         return {
             "structuredContent": envelope,
             "content": [{"type": "text", "text": self._compact_text(name, envelope)}],
@@ -444,6 +466,45 @@ class HubProtocolV2:
                 "patchbay/schema_hash": HUB_V2_SCHEMA_HASH,
             },
         }
+
+    def _result_fault_data(self, name: str, arguments: Mapping, output: Any, context: RequestContext | None) -> dict:
+        write = name in HUB_V2_MUTATING_TOOL_NAMES
+        data = {"code": "INVALID_OUTPUT", "boundary": "effect_may_exist_result_invalid" if write else "read_result_invalid",
+                "effect_may_exist": write, "success_asserted": False}
+        # Only bounded, protocol-shaped request identities are projected. An
+        # invalid result's operation ID additionally requires durable readback.
+        def identity(value):
+            return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", value) else None
+        group_id = identity(arguments.get("work_group_id"))
+        operation_id = identity(arguments.get("operation_id"))
+        key = arguments.get("idempotency_key")
+        if write and isinstance(key, str) and len(key.encode("utf-8")) <= 200:
+            data["original_key"] = key
+        store = getattr(self.handler, "store", None)
+        if isinstance(store, HubStoreV2) and isinstance(output, Mapping):
+            operation = output.get("operation")
+            candidate = identity(operation.get("operation_id")) if isinstance(operation, Mapping) else None
+            if candidate:
+                try:
+                    row = store.get_operation(candidate)
+                    principal = (context.owner_ref if context and context.owner_ref else store.principal_ref)
+                    if row and row["principal_ref"] == principal and row["tool"] == name and row["idempotency_key"] == key:
+                        if group_id:
+                            store.assert_operation_group_association(operation_id=candidate, work_group_id=group_id)
+                        operation_id = candidate
+                except Exception:
+                    data["recovery_lookup_unavailable"] = True
+        actions = []
+        if operation_id:
+            data["operation_id"] = operation_id
+            actions.append({"tool": "patchbay_operation_status", "arguments": {"operation_id": operation_id}})
+        if group_id:
+            data["work_group_id"] = group_id
+            actions.append({"tool": "patchbay_work_group_status", "arguments": {"work_group_id": group_id}})
+        data["recovery_actions"] = actions or [{"tool": "patchbay_work_group_list", "arguments": {}}]
+        data["guidance"] = ("No success or absence of an effect is asserted. Read the original operation/group before another mutation; an identical retry keeps the original key and payload."
+                            if write else "The read result violated its contract; no mutation was attempted. Use the existing read-only recovery route.")
+        return redact_sensitive_output(data)
 
     @staticmethod
     def _compact_text(name: str, envelope: Mapping[str, Any]) -> str:
@@ -469,23 +530,29 @@ class HubProtocolV2:
         # a bounded identifier-rich fallback in ordinary MCP text content.
         fallback = HubProtocolV2._manager_fallback_text(name, result_map)
         if fallback:
-            pieces.append(fallback)
+            pieces.append(fallback[:1800] + ("... Orientation is partial; read full structuredContent." if len(fallback) > 1800 else ""))
         operation = envelope.get("operation")
         operation_map = operation if isinstance(operation, Mapping) else {}
         operation_id = operation_map.get("operation_id")
-        if isinstance(operation_id, str) and operation_id:
+        if isinstance(operation_id, str) and operation_id and len(operation_id.encode("utf-8")) <= 128:
             pieces.append(f"Operation: {operation_id}.")
+        pieces.append(decision_text(operation_map))
         next_actions = envelope.get("next_actions")
         if isinstance(next_actions, list) and next_actions:
             first = next_actions[0]
             if isinstance(first, str):
-                action = first
+                action = first[:360]
             elif isinstance(first, Mapping):
-                action = str(first.get("tool") or "")
+                encoded = json.dumps(dict(first), ensure_ascii=False, separators=(",", ":"))
+                action = encoded if len(encoded.encode("utf-8")) <= 2048 else "Action arguments exceed summary budget; read exact next_actions in structuredContent"
             else:
                 action = ""
             if action:
                 pieces.append(f"Next: {action}.")
+        pieces.append(decision_text(result_map))
+        for key in ("worker", "work_group", "completion_contract", "projection_freshness"):
+            if isinstance(result_map.get(key), Mapping):
+                pieces.append(key + ": " + decision_text(result_map[key]))
         return " ".join(pieces)
 
     @staticmethod

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from pydantic import ValidationError
+from patchbay.mcp_versions import select_mcp_version
 
 from ..errors import AuthorError, require
 from ..execution.runner import Checks
@@ -17,6 +18,8 @@ from .outputs import CONTRACTS
 from .catalog import identity as catalog_identity, OUTPUT_PROFILE, OUTPUT_PROFILES
 from ..publication.git import Publisher
 from .instructions import READ_ONLY, WRITABLE
+from .diagnostics import argument_error
+from .result_faults import result_fault
 
 CATALOG = [
     ("author_capabilities", I.Empty, "Inspect Author Mode transport, execution, and qualification status. Does not start work.", False),
@@ -76,7 +79,11 @@ class MCP:
         _, contract, _, write = match
         if write:
             self.access.require_mutation(role, mcp=True, output_profile=self.output_profile, operator_only=name in {"author_approve_publication", "author_publish"})
-        params = contract.model_validate(arguments).wire()
+        try:
+            params = contract.model_validate(arguments).wire()
+        except ValidationError as exc:
+            error = argument_error(contract, exc)
+            raise AuthorError(error["code"], error["message"], **error["details"]) from exc
         service = self.service
         if name == "author_capabilities":
             qualification = self.access.qualified(role, output_profile=self.output_profile)
@@ -137,7 +144,10 @@ class MCP:
             require(isinstance(params, dict), "INVALID_REQUEST", "Expected object parameters")
             if method == "initialize":
                 requested = params.get("protocolVersion", "2025-03-26")
-                version = requested if requested in {"2025-03-26", "2025-06-18", "2025-11-25"} else "2025-03-26"
+                try:
+                    version = select_mcp_version(requested, preferred="2025-03-26")
+                except ValueError as exc:
+                    raise AuthorError("INVALID_REQUEST", str(exc)) from exc
                 writable = role in {"operator", "author"} and self.access.qualified(role, output_profile=self.output_profile) is not None
                 result = {"protocolVersion": version, "capabilities": {"tools": {"listChanged": False}},
                           "serverInfo": {"name": "patchbay-author", "version": "0.1.0", "_meta": {"patchbay/catalog": catalog_identity(self.output_profile)}},
@@ -147,18 +157,20 @@ class MCP:
             elif method == "tools/call":
                 try:
                     payload = self.call(role, params.get("name"), params.get("arguments", {}))
+                    entry = next(entry for entry in CATALOG if entry[0] == params["name"])
+                    trusted_arguments = entry[1].model_validate(params.get("arguments", {})).wire()
                     # Validate the full result before exposing a successful tool call.
                     try:
                         CONTRACTS[params["name"]].model_validate(payload)
                     except ValidationError as exc:
-                        raise AuthorError("INVALID_OUTPUT", "The server result violated its published output contract; no success is asserted") from exc
+                        raise AuthorError("INVALID_OUTPUT", "The server result violated its published output contract; no success is asserted",
+                            **result_fault(self.service, params["name"], trusted_arguments, write=entry[3])) from exc
                     text = _summary_text(params["name"], payload) if self.output_profile == "structured-summary-v2" else payload
                     result = {"content": [{"type": "text", "text": json.dumps(text, ensure_ascii=False)}],
                               "structuredContent": payload, "isError": False}
-                    require(len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= 8 * 1024**2,
-                            "RESOURCE_LIMIT", "Result exceeds the MCP response budget; request a smaller page or export the exact artifact through the operator route",
-                            effect_returned=bool(next(entry[3] for entry in CATALOG if entry[0] == params["name"])),
-                            result_identity={key: payload[key] for key in ("id", "task_id", "revision", "operation_id", "request_operation_id", "commit", "blob_sha", "bundle_sha", "context_id") if key in payload})
+                    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 8 * 1024**2:
+                        raise AuthorError("RESOURCE_LIMIT", "Result exceeds MCP response budget; request a smaller page or an existing operator artifact",
+                            **result_fault(self.service, params["name"], trusted_arguments, write=entry[3], too_large=True))
                 except (AuthorError, ValidationError, UnicodeDecodeError) as exc:
                     error = exc.as_dict() if isinstance(exc, AuthorError) else {"code": "INVALID_REQUEST", "message": "Tool arguments or text content violate the contract"}
                     result = {"content": [{"type": "text", "text": json.dumps(error)}], "structuredContent": error, "isError": True}

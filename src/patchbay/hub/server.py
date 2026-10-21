@@ -1,5 +1,6 @@
 """HTTP server for optional PatchBay Hub mode."""
 from __future__ import annotations
+from patchbay.mcp_versions import validate_mcp_version_header
 
 import asyncio
 import json
@@ -350,6 +351,13 @@ async def mcp_endpoint(request: Request):
         error_response.headers["Mcp-Session-Id"] = session_id
         return error_response
 
+    try:
+        validate_mcp_version_header(request.headers.get("MCP-Protocol-Version"), negotiated=(
+            sessions[session_id].get("protocol_version") if message.get("method") != "initialize" else None))
+    except ValueError as error:
+        return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"),
+                             "error": {"code": -32602, "message": str(error)}},
+                            status_code=400, headers={"Mcp-Session-Id": session_id})
     _apply_chatgpt_client_metadata(session_id, message)
     try:
         response = await protocol.handle_message(message, context=_request_context_for_session(session_id))

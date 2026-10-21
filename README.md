@@ -109,6 +109,13 @@ The published Linux candidate `f611a02a89c8154d93d424a715dba9716aed23fd` complet
 
 Do not infer qualification from a clean merge or from historical branch test counts.
 
+The [S01 MCP interface contract](docs/reference/mcp-interface-contract.md) covers
+source selectors, supported-version negotiation, compact outcome evidence and
+recovery after a result fault. These source changes require renewed route
+qualification; they do not update or qualify existing deployed trial connections.
+The [S01 implementation record](docs/repairs/2026-10-22-s01-interface-contracts.md)
+separates repository verification from the remaining client/deployment gates.
+
 ## Documentation
 
 - [Quick start](QUICKSTART.md)

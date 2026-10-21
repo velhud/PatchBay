@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'src/patchbay/authoring/**'
+      - 'src/patchbay/mcp_versions.py'
       - 'tests/authoring/**'
       - '.github/workflows/author-mode-validation.yml'
       - 'pyproject.toml'

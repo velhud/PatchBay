@@ -109,4 +109,10 @@ own observed client qualification and keeps full payloads in `structuredContent`
 - Signal delivery targets proven process ownership rather than recycled identifiers.
 - CLI terminal failure states return non-zero status.
 
-Exact schemas live in source and tests. Documentation must not claim a reduced catalog or weaken annotations to match an incomplete client cache.
+Exact schemas live in source and tests. A complete canonical Hub capture must
+retain all 31 tools; a legitimate scoped or host-loaded subset is a separate
+observation. Do not weaken annotations to match an incomplete client cache.
+The [MCP interface contract](mcp-interface-contract.md) specifies safe selector
+errors, supported versions, bounded text decisions, post-effect fault recovery
+and the complete Author effect/annotation table. Full evidence remains structured
+or paged; source publication does not establish native-client qualification.

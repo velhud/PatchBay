@@ -62,6 +62,13 @@ this cleanup gate and must remain fenced; never turn missing child identity
 into an absence proof. Record the macOS and Codex CLI versions and the cleanup
 proof outcome with the qualification evidence.
 
+The stdout-completion/nonzero-wrapper regression establishes natural wrapper
+exit before consuming the fixture's terminal events, and still asserts exit
+code 7. This separates that path from deliberate post-terminal termination
+(which can produce 143). Adjacent tests independently cover a still-live wrapper
+and require the exact durable report before cleanup. No production grace or
+cleanup deadline is relaxed by this fixture ordering.
+
 For Linux qualification, enable the real 185-second check with
 `PATCHBAY_AUTHOR_LONG_TESTS=1`. Supply `PATCHBAY_AUTHOR_DOCKER_IMAGE` only after
 preparing and inspecting an immutable local image. The strict Docker test uses
@@ -129,6 +136,21 @@ Also verify that importing `patchbay.authoring.interfaces.cli` does not import `
 A macOS run that stops at the explicit Linux/WSL2 guard is a platform qualification result, not proof of five independent defects. Do not remove the guard to make that run pass.
 
 ### Context and response efficiency
+
+The S01 deterministic contract regressions exercise supported and malformed
+versions through public protocol/HTTP entrypoints, source-selector alternatives,
+safe bounded errors, role/annotation coverage, Unicode/long-line pages, paired
+text outcomes and recovery after a disposable admitted effect returns malformed
+output or loses its response:
+
+```bash
+python -m pytest tests/test_s01_mcp_contracts.py \
+  tests/authoring/test_s01_interface_contracts.py -q
+```
+
+See the [MCP interface contract](docs/reference/mcp-interface-contract.md) for
+the exact residual native-client/deployment qualification recipe. These fixtures
+do not run paid workers, qualify Pro, or refresh deployed metadata.
 
 ```bash
 python -m pytest tests/test_mcp_compact_text_serialization.py \

@@ -1,5 +1,6 @@
 """MCP protocol surface for PatchBay Hub mode."""
 from __future__ import annotations
+from patchbay.mcp_versions import PREFERRED_MCP_VERSION, select_mcp_version
 
 import json
 import logging
@@ -365,8 +366,11 @@ class HubProtocol:
             if method == "notifications/initialized":
                 return None
             if method == "initialize":
+                version = select_mcp_version(params.get("protocolVersion", PREFERRED_MCP_VERSION))
+                if context is not None and context.session_data is not None:
+                    context.session_data["protocol_version"] = version
                 result = {
-                    "protocolVersion": params.get("protocolVersion", "2025-11-25"),
+                    "protocolVersion": version,
                     "serverInfo": self.server_info,
                     "capabilities": self.capabilities,
                     "instructions": HUB_INSTRUCTIONS,

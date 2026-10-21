@@ -75,6 +75,14 @@ def _tool_call(protocol: HubProtocolV2, name: str, arguments: Any, *, msg_id: in
     )
 
 
+def _assert_read_output_fault(response):
+    data = response["error"].pop("data")
+    assert data["code"] == "INVALID_OUTPUT"
+    assert data["boundary"] == "read_result_invalid"
+    assert data["effect_may_exist"] is False and data["success_asserted"] is False
+    assert data["recovery_actions"] == [{"tool": "patchbay_work_group_list", "arguments": {}}]
+
+
 @pytest.mark.asyncio
 async def test_protocol_reports_ready_unclaimed_work_as_active_without_recovery(
     tmp_path: Path,
@@ -246,7 +254,8 @@ def test_initialize_is_manager_first_and_carries_frozen_contract_metadata():
     assert "do not produce a voluntary final answer" in HUB_V2_INSTRUCTIONS
     assert "20-30 second intervals" in HUB_V2_INSTRUCTIONS
     assert "exactly 31 PatchBay tools" in HUB_V2_INSTRUCTIONS
-    assert "connector manifest is stale or partial" in HUB_V2_INSTRUCTIONS
+    assert "a visible subset alone does not prove stale metadata" in HUB_V2_INSTRUCTIONS
+    assert "complete authenticated server/connector catalog capture" in HUB_V2_INSTRUCTIONS
     assert "timeout means" in HUB_V2_INSTRUCTIONS
     assert "Never invent a tool-call" in HUB_V2_INSTRUCTIONS
     assert "complete callable tool action" in HUB_V2_INSTRUCTIONS
@@ -599,6 +608,8 @@ def test_invalid_handler_output_and_handler_exceptions_are_internal_mcp_faults()
     exploded = HubProtocolV2(RecordingHandler(error=ValueError("domain implementation exploded")))
     handler_error = _tool_call(exploded, "patchbay_fleet_status", {})
 
+    _assert_read_output_fault(bad_output)
+
     assert bad_output == {
         "jsonrpc": "2.0",
         "id": 1,
@@ -622,6 +633,8 @@ def test_protocol_rejects_next_action_tools_outside_the_exact_hub_registry():
     )
 
     response = _tool_call(protocol, "patchbay_fleet_status", {})
+
+    _assert_read_output_fault(response)
 
     assert response == {
         "jsonrpc": "2.0",
@@ -647,6 +660,8 @@ def test_protocol_rejects_known_next_action_with_incomplete_arguments():
     )
 
     response = _tool_call(protocol, "patchbay_fleet_status", {})
+
+    _assert_read_output_fault(response)
 
     assert response == {
         "jsonrpc": "2.0",
@@ -947,6 +962,7 @@ def test_python_only_input_and_output_values_are_rejected_at_the_json_boundary()
 
     assert bad_input["error"]["code"] == -32602
     assert "not JSON-compatible" in bad_input["error"]["message"]
+    _assert_read_output_fault(output_response)
     assert output_response["error"] == {
         "code": -32603,
         "message": "Internal processing error",

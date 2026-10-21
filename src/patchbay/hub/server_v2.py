@@ -5,6 +5,7 @@ Callers may inject a ``HubV2App`` for tests; the default factory composes the
 production pull-transport graph.
 """
 from __future__ import annotations
+from patchbay.mcp_versions import validate_mcp_version_header
 
 import inspect
 import asyncio
@@ -889,6 +890,12 @@ def create_hub_v2_server(
                 )
 
             session = sessions[session_id]
+            try:
+                validate_mcp_version_header(request.headers.get("MCP-Protocol-Version"), negotiated=(
+                    session.get("protocol_version") if isinstance(message, Mapping) and message.get("method") != "initialize" else None))
+            except ValueError as error:
+                return JSONResponse({"jsonrpc": "2.0", "id": message.get("id") if isinstance(message, Mapping) else None,
+                                     "error": {"code": -32602, "message": str(error)}}, status_code=400, headers=headers)
             _apply_request_metadata(session, message, salt=salt, idle_seconds=idle_seconds)
             context = _context_for_session(
                 session_id,

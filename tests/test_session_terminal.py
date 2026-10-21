@@ -1812,10 +1812,24 @@ async def test_stdout_turn_completed_is_terminal_even_when_wrapper_exits_nonzero
         "_build_codex_command",
         lambda *args, **kwargs: [sys.executable, "-u", "-c", script],
     )
+    original_capture = executor._communicate_with_progress
+    observed_exit_codes = []
+
+    async def capture_after_wrapper_exit(job_id, process, **kwargs):
+        # This case owns the natural nonzero-exit path. Without this barrier,
+        # terminal cleanup can win the race and legitimately terminate the
+        # wrapper (143) before it exits 7. Live-wrapper cleanup is covered by
+        # the adjacent exact-session/cleanup tests. These two small events fit
+        # in the pipe buffer, so no reader is needed for the fixture to exit.
+        observed_exit_codes.append(await asyncio.wait_for(process.wait(), timeout=3))
+        return await original_capture(job_id, process, **kwargs)
+
+    monkeypatch.setattr(executor, "_communicate_with_progress", capture_after_wrapper_exit)
 
     await asyncio.wait_for(executor.execute_job(job_id), timeout=5)
 
     durable = manager.get_job(job_id)
+    assert observed_exit_codes == [7]
     assert durable.state == JobState.COMPLETED
     assert durable.result["summary"] == "STDOUT_TERMINAL_NONZERO"
     assert durable.exit_code == 7

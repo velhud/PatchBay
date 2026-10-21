@@ -24,6 +24,11 @@ Worker file views are lossless over contiguous source lines. When a line or resp
 
 Bounded output is a transport-stability contract. Managers may request the next page or a focused file/diff view when additional evidence is required.
 
+Compact Manager text keeps independent outcome, candidate/source, partial-page,
+cleanup and recovery fields when returned. It does not replace exact file/log
+bodies. Oversized scalar identities/cursors are explicitly marked omitted and
+remain intact in structured output. See the [MCP interface contract](mcp-interface-contract.md).
+
 ## Process and concurrency behavior
 
 - Repository mutation uses cross-process serialization.

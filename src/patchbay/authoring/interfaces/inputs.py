@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import Field, StrictInt, model_validator
+from pydantic_core import PydanticCustomError
 from ..models import Contract, TaskPolicy
 from ..util import safe_path
 
@@ -91,10 +92,19 @@ class ExportContext(TaskRef):
 
 
 class ReadFile(Contract):
-    context_id: str | None = Field(None, pattern=r"^ctx_[0-9a-f]{40}$")
-    draft_id: str | None = Field(None, pattern=r"^draft_[0-9a-f]{32}$")
-    draft_version: StrictInt | None = Field(None, ge=1)
-    path: str = Field(min_length=1, max_length=4096)
+    model_config = {"json_schema_extra": {"oneOf": [
+        {"required": ["context_id"], "properties": {
+            "context_id": {"type": "string"}, "draft_id": {"type": "null"}, "draft_version": {"type": "null"}}},
+        {"required": ["draft_id", "draft_version"], "properties": {
+            "context_id": {"type": "null"}, "draft_id": {"type": "string"}, "draft_version": {"type": "integer"}}},
+    ]}}
+    context_id: str | None = Field(None, pattern=r"^ctx_[0-9a-f]{40}$",
+        description="Immutable context ID from task recovery or an existing export; excludes draft_id and draft_version.")
+    draft_id: str | None = Field(None, pattern=r"^draft_[0-9a-f]{32}$",
+        description="Draft ID from task recovery or an edit result; requires its exact draft_version and no context_id.")
+    draft_version: StrictInt | None = Field(None, ge=1,
+        description="Exact positive draft version from task recovery drafts[].version; not the task revision.")
+    path: str = Field(min_length=1, max_length=4096, description="Normalized repository-relative path in the selected source.")
     start_line: StrictInt = Field(1, ge=1)
     max_lines: StrictInt = Field(200, ge=1, le=1000)
     max_bytes: StrictInt = Field(65536, ge=1, le=262144)
@@ -102,9 +112,9 @@ class ReadFile(Contract):
     @model_validator(mode="after")
     def selector(self):
         if (self.context_id is None) == (self.draft_id is None):
-            raise ValueError("Select exactly one immutable context or draft")
+            raise PydanticCustomError("source_selector", "Select context_id alone or draft_id with exact draft_version")
         if (self.draft_id is None) != (self.draft_version is None):
-            raise ValueError("Draft reads require an exact draft version")
+            raise PydanticCustomError("source_selector", "Select context_id alone or draft_id with exact draft_version")
         safe_path(self.path)
         return self
 

@@ -26,6 +26,11 @@ Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_eff
 
 When the connector exposes `patchbay_*` tools, use the Hub workflow rather than looking for single-machine `codex_*` tools.
 
+The complete canonical Hub export has 31 tools. A scoped trial, permission view
+or currently loaded subset is a different observation. Diagnose unavailable
+actions using the selected plugin/profile, permissions and supported complete
+contract capture; do not infer stale metadata from a visible subset alone.
+
 1. Inspect fleet, workspaces, and existing groups.
 2. Resume the exact existing group or create one durable group for the user task.
 3. Wait for Edge preflight.
@@ -67,13 +72,25 @@ patchbay author ...
 patchbay-author ...
 ```
 
-The normal lifecycle is:
+The writable/operator lifecycle is:
 
 ```text
 register repository -> create task -> claim lease -> export context ->
 write package -> apply revision -> run checks -> inspect feedback ->
 approve with actor -> publish
 ```
+
+A read-only connection recovers existing tasks and reads pinned source,
+feedback, logs and operations. Use an existing artifact if available; creating
+a context or feedback export requires an authorized writer/operator. Do not
+invoke hidden export tools or change modes to bypass the role.
+
+For `author_read_file`, select `context_id` alone or `draft_id` plus exact
+`draft_version`. Recover IDs and draft versions from the existing task rather
+than guessing. Bounded field errors describe repairable argument constraints.
+After a post-dispatch output/size fault, no success or absence of an effect is
+asserted. Follow the returned read-only recovery actions before another
+mutation; an identical retry keeps its original key and payload.
 
 Author execution qualification is Linux/WSL2-only. Do not ask PatchBay to weaken the guard or reinterpret a guarded macOS run as multiple independent source defects.
 
