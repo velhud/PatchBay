@@ -198,8 +198,10 @@ async def test_peer_review_context_includes_diff_and_visibility_note(tmp_path):
     assert "fixture-secret-value" not in reviewer_job.prompt
     assert "Review note:" in reviewer_job.prompt
     assert "Candidate source identity:" in reviewer_job.prompt
-    assert f"Workspace path: {worktree}" in reviewer_job.prompt
-    assert f"Base revision: {implementer_job.options['_worker_base_revision']}" in reviewer_job.prompt
+    assert f"Workspace path: {worktree}" not in reviewer_job.prompt
+    assert "candidate_id" in reviewer_job.prompt and "snapshot_commit" in reviewer_job.prompt
+    assert implementer_job.options['_worker_base_revision'] in reviewer_job.prompt
+    assert "separate disposable writable check workspace" in reviewer_job.prompt
 
 
 @pytest.mark.asyncio

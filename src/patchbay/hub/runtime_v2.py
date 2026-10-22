@@ -23,6 +23,9 @@ from patchbay.hub.groups_v2 import (
     TERMINAL_OPERATION_STATES,
     create_successor_group,
     derive_completion_contract,
+    validate_source_contract,
+    combined_source_generation,
+    validate_combined_verification,
     validate_close_dispositions,
 )
 from patchbay.hub.identity import (
@@ -2256,6 +2259,7 @@ class HubRuntimeV2:
         summary: str,
         dispositions: Mapping[str, str],
         active_work_disposition: str,
+        combined_verification: Any = None,
     ) -> dict[str, Any]:
         """Finish or replay group closure after its durable operation exists."""
 
@@ -2274,17 +2278,36 @@ class HubRuntimeV2:
                     "outcome": outcome,
                     "summary": summary,
                     "closure_dispositions": dict(dispositions),
+                    "combined_verification": deepcopy(combined_verification or {}),
                     "active_work_disposition": active_work_disposition,
                     "closed_at": now,
                     "updated_at": now,
                 }
             )
-            group_entity = self.store.put_entity(
-                WORK_GROUP_ENTITY,
-                group_id,
-                group,
-                expected_revision=group_entity["revision"],
-            )
+            if outcome == 'complete' and (group.get('source_contract') or {}).get('required_combined_checks'):
+                changed = False
+                # Only bounded SQLite reads/writes: source generation and close
+                # become one transaction, without Git, network or model work.
+                with self.store.immediate_transaction() as connection:
+                    current_generation = combined_source_generation(
+                        self._workers_for_group(group_id), self._operations_for_group(group_id))
+                    evidence = (combined_verification or {}).get('evidence') or {}
+                    if evidence.get('delivery_generation') != current_generation:
+                        changed = True
+                    else:
+                        saved = self.store._put_entity_in_transaction(connection, WORK_GROUP_ENTITY,
+                            group_id, group, expected_revision=group_entity['revision'], legacy_classification='')
+                        if saved is None:
+                            raise HubStoreV2Conflict('group_close_state_conflict')
+                        group_entity = saved
+                if changed:
+                    blocked = public_envelope('blocked', result={'reason': 'combined_source_generation_changed'})
+                    terminal = self._complete_hub_operation(operation, blocked)
+                    blocked['operation'] = self._operation_summary(terminal)
+                    return blocked
+            else:
+                group_entity = self.store.put_entity(
+                    WORK_GROUP_ENTITY, group_id, group, expected_revision=group_entity['revision'])
         elif not (
             group.get("status") == "closed"
             and group.get("outcome") == outcome
@@ -2424,6 +2447,7 @@ class HubRuntimeV2:
         shared_write_policy: str = "serialized",
         execution_mode: str = "end_to_end",
         definition_of_done: str = "",
+        source_contract: Any = None,
         wait_for_preflight_seconds: int = 0,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
@@ -2441,6 +2465,7 @@ class HubRuntimeV2:
         if execution_mode_value not in {"end_to_end", "asynchronous_handoff"}:
             raise ValueError("execution_mode must be end_to_end or asynchronous_handoff")
         definition_of_done_value = _optional_text(definition_of_done, 8_000) or goal_value
+        source_contract_value = validate_source_contract(source_contract)
         identity = self._manager_identity(context)
         target = str(workspace_ref or repo_path or machine_id or "fleet")
         payload = {
@@ -2456,6 +2481,7 @@ class HubRuntimeV2:
             "shared_write_policy": shared_write_policy_value,
             "execution_mode": execution_mode_value,
             "definition_of_done": definition_of_done_value,
+            **({"source_contract": source_contract_value} if source_contract is not None else {}),
         }
         operation = self.broker.create_operation(
             tool="patchbay_work_group_create",
@@ -2550,6 +2576,7 @@ class HubRuntimeV2:
             "shared_write_policy": shared_write_policy_value,
             "execution_mode": execution_mode_value,
             "definition_of_done": definition_of_done_value,
+            "source_contract": source_contract_value,
             "workspace_ref": str(projection.get("workspace_ref") or workspace_ref or ""),
             "workspace_projection_ref": str(projection.get("workspace_projection_ref") or ""),
             "repository_identity": str(projection.get("repository_identity") or ""),
@@ -3235,6 +3262,7 @@ class HubRuntimeV2:
         idempotency_key: str,
         active_work_disposition: str = "refuse",
         cleanup_completed_workspaces: bool = False,
+        combined_verification: Any = None,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         del cleanup_completed_workspaces  # Cleanup remains Edge-owned.
@@ -3261,6 +3289,10 @@ class HubRuntimeV2:
             blockers.append({"reason": "active_work_disposition_refuse"})
         if active_workers and active_work_disposition == "stop":
             blockers.append({"reason": "worker_stop_operation_required"})
+        combined = validate_combined_verification(group.get("source_contract") or {}, combined_verification,
+            expected_generation=combined_source_generation(workers, self._operations_for_group(work_group_id)) if group.get('status') == 'open' else None)
+        if outcome == "complete" and not combined["satisfied"]:
+            blockers.append({"reason": "combined_verification_required_for_declared_source_generation"})
         if outcome == "complete":
             if active_work_disposition == "leave_running" or any(
                 disposition == "leave_running" for disposition in dispositions.values()
@@ -3335,6 +3367,7 @@ class HubRuntimeV2:
                 "summary": summary_value,
                 "worker_dispositions": dispositions,
                 "active_work_disposition": active_work_disposition,
+                **({"combined_verification": combined} if combined_verification is not None else {}),
             },
             principal_ref=identity.principal_ref,
         )
@@ -3365,6 +3398,7 @@ class HubRuntimeV2:
             summary=summary_value,
             dispositions=dispositions,
             active_work_disposition=active_work_disposition,
+            combined_verification=combined,
         )
 
     # -- Public projections and operation recovery ----------------------
@@ -3867,6 +3901,10 @@ class HubRuntimeV2:
             lane_summaries=projection["lane_summaries"],
         )
         completion_contract = deepcopy(dict(public_group["completion_contract"]))
+        if (group.get('source_contract') or {}).get('required_combined_checks'):
+            completion_contract['delivery_generation'] = combined_source_generation(
+                self._workers_for_group(group_id), self._operations_for_group(group_id))
+            public_group['completion_contract'] = deepcopy(completion_contract)
 
         def page_metadata(
             *, total: int, offset: int, limit: int, returned: int, included: bool

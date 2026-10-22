@@ -1001,19 +1001,15 @@ async def test_integrate_and_destructive_cleanup_require_explicit_tokens_before_
                 "idempotency_key": "integrate-missing-preview",
             },
         )
-    with pytest.raises(ValueError, match="discard_unintegrated_changes"):
-        await adapter.handle_tool_call(
-            "patchbay_worker_stop",
-            {
-                "work_group_id": "group_alpha",
-                "worker": "Implementer",
-                "cleanup_workspace": True,
-                "idempotency_key": "stop-missing-discard",
-            },
-        )
-
     assert runtime.resolve_calls == []
     assert broker.create_calls == []
+    await adapter.handle_tool_call(
+        "patchbay_worker_stop",
+        {"work_group_id": "group_alpha", "worker": "Implementer", "cleanup_workspace": True,
+         "discard_unintegrated_changes": False, "idempotency_key": "stop-safe-cleanup"},
+    )
+    assert runtime.resolve_calls
+    assert broker.create_calls
 
 
 @pytest.mark.asyncio
@@ -1852,3 +1848,13 @@ async def test_routed_queue_receipt_is_never_reported_as_success():
     assert result["status"] == "pending"
     assert result["operation"] == {}
     assert "command_id" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_batch_preserves_explicit_dependent_source_selector():
+    adapter,runtime,broker,_=make_adapter()
+    arguments=batch_arguments()
+    source={'worker':'wrk_upstream','candidate_id':'a'*64}
+    arguments['workers'][0]['source_candidate']=source
+    await adapter.handle_tool_call('patchbay_worker_start_batch',arguments,context=CONTEXT)
+    assert broker.child_calls[0]['payload']['arguments']['source_candidate']==source

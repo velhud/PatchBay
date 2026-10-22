@@ -16,6 +16,8 @@ Public wrapper modules may delegate to adjacent `*_legacy.py` implementation mod
 - Integration preview is explicit and token-bound.
 - Application preserves all non-delivered content and does not commit.
 - Cleanup requires complete delivery or explicit discard proof.
+
+S06 uses one candidate for preview and apply, typed raw entry pre/postimages, and one atomic delivered-baseline/applied-receipt update. Failed observations preserve uncertainty. `candidate_id` reads retained review source; `review_decision` records controller source acceptance. Legacy delivery disposition is not independent review evidence. Hub safe cleanup forwards discard false to the existing Edge proof. See the [complete candidate contract](../repairs/2026-10-22-s06-candidate-delivery.md).
 - Read-only workers cannot mutate through Git options or command paths.
 
 Optional local start/message retry keys are persisted in the existing atomic

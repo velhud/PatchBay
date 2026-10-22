@@ -100,7 +100,7 @@ Integration preview runs the read-only preview algorithm below.
 1. Resolve worker.
 2. If the latest job is active, cancel through existing execution controls.
 3. Preserve prior worker-tagged jobs and session continuity.
-4. If `cleanup_workspace=true`, remove the isolated worker worktree and private branch.
+4. If `cleanup_workspace=true`, require resolved process ownership and complete delivery proof before removing the isolated worker worktree/private branch. Preserve undelivered work unless a separate explicit discard decision is supplied.
 5. Mark the worker workspace discarded so future messages refuse to continue instead of writing in the base checkout.
 6. Return whether an active turn was stopped and whether cleanup happened.
 ```

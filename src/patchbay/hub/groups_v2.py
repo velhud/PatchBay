@@ -82,6 +82,57 @@ def derive_group_activity(
     return {"activity": activity, "counts": counts}
 
 
+def validate_source_contract(value):
+    if value is None:
+        return {}
+    allowed = {"input_generation", "lane_relationships", "interface_owner", "join_condition", "required_combined_checks"}
+    if not isinstance(value, dict) or set(value) != allowed:
+        raise ValueError("source_contract must declare input_generation, lane_relationships, interface_owner, join_condition and required_combined_checks")
+    for key in allowed - {"required_combined_checks"}:
+        if not isinstance(value[key], str) or not value[key].strip() or len(value[key]) > 4000:
+            raise ValueError("source_contract text must be explicit and bounded")
+    checks = value["required_combined_checks"]
+    if not isinstance(checks, list) or len(checks)>32 or any(not isinstance(x,str) or not x.strip() or len(x)>512 for x in checks) or len(set(checks)) != len(checks):
+        raise ValueError("required_combined_checks must contain unique bounded check names")
+    return deepcopy(value)
+
+
+def combined_source_generation(workers, operations):
+    import hashlib
+    import json
+    # Exact durable source/delivery facts; liveness and observer reads are not source generations.
+    worker_fields = ('fleet_worker_ref', 'edge_worker_id', 'content_revision', 'latest_job_id', 'turn_count', 'integration_state')
+    worker_facts = [{key: worker.get(key) for key in worker_fields} for worker in workers]
+    delivery_facts = [{key: operation.get(key) for key in ('operation_id', 'revision', 'state', 'result')}
+                      for operation in operations if operation.get('tool') == 'patchbay_worker_integrate']
+    raw = json.dumps({'workers': sorted(worker_facts,key=lambda x:str(x)), 'deliveries': sorted(delivery_facts,key=lambda x:str(x))}, sort_keys=True).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def validate_combined_verification(contract, evidence, *, expected_generation=None):
+    import re
+    checks = contract.get("required_combined_checks") or []
+    if not evidence:
+        return {"satisfied": not checks, "scope": "controller_attestation", "reason": "not_required" if not checks else "combined_check_evidence_required"}
+    if not isinstance(evidence, dict) or set(evidence) != {"input_generation", "combined_tree", "checks", "delivery_generation"}:
+        raise ValueError("combined_verification requires input_generation, combined_tree, delivery_generation and checks")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", str(evidence["combined_tree"])):
+        raise ValueError("combined_tree must identify the tested Git tree")
+    if not isinstance(evidence["checks"], list) or len(evidence["checks"])>32:
+        raise ValueError("checks must be a bounded list")
+    observed = {}
+    for check in evidence["checks"]:
+        if not isinstance(check,dict) or set(check) != {"name", "tree", "outcome", "evidence_ref"}:
+            raise ValueError("Each check requires name/tree/outcome/evidence_ref")
+        if not isinstance(check['name'], str) or not 0 < len(check['name']) <= 512 or check["name"] in observed or check["outcome"] not in {"passed", "failed", "not_run"} or not isinstance(check["evidence_ref"],str) or not 0<len(check["evidence_ref"])<=512:
+            raise ValueError("Check identity/outcome/evidence_ref is invalid")
+        observed[check["name"]] = check
+    satisfied = (expected_generation is None or evidence['delivery_generation'] == expected_generation) and evidence["input_generation"] == contract.get("input_generation", evidence["input_generation"]) and all(
+        name in observed and observed[name]["outcome"] == "passed" and observed[name]["tree"] == evidence["combined_tree"] for name in checks)
+    return {"satisfied": satisfied, "scope": "controller_attestation", "evidence": deepcopy(evidence),
+            "canonical_execution_receipt": False}
+
+
 def derive_completion_contract(
     group: Mapping[str, Any],
     workers: Iterable[Mapping[str, Any]],
@@ -228,6 +279,8 @@ def derive_completion_contract(
     return {
         "execution_mode": mode,
         "definition_of_done": str(group.get("definition_of_done") or group.get("goal") or ""),
+        "source_contract": deepcopy(group.get("source_contract") or {}),
+        "combined_verification": deepcopy(group.get("combined_verification") or validate_combined_verification(group.get("source_contract") or {}, None)),
         "work_remaining": group_open,
         "manager_must_continue": group_open and mode == "end_to_end",
         "final_response_allowed": final_response_allowed,
@@ -320,6 +373,7 @@ def create_successor_group(
         "definition_of_done": str(
             predecessor.get("definition_of_done") or predecessor.get("goal") or ""
         ),
+        "source_contract": deepcopy(predecessor.get("source_contract") or {}),
         "workspace_ref": str(predecessor.get("workspace_ref") or ""),
         "pinned_machine_id": machine_id,
         "pinned_edge_generation": edge_generation,

@@ -10,6 +10,8 @@ ChatGPT Pro acts as manager, architect, reviewer, and coordinator. Local Codex w
 
 PatchBay owns transport, durable worker identity, worktree isolation, status, evidence, integration preview/apply, process lifecycle, and optional Hub/Edge coordination. The manager remains responsible for worker selection, briefs, follow-up, acceptance, and user-facing synthesis.
 
+Retained candidate targets bind review to exact source, separately from delivery. Explicit dependent source and combined-check handoffs use existing worker/group owners. Group check attestations are controller evidence, not canonical execution receipts. [S06](../repairs/2026-10-22-s06-candidate-delivery.md) defines source and recovery boundaries.
+
 ### Entry points and state
 
 - `patchbay start`

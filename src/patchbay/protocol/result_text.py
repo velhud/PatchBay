@@ -5,6 +5,7 @@ import json
 from collections.abc import Mapping
 
 FIELDS = (
+    "effect_may_exist", "candidate_id", "complete", "observation_complete", "baseline_repair_required", "receipt_scope", "current_target_matches", "representation", "review_target", "controller_review", "source_review",
     "report_completeness", "report_truncated", "report_source", "report_source_unavailable", "source_sha256", "returned_source_sha256", "redacted", "offset_basis", "report_offset", "total_bytes", "max_bytes_applied", "view", "next_offset", "has_more",
     "worker_id", "name", "worker", "task_id", "work_group_id", "operation_id", "request_operation_id",
     "state", "status", "accepted", "request_replayed", "request_ref", "resync_required", "projection_observed_at", "observation_refresh_seconds", "wait_outcome", "applied", "blocked", "reason", "conflict_summary", "error",
@@ -40,6 +41,13 @@ def decision_metadata(payload: Mapping) -> dict:
                 omitted.append(key)
         elif key == "error" and isinstance(value, Mapping):
             result[key] = {k: v for k in ("code", "message") if isinstance((v := value.get(k)), str) and len(v.encode("utf-8")) <= 128}
+        elif key == 'review_target' and isinstance(value, Mapping):
+            for field in ('candidate_id', 'tree_sha', 'baseline_revision', 'contract_sha256'):
+                item = value.get(field)
+                if isinstance(item,str) and len(item.encode())<=128:
+                    result[field] = item
+        elif key in {'controller_review', 'source_review'} and isinstance(value, Mapping):
+            result[key+'_disposition'] = str(value.get('disposition') or 'unreviewed')[:64]
         elif key == 'report_source' and isinstance(value, Mapping):
             source_hash = value.get('sha256')
             if isinstance(source_hash, str) and len(source_hash.encode('utf-8')) <= 128:

@@ -626,7 +626,7 @@ async def test_integration_preview_reports_conflict_without_mutating_base(tmp_pa
     preview = await runtime.inspect_worker(worker="Implementer", view="integration_preview")
     assert preview["base_moved"] is True
     assert preview["can_apply"] is False
-    assert preview["apply_check"] == "conflict"
+    assert preview["apply_check"] == "affected_preimage_mismatch"
     assert "README.md" in preview["conflict_summary"]
     assert (base / "README.md").read_text(encoding="utf-8") == "# moved main\n"
 

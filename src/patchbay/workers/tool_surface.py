@@ -447,6 +447,10 @@ WORKER_TOOLS = [
                         "phase artifacts that are not committed yet; blocked/secret-like paths are not copied."
                     ),
                 },
+                "source_candidate": {"type": "object", "additionalProperties": False,
+                    "properties": {"worker": {"type": "string"}, "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+                    "required": ["worker", "candidate_id"],
+                    "description": "Explicit dependent lane: start isolated source at this same-repository retained review candidate. Does not commit or change the operator checkout."},
                 "context_from_workers": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -721,6 +725,8 @@ WORKER_TOOLS = [
                     "type": "string",
                     "description": "Workspace-relative path required for view=diff or view=file.",
                 },
+                "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$",
+                    "description": "Exact retained review target from integration_preview or peer context; use with changes/file/diff to read immutable source across later edits."},
                 "report_source_sha256": {"type":"string", "pattern":"^[0-9a-f]{64}$",
                     "description":"For view=report_source, exact immutable complete-report identity returned by the worker report. Omit to select the latest retained report."},
                 "report_offset": {"type":"integer", "minimum":0,
@@ -797,6 +803,12 @@ WORKER_TOOLS = [
                         "recovered after response loss."
                     ),
                 },
+                "review_decision": {"type": "object", "additionalProperties": False,
+                    "properties": {"candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                        "disposition": {"type": "string", "enum": ["accepted", "not_required"]},
+                        "evidence_refs": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 512}}},
+                    "required": ["candidate_id", "disposition"],
+                    "description": "Optional explicit controller source-review decision bound to one retained candidate. Reports are advisory; delivery alone does not certify independent review."},
                 **WORKER_TAKEOVER_PROPERTIES,
             },
             "required": ["worker"],

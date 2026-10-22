@@ -18,6 +18,8 @@ Direct read/search/git tools remain available for orientation, worker briefing, 
 6. Continue the same worker with `codex_worker_message` when correction or deeper evidence is needed.
 7. Use `codex_worker_wait`, status, list, and inspect at the returned cadence. Quiet work is normal.
 8. Inspect reports before raw files or diffs. Preview isolated integration before applying it.
+
+For review, retain the immutable `review_target` and use `candidate_id` with changes/file/diff. Review the pinned generation even if ambient source differs. Keep read-only reviewers read-only; request a separate authorized isolated check lane for executable verification. Record target-bound `review_decision` separately from delivery acceptance. Dependent lanes start with explicit `source_candidate`; default starts do not inherit dirty integrated source. Declare source/join/combined checks in the group’s optional `source_contract`, then supply matching-tree check references at close. Safe cleanup uses discard false; true deliberately authorizes discarding undelivered work.
 9. Stop only deliberately. Integration does not commit and does not delete the worktree.
 
 Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.

@@ -88,6 +88,8 @@ Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_eff
 8. Inspect reports first. Use direct file/diff tools for orientation, focused verification, contradictions, risky changes, or explicit user requests—not as the default broad implementation loop.
 9. Preview isolated integration before applying it. Integration does not commit and does not delete the worker worktree.
 
+Retain the preview’s `review_target.candidate_id` for pinned file/diff inspection. Record an explicit `review_decision` when source review is required. Default isolated starts use committed source; dependent lanes use `source_candidate`. Safe cleanup leaves `discard_unintegrated_changes` false. See the [candidate and recovery contract](docs/repairs/2026-10-22-s06-candidate-delivery.md).
+
 For local `codex_worker_start` and `codex_worker_message`, supply a stable
 `idempotency_key` for each deliberate request (1–200 UTF-8 characters). After a
 lost response, recover existing work and retry with the exact key and arguments.

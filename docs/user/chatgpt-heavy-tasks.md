@@ -81,6 +81,12 @@ preview is the gate before explicit integration; applying it updates the base
 checkout but does not commit or publish. Review the accepted changes before
 any separate Git or release action.
 
+## Pin source and join dependent work
+
+Before parallel implementation, declare the input generation, independent and dependent lanes, interface owner, join condition and required combined checks. Keep these as a short controller brief; Hub groups can persist the same declaration in `source_contract`. Start only independent lanes concurrently. For a dependent lane, retain the upstream preview target and pass `source_candidate` with its worker and `candidate_id`; default starts use committed base source and do not inherit dirty no-commit integration.
+
+Use `context_detail=review` and the retained candidate ID to review actual source. Pass `candidate_id` to inspect changes/file/diff; a later worker edit cannot replace that target. Keep read-only review distinct from executable verification in a separate authorized isolated writable check lane. Supply a candidate-bound `review_decision` on integration when required. After joining the accepted changes, run the declared checks against the actual combined source. At complete group close, `combined_verification` retains the matching tree/check evidence as controller attestation. Independent passes alone do not establish a combined pass. Do not commit or publish to manufacture a source generation. See the [full source/delivery contract](../repairs/2026-10-22-s06-candidate-delivery.md).
+
 ## Keep long tasks and context manageable
 
 PatchBay stores task, draft, operation and worker state, but it does not wake

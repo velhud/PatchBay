@@ -96,6 +96,9 @@ async def admitted_call(runtime, method, arguments, key):
     bound.apply_defaults()
     values = dict(bound.arguments)
     context = values.pop('request_context', None)
+    # S06 adds an optional source selector; omission keeps pre-upgrade keys.
+    if values.get('source_candidate') is None:
+        values.pop('source_candidate', None)
     encoded = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
     record = {'ref': _reference(method.__name__, context, key),
               'fingerprint': hashlib.sha256(encoded(values)).hexdigest(), 'kind': method.__name__}

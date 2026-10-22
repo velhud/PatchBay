@@ -646,6 +646,9 @@ def test_create_worker_worktree_reports_full_filesystem(tmp_path, monkeypatch):
     manager = JobManager(config)
 
     class FakeGit:
+        def branch(self, *args):
+            return ""
+
         def worktree(self, *args):
             raise OSError(errno.ENOSPC, "No space left on device")
 

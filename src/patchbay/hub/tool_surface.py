@@ -297,6 +297,9 @@ HUB_V2_COMPLETION_CONTRACT_SCHEMA: dict[str, Any] = {
             "enum": ["end_to_end", "asynchronous_handoff"],
         },
         "definition_of_done": {"type": "string"},
+        "delivery_generation": {"type": "string"},
+        "source_contract": {"type": "object", "additionalProperties": True},
+        "combined_verification": {"type": "object", "additionalProperties": True},
         "work_remaining": {"type": "boolean"},
         "manager_must_continue": {"type": "boolean"},
         "final_response_allowed": {"type": "boolean"},
@@ -894,6 +897,11 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
                         "Manager completion policy. end_to_end forbids a voluntary final response while the group is open; asynchronous_handoff explicitly permits reporting active durable work.",
                         enum=("end_to_end", "asynchronous_handoff"),
                     ),
+                    "source_contract": {"type": "object", "additionalProperties": False,
+                        "properties": {**{key: {"type": "string", "minLength": 1, "maxLength": 4000} for key in ("input_generation", "lane_relationships", "interface_owner", "join_condition")},
+                            "required_combined_checks": {"type": "array", "maxItems": 32, "uniqueItems": True, "items": {"type": "string", "minLength": 1, "maxLength": 512}}},
+                        "required": ["input_generation", "lane_relationships", "interface_owner", "join_condition", "required_combined_checks"],
+                        "description": "Optional controller-declared source and join contract. Natural language defines meaning; declared combined checks require explicit matching-tree evidence at complete close."},
                     "definition_of_done": _string(
                         "Natural-language result and verification criteria. Defaults to goal when omitted."
                     ),
@@ -1007,6 +1015,13 @@ def _work_group_descriptors() -> list[dict[str, Any]]:
                 {
                     "work_group_id": deepcopy(GROUP_ROUTE_PROPERTIES["work_group_id"]),
                     "outcome": _string("Final manager outcome.", enum=("complete", "partial", "abandoned", "failed")),
+                    "combined_verification": {"type": "object", "additionalProperties": False,
+                        "properties": {"input_generation": {"type": "string"}, "delivery_generation": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "combined_tree": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+                            "checks": {"type": "array", "maxItems": 32, "items": {"type": "object", "additionalProperties": False,
+                                "properties": {"name": {"type": "string"}, "tree": {"type": "string"}, "outcome": {"type": "string", "enum": ["passed", "failed", "not_run"]}, "evidence_ref": {"type": "string", "minLength": 1, "maxLength": 512}},
+                                "required": ["name", "tree", "outcome", "evidence_ref"]}}},
+                        "required": ["input_generation", "combined_tree", "delivery_generation", "checks"],
+                        "description": "Controller attestation of actual combined checkout/check evidence; not a canonical execution receipt or automatic semantic verdict."},
                     "summary": _string("Durable manager closure summary."),
                     "worker_dispositions": {"type": "array", "items": disposition_schema},
                     "idempotency_key": deepcopy(IDEMPOTENCY_KEY_SCHEMA),
@@ -1099,6 +1114,7 @@ def _worker_start_batch_descriptor() -> dict[str, Any]:
         "workspace_mode": deepcopy(start_properties["workspace_mode"]),
         "model": deepcopy(start_properties["model"]),
         "reasoning_effort": deepcopy(start_properties["reasoning_effort"]),
+        "source_candidate": deepcopy(start_properties["source_candidate"]),
         "context_from_workers": deepcopy(start_properties["context_from_workers"]),
         "context_from_artifacts": deepcopy(start_properties["context_from_artifacts"]),
         "include_untracked_from_base": deepcopy(start_properties["include_untracked_from_base"]),
@@ -1235,26 +1251,15 @@ def _worker_stop_descriptor() -> dict[str, Any]:
     properties.update(deepcopy(GROUP_ROUTE_PROPERTIES))
     properties.update(deepcopy(WORKER_SELECTOR_PROPERTIES))
     properties["discard_unintegrated_changes"] = _boolean(
-        "Explicit consent required in addition to cleanup_workspace when unintegrated changes would be discarded."
+        "False/default requests safe cleanup only: Edge preserves any undelivered or uncertain content. True explicitly authorizes discarding current unintegrated changes; process cleanup proof remains required."
     )
     properties["idempotency_key"] = deepcopy(IDEMPOTENCY_KEY_SCHEMA)
-    cleanup_rule = {
-        "if": {
-            "properties": {"cleanup_workspace": {"const": True}},
-            "required": ["cleanup_workspace"],
-        },
-        "then": {
-            "required": ["discard_unintegrated_changes"],
-            "properties": {"discard_unintegrated_changes": {"const": True}},
-        },
-    }
     return _descriptor(
         "patchbay_worker_stop",
         "Use this only after a deliberate decision to interrupt or retire a worker, not because it is merely quiet. Workspace cleanup never authorizes loss by itself; discarding unintegrated changes requires explicit discard_unintegrated_changes=true.",
         _input_schema(
             properties,
             required=("work_group_id", "idempotency_key"),
-            all_of=(cleanup_rule,),
             any_of=({"required": ["worker"]}, {"required": ["fleet_worker_ref"]}),
         ),
         HUB_V2_WORKER_RESULT_SCHEMA,

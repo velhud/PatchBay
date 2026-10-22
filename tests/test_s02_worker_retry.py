@@ -147,3 +147,23 @@ async def test_crashed_admission_lock_owner_does_not_block_legitimate_new_work(t
         if pending and not pending.done():
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_omitted_source_selector_keeps_pre_s06_start_key_fingerprint(tmp_path,monkeypatch):
+    import inspect,json,hashlib
+    from patchbay.workers import runtime_legacy
+    from patchbay.workers.requests import REQUEST_OPTION
+    monkeypatch.setenv('PATCHBAY_HOME',str(tmp_path/'private-runtime'))
+    config=make_config(tmp_path);runtime,executor=runtime_for(config)
+    args=dict(name='legacy reader',brief='Recover the original request.',repo_path=config['repositories']['default'],workspace_mode='read_only')
+    first=await runtime.start_worker(**args,idempotency_key='pre-s06-request')
+    old=inspect.signature(runtime_legacy.WorkerRuntime.start_worker).bind(runtime,**args,model='gpt-6-luna',reasoning_effort='high')
+    old.apply_defaults();values=dict(old.arguments)
+    for key in ['self','request_context','source_candidate']:values.pop(key,None)
+    expected=hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+    job=next(iter(runtime.job_manager.jobs.values()))
+    assert job.options[REQUEST_OPTION]['fingerprint']==expected
+    fresh,fresh_executor=runtime_for(config)
+    replay=await fresh.start_worker(**args,idempotency_key='pre-s06-request')
+    assert replay['request_replayed'] and replay['worker_id']==first['worker_id'] and not fresh_executor.started

@@ -272,6 +272,7 @@ class WorkerRuntime:
         brief: str,
         repo_path: str,
         workspace_mode: str = "isolated_write",
+        source_candidate: Optional[Dict[str, str]] = None,
         context_from_workers: Optional[list[str]] = None,
         context_from_artifacts: Optional[list[str]] = None,
         context_detail: str = "report",
@@ -296,6 +297,15 @@ class WorkerRuntime:
                 self.config.get("repositories", {}).get("allowed") or [],
             )
         )
+        source_revision = ""
+        if source_candidate is not None:
+            if workspace_mode != "isolated_write" or not isinstance(source_candidate, dict) or set(source_candidate) != {"worker", "candidate_id"}:
+                raise ValueError("source_candidate requires worker/candidate_id and an isolated writing workspace")
+            source_jobs = self._resolve_worker(source_candidate["worker"], repo_path=repo_path)
+            source_root, target = self._review_target(source_jobs, source_candidate["candidate_id"])
+            if Path(source_root).resolve() != Path(repo_path).resolve():
+                raise ValueError("Dependent source must belong to the same authorized repository")
+            source_revision = target["snapshot_commit"]
         worker_context = self._worker_context_prompt(context_from_workers, detail=context_detail, repo_path=repo_path)
         if self._find_jobs_by_name(worker_name, repo_path=repo_path):
             if auto_suffix:
@@ -309,6 +319,7 @@ class WorkerRuntime:
             repo_path=repo_path,
             workspace_mode=workspace_mode,
             include_untracked_from_base=include_untracked_from_base,
+            source_revision=source_revision,
         )
         try:
             artifact_context = self._artifact_context_prompt(artifact_ids, repo_path=repo_path, workspace=workspace)
@@ -323,6 +334,8 @@ class WorkerRuntime:
                 allow_concurrent_shared_write=allow_concurrent_shared_write,
                 request_context=request_context,
             )
+            if source_candidate:
+                options['_worker_source_candidate'] = dict(source_candidate)
             job_id = await self._create_worker_job_with_optional_repo_lock(
                 "interactive",
                 self._prepare_prompt(worker_brief, context=context),
@@ -359,6 +372,8 @@ class WorkerRuntime:
                     if workspace_mode == "shared_write"
                     else "not_applicable"
                 ),
+                "source_generation": workspace.get('base_revision'),
+                "inherits_dirty_base": False,
                 "context_sources": context["sources"],
                 "context_detail": context["detail"],
                 "context_truncated": context["truncated"],
@@ -432,6 +447,12 @@ class WorkerRuntime:
                     ),
                 }
             )
+            return view
+        if self._delivery_baseline_repair_required(jobs):
+            view = self._public_view(jobs, request_context=request_context, include_change_state=False)
+            view.update(accepted=False, can_message=False, can_message_now=False,
+                        reason='delivery_baseline_repair_required',
+                        note='Delivery history needs its pinned commit baseline repaired. Recover the accepted token/key, or use operator reconciliation for an unkeyed legacy receipt, before starting a new turn.')
             return view
         worker_message = self._validate_message(message, field_name="message")
         worker_repo_path = repo_path or self._workspace_for_jobs(jobs)["base_repo_path"]
@@ -1301,6 +1322,7 @@ class WorkerRuntime:
         accepted_dirty_base: Optional[list[str]] = None,
         preview_token: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        review_decision: Optional[Dict[str, Any]] = None,
         request_context: Optional[RequestContext] = None,
         takeover: bool = False,
         takeover_reason: str = "",
@@ -1348,7 +1370,23 @@ class WorkerRuntime:
                     assert token_state is not None and token_record is not None
                     disposition = str(token_record.get("disposition") or "issued")
                     if disposition in {"applied", "failed"}:
-                        return self._integration_token_replay(token_record)
+                        if review_decision is not None:
+                            retained_review = (token_record.get('result') or {}).get('controller_review') or {}
+                            submitted = {**review_decision, 'evidence_refs': review_decision.get('evidence_refs') or []}
+                            if any(retained_review.get(key) != value for key, value in submitted.items()):
+                                return self._integration_blocked_result(jobs, request_context=request_context,
+                                    reason='idempotency_payload_conflict', note='The retained delivery has a different controller review decision.')
+                        if disposition == 'applied':
+                            self._repair_applied_delivery(jobs, token_state, token_record)
+                        replay = self._integration_token_replay(token_record)
+                        replay['receipt_scope'] = 'historical_delivery'
+                        try:
+                            expected = (token_record.get('patch_info') or {}).get('expected_postimages')
+                            replay['current_target_matches'] = (self._integration_file_fingerprints(base_repo, expected) == expected) if expected else None
+                        except CandidateSnapshotError:
+                            replay['current_target_matches'] = None
+                            replay['current_observation'] = 'failed'
+                        return replay
                     if disposition == "applying":
                         reconciliation = self._reconcile_applying_token(base_repo, token_record)
                         if reconciliation == "applied":
@@ -1402,8 +1440,11 @@ class WorkerRuntime:
                                 preview_token_id=token_id,
                             )
 
+                candidate = self._candidate_snapshot(jobs)
+                controller_review = self._controller_review_decision(jobs, candidate, review_decision, request_context)
                 preview = self._integration_preview(
                     jobs,
+                    candidate_snapshot=candidate,
                     allow_dirty_base=allow_dirty_base,
                     accepted_dirty_base=accepted_dirty_base,
                     request_context=request_context,
@@ -1473,7 +1514,8 @@ class WorkerRuntime:
                     )
                     return preview
 
-                patch, patch_info = self._integration_patch(jobs)
+                patch, patch_info = self._integration_patch_from_snapshot(candidate)
+                patch_info['controller_review'] = controller_review
                 if token_record is not None and token_state is not None:
                     token_record.update(
                         {
@@ -1498,63 +1540,70 @@ class WorkerRuntime:
                     text=True,
                     timeout=30,
                 )
+                if result.returncode != 0:
+                    preview.update(
+                        {
+                            "applied": False,
+                            "can_apply": False,
+                            "apply_check": "failed_at_apply",
+                            "conflict_summary": self._safe_public_text(
+                                self._clip_text(result.stderr or result.stdout or "git apply failed", MAX_INTEGRATION_MESSAGE_CHARS),
+                                self._private_paths_for_jobs(jobs) | {base_repo},
+                            ),
+                            "note": "The worker result passed preview earlier but git refused to apply it to the base checkout.",
+                        }
+                    )
+                    if token_record is not None and token_state is not None:
+                        token_record.update(
+                            {
+                                "disposition": "failed",
+                                "failed_at": time.time(),
+                                "result": deepcopy(preview),
+                            }
+                        )
+                        self._persist_integration_token_state(jobs, token_state)
+                    return preview
+
+                try:
+                    observed_post = self._integration_file_fingerprints(base_repo, preview.get('changed_files') or [])
+                except CandidateSnapshotError:
+                    observed_post = None
+                if observed_post != patch_info.get('expected_postimages'):
+                    return self._integration_blocked_result(jobs, request_context=request_context,
+                        reason='integration_outcome_unknown', note='Apply returned, but exact affected postimages differ; preserve both workspaces and reconcile the retained intent')
+                applied = self._applied_integration_result(
+                    jobs,
+                    preview=preview,
+                    patch_info=patch_info,
+                    base_repo=base_repo,
+                    request_context=request_context,
+                    takeover=takeover,
+                )
+                if token_record is not None and token_state is not None:
+                    token_record.update(
+                        {
+                            "disposition": "applied",
+                            "applied_at": time.time(),
+                            "post_apply_file_fingerprints": self._integration_file_fingerprints(
+                                base_repo, preview.get("changed_files") or []
+                            ),
+                            "result": deepcopy(applied),
+                        }
+                    )
+                self._persist_integration_token_state(
+                    jobs,
+                    token_state,
+                    request_context=request_context,
+                    takeover=takeover,
+                    takeover_reason=takeover_reason,
+                    integrated_result=applied,
+                )
+                self._clear_monitoring_caches()
+                return applied
         except RepoMutationBusy as busy:
             view = self._public_view(jobs, request_context=request_context)
             view.update({"applied": False, "can_apply": False, **busy.public_payload()})
             return view
-        if result.returncode != 0:
-            preview.update(
-                {
-                    "applied": False,
-                    "can_apply": False,
-                    "apply_check": "failed_at_apply",
-                    "conflict_summary": self._safe_public_text(
-                        self._clip_text(result.stderr or result.stdout or "git apply failed", MAX_INTEGRATION_MESSAGE_CHARS),
-                        self._private_paths_for_jobs(jobs) | {base_repo},
-                    ),
-                    "note": "The worker result passed preview earlier but git refused to apply it to the base checkout.",
-                }
-            )
-            if token_record is not None and token_state is not None:
-                token_record.update(
-                    {
-                        "disposition": "failed",
-                        "failed_at": time.time(),
-                        "result": deepcopy(preview),
-                    }
-                )
-                self._persist_integration_token_state(jobs, token_state)
-            return preview
-
-        applied = self._applied_integration_result(
-            jobs,
-            preview=preview,
-            patch_info=patch_info,
-            base_repo=base_repo,
-            request_context=request_context,
-            takeover=takeover,
-        )
-        if token_record is not None and token_state is not None:
-            token_record.update(
-                {
-                    "disposition": "applied",
-                    "applied_at": time.time(),
-                    "post_apply_file_fingerprints": self._integration_file_fingerprints(
-                        base_repo, preview.get("changed_files") or []
-                    ),
-                    "result": deepcopy(applied),
-                }
-            )
-        self._persist_integration_token_state(
-            jobs,
-            token_state,
-            request_context=request_context,
-            takeover=takeover,
-            takeover_reason=takeover_reason,
-            integrated_result=applied,
-        )
-        self._clear_monitoring_caches()
-        return applied
 
     async def reconcile_active_jobs(self) -> None:
         """Reconcile durable process state without blocking the owning event loop."""
@@ -2046,6 +2095,7 @@ class WorkerRuntime:
         repo_path: str,
         workspace_mode: str,
         include_untracked_from_base: Optional[list[str]] = None,
+        source_revision: str = "",
     ) -> Dict[str, Any]:
         workspace: Dict[str, Any] = {
             "mode": workspace_mode,
@@ -2059,7 +2109,7 @@ class WorkerRuntime:
             "discarded": False,
         }
         if workspace_mode == "isolated_write":
-            worktree_path, branch_name, base_revision = self.job_manager.create_worker_worktree(worker_id, repo_path)
+            worktree_path, branch_name, base_revision = self.job_manager.create_worker_worktree(worker_id, repo_path, **({"source_revision": source_revision} if source_revision else {}))
             workspace.update(
                 {
                     "worktree_path": str(worktree_path),
@@ -2496,6 +2546,7 @@ class WorkerRuntime:
             "liveness": liveness,
             "integration_state": integration_state,
             "review_disposition": review_disposition,
+            "source_review": deepcopy(options.get('_worker_controller_review') or {"disposition": "unreviewed"}),
             "has_session": bool(session_id),
             "can_message": bool(
                 session_id
@@ -3995,6 +4046,17 @@ class WorkerRuntime:
             if token_state is not None:
                 options[WORKER_INTEGRATION_TOKENS_OPTION] = deepcopy(token_state)
             if integrated_result is not None:
+                options["_worker_delivery_baseline_repair_required"] = bool(integrated_result.get('baseline_repair_required'))
+                if integrated_result.get('baseline_repair_required'):
+                    options['_worker_delivery_pending_anchor'] = {key: deepcopy(integrated_result.get(key)) for key in
+                        ('worker_tree_sha', 'worker_baseline_revision', 'patch_sha256', 'changed_files', 'controller_review')}
+                else:
+                    options.pop('_worker_delivery_pending_anchor', None)
+                if integrated_result.get('integrated_snapshot_revision'):
+                    options['_worker_integrated_snapshot_revision'] = integrated_result['integrated_snapshot_revision']
+                    options['_worker_integrated_worker_tree'] = integrated_result['worker_tree_sha']
+                    options['_worker_integrated_snapshot_ref'] = integrated_result['integrated_snapshot_ref']
+                options['_worker_controller_review'] = deepcopy(integrated_result.get('controller_review') or {})
                 options["_worker_integrated_at"] = time.time()
                 options["_worker_integrated_changed_files"] = list(
                     integrated_result.get("changed_files") or []
@@ -4237,29 +4299,18 @@ class WorkerRuntime:
         }
 
     def _dirty_worktree_fingerprint(self, base_repo: str) -> str:
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-            cwd=base_repo,
-            capture_output=True,
-            timeout=15,
-        )
-        diff = subprocess.run(
-            ["git", "diff", "--binary", "HEAD"],
-            cwd=base_repo,
-            capture_output=True,
-            timeout=30,
-        )
-        untracked = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-            cwd=base_repo,
-            capture_output=True,
-            timeout=15,
-        )
+        from .integration_state import _run_git
+        status = _run_git(base_repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], timeout=15)
+        diff = _run_git(base_repo, ["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"], timeout=30)
+        untracked = _run_git(base_repo, ["ls-files", "--others", "--exclude-standard", "-z"], timeout=15)
         untracked_paths = [
             value.decode("utf-8", errors="surrogateescape")
             for value in untracked.stdout.split(b"\0")
             if value
         ]
+        if any(result.returncode != 0 for result in (status, diff, untracked)):
+            from .integration_state import CandidateSnapshotError
+            raise CandidateSnapshotError('Required Git dirty observation failed; clean state is unknown')
         payload = {
             "status_sha256": hashlib.sha256(status.stdout).hexdigest(),
             "tracked_diff_sha256": hashlib.sha256(diff.stdout).hexdigest(),
@@ -4268,23 +4319,8 @@ class WorkerRuntime:
         return f"sha256:{canonical_sha256(payload)}"
 
     def _integration_file_fingerprints(self, root: str, paths: Iterable[str]) -> Dict[str, str]:
-        base = Path(root).expanduser().resolve()
-        fingerprints: Dict[str, str] = {}
-        for raw_path in sorted({str(path).replace("\\", "/") for path in paths if str(path).strip()}):
-            path = base / raw_path
-            try:
-                if path.is_symlink():
-                    value = "symlink:" + hashlib.sha256(str(path.readlink()).encode("utf-8")).hexdigest()
-                elif path.is_file():
-                    value = "file:" + self._file_sha256(path)
-                elif path.exists():
-                    value = "other"
-                else:
-                    value = "missing"
-            except OSError:
-                value = "unreadable"
-            fingerprints[raw_path] = value
-        return fingerprints
+        from .integration_state import filesystem_fingerprints
+        return filesystem_fingerprints(root, paths)
 
     def _git_apply_check(self, base_repo: str, patch: str, *, reverse: bool = False) -> bool:
         command = ["git", "apply"]
@@ -4302,25 +4338,19 @@ class WorkerRuntime:
         return result.returncode == 0
 
     def _reconcile_applying_token(self, base_repo: str, record: Dict[str, Any]) -> str:
-        patch = str(record.get("patch") or "")
+        patch = str(record.get('patch') or '')
         if not patch:
-            return "outcome_unknown"
-        changed_files = list((record.get("preview") or {}).get("changed_files") or [])
-        current_files = self._integration_file_fingerprints(base_repo, changed_files)
-        before_files = dict(record.get("pre_apply_file_fingerprints") or {})
-        current_dirty = self._dirty_worktree_fingerprint(base_repo)
-        before_dirty = str(record.get("pre_apply_dirty_fingerprint") or "")
-        forward_applies = self._git_apply_check(base_repo, patch)
-        reverse_applies = self._git_apply_check(base_repo, patch, reverse=True)
-        if forward_applies and current_files == before_files and current_dirty == before_dirty:
-            return "not_applied"
-        if reverse_applies and not forward_applies:
-            return "applied"
-        if reverse_applies and current_files != before_files:
-            return "applied"
-        if forward_applies and not reverse_applies:
-            return "not_applied"
-        return "outcome_unknown"
+            return 'outcome_unknown'
+        changed = (record.get('preview') or {}).get('changed_files') or []
+        current = self._integration_file_fingerprints(base_repo, changed)
+        expected = (record.get('patch_info') or {}).get('expected_postimages')
+        if expected and current == expected:
+            record['effect_evidence'] = 'exact_postimages_observed_after_uncertain_attempt'
+            return 'applied'
+        before = record.get('pre_apply_file_fingerprints') or {}
+        if current == before and self._dirty_worktree_fingerprint(base_repo) == record.get('pre_apply_dirty_fingerprint') and self._git_apply_check(base_repo, patch):
+            return 'not_applied'
+        return 'outcome_unknown'
 
     def _integration_preview_for_disposition(self, preview: Dict[str, Any]) -> Dict[str, Any]:
         stored = deepcopy(preview)
@@ -4370,8 +4400,9 @@ class WorkerRuntime:
         accepted_dirty_base: Optional[list[str]] = None,
         request_context: Optional[RequestContext] = None,
         issue_preview_token: bool = True,
+        candidate_snapshot: Any = None,
     ) -> Dict[str, Any]:
-        view = self._changes_view(jobs, request_context=request_context)
+        view = self._public_view(jobs, request_context=request_context, include_change_state=False)
         latest = jobs[-1]
         if (latest.native_outcome or {}).get('kind') == 'session_identity_conflict':
             view.update(view='integration_preview', can_apply=False, applied=False,
@@ -4425,7 +4456,9 @@ class WorkerRuntime:
             view["note"] = "The worker's isolated workspace is unavailable."
             return view
 
-        changed_files = self._changed_files(jobs)
+        candidate_snapshot = candidate_snapshot or self._candidate_snapshot(jobs)
+        changed_files = list(candidate_snapshot.changed_files)
+        view['review_target'] = self._retain_review_target(jobs, candidate_snapshot)
         view.update({"changed_files": changed_files, "change_count": len(changed_files), "has_changes": bool(changed_files)})
         if not changed_files:
             view["note"] = "The worker has no changes to integrate."
@@ -4483,8 +4516,18 @@ class WorkerRuntime:
             )
             return view
 
-        patch, patch_info = self._integration_patch(jobs)
+        patch, patch_info = self._integration_patch_from_snapshot(candidate_snapshot)
         view.update(patch_info)
+        # Supported worktree-only profile: unrelated accepted dirt may coexist;
+        # touched paths must still equal the exact candidate baseline.
+        from .integration_state import tree_entries, tree_fingerprints
+        expected_pre = tree_fingerprints(tree_entries(self._execution_path_for_workspace(workspace),
+                                                   candidate_snapshot.baseline_revision), changed_files)
+        if self._integration_file_fingerprints(base_repo, changed_files) != expected_pre:
+            view.update(apply_check="affected_preimage_mismatch",
+                        conflict_summary=self._clip_text("Affected destination differs: " + ", ".join(changed_files), MAX_INTEGRATION_MESSAGE_CHARS),
+                        note="Affected destination entries differ from the candidate baseline; preserve the checkout and resolve them explicitly.")
+            return view
         if patch_info.get("skipped_files"):
             view["note"] = "Some worker files could not be represented as a safe patch. Integrate manually."
             return view

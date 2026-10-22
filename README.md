@@ -97,6 +97,7 @@ patchbay-author
 - Public or tunneled access requires authentication.
 - Repository paths, package paths, exports, and materialized files are validated against their declared roots.
 - Isolated worker integration is preview-first and explicit; it does not commit or delete the worker worktree.
+- Review targets retain exact candidate source; dependent lanes can explicitly start from that snapshot. Controller review, delivery and combined-check evidence remain distinct. See [S06 contracts](docs/repairs/2026-10-22-s06-candidate-delivery.md).
 - Author packages are deterministic inputs, not instructions to launch another model.
 - Unknown execution ownership, stale leases, stale acceptance, or uncertain process identity fail closed.
 - Public status and evidence are bounded and sanitized. Private instance identity and unsafe path details are not projected unnecessarily.

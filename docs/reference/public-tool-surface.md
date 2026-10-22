@@ -43,6 +43,8 @@ These are manager inspection instruments. They are not a mandate for ChatGPT to 
 
 Writing workers use isolated worktrees by default. Integration is explicit, preview-bound, no-commit, and preserves the worker worktree.
 
+The existing inspect tool accepts `candidate_id` for retained changes/file/diff reads. Integration accepts optional target-bound `review_decision`; start accepts `source_candidate` for dependent source. Hub group create/close optionally retain `source_contract`/`combined_verification`. The canonical tool count is unchanged. Safe stop/cleanup forwards discard false; Edge still refuses undelivered or uncertain removal.
+
 Local start/message tools accept an optional `idempotency_key` (1–200 valid
 UTF-8 characters). Exact keyed retries read the retained admission without
 scheduling a second turn; changed arguments conflict. Keys are scoped to method

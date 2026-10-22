@@ -418,7 +418,7 @@ def test_strict_descriptor_validation_rejects_unknown_missing_and_wrong_typed_in
     assert handler.calls == []
 
 
-def test_strict_descriptor_validation_enforces_nested_anyof_and_cleanup_condition():
+def test_strict_route_validation_and_safe_cleanup_forwarding():
     handler = RecordingHandler()
     protocol = HubProtocolV2(handler)
 
@@ -444,9 +444,9 @@ def test_strict_descriptor_validation_enforces_nested_anyof_and_cleanup_conditio
 
     assert missing_route["error"]["code"] == -32602
     assert "allowed schema" in missing_route["error"]["message"]
-    assert unsafe_cleanup["error"]["code"] == -32602
-    assert "discard_unintegrated_changes" in unsafe_cleanup["error"]["message"]
-    assert handler.calls == []
+    assert "error" not in unsafe_cleanup
+    assert len(handler.calls) == 1
+    assert handler.calls[0][0] == "patchbay_worker_stop"
 
 
 def test_validated_call_dispatches_public_tool_name_and_arguments_to_injected_handler():

@@ -73,6 +73,7 @@ EDGE_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
     "codex_worker_start": (
         "name",
         "brief",
+        "source_candidate",
         "repo_path",
         "workspace_mode",
         "auto_suffix",
@@ -106,6 +107,7 @@ EDGE_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
         "end_line",
         "max_bytes",
         "report_source_sha256",
+        "candidate_id",
         "report_offset",
         "accepted_dirty_base",
     ),
@@ -113,6 +115,7 @@ EDGE_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
         "worker",
         "repo_path",
         "preview_token",
+        "review_decision",
         "allow_dirty_base",
         "accepted_dirty_base",
         "takeover",
@@ -933,6 +936,7 @@ class HubWorkerAdapterV2:
                 "brief": _joined_brief(str(args["shared_brief"]), str(item["mission"])),
             }
             for key in (
+                "source_candidate",
                 "workspace_mode",
                 "model",
                 "reasoning_effort",
@@ -1253,11 +1257,6 @@ class HubWorkerAdapterV2:
             and not str(args.get("preview_token") or "").strip()
         ):
             raise ValueError("patchbay_worker_integrate requires preview_token")
-        if name == "patchbay_worker_stop" and bool(args.get("cleanup_workspace")):
-            if args.get("discard_unintegrated_changes") is not True:
-                raise ValueError(
-                    "cleanup_workspace=true requires discard_unintegrated_changes=true"
-                )
         if (
             name
             in {

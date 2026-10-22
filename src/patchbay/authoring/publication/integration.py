@@ -38,59 +38,74 @@ class Integration:
                 retained = json.loads(self.store.one("SELECT payload FROM operations WHERE id=?", (op["id"],))["payload"])
                 result["lease"] = retained["lease"]
                 return result
-            require(observed["state"] not in {"failed", "blocked"}, "OPERATION_FAILED", "Integration was previously rejected")
+            require(observed["state"] not in {"failed", "blocked"}, "OPERATION_FAILED", "Integration was previously rejected; inspect the retained outcome and use a new key for corrected sources", previous=observed.get("error"))
             payload = json.loads(self.store.one("SELECT payload FROM operations WHERE id=?", (op["id"],))["payload"])
             resolved_base = payload["resolved_base"]
-            for source in sources:
-                require(set(source) == {"task_id", "revision"}, "INVALID_REQUEST", "Source dependencies must identify task and exact revision")
-                task = self.tasks.get(source["task_id"])
-                require(task["repository_id"] == repo["id"], "INVALID_REQUEST", "Cross-repository changes need a release manifest, not an atomic integration")
-                require(Feedback(self.store).get(source["task_id"], revision=source["revision"])["classification"] == "READY_FOR_REVIEW",
-                        "CHECKS_INCOMPLETE", "An integration source lacks passing canonical checks")
-            task = self.tasks.create(repo["id"], goal, base=resolved_base, key="integration-" + op["id"], dependencies=sources)
-            lease = payload.get("lease")
-            lease = self.leases.claim(task["id"], label=label, token=lease.get("token") if lease else None)
-            payload.update(task_id=task["id"], lease=lease)
-            with self.store.transaction() as conn:
-                conn.execute("UPDATE operations SET payload=?,state='running',phase='combining',updated=? WHERE id=?", (canonical(payload).decode(), utc_now(), op["id"]))
-            child_key = "integration-package-" + op["id"]
-            child = self.store.one("SELECT * FROM operations WHERE task_id=? AND kind='package.submit' AND idempotency_key=?",
-                                   (task["id"], self.store.scoped_key(child_key)), required=False)
-            if child and child["state"] == "completed":
-                accepted = json.loads(child["result"])
-            else:
-                base_entries = git.entries(resolved_base)
-                combined = dict(base_entries)
+            try:
                 for source in sources:
-                    source_task = self.tasks.get(source["task_id"])
-                    revision = self.tasks.revision(source["task_id"], source["revision"])
-                    original = git.entries(source_task["origin_commit"])
-                    target = git.entries(revision["commit_oid"])
-                    for path in sorted(set(original) | set(target)):
-                        before, after, current = original.get(path), target.get(path), combined.get(path)
-                        if before == after:
-                            continue
-                        require(current == before or current == after, "INTEGRATION_CONFLICT",
-                                "Independent changes conflict at this file; Pro must author the combined correction", path=path)
-                        if after is None:
-                            combined.pop(path, None)
-                        else:
-                            require(after["mode"] in {"100644", "100755"}, "UNSUPPORTED_FILE", "Unsupported integration file mode", path=path)
-                            combined[path] = after
-                replacements = {}
-                for path in sorted(set(base_entries) | set(combined)):
-                    if base_entries.get(path) != combined.get(path):
-                        entry = combined.get(path)
-                        replacements[path] = None if entry is None else (git.blob(entry["oid"]), entry["mode"])
-                require(replacements, "NO_CHANGES", "Selected sources add no new integration changes")
-                with file_lock(self.store.home / ("locks/git-" + repo["id"])):
-                    target_commit, _ = git.create_candidate(resolved_base, replacements, operation_id="integration-" + op["id"],
-                                                           created=op["created"], ref="refs/author/integration/" + op["id"], staging=self.store.home / "staging")
-                with tempfile.TemporaryDirectory(prefix="integration-", dir=self.store.home / "staging") as temporary:
-                    archive = Path(temporary) / "integration.zip"
-                    from_commit(self.store, task["id"], revision=0, target_commit=target_commit, output=archive, summary=goal)
-                    accepted = Materializer(self.store).submit(task["id"], archive, key=child_key, token=lease["token"], epoch=lease["epoch"])
-            result = {"task_id": task["id"], "revision": accepted["revision"], "commit": accepted["commit"],
-                      "tree": accepted["tree"], "classification": "INTEGRATION_NEEDS_CHECKS", "sources": sources}
-            self.store.finish(op["id"], "completed", result=result)
-            return {**result, "lease": lease}
+                    require(set(source) == {"task_id", "revision"}, "INVALID_REQUEST", "Source dependencies must identify task and exact revision")
+                    task = self.tasks.get(source["task_id"])
+                    require(task["repository_id"] == repo["id"], "INVALID_REQUEST", "Cross-repository changes need a release manifest, not an atomic integration")
+                    require(Feedback(self.store).get(source["task_id"], revision=source["revision"])["classification"] == "READY_FOR_REVIEW",
+                            "CHECKS_INCOMPLETE", "An integration source lacks passing canonical checks")
+                task = self.tasks.create(repo["id"], goal, base=resolved_base, key="integration-" + op["id"], dependencies=sources)
+                lease = payload.get("lease")
+                lease = self.leases.claim(task["id"], label=label, token=lease.get("token") if lease else None)
+                payload.update(task_id=task["id"], lease=lease)
+                with self.store.transaction() as conn:
+                    conn.execute("UPDATE operations SET payload=?,state='running',phase='combining',updated=? WHERE id=?", (canonical(payload).decode(), utc_now(), op["id"]))
+                child_key = "integration-package-" + op["id"]
+                child = self.store.one("SELECT * FROM operations WHERE task_id=? AND kind='package.submit' AND idempotency_key=?",
+                                       (task["id"], self.store.scoped_key(child_key)), required=False)
+                if child and child["state"] == "completed":
+                    accepted = json.loads(child["result"])
+                else:
+                    base_entries = git.entries(resolved_base)
+                    combined = dict(base_entries)
+                    for source in sources:
+                        source_task = self.tasks.get(source["task_id"])
+                        revision = self.tasks.revision(source["task_id"], source["revision"])
+                        original = git.entries(source_task["origin_commit"])
+                        target = git.entries(revision["commit_oid"])
+                        for path in sorted(set(original) | set(target)):
+                            before, after, current = original.get(path), target.get(path), combined.get(path)
+                            if before == after:
+                                continue
+                            require(current == before or current == after, "INTEGRATION_CONFLICT",
+                                    "Independent changes conflict at this file; Pro must author the combined correction", path=path)
+                            if after is None:
+                                combined.pop(path, None)
+                            else:
+                                require(after["mode"] in {"100644", "100755"}, "UNSUPPORTED_FILE", "Unsupported integration file mode", path=path)
+                                combined[path] = after
+                    replacements = {}
+                    for path in sorted(set(base_entries) | set(combined)):
+                        if base_entries.get(path) != combined.get(path):
+                            entry = combined.get(path)
+                            replacements[path] = None if entry is None else (git.blob(entry["oid"]), entry["mode"])
+                    require(replacements, "NO_CHANGES", "Selected sources add no new integration changes")
+                    with file_lock(self.store.home / ("locks/git-" + repo["id"])):
+                        target_commit, _ = git.create_candidate(resolved_base, replacements, operation_id="integration-" + op["id"],
+                                                               created=op["created"], ref="refs/author/integration/" + op["id"], staging=self.store.home / "staging")
+                    with tempfile.TemporaryDirectory(prefix="integration-", dir=self.store.home / "staging") as temporary:
+                        archive = Path(temporary) / "integration.zip"
+                        from_commit(self.store, task["id"], revision=0, target_commit=target_commit, output=archive, summary=goal)
+                        accepted = Materializer(self.store).submit(task["id"], archive, key=child_key, token=lease["token"], epoch=lease["epoch"])
+                result = {"task_id": task["id"], "revision": accepted["revision"], "commit": accepted["commit"],
+                          "tree": accepted["tree"], "classification": "INTEGRATION_NEEDS_CHECKS", "sources": sources}
+                self.store.finish(op["id"], "completed", result=result)
+                return {**result, "lease": lease}
+            except AuthorError as error:
+                deterministic = {'INVALID_REQUEST', 'CHECKS_INCOMPLETE', 'INTEGRATION_CONFLICT',
+                                 'NO_CHANGES', 'UNSUPPORTED_FILE', 'NOT_FOUND', 'POLICY_DENIED', 'STALE_BASE'}
+                child = self.store.one("SELECT state FROM operations WHERE task_id=? AND kind='package.submit' AND idempotency_key=?",
+                    (payload.get('task_id', ''), self.store.scoped_key('integration-package-'+op['id'])), required=False)
+                # An accepted child always retains its ordinary success-replay
+                # path, even if a later response/receipt could not be delivered.
+                if error.code in deterministic and not (child and child['state']=='completed'):
+                    error.details.update(operation_id=op['id'], sources=sources,
+                                         integration_task_id=payload.get('task_id'))
+                    self.store.finish(op['id'], 'blocked', error=error.as_dict(), result={
+                        'classification':'INTEGRATION_NEEDS_DECISION', 'sources':sources,
+                        'integration_task_id':payload.get('task_id'), 'reason':error.code})
+                raise
