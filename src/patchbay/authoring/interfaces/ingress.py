@@ -35,12 +35,13 @@ class _RateBucket:
 
 
 class IngressAdmission:
-    """A global concurrency gate with reserved read/control capacity.
+    """A bounded gate with separate ordinary and authorized urgent capacity.
 
-    Write requests can consume at most ``max_concurrency - reserved_control``
-    active slots. Reads and explicit recovery/control routes can use any
-    remaining slot. The pending queue is bounded, with a portion reserved for
-    reads/control; waiting is deliberately short and yields 429 on overload.
+    Writes leave room for reads; ordinary reads also leave an urgent slot in
+    the default gate. Urgent requests have their own concurrency and rate
+    bounds. The semantic classifier validates intent without dispatching it;
+    final route authorization is still required. Queue waits yield 429 on
+    overload and never impose a deadline on admitted domain work.
 
     ``principal_getter`` may read an authenticated principal from the ASGI
     scope (for example, middleware-populated ``scope['state']``). Without one,
@@ -55,6 +56,9 @@ class IngressAdmission:
                  rate_per_minute: float | None = 60, rate_burst: int = 20,
                  max_principals: int = 4096,
                  principal_getter: Callable[[dict], str | None] | None = None,
+                 semantic_kind: Callable[[dict, bytes | None], str] | None = None,
+                 classification_bytes: int = 65536,
+                 classification_timeout: float = 0.1,
                  clock: Callable[[], float] = time.monotonic):
         if max_concurrency < 1 or not 0 <= reserved_control < max_concurrency:
             raise ValueError("reserved_control must leave at least one active request slot")
@@ -79,15 +83,29 @@ class IngressAdmission:
         self.rate_burst = rate_burst
         self.max_principals = max_principals
         self.principal_getter = principal_getter
+        self.semantic_kind = semantic_kind
+        self.classification_bytes = classification_bytes
+        self.classification_timeout = classification_timeout
+        if classification_bytes < 1 or classification_timeout <= 0:
+            raise ValueError('Invalid bounded admission classification budget')
+        self._classifying = 0
+        self._classification_tasks = set()
         self.clock = clock
+        # Preserve a small urgent share against ordinary reads as well as writes.
+        # Tiny custom gates retain their existing read reservation.
+        self.urgent_reserved = 1 if max_concurrency > 2 and reserved_control else 0
+        self.control_capacity = max(1, reserved_control)
 
         self._condition = asyncio.Condition()
         self._waiters: deque[_Waiter] = deque()
         self._active = 0
         self._active_writes = 0
+        self._active_controls = 0
         self._active_by_principal: dict[str, int] = {}
         self._waiting_by_principal: dict[str, int] = {}
         self._rate_buckets: OrderedDict[str, _RateBucket] = OrderedDict()
+        self._control_rate_buckets: OrderedDict[str, _RateBucket] = OrderedDict()
+        self._control_global = _RateBucket(tokens=10.0, updated=self.clock())
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
@@ -96,7 +114,7 @@ class IngressAdmission:
         request_id = self._request_id(scope)
         state = scope.setdefault("state", {})
         state["request_id"] = request_id
-        kind = self._kind(scope)
+        kind, receive = await self._classify(scope, receive)
         principal = self._principal(scope)
         admitted, retry_after = await self._acquire(kind, principal)
         if not admitted:
@@ -114,6 +132,54 @@ class IngressAdmission:
             await self.app(scope, receive, identified_send)
         finally:
             await self._release(kind, principal)
+
+    async def _classify(self, scope, receive):
+        fallback = self._kind(scope)
+        if self.semantic_kind is None or self._classifying >= self.max_concurrency:
+            return fallback if self.semantic_kind is None else 'write', receive
+        self._classifying += 1
+        messages = []
+
+        async def classify():
+            try:
+                raw = None
+                if scope.get('method', 'GET').upper() == 'POST':
+                    length = next((v for k,v in scope.get('headers',[]) if k.lower()==b'content-length'), None)
+                    if length is not None and (not length.isdigit() or int(length) > self.classification_bytes):
+                        return 'write'
+                    async def prefix():
+                        size = 0
+                        while True:
+                            message = await receive()
+                            messages.append(message)
+                            if message['type'] != 'http.request':
+                                return None
+                            size += len(message.get('body', b''))
+                            if size > self.classification_bytes:
+                                return None
+                            if not message.get('more_body', False):
+                                return b''.join(m.get('body',b'') for m in messages)
+                    raw = await asyncio.wait_for(prefix(), self.classification_timeout)
+                    if raw is None:
+                        return 'write'
+                kind = await asyncio.to_thread(self.semantic_kind, scope, raw)
+                return kind if kind in {'read','control','write'} else 'write'
+            except Exception:
+                # Classification grants no effects. Invalid/large/incomplete
+                # input keeps ordinary limits and the normal route validation.
+                return 'write'
+            finally:
+                self._classifying -= 1
+
+        # A disconnected caller cannot release a slot while its bounded
+        # classifier is still doing authentication/readback in a worker thread.
+        task = asyncio.create_task(classify())
+        self._classification_tasks.add(task)
+        task.add_done_callback(self._classification_tasks.discard)
+        kind = await asyncio.shield(task)
+        async def replay():
+            return messages.pop(0) if messages else await receive()
+        return kind, replay
 
     @staticmethod
     def _kind(scope: dict) -> str:
@@ -160,41 +226,56 @@ class IngressAdmission:
             material = str(raw).encode("utf-8", "replace")
         return hashlib.sha256(material).hexdigest()
 
-    def _rate_limit(self, principal: str | None) -> int | None:
+    def _rate_limit(self, principal: str | None, kind: str = 'write') -> int | None:
         if principal is None or self.rate_per_minute is None:
             return None
         now = self.clock()
-        bucket = self._rate_buckets.get(principal)
+        ledger = self._control_rate_buckets if kind == 'control' else self._rate_buckets
+        burst = 5 if kind == 'control' else self.rate_burst
+        rate = min(self.rate_per_minute, 30) if kind == 'control' else self.rate_per_minute
+        if kind == 'control':
+            global_bucket = self._control_global
+            global_bucket.tokens = min(10.0, global_bucket.tokens + max(0.0, now-global_bucket.updated))
+            global_bucket.updated = now
+            if global_bucket.tokens < 1:
+                return 1
+        bucket = ledger.get(principal)
         if bucket is None:
-            if len(self._rate_buckets) >= self.max_principals:
+            if len(ledger) >= self.max_principals:
                 evicted = False
-                for old in list(self._rate_buckets):
+                for old in list(ledger):
                     if self._active_by_principal.get(old, 0) == 0 and self._waiting_by_principal.get(old, 0) == 0:
-                        del self._rate_buckets[old]
+                        del ledger[old]
                         evicted = True
                         break
                 if not evicted:
                     # Active principal state is bounded by max_concurrency; a
                     # config check ensures space exists for a new active key.
                     return 1
-            bucket = _RateBucket(tokens=float(self.rate_burst), updated=now)
-            self._rate_buckets[principal] = bucket
+            bucket = _RateBucket(tokens=float(burst), updated=now)
+            ledger[principal] = bucket
         else:
-            self._rate_buckets.move_to_end(principal)
-        refill = self.rate_per_minute / 60.0
-        bucket.tokens = min(float(self.rate_burst), bucket.tokens + max(0.0, now - bucket.updated) * refill)
+            ledger.move_to_end(principal)
+        refill = rate / 60.0
+        bucket.tokens = min(float(burst), bucket.tokens + max(0.0, now - bucket.updated) * refill)
         bucket.updated = now
         if bucket.tokens >= 1.0:
             bucket.tokens -= 1.0
+            if kind == 'control':
+                self._control_global.tokens -= 1.0
             return None
         return max(1, int((1.0 - bucket.tokens) / refill + 0.999999))
 
     def _can_use(self, waiter: _Waiter) -> bool:
         if self._active >= self.max_concurrency:
             return False
+        if waiter.kind == 'control' and self._active_controls >= self.control_capacity:
+            return False
+        if waiter.kind != 'control' and self._active-self._active_controls >= self.max_concurrency-self.urgent_reserved:
+            return False
         if waiter.kind == "write" and self._active_writes >= self.write_capacity:
             return False
-        principal_limit = self.max_per_principal + (1 if waiter.kind != "write" else 0)
+        principal_limit = self.max_per_principal + {'write':0,'read':1,'control':2}[waiter.kind]
         if waiter.principal and self._active_by_principal.get(waiter.principal, 0) >= principal_limit:
             return False
         return True
@@ -208,7 +289,7 @@ class IngressAdmission:
     async def _acquire(self, kind: str, principal: str | None) -> tuple[bool, int]:
         waiter = _Waiter(kind, principal)
         async with self._condition:
-            retry_after = self._rate_limit(principal)
+            retry_after = self._rate_limit(principal, kind)
             if retry_after is not None:
                 return False, retry_after
 
@@ -216,14 +297,17 @@ class IngressAdmission:
                 self._active += 1
                 if kind == "write":
                     self._active_writes += 1
+                if kind == 'control':
+                    self._active_controls += 1
                 if principal:
                     self._active_by_principal[principal] = self._active_by_principal.get(principal, 0) + 1
                 return True, 0
 
             write_pending_limit = self.max_pending - self.reserved_pending
             if (len(self._waiters) >= self.max_pending
+                    or (kind != 'control' and len(self._waiters) >= max(0,self.max_pending-self.urgent_reserved))
                     or (kind == "write" and len(self._waiters) >= write_pending_limit)
-                    or (principal and self._waiting_by_principal.get(principal, 0) >= self.max_pending_per_principal)):
+                    or (principal and self._waiting_by_principal.get(principal, 0) >= self.max_pending_per_principal + (1 if kind == 'control' else 0))):
                 return False, 2
 
             self._waiters.append(waiter)
@@ -249,6 +333,8 @@ class IngressAdmission:
             self._active += 1
             if kind == "write":
                 self._active_writes += 1
+            if kind == 'control':
+                self._active_controls += 1
             if principal:
                 self._active_by_principal[principal] = self._active_by_principal.get(principal, 0) + 1
             self._condition.notify_all()
@@ -270,6 +356,8 @@ class IngressAdmission:
             self._active = max(0, self._active - 1)
             if kind == "write":
                 self._active_writes = max(0, self._active_writes - 1)
+            if kind == 'control':
+                self._active_controls = max(0, self._active_controls - 1)
             if principal:
                 remaining = self._active_by_principal.get(principal, 0) - 1
                 if remaining > 0:

@@ -172,6 +172,30 @@ tool through a reader role before an effect. A future annotation experiment must
 keep these outcomes unchanged, vary one family in an identified test profile,
 and retain the original hints unless actual client evidence demonstrates benefit.
 
+## Observation, waits and urgent admission
+
+Manager waits preserve complete default output. Local waits read first, return
+early for actionable/status changes and cap the idle budget at 30 seconds by
+default. Admission, readback, encoding and delivery still need route-specific
+margin. A timeout or observer disconnect does not cancel execution. Hub waits
+reuse scoped observation; a revision ahead of current state returns a full
+snapshot with `resync_required=true`. `projection_observed_at` identifies Hub
+snapshot construction, not native progress. Internal sampling cadence does not
+replace the returned client polling guidance.
+
+Author MCP semantic admission recognizes authorized recovery and owned check
+cancellation under bounded parsing and separate urgent concurrency/rate limits.
+It reuses real catalog/input/access validation without dispatching. Final role,
+qualification, task and lease checks remain authoritative. Priority cannot be
+requested with a caller flag. Author keeps short pure status/recovery reads;
+there is no new Author wait tool or hidden continuation worker.
+
+The [S03 observation contract](../repairs/2026-10-22-s03-observation.md) records
+source measurements, exact capacity, residual native/client gates and the
+deferred optional no-change profile. No token savings or universal transport
+timeout is inferred from these fixtures. Schema/source changes require renewed
+qualification for the selected client/route; existing deployments are unchanged.
+
 ## Qualification still required
 
 Before enabling an upgraded route, capture its build, full authenticated catalog,

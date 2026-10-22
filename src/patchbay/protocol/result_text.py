@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 FIELDS = (
     "worker_id", "name", "worker", "task_id", "work_group_id", "operation_id", "request_operation_id",
-    "state", "status", "accepted", "request_replayed", "request_ref", "applied", "blocked", "reason", "conflict_summary", "error",
+    "state", "status", "accepted", "request_replayed", "request_ref", "resync_required", "projection_observed_at", "observation_refresh_seconds", "wait_outcome", "applied", "blocked", "reason", "conflict_summary", "error",
     "stopped", "stop_confirmation_required", "discard_confirmation_required", "workspace_cleaned",
     "cleanup_pending", "cleanup_unresolved", "cleanup_recovery_required", "integration_state", "apply_disposition",
     "preview_token_id", "patch_sha256", "candidate_hash", "base_revision", "worker_base_revision", "revision",

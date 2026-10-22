@@ -122,6 +122,10 @@ separates repository verification from the remaining client/deployment gates.
 The [S02 controller recovery contract](docs/repairs/2026-10-22-s02-controller-recovery.md)
 describes optional local worker retry keys, notification admission, trusted
 post-effect errors, takeover fencing and complete Author history traversal.
+The [S03 observation contract](docs/repairs/2026-10-22-s03-observation.md)
+describes silence-threshold publication, meaningful status deltas, shared
+observation costs, bounded waits and authorized urgent Author admission.
+Its local measurements leave native mixed-workload and client qualification explicit.
 
 ## Documentation
 

@@ -106,7 +106,10 @@ class ToolHandler:
     ) -> Dict[str, Any]:
         """Route tool calls to appropriate handlers."""
         logger.info(f"Handling tool: {tool_name}")
-        await self._reconcile_active_jobs()
+        # Monitoring owners check their own cache before fresh reconciliation.
+        # Mutation and legacy job routes retain the existing fresh barrier.
+        if tool_name not in {'codex_worker_list','codex_worker_status','codex_worker_wait','codex_worker_inspect'}:
+            await self._reconcile_active_jobs()
         
         handlers = {
             "codex_open_workspace": self._codex_open_workspace,

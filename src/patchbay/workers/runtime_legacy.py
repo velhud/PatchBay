@@ -14,6 +14,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -184,6 +185,10 @@ class WorkerRuntime:
             str, tuple[tuple[Any, ...], str]
         ] = {}
         self._projection_change_summary_lock = threading.Lock()
+        self._observation_lock = threading.Lock()
+        self._observation_deadline = None
+        self._observation_revision = 0
+        self._observation_wall = None
 
     def _prune_monitoring_caches(self, *, now: float | None = None) -> None:
         """Apply idle TTL and LRU bounds without changing durable worker visibility."""
@@ -561,7 +566,6 @@ class WorkerRuntime:
         repo_path = self._normalize_optional_repo_path(repo_path)
 
         while True:
-            await self._reconcile_active_jobs_async()
             jobs = self._resolve_worker(worker, repo_path=repo_path)
             latest = jobs[-1]
             worker_id, _ = self._worker_identity(jobs)
@@ -581,6 +585,9 @@ class WorkerRuntime:
                 cached = self._cached_monitoring_response(inspect_cache_key, tool_name="codex_worker_inspect")
                 if cached:
                     return cached
+            await self._reconcile_active_jobs_async()
+            jobs = self._resolve_worker(worker, repo_path=repo_path)
+            latest = jobs[-1]
             if latest.state not in (JobState.PENDING, JobState.RUNNING) or time.monotonic() >= deadline:
                 if view in {"report", "status", "compact", "diagnostics"}:
                     public = self._public_view(jobs, request_context=request_context)
@@ -780,16 +787,26 @@ class WorkerRuntime:
             force_change_refresh=force_change_refresh,
         )
 
-    def projection_state_token(self) -> tuple[int, int]:
+    def projection_state_token(self) -> tuple:
         """Return a cheap token for state represented by worker projection."""
 
         manager_revision = int(getattr(self.job_manager, "state_revision", 0) or 0)
         liveness_revision = int(
             getattr(self.job_executor, "runtime_liveness_revision", 0) or 0
         )
-        return manager_revision, liveness_revision
+        now = time.time()
+        with self._observation_lock:
+            # Only semantic deadlines and clock rollback invalidate silence.
+            # A ticking age/observer heartbeat must not defeat suppression.
+            if ((self._observation_deadline is not None and now >= self._observation_deadline)
+                    or (self._observation_wall is not None and now < self._observation_wall)):
+                self._observation_revision += 1
+                self._observation_deadline = None
+            self._observation_wall = now
+            temporal_revision = self._observation_revision
+        return manager_revision, liveness_revision, self._heartbeat_thresholds(), temporal_revision
 
-    async def projection_state_token_async(self) -> tuple[int, int]:
+    async def projection_state_token_async(self) -> tuple:
         """Reconcile process state before returning the projection token."""
 
         await self._reconcile_active_jobs_async()
@@ -818,6 +835,7 @@ class WorkerRuntime:
     ) -> Dict[str, Any]:
         """Build projection content without reconciling runtime state."""
 
+        observation_started = time.time()
         groups = self._projection_worker_groups_snapshot()
         shared_projection_versions = self._terminal_shared_projection_versions(groups)
         workers: list[Dict[str, Any]] = []
@@ -872,6 +890,27 @@ class WorkerRuntime:
             "workers": workers,
         }
         content_sha256 = self._projection_content_sha256(content)
+        fresh, quiet = self._heartbeat_thresholds()
+        deadlines = []
+        for jobs in groups:
+            latest = jobs[-1]
+            if latest.state != JobState.RUNNING:
+                continue
+            checkpoints = self._latest_checkpoints_for_jobs(jobs)
+            partial_at = self._checkpoint_timestamp(checkpoints[-1]) if checkpoints else None
+            for stamp, thresholds in ((latest.last_heartbeat_at, (fresh, quiet)), (partial_at, (fresh,))):
+                if stamp is not None:
+                    for threshold in thresholds:
+                        # Display ages are integer seconds; > threshold is the
+                        # first second in the next classification bucket.
+                        if math.isfinite(threshold):
+                            deadline = float(stamp) + math.floor(threshold) + 1
+                            # If it crosses during construction, retain the
+                            # due deadline so the next token forces readback.
+                            if deadline > observation_started:
+                                deadlines.append(deadline)
+        with self._observation_lock:
+            self._observation_deadline = min(deadlines) if deadlines else None
         return {
             **content,
             "content_revision": f"sha256:{content_sha256}",
@@ -955,47 +994,67 @@ class WorkerRuntime:
         wait_seconds: Optional[int] = None,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
-        """Wait a bounded interval, then return a fresh worker status payload."""
+        """Read first, then yield for a control-state change within a bounded budget."""
         policy = self._status_poll_policy()
         if wait_seconds is None:
             wait_seconds = int(policy["recommended_next_poll_seconds"])
         requested_wait_seconds = int(wait_seconds)
-        wait_cap_seconds = 120
+        wait_cap_seconds = max(1,min(120,int(self._worker_seconds_config('status_max_wait_seconds',30))))
         minimum_wait_seconds = min(wait_cap_seconds, int(policy["minimum_next_poll_seconds"]))
         wait_seconds = min(wait_cap_seconds, max(minimum_wait_seconds, requested_wait_seconds))
-        poll_key = self._status_response_key(
-            repo_path=repo_path,
-            active_only=active_only,
-            include_stopped=include_stopped,
-            owned_only=owned_only,
-            created_after=created_after,
-            scope=scope,
-            request_context=request_context,
-        )
-        cached = self._cached_monitoring_response(poll_key, tool_name="codex_worker_wait")
-        if cached:
-            wait_seconds = max(wait_seconds, int(cached.get("retry_after_seconds") or 0))
         started = self._monotonic_clock()
-        await asyncio.sleep(wait_seconds)
-        payload = await self.worker_status(
-            repo_path=repo_path,
-            active_only=active_only,
-            include_stopped=include_stopped,
-            owned_only=owned_only,
-            created_after=created_after,
-            scope=scope,
-            force_refresh=True,
-            request_context=request_context,
-        )
-        elapsed_seconds = int(self._monotonic_clock() - started)
-        payload["waited_seconds"] = max(wait_seconds, elapsed_seconds)
+        status_arguments = dict(repo_path=repo_path,active_only=active_only,include_stopped=include_stopped,
+            owned_only=owned_only,created_after=created_after,scope=scope,force_refresh=True,request_context=request_context)
+        payload = await self.worker_status(**status_arguments)
+        selected_ids = {worker['worker_id'] for worker in payload['workers']}
+        selected = [jobs for jobs in self._worker_groups() if self._worker_id(jobs[-1]) in selected_ids]
+        job_count = len(self.job_manager.jobs)
+
+        def control_state():
+            values = []
+            ready = not selected
+            for jobs in selected:
+                job = jobs[-1]
+                live = self._liveness_for_job(job,session_id=job.session_id or (job.options or {}).get('resume_session_id'),
+                    latest_partial_note=self._latest_partial_note_for_jobs(jobs))
+                values.append((job.job_id,job.state.value,live['status'],live['phase'],job.wrapper_cleanup_outcome))
+                ready = ready or job.state not in {JobState.PENDING,JobState.RUNNING} or live['status'] in {'lost','stale'}
+            return tuple(values),ready
+
+        # Read/register/recheck uses retained job references, without a domain
+        # lock, process census, Git read, or thread held across the idle wait.
+        baseline, actionable = control_state()
+        reason = 'actionable' if actionable else 'timeout'
+        if not actionable:
+            while True:
+                remaining = wait_seconds-(self._monotonic_clock()-started)
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(.25,remaining))
+                current, actionable = control_state()
+                if len(self.job_manager.jobs) != job_count:
+                    refreshed = await self.worker_status(**status_arguments)
+                    job_count = len(self.job_manager.jobs)
+                    if {worker['worker_id'] for worker in refreshed['workers']} != selected_ids:
+                        reason = 'status_changed'
+                        break
+                if current != baseline:
+                    reason = 'status_changed'
+                    break
+            payload = await self.worker_status(**status_arguments)
+        elif baseline:
+            # A terminal/cleanup transition may occur during initial readback.
+            payload = await self.worker_status(**status_arguments)
+        payload['wait_outcome'] = reason
+        payload["waited_seconds"] = int(max(0,self._monotonic_clock()-started))
         payload["requested_wait_seconds"] = requested_wait_seconds
         payload["minimum_wait_seconds_applied"] = minimum_wait_seconds
         payload["wait_cap_seconds"] = wait_cap_seconds
         payload["wait_guidance"] = (
-            "This tool is the patient manager path: it waits once, then returns a fresh compact status. "
+            "This tool is the patient manager path: it reads first, then waits for a meaningful status change. "
             "Use it instead of repeated rapid codex_worker_status calls while workers are normally active or quiet. "
-            "Very small wait requests are raised to the configured minimum monitoring cadence."
+            "Very small wait requests are raised to the configured minimum monitoring cadence, but actionable work returns early. "
+            "The server wait cap must leave delivery margin within the operator-qualified route budget; a timeout never cancels work."
         )
         return payload
 
@@ -2988,6 +3047,9 @@ class WorkerRuntime:
             "stdout_bytes_seen": int(latest_turn.get("stdout_bytes_seen") or liveness.get("stdout_bytes_seen") or 0),
             "stderr_bytes_seen": int(latest_turn.get("stderr_bytes_seen") or liveness.get("stderr_bytes_seen") or 0),
             "checkpoint_count": int(view.get("checkpoint_count") or 0),
+            **{field: view.get(field) for field in (
+                'cleanup_pending', 'cleanup_unresolved', 'cleanup_recovery_required',
+                'can_message', 'review_disposition', 'integration_state')},
         }
 
     def _status_delta(self, current: Dict[str, Any], previous: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3003,6 +3065,9 @@ class WorkerRuntime:
                 "last_event_changed": False,
                 "heartbeat_changed": False,
                 "state_changed": False,
+                "activity_changed": False,
+                "status_changed": False,
+                "control_changed_fields": [],
                 "line": "baseline recorded",
             }
         events_delta = max(0, int(current["event_count"]) - int(previous.get("event_count") or 0))
@@ -3013,11 +3078,18 @@ class WorkerRuntime:
         last_event_changed = str(current["last_event"]) != str(previous.get("last_event") or "")
         heartbeat_changed = events_delta > 0 or stdout_delta > 0 or stderr_delta > 0 or last_event_changed
         completed_delta = 1 if str(previous.get("state") or "") != "idle" and str(current["state"]) == "idle" else 0
-        changed = bool(events_delta or stdout_delta or stderr_delta or partial_delta or state_changed or last_event_changed)
+        activity_changed = bool(events_delta or stdout_delta or stderr_delta or partial_delta or last_event_changed)
+        control_fields = ('state', 'liveness_status', 'phase', 'cleanup_pending', 'cleanup_unresolved',
+                          'cleanup_recovery_required', 'can_message', 'review_disposition', 'integration_state')
+        control_changed = [field for field in control_fields if current.get(field) != previous.get(field)]
+        changed = activity_changed or bool(control_changed)
         if changed:
             line = self._delta_line(events_delta, stdout_delta, stderr_delta, partial_delta, completed_delta)
         else:
             line = "no new events or output"
+        if control_changed:
+            status_line = 'status changed: ' + ', '.join(control_changed)
+            line = line + ' | ' + status_line if activity_changed or completed_delta else status_line
         return {
             "first_check": False,
             "changed": changed,
@@ -3029,6 +3101,9 @@ class WorkerRuntime:
             "last_event_changed": last_event_changed,
             "heartbeat_changed": heartbeat_changed,
             "state_changed": state_changed,
+            "activity_changed": activity_changed,
+            "status_changed": bool(control_changed),
+            "control_changed_fields": control_changed,
             "line": line,
         }
 
@@ -3192,6 +3267,8 @@ class WorkerRuntime:
             "suggested_action": liveness.get("suggested_action"),
             "status_line": view.get("status_line"),
             "can_message_now": view.get("can_message_now"),
+            "cleanup_pending": view.get("cleanup_pending"),
+            "cleanup_recovery_required": view.get("cleanup_recovery_required"),
             "cleanup_unresolved": view.get("cleanup_unresolved"),
             "can_queue_message": view.get("can_queue_message"),
             "followup_mode": view.get("followup_mode"),

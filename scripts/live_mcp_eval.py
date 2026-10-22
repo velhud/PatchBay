@@ -270,7 +270,9 @@ def main() -> int:
             "worker_wait_fresh_status",
             waited_status_data["status_current"] is True
             and waited_status_data["poll_too_early"] is False
-            and waited_status_data["waited_seconds"] >= 1
+            and waited_status_data["wait_outcome"] in {"actionable", "status_changed", "timeout"}
+            and waited_status_data["waited_seconds"] >= 0
+            and (waited_status_data["wait_outcome"] != "timeout" or waited_status_data["waited_seconds"] >= 1)
             and waited_status_data["minimum_wait_seconds_applied"] == 1,
         )
 

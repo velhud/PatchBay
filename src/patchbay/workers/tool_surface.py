@@ -25,6 +25,10 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "state": {"type": "string"},
         "request_ref": {"type": "string", "description": "Opaque retained admission reference for a keyed local start or follow-up."},
         "request_replayed": {"type": "boolean", "description": "True means the original admission was read; no new worker turn was scheduled."},
+        "resync_required": {"type":"boolean", "description":"The supplied observation revision is ahead of current state; use the full returned snapshot to establish a new baseline."},
+        "projection_observed_at": {"type":["number","null"], "description":"When the Hub snapshot was constructed; not native progress or HTTP response time."},
+        "observation_refresh_seconds": {"type":"number", "description":"Maximum routine shared observation sampling interval, separate from client polling cadence."},
+        "wait_outcome": {"type":"string", "enum":["actionable","status_changed","timeout"]},
         "view": {"type": "string"},
         "report": {"type": "string"},
         "status_line": {"type": "string"},
@@ -631,11 +635,11 @@ WORKER_TOOLS = [
     {
         "name": "codex_worker_wait",
         "description": (
-            "Wait once, then return a fresh compact worker team status. Use this instead of repeatedly calling "
+            "Read current worker status, return actionable work immediately, or wait for a meaningful status change within the server cap. Use this instead of repeatedly calling "
             "codex_worker_status every few seconds while workers are active or quiet. The normal manager pattern "
             "is: assign workers, wait about 20-30 seconds, read compact status, then either wait again, ask a "
             "worker a natural-language follow-up after its turn completes, or inspect only when there is a real "
-            "concern. If wait_seconds is lower than the configured minimum cadence, PatchBay raises it to that minimum. "
+            "concern. Small wait requests use the configured minimum observation budget; actionable state can return early. The default cap is 30 seconds; the operator must qualify any route-specific cap and delivery margin. "
             "Default scope=current hides old completed/stopped historical workers while keeping current-run and live/problem workers visible; use scope=conversation or scope=history only when intentionally reusing older workers. If repo_path is omitted, status covers workers across all allowed repositories. This tool does not expose "
             "raw logs and does not interrupt workers."
         ),
@@ -665,7 +669,7 @@ WORKER_TOOLS = [
                 },
                 "wait_seconds": {
                     "type": "integer",
-                    "description": "Seconds to wait before refreshing status. Default follows recommended_next_poll_seconds; values below the configured minimum monitoring cadence are raised to that minimum, and values are capped by server policy.",
+                    "description": "Maximum observation budget, subject to the configured minimum cadence and server cap (default 30 seconds). Existing terminal/actionable state and meaningful changes return early; timeout never cancels work.",
                 },
                 "scope": {
                     "type": "string",

@@ -146,6 +146,7 @@ workers:
   heartbeat_quiet_seconds: 600
   status_recommended_poll_seconds: 30
   status_minimum_poll_seconds: 20
+  status_max_wait_seconds: 30  # Operator must qualify the route and reserve delivery margin.
   stop_artifact_wait_seconds: 2
   stop_confirmation_grace_seconds: 300
 

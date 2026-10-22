@@ -694,6 +694,18 @@ class HubWorkerProjectionPortV2:
             self.minimum_poll_seconds, float(max_wait_seconds)
         )
         self._poll_responses: dict[str, dict[str, Any]] = {}
+        from patchbay.observation import ScopedObservationCache
+        self._wait_snapshots = ScopedObservationCache()
+
+    def _scope_revision(self, group_id):
+        # Preserve the existing scoped indexes, including projection-only
+        # records. No retained result bodies are materialized for this hint.
+        row = self.store.connection.execute(
+            "SELECT COALESCE(SUM(revision),0),COUNT(*) FROM entity_records WHERE entity_type=?"
+            + (" AND COALESCE(json_extract(record_json,'$.work_group_id'),'')=?" if group_id else ''),
+            (WORKER_PROJECTION_ENTITY,group_id) if group_id else (WORKER_PROJECTION_ENTITY,),
+        ).fetchone()
+        return (self.store.work_group_status_revision(group_id) if group_id else 0, int(row[0]),int(row[1]))
 
     def _poll_cache_key(
         self,
@@ -776,6 +788,7 @@ class HubWorkerProjectionPortV2:
         group_entity = self.store.get_entity(WORK_GROUP_ENTITY, group_id) if group_id else None
         return {
             "values": values,
+            "observed_at": time.time(),
             "snapshot_revision": (self.store.work_group_status_revision(group_id) if group_id else 0) + sum(item[0] for item in values),
             "group": deepcopy(group_entity["record"]) if group_entity else {},
             # Completion depends only on live/uncertain operations. Retained
@@ -865,6 +878,8 @@ class HubWorkerProjectionPortV2:
             "total_known": len(values),
             "counts": counts,
             "projection_revision": projection_revision,
+            "projection_observed_at": source.get('observed_at'),
+            "observation_refresh_seconds": .25,
             "next_cursor": str(start + limit) if start + limit < len(values) else "",
             "status_current": True,
             "minimum_next_poll_seconds": int(self.minimum_poll_seconds),
@@ -935,17 +950,15 @@ class HubWorkerProjectionPortV2:
             max(self.minimum_poll_seconds, requested_timeout), self.max_wait_seconds
         )
         started = time.monotonic()
-        snapshot: dict[str, Any] = {}
-        last_store_revision = None
+        group_id = str(filters.get('work_group_id') or route.get('work_group_id') or '')
+        previous_snapshot = None
         while True:
-            store_revision = self.store.connection.execute(
-                "SELECT v2_mutation_count FROM schema_metadata WHERE singleton=1"
-            ).fetchone()[0]
-            if store_revision != last_store_revision:
-                snapshot = self._projection_snapshot(filters=filters, route=route)
+            snapshot = self._wait_snapshots.get(group_id,lambda:self._scope_revision(group_id),
+                lambda:self._projection_snapshot(filters=filters,route=route))
+            if snapshot is not previous_snapshot:
                 result = self._query_result(filters=filters, route=route, snapshot=snapshot)
-                last_store_revision = store_revision
-            if int(result["projection_revision"]) > max(0, int(since_revision)):
+                previous_snapshot = snapshot
+            if int(result["projection_revision"]) != max(0, int(since_revision)):
                 break
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
@@ -954,7 +967,8 @@ class HubWorkerProjectionPortV2:
         result["waited_seconds"] = int(round(time.monotonic() - started))
         result["requested_wait_seconds"] = int(requested_timeout)
         result["effective_wait_seconds"] = int(timeout)
-        result["changed"] = int(result["projection_revision"]) > max(0, int(since_revision))
+        result["changed"] = int(result["projection_revision"]) != max(0, int(since_revision))
+        result['resync_required'] = int(result['projection_revision']) < max(0,int(since_revision))
         result.update(
             {
                 "view": "wait",

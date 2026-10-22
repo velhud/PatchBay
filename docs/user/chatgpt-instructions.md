@@ -62,6 +62,16 @@ content moved.
 
 A queued operation is accepted durable work, not proof of completed Edge execution. A wait timeout is not permission to answer as though the task finished.
 
+Waits read current state first; already actionable work can return immediately.
+Treat phase, liveness and cleanup changes as decision-relevant even without new
+output. Quiet alone does not prove loss or authorize replacement. A Hub
+`resync_required` result supplies the full new baseline, rather than an empty
+delta. `projection_observed_at` is a Hub observation timestamp, not a native
+progress event. Respect the returned client cadence; the internal sampling
+interval is not the client polling interval. Cancelling your observation does
+not cancel durable work. Ending a chat does not arrange an automatic model wake;
+recover retained work in a later explicitly resumed conversation.
+
 ### Shared-server behavior
 
 One Server URL shares local state across connected clients. Reads may be shared. Cross-owner mutation requires explicit `takeover: true` after user confirmation. Under serialized policy, base-checkout contention should return `repo_busy`; do not bypass the lock.

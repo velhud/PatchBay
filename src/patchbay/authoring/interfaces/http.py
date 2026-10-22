@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import tempfile
 import time
 import zipfile
@@ -418,5 +419,65 @@ def create_app(home: Path, *, expected_instance: str | None = None, scheduler: b
         authorization = next((value.decode("latin-1") for key, value in scope.get("headers", []) if key.lower() == b"authorization"), None)
         return access.authenticate(authorization).principal_id
 
-    app.add_middleware(IngressAdmission, principal_getter=principal_for_scope)
+    def admission_kind(scope, raw):
+        """Classify bounded, authorized intent; never dispatch or grant authority."""
+        if not scope.get('path','').startswith(('/api/','/mcp')):
+            return 'read' if scope.get('method','GET').upper() in {'GET','HEAD','OPTIONS'} else 'write'
+        authorization = next((v.decode('latin-1') for k,v in scope.get('headers',[]) if k.lower()==b'authorization'), None)
+        identity = access.authenticate(authorization)
+        method, path = scope.get('method','GET').upper(), scope.get('path','')
+        with access.as_identity(identity):
+            if method == 'GET':
+                recovery = re.fullmatch(r'/api/tasks/(task_[0-9a-f]{32})/recovery', path)
+                if recovery:
+                    service.tasks.get(recovery[1])
+                    return 'control'
+                return 'read'
+            if method in {'HEAD','OPTIONS'}:
+                return 'read'
+            if method != 'POST' or raw is None:
+                return 'write'
+            value = strict_json(raw)
+            if path == '/mcp':
+                from patchbay.mcp_framing import request_identity
+                version = next((v.decode('latin-1') for k,v in scope.get('headers',[]) if k.lower()==b'mcp-protocol-version'),None)
+                validate_mcp_version_header(version)
+                identified, _ = request_identity(value)
+                if not identified:
+                    return 'read'  # Notifications cannot dispatch domain work.
+                if value['method'] in {'initialize','tools/list','ping'}:
+                    return 'read'
+                if value['method'] != 'tools/call' or not isinstance(value.get('params'),dict):
+                    return 'write'
+                params = value['params']
+                entry, arguments = protocol._prepare_call(identity.role, params.get('name'),params.get('arguments',{}))
+                if entry[0] == 'author_recover_task':
+                    service.tasks.get(arguments['task_id'])
+                    return 'control'
+                if entry[0] == 'author_cancel_operation':
+                    operation = service.store.operation(arguments['operation_id'])
+                    require(operation['kind']=='checks.run','INVALID_REQUEST','Only check operations can be cancelled')
+                    service.leases.assert_owned(operation['task_id'],arguments['token'],arguments['epoch'])
+                    return 'control'
+                return 'write' if entry[3] else 'read'
+            if path == '/api/cancel':
+                access.require_mutation(identity.role, output_profile=output_profile)
+                params = I.Cancel.model_validate(value)
+                operation = service.store.operation(params.operation_id)
+                require(operation['kind']=='checks.run','INVALID_REQUEST','Only check operations can be cancelled')
+                service.leases.assert_owned(operation['task_id'],params.token,params.epoch)
+                return 'control'
+            if path in {'/api/control/pause','/api/control/resume','/api/control/revoke','/api/control/restore_grant'}:
+                access.require_mutation(identity.role,operator_only=True,output_profile=output_profile)
+                params = I.Control.model_validate(value)
+                if path in {'/api/control/pause','/api/control/resume'}:
+                    access.assert_global_operator()
+                    require(params.task_id is None,'INVALID_REQUEST','Global control does not take a task')
+                else:
+                    require(params.task_id is not None,'INVALID_REQUEST','Task control requires a task')
+                    service.tasks.get(params.task_id)
+                return 'control'
+            return 'write'
+
+    app.add_middleware(IngressAdmission, principal_getter=principal_for_scope, semantic_kind=admission_kind)
     return app

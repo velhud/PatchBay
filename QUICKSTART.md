@@ -97,6 +97,15 @@ Keyed integration also requires the signed `preview_token` from preview.
 See the [S02 recovery contract](docs/repairs/2026-10-22-s02-controller-recovery.md)
 for ownership scope and retention limits.
 
+Local `codex_worker_wait` reads first and returns existing terminal/actionable
+work immediately, or returns after a meaningful status change. Its default idle
+budget cap is 30 seconds (`workers.status_max_wait_seconds`, bounded to 1–120).
+An operator changing this value must reserve time for admission, final readback,
+serialization and delivery within the measured route deadline. The idle cap is
+not a total HTTP deadline. Cancelling a wait never stops execution. A Hub
+`resync_required` response contains a full snapshot: use it as the new baseline.
+See the [S03 observation contract](docs/repairs/2026-10-22-s03-observation.md).
+
 If a terminal job reports `cleanup_blocked_untrusted_process_identity`, do not
 blindly retry or remove the durable fence. Stop the local PatchBay server first,
 then inspect one exact job with the offline operator command. It defaults to an

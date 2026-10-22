@@ -2004,7 +2004,8 @@ async def test_worker_wait_returns_fresh_status_after_delay(monkeypatch, tmp_pat
     config["workers"]["status_recommended_poll_seconds"] = 30
     manager = JobManager(config)
     executor = RecordingExecutor(manager)
-    runtime = WorkerRuntime(config, manager, executor)
+    clock = [0.0]
+    runtime = WorkerRuntime(config, manager, executor,monotonic_clock=lambda:clock[0])
 
     await runtime.start_worker(
         name="Wait Worker",
@@ -2014,7 +2015,7 @@ async def test_worker_wait_returns_fresh_status_after_delay(monkeypatch, tmp_pat
     )
 
     async def fake_sleep(seconds):
-        return None
+        clock[0] += seconds
 
     monkeypatch.setattr("patchbay.workers.runtime.asyncio.sleep", fake_sleep)
 
@@ -2036,7 +2037,8 @@ async def test_worker_wait_respects_recent_status_cooldown(monkeypatch, tmp_path
     config["workers"]["status_recommended_poll_seconds"] = 30
     manager = JobManager(config)
     executor = RecordingExecutor(manager)
-    runtime = WorkerRuntime(config, manager, executor)
+    clock = [0.0]
+    runtime = WorkerRuntime(config, manager, executor,monotonic_clock=lambda:clock[0])
 
     await runtime.start_worker(
         name="Patient Worker",
@@ -2049,14 +2051,14 @@ async def test_worker_wait_respects_recent_status_cooldown(monkeypatch, tmp_path
 
     async def fake_sleep(seconds):
         sleeps.append(seconds)
-        return None
+        clock[0] += seconds
 
     monkeypatch.setattr("patchbay.workers.runtime.asyncio.sleep", fake_sleep)
 
     result = await runtime.worker_wait(repo_path=config["repositories"]["default"], wait_seconds=1)
 
     assert sleeps
-    assert sleeps[0] >= 20
+    assert sum(sleeps) >= 20 and max(sleeps) <= .25
     assert result["status_current"] is True
     assert result["poll_too_early"] is False
 

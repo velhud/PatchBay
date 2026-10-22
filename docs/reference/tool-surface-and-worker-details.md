@@ -55,6 +55,26 @@ terminal decisions. See the [S02 identity, crash and recovery map](../repairs/20
 
 Status/list/wait/compact-inspect are bounded coordination views. Poll at the returned cadence, normally 20–30 seconds. `poll_too_early`, cached status, or a wait timeout is not a worker failure.
 
+Projection suppression now expires at the next discrete native-activity or
+checkpoint silence threshold. Threshold changes and clock rollback invalidate
+the observation token; elapsed age alone does not publish every second. Status
+deltas separate `activity_changed` from `status_changed`, with bounded
+`control_changed_fields` for phase, liveness, cleanup and other action-relevant
+changes. Observer activity never resets native progress age.
+
+Cached local coordination reads avoid redundant dispatcher reconciliation.
+Ordinary native supervision shares a process-parent census and offloads that
+scan from the event loop. Startup, cancellation and cleanup paths retain their
+forced fresh census and exact process identity checks. Cached telemetry cannot
+clear an uncertainty or cleanup fence.
+
+Hub wait observation uses process-local per-group reuse (0.25-second sampling,
+60-second idle expiry, at most 256 scopes), with generation recheck after
+snapshot construction. Caller filters, output and cancellation remain separate.
+Same-group retained history still affects revision-query cost; no durable
+counter or schema migration is added. The [S03 measurements and remaining
+qualification](../repairs/2026-10-22-s03-observation.md) give the limits.
+
 Completed reports should include summary, detailed report, evidence, changed files, commands/tests, notes, risks, open questions, and next steps when Codex emitted them. Diagnostics and raw lifecycle details are explicit debugging views, not the default manager payload.
 
 ## Model and reasoning selection

@@ -51,6 +51,17 @@ conservative non-idempotent annotation. An active worker message is refused,
 not queued. Local keyed integration requires its signed preview token as well
 as the key. Hub mutation keys remain required under the Hub contract.
 
+Local wait is read-first and can return early for terminal/actionable work or
+meaningful status changes. `wait_outcome` is `actionable`, `status_changed` or
+`timeout`; elapsed wait is independent of requested maximum budget. The default
+idle cap is 30 seconds and must leave delivery margin on the selected route.
+Hub waits share bounded per-group observation while retaining separate caller
+filters/cursors. A future revision returns the full snapshot with
+`resync_required=true`. `projection_observed_at` describes Hub snapshot
+construction, not native progress; `observation_refresh_seconds` describes
+internal sampling, not permission to poll faster. No new tools or compact
+output default are introduced. See the [S03 contract](../repairs/2026-10-22-s03-observation.md).
+
 ### Pro Request tools
 
 - list/read/claim

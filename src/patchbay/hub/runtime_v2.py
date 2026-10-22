@@ -352,7 +352,11 @@ class HubRuntimeV2:
             if remaining <= 0:
                 break
             await asyncio.sleep(min(0.1, remaining))
-            current_revision = self.store.work_group_status_revision(group_id)
+            if not hasattr(self, '_observation_revisions'):
+                from patchbay.observation import ScopedObservationCache
+                self._observation_revisions = ScopedObservationCache()
+            current_revision = self._observation_revisions.get(group_id,
+                lambda:self.store.work_group_status_revision(group_id))
             if current_revision != baseline:
                 current = self.work_group_status(context=context, **args)
                 if current.get("status") != "ok":

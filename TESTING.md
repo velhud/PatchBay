@@ -172,6 +172,23 @@ and qualify the updated route rather than copying an old receipt.
 
 ## 6. Deterministic local evaluators
 
+### S03 observation and admission regressions
+
+```bash
+python -m pytest tests/test_s03_monitoring.py tests/test_s03_observation_cost.py \
+  tests/test_s03_process_cost.py tests/authoring/test_s03_ingress.py -q
+python -m pytest tests/test_job_executor_cancellation.py tests/test_process_supervisor.py \
+  tests/test_worker_projection_v2.py tests/test_hub_edge_client_v2.py -q
+```
+
+These use actual local runtime, authenticated Author HTTP/MCP and SQLite owners,
+with controlled clocks, recording transport, queued check fixtures and a fake
+process census. They launch no inference and do not remove the Linux/WSL2 guard.
+The [S03 contract](docs/repairs/2026-10-22-s03-observation.md) records real-store
+query/snapshot measurements and the remaining 5/10-lane, 20-minute native/client
+recipe. Local ASGI latency, virtual silence and process fixtures do not qualify
+deployed urgent admission, native cleanup, Pro comprehension or quota savings.
+
 ### S02 controller recovery regressions
 
 ```bash

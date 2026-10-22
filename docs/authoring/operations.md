@@ -25,16 +25,45 @@ not prove the client refreshed its metadata.
 
 ## Authentication and ingress
 
-Author HTTP admission defaults to eight active and sixteen pending requests,
-with two active and two pending slots reserved for HTTP reads/control. Each
-principal has two ordinary active slots and four pending slots; reads/control
-may use one additional principal slot. The token bucket allows 60 requests per
-minute with a burst of 20 and retains at most 4,096 opaque principal entries.
-Queue admission waits at most 0.25 seconds, then returns `429 INGRESS_BUSY`,
-`Retry-After`, a bounded jitter hint, and `X-Request-ID`. MCP POST requests use
-the ordinary admission lane; the authenticated HTTP recovery and cancellation
-routes remain independent control paths. Follow backoff rather than opening
-parallel retry storms. Admission never retries a domain mutation.
+Author HTTP admission defaults to eight active and sixteen pending requests.
+Writes can occupy six active slots, ordinary reads and writes together seven,
+and authorized urgent controls at most two, always within the total of eight.
+Per-principal active limits are two for writes, three for reads and four for
+urgent controls, counting all of that principal's active requests. Pending
+limits are fourteen writes, fifteen ordinary requests or sixteen including
+urgent controls; a principal may queue four ordinary or five urgent requests.
+These are admission limits, not guaranteed simultaneous allocations.
+
+Ordinary requests share a 60/minute, burst-20 token bucket per principal.
+Urgent requests use a separate 30/minute, burst-five bucket and a global
+60/minute, burst-ten bucket. Each principal ledger retains at most 4,096 opaque
+keys. Admission attempts consume rate capacity even if queueing later fails.
+The default gate reserves urgent capacity against ordinary reads as well as
+writes; custom two-slot gates retain only their existing read reservation.
+
+The actual authenticated MCP tool catalog, role, write qualification and
+validated arguments determine admission class. Task recovery must pass scoped
+task access. Cancellation must identify an existing check operation and pass
+current lease ownership before receiving priority. HTTP recovery/cancel and
+exact operator control routes follow the equivalent checks. Arbitrary caller
+priority flags, inbox mutations and tool-name-looking strings grant no priority.
+Final route checks run again; admission never grants mutation authority.
+
+Classification has at most eight in-flight owners, a 64 KiB JSON prefix and a
+0.1-second prefix-read budget. Malformed, oversized or incomplete classification
+falls back to ordinary write admission and normal route validation. Buffered
+ASGI messages are replayed without dropping bytes; the existing 2 MiB MCP/body
+limit remains. Cancelling an observer does not free a classifier thread slot
+until that classification finishes. Queue admission waits at most 0.25 seconds,
+then returns `429 INGRESS_BUSY`, `Retry-After`, a bounded jitter hint and
+`X-Request-ID`. Follow backoff rather than opening parallel retry storms.
+Admission never retries a domain mutation or proves cancellation/cleanup
+completion. Pure recovery/status reads do not start or reconcile work.
+
+Author retains short pure reads rather than introducing a thread-occupying
+long wait. Respect the returned state/cadence and recover existing operation
+IDs after a lost response. Async Author waits and deployed route latency remain
+separate qualification work; see the [S03 contract](../repairs/2026-10-22-s03-observation.md).
 
 The request ID is correlation metadata, not the mutation's retry key. Accepted
 operations retain it through materialization/recovery. Native downloads use a

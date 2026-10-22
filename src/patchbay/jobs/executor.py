@@ -152,6 +152,9 @@ class StartupGateLease:
         self.lock.release()
 
 
+_PARENT_SNAPSHOT_UNSET = object()
+
+
 class JobExecutor:
     """
     Executes Codex jobs with conservative defaults.
@@ -776,6 +779,15 @@ class JobExecutor:
             ):
                 return dict(self._process_tree_cache)
 
+            # One census owner; concurrent ordinary observers reuse its result.
+            # force_refresh always scans after acquiring the lock, so cleanup
+            # never substitutes a pre-boundary ordinary sample for fresh proof.
+            snapshot = self._read_process_parent_snapshot()
+            self._process_tree_cache = dict(snapshot) if snapshot is not None else None
+            self._process_tree_cache_at = now
+            return dict(snapshot) if snapshot is not None else None
+
+    def _read_process_parent_snapshot(self) -> Optional[dict[int, int]]:
         proc = Path("/proc")
         parents: dict[int, int] = {}
         complete = True
@@ -831,11 +843,7 @@ class JobExecutor:
                     if not fields[2].startswith("Z"):
                         parents[pid] = parent
 
-        snapshot = parents if complete else None
-        with self._process_tree_cache_lock:
-            self._process_tree_cache = dict(snapshot) if snapshot is not None else None
-            self._process_tree_cache_at = now
-        return dict(snapshot) if snapshot is not None else None
+        return parents if complete else None
 
     def _current_descendant_pids(
         self, root_pid: int, *, force_refresh: bool = False
@@ -843,6 +851,12 @@ class JobExecutor:
         if root_pid <= 0:
             return set()
         parents = self._process_parent_snapshot(force_refresh=force_refresh)
+        return self._descendants_from_snapshot(root_pid, parents)
+
+    @staticmethod
+    def _descendants_from_snapshot(root_pid, parents):
+        if root_pid <= 0:
+            return set()
         if parents is None:
             return None
         descendants: set[int] = set()
@@ -860,11 +874,12 @@ class JobExecutor:
         return descendants
 
     def _capture_job_descendants(
-        self, job_id: str, root_pid: int, *, force_refresh: bool = False
+        self, job_id: str, root_pid: int, *, force_refresh: bool = False,
+        parent_snapshot=_PARENT_SNAPSHOT_UNSET,
     ) -> Optional[set[int]]:
-        descendants = self._current_descendant_pids(
-            root_pid, force_refresh=force_refresh
-        )
+        descendants = (self._current_descendant_pids(root_pid,force_refresh=force_refresh)
+                       if parent_snapshot is _PARENT_SNAPSHOT_UNSET or force_refresh
+                       else self._descendants_from_snapshot(root_pid,parent_snapshot))
         if descendants is None:
             self._persist_descendant_tracking_options(
                 job_id, scan_uncertain=True
@@ -896,6 +911,15 @@ class JobExecutor:
             scan_uncertain=False,
         )
         return set(descendants)
+
+    async def _capture_routine_descendants(self, job_id, root_pid):
+        task = getattr(self, '_routine_census_task', None)
+        if task is None or task.done():
+            task = asyncio.create_task(asyncio.to_thread(self._process_parent_snapshot))
+            self._routine_census_task = task
+        parents = await asyncio.shield(task)
+        # Keep per-job identity bookkeeping on the executor's owning loop.
+        return self._capture_job_descendants(job_id,root_pid,parent_snapshot=parents)
 
     def _tracked_descendant_liveness(self, job_id: str) -> Optional[bool]:
         job = self.job_manager.get_job(job_id)
@@ -3737,10 +3761,9 @@ class JobExecutor:
                             f"Codex {stream_name} reader failed while draining output"
                         ) from reader_error
                 now = time.time()
-                self._capture_job_descendants(
+                await self._capture_routine_descendants(
                     job_id,
                     int(getattr(process, "pid", 0) or 0),
-                    force_refresh=True,
                 )
                 session_id = str(state.get("session_id") or "")
                 if session_id and session_observer is None:
