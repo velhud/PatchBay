@@ -192,7 +192,7 @@ def create_app(home: Path, *, expected_instance: str | None = None, scheduler: b
     @app.get("/api/capabilities")
     async def capabilities(request: Request):
         public = {k: v for k, v in service.capabilities().items() if k != "instance_id"}
-        return {**public, "role": request.state.role, "mcp_write_qualified": access.qualified() is not None,
+        return {**public, "role": request.state.role, "mcp_write_qualified": request.state.role in {"operator", "author"} and access.qualified(request.state.role, output_profile=output_profile) is not None,
                 "scheduler_enabled": scheduler, "scheduler_health": scheduler_health, "limits": service.store.limits.wire()}
 
     @app.get("/api/repositories")

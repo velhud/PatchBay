@@ -27,7 +27,7 @@ for descriptor in PRO_REQUEST_TOOLS:
         ),
     }
     descriptor["description"] += (
-        " For target=new_worker, execution explicitly uses gpt-6-luna and high effort by default; xhigh or max is allowed. No model fallback is permitted."
+        " Local dispatch is non-idempotent: never automatically retry after a lost response. Read the Pro Request and origin worker first; any repeat dispatch requires a new deliberate decision. For target=new_worker, execution explicitly uses gpt-6-luna and high effort by default; xhigh or max is allowed. No model fallback is permitted."
     )
     break
 

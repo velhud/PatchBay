@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from ..errors import require
 from ..persistence.gates import mutation
 from ..persistence.locks import file_lock
-from ..util import atomic_write, canonical, strict_json, utc_now, fingerprint, safe_id
+from ..util import canonical, strict_json, utc_now, fingerprint, safe_id
 from .catalog import identity as catalog_identity, OUTPUT_PROFILE, OUTPUT_PROFILES
 from ..authority import AuthIdentity, assert_operator as require_operator, assert_task_scope, current_identity, identity_context
 import json
@@ -167,27 +167,72 @@ class Access:
             require(self.qualified(role, output_profile=output_profile) is not None, "QUALIFICATION_REQUIRED",
                     "Live MCP writes are not qualified for this runtime; use the artifact import workflow", status=403)
 
-    def qualified(self, role: str | None = None, *, output_profile: str | None = None) -> dict | None:
-        from .catalog import STARTUP_SOURCE_SHA256, observed_source_digest
-        if observed_source_digest() != STARTUP_SOURCE_SHA256:
-            return None
+    _QUALIFICATION_REGISTRY = "author.client.qualifications.v1"
+    _QUALIFICATION_PREFIX = "author.client.qualification."
+
+    def _qualification_key(self, record):
+        import math
+        require(isinstance(record, dict) and isinstance(record.get('binding'), dict)
+                and isinstance(record.get('evidence'), dict), "CORRUPT_STATE", "Invalid client qualification record")
+        evidence, binding = record['evidence'], record['binding']
+        require(evidence.get('role') in {'operator', 'author'} and binding.get('output_profile') in OUTPUT_PROFILES
+                and isinstance(record.get('instance_id'), str)
+                and isinstance(record.get('qualification_id'), str)
+                and record['qualification_id'].startswith('qualification_')
+                and isinstance(record.get('created'), (float, int)) and type(record.get('created')) is not bool
+                and isinstance(record.get('expires'), (float, int)) and type(record.get('expires')) is not bool
+                and math.isfinite(record['created']) and math.isfinite(record['expires'])
+                and record['expires'] > record['created']
+                and evidence.get('ordinary_chat') is True and evidence.get('write_supported') is True,
+                "CORRUPT_STATE", "Invalid client qualification binding")
+        require(all(isinstance(evidence.get(name), str) and 0 < len(evidence[name]) <= 4000
+                    for name in ('model', 'client', 'probe_description', 'observed_at',
+                                 'account_label', 'mode', 'protocol', 'ingress', 'plugin_version'))
+                and evidence['mode'] == 'ordinary_chat'
+                and evidence.get('output_profile', OUTPUT_PROFILE) == binding['output_profile']
+                and isinstance(record.get('actor'), str) and 0 < len(record['actor']) <= 200,
+                'CORRUPT_STATE', 'Invalid client qualification observation')
+        principal = evidence.get('principal_id', 'local-operator')
+        require(isinstance(principal, str) and principal, "CORRUPT_STATE", "Invalid qualification principal")
+        return self._QUALIFICATION_PREFIX + fingerprint({'instance_id': record['instance_id'],
+            'binding': binding, 'role': evidence['role'], 'principal_id': principal})
+
+    def _legacy_qualification(self):
         path = self.store.home / "client-qualification.json"
         if not path.is_file() or path.is_symlink():
             return None
         record = strict_json(path.read_bytes())
-        profile = record.get("binding", {}).get("output_profile", OUTPUT_PROFILE)
-        if profile not in OUTPUT_PROFILES or output_profile is not None and profile != output_profile:
-            return None
-        if (record.get("instance_id") != self.store.identity["instance_id"] or record.get("expires", 0) <= utc_now()
-                or record.get("evidence", {}).get("ordinary_chat") is not True
-                or record.get("evidence", {}).get("write_supported") is not True
-                or (role in {"operator", "author"} and record.get("evidence", {}).get("role") != role)
-                or record.get("binding") != catalog_identity(profile)):
+        self._qualification_key(record)
+        return record
+
+    def qualified(self, role: str | None = None, *, output_profile: str | None = None) -> dict | None:
+        from .catalog import STARTUP_SOURCE_SHA256, observed_source_digest
+        if observed_source_digest() != STARTUP_SOURCE_SHA256:
             return None
         identity = current_identity()
-        if not identity.legacy and record.get("evidence", {}).get("principal_id") != identity.principal_id:
-            return None
-        return record
+        marker = self.store.one("SELECT value FROM metadata WHERE key=?", (self._QUALIFICATION_REGISTRY,), required=False)
+        if marker is not None:
+            require(strict_json(marker['value']) == {'version': 1}, "CORRUPT_STATE", "Invalid qualification registry")
+        legacy = self._legacy_qualification() if marker is None else None
+        for profile in ([output_profile] if output_profile is not None else OUTPUT_PROFILES):
+            if profile not in OUTPUT_PROFILES:
+                continue
+            binding = catalog_identity(profile)
+            # Reader capabilities may inspect this principal's own observation;
+            # write eligibility still requires an explicit author/operator role.
+            roles = [role] if role in {'operator', 'author'} else ('operator', 'author') if role in {None, 'reader'} else ()
+            for candidate_role in roles:
+                key = self._QUALIFICATION_PREFIX + fingerprint({'instance_id': self.store.identity['instance_id'],
+                    'binding': binding, 'role': candidate_role, 'principal_id': identity.principal_id})
+                row = self.store.one("SELECT value FROM metadata WHERE key=?", (key,), required=False) if marker else None
+                record = strict_json(row['value']) if row else legacy
+                if record is None:
+                    continue
+                actual_key = self._qualification_key(record)
+                require(row is None or actual_key == key, "CORRUPT_STATE", "Qualification registry key mismatch")
+                if (actual_key == key and record['expires'] > utc_now()):
+                    return record
+        return None
 
     @mutation
     def qualify(self, evidence: dict, *, actor: str, key: str | None = None) -> dict:
@@ -229,8 +274,19 @@ class Access:
             if current["state"] == "completed":
                 return json.loads(current["result"])
             record = json.loads(current["payload"])
-            atomic_write(self.store.home / "client-qualification.json", canonical(record))
             with self.store.transaction() as conn:
+                marker = conn.execute("SELECT value FROM metadata WHERE key=?", (self._QUALIFICATION_REGISTRY,)).fetchone()
+                if marker is None:
+                    # First authorized write migrates the old singleton. Read-only
+                    # catalogue/status calls never mutate or activate authority.
+                    legacy = self._legacy_qualification()
+                    if legacy is not None:
+                        conn.execute("INSERT INTO metadata(key,value) VALUES(?,?)", (self._qualification_key(legacy), canonical(legacy).decode()))
+                    conn.execute("INSERT INTO metadata(key,value) VALUES(?,?)", (self._QUALIFICATION_REGISTRY, canonical({'version': 1}).decode()))
+                else:
+                    require(strict_json(marker[0]) == {'version': 1}, "CORRUPT_STATE", "Invalid qualification registry")
+                conn.execute("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                             (self._qualification_key(record), canonical(record).decode()))
                 self.store.event(conn, "client.qualified", "", {"qualification_id": record["qualification_id"], "actor": actor})
                 conn.execute("UPDATE operations SET state='completed',phase='terminal',result=?,updated=? WHERE id=?",
                              (canonical(record).decode(), utc_now(), op["id"]))

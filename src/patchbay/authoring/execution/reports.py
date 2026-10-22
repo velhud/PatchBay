@@ -23,6 +23,10 @@ def junit_counts(root) -> tuple[list, dict]:
     Properties and system output are informational, never outcome containers.
     """
     require(root.tag in {"testsuite", "testsuites"}, "EVIDENCE_INVALID", "Expected a JUnit testsuite root")
+    def information(node):
+        require(not any(n.tag in {"testcase", "testsuite", "testsuites", "failure", "error", "skipped"} or "}" in n.tag
+                        for n in node.iter()), "EVIDENCE_INVALID", "Outcome hidden in informational data")
+
     def visit(node, depth=0):
         require(depth <= 100, "RESOURCE_LIMIT", "JUnit nesting exceeds the supported depth")
         cases = []
@@ -31,6 +35,9 @@ def junit_counts(root) -> tuple[list, dict]:
                         for child in node), "EVIDENCE_INVALID", "Unsupported testcase outcome shape")
             outcomes = [child for child in node if child.tag in {"failure", "error", "skipped"}]
             require(len(outcomes) <= 1, "EVIDENCE_INVALID", "Contradictory testcase outcomes")
+            for child in node:
+                if child.tag in {"properties", "system-out", "system-err"}:
+                    information(child)
             return [node]
         for child in node:
             if child.tag in {"testsuite", "testsuites", "testcase"}:
@@ -38,8 +45,7 @@ def junit_counts(root) -> tuple[list, dict]:
             else:
                 require(child.tag in {"properties", "system-out", "system-err"}, "EVIDENCE_INVALID",
                         "Unsupported suite child or suite-level failure/error")
-                require(not any(n.tag in {"testcase", "failure", "error", "skipped"} or "}" in n.tag
-                                for n in child.iter()), "EVIDENCE_INVALID", "Outcome hidden in informational data")
+                information(child)
         totals = {"tests": len(cases), "failures": sum(c.find("failure") is not None for c in cases),
                   "errors": sum(c.find("error") is not None for c in cases),
                   "skipped": sum(c.find("skipped") is not None for c in cases)}

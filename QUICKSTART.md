@@ -308,3 +308,11 @@ There is no unqualified MCP-write bypass; if the permitted bootstrap cannot
 exercise the capability, keep that gate blocked/unrun and use the independently
 authorized artifact path. No live deployment or client qualification follows
 from a source update or a local suite pass.
+
+## Postimplementation reliability
+
+Manager artifact imports run in bounded background writers; repeated waits on
+unchanged mixed teams respect the wait budget. Author rejects hidden JUnit
+outcomes and retains separate principal/role/profile qualifications. Existing
+homes need explicit quiescent index maintenance, immutable release verification
+and actual client requalification. See [postimplementation repairs and qualification limits](docs/repairs/2026-10-23-postimplementation.md).

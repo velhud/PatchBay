@@ -169,3 +169,10 @@ Validated evidence fields/hashes, executed local checks and actual client/native
 acceptance are different evidence classes. Continue existing uncertain work by
 its durable identity and current authority; a new implementation decision waits
 for explicit controller continuation. No automatic ordinary-Chat wake is promised.
+
+Repeated default waits on an unchanged mixed completed/running team use the
+observation budget; another caller/reconnect may receive a first completion.
+Urgent signals remain actionable. For artifact import timeout or response loss,
+inspect the inbox before a new import; cancellation may leave a writer cleaning
+up. Local Pro Request dispatch has no retry identity: never automatically
+repeat it after response loss; read the request and origin worker first.

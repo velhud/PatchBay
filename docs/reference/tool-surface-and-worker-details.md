@@ -162,3 +162,17 @@ selectors stay readable and stored target records remain unchanged.
 A known brief digest is provenance, not semantic acceptance or mutation
 authority. Changed source and a new turn still change candidate identity.
 See [S10](../repairs/2026-10-22-s10-final-composition.md).
+
+## Import and wait observations after repeated use
+
+The complete inbox import runs off the MCP control loop with bounded admission
+and an overall deadline. Cancellation keeps its writer slot and private staging
+until the writer exits after cleanup; a lost response can still correspond to a
+complete published artifact. Inspect before another import. An old completed
+worker no longer makes every unchanged mixed-team wait return immediately.
+Observations are local to caller and exact selection; first completion, new
+work/turns, meaningful transitions and urgent cleanup/liveness still return
+early. Empty/all-terminal selections return immediately; observer cancellation
+never stops workers. Local Pro Request dispatch is non-idempotent: never retry
+automatically; inspect request/worker state before any deliberate repeat.
+See [follow-up contracts](../repairs/2026-10-23-postimplementation.md).

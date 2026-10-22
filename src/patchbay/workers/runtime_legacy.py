@@ -211,7 +211,12 @@ class WorkerRuntime:
 
     def _clear_monitoring_caches(self) -> None:
         """Forget cached manager status after a real worker-side state change."""
-        self._status_poll_responses.clear()
+        # Wait observations describe what this caller already received. Real
+        # transitions change their signatures; unrelated mutations must not
+        # make an unchanged old completion actionable again.
+        for key in list(self._status_poll_responses):
+            if not key.startswith("wait|"):
+                self._status_poll_responses.pop(key, None)
 
     def _cached_monitoring_response(
         self,
@@ -1088,45 +1093,65 @@ class WorkerRuntime:
         status_arguments = dict(repo_path=repo_path,active_only=active_only,include_stopped=include_stopped,
             owned_only=owned_only,created_after=created_after,scope=scope,force_refresh=True,request_context=request_context)
         payload = await self.worker_status(**status_arguments)
-        selected_ids = {worker['worker_id'] for worker in payload['workers']}
-        selected = [jobs for jobs in self._worker_groups() if self._worker_id(jobs[-1]) in selected_ids]
-        job_count = len(self.job_manager.jobs)
+        wait_key = "wait|" + self._status_response_key(**{k:v for k,v in status_arguments.items() if k != 'force_refresh'})
+        # Cadence observations belong to this caller and exact selection, never
+        # another manager sharing a work-run or a status/list cache entry.
+        wait_key += repr((request_context.client_ref, request_context.owner_ref,
+                          request_context.chatgpt_session_ref)) if request_context else "anonymous"
+        self._prune_monitoring_caches()
+        previous = self._status_poll_responses.get(wait_key, {}).get('payload', {}).get('control_signature')
+
+        def selection(status):
+            ids = {worker['worker_id'] for worker in status['workers']}
+            return [jobs for jobs in self._worker_groups() if self._worker_id(jobs[-1]) in ids]
+
+        selected = selection(payload)
+        job_ids = frozenset(self.job_manager.jobs)
 
         def control_state():
-            values = []
-            ready = not selected
+            values, active, terminal, urgent = [], False, False, False
             for jobs in selected:
                 job = jobs[-1]
-                live = self._liveness_for_job(job,session_id=job.session_id or (job.options or {}).get('resume_session_id'),
+                live = self._liveness_for_job(job, session_id=job.session_id or (job.options or {}).get('resume_session_id'),
                     latest_partial_note=self._latest_partial_note_for_jobs(jobs))
-                values.append((job.job_id,job.state.value,live['status'],live['phase'],job.wrapper_cleanup_outcome))
-                ready = ready or job.state not in {JobState.PENDING,JobState.RUNNING} or live['status'] in {'lost','stale'}
-            return tuple(values),ready
+                # Cleanup of any terminal turn remains actionable even when
+                # its wrapper outcome is absent but its owned runtime is live.
+                cleanup = self._workspace_cleanup_blocker_for_jobs(
+                    [turn for turn in jobs if turn.state not in {JobState.PENDING, JobState.RUNNING}])
+                values.append((job.job_id, job.state.value, live['status'], live['phase'], job.wrapper_cleanup_outcome,
+                               getattr(job, 'event_count', 0), job.last_event, len(job.checkpoints or []),
+                               tuple((turn.job_id, turn.wrapper_cleanup_outcome) for turn in jobs),
+                               cleanup['cleanup_pending'], cleanup['cleanup_unresolved'], cleanup['recovery_required']))
+                running = job.state in {JobState.PENDING, JobState.RUNNING}
+                active = active or running
+                terminal = terminal or not running
+                urgent = urgent or live['status'] in {'lost', 'stale'} or job.state == JobState.FAILED
+                urgent = urgent or cleanup['cleanup_pending'] or cleanup['cleanup_unresolved'] or cleanup['recovery_required']
+                urgent = urgent or live['phase'] in {'waiting_for_input', 'waiting_for_approval'}
+            return tuple(sorted(values)), active, terminal, urgent
 
-        # Read/register/recheck uses retained job references, without a domain
-        # lock, process census, Git read, or thread held across the idle wait.
-        baseline, actionable = control_state()
+        baseline, active, terminal, urgent = control_state()
+        actionable = (not active or urgent or (terminal and previous is None)
+                      or (previous is not None and baseline != previous))
         reason = 'actionable' if actionable else 'timeout'
         if not actionable:
             while True:
-                remaining = wait_seconds-(self._monotonic_clock()-started)
+                remaining = wait_seconds - (self._monotonic_clock() - started)
                 if remaining <= 0:
                     break
-                await asyncio.sleep(min(.25,remaining))
-                current, actionable = control_state()
-                if len(self.job_manager.jobs) != job_count:
-                    refreshed = await self.worker_status(**status_arguments)
-                    job_count = len(self.job_manager.jobs)
-                    if {worker['worker_id'] for worker in refreshed['workers']} != selected_ids:
-                        reason = 'status_changed'
-                        break
+                await asyncio.sleep(min(.25, remaining))
+                if frozenset(self.job_manager.jobs) != job_ids:
+                    payload = await self.worker_status(**status_arguments)
+                    job_ids = frozenset(self.job_manager.jobs)
+                    selected = selection(payload)  # Includes a new turn of an existing worker.
+                current, _, _, _ = control_state()
                 if current != baseline:
                     reason = 'status_changed'
                     break
-            payload = await self.worker_status(**status_arguments)
-        elif baseline:
-            # A terminal/cleanup transition may occur during initial readback.
-            payload = await self.worker_status(**status_arguments)
+        payload = await self.worker_status(**status_arguments)
+        selected = selection(payload)
+        signature, _, _, _ = control_state()
+        self._store_monitoring_response(wait_key, {'control_signature': signature})
         payload['wait_outcome'] = reason
         payload["waited_seconds"] = int(max(0,self._monotonic_clock()-started))
         payload["requested_wait_seconds"] = requested_wait_seconds

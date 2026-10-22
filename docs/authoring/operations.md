@@ -482,3 +482,29 @@ Review claim relevance independently before accepting a capability; a matching
 HEAD and hash cannot certify loaded/install identity or actual external work.
 See [evidence adjudication](../testing/evidence-adjudication.md) and the
 [final release matrix](../repairs/2026-10-22-s10-final-composition.md).
+
+## Coexisting client observations after the reliability follow-up
+
+Qualification is stored transactionally in private SQLite metadata, keyed by
+instance, full source/runtime/catalog/output-profile binding, role and principal.
+An authorized new observation replaces only the same binding. Replaying a
+completed old qualification returns history without reactivating it. A valid
+legacy `client-qualification.json` is read without migration until the first
+authorized qualification write; that transaction preserves it in the registry.
+The old file is retained but ignored for authority thereafter. Status/catalog
+reads never migrate. Corrupt matched records or registry markers fail closed.
+
+CLI `qualify-client` retains global-operator authorization. Scoped operators and
+authors cannot qualify globally; no token, scope or lease is widened. HTTP
+capabilities, MCP catalogs and mutations use the actual role and selected
+profile. Backups include the registry through the existing SQLite snapshot;
+historical restore does not grant activation or refresh any client. Observe an
+actual permitted client write before recording support.
+
+For an old quiescent schema-1 home, follow the maintenance/backup procedure above
+and run `patchbay-author --home "$PATCHBAY_AUTHOR_HOME" optimize-admission`.
+Opening the home is intentionally read-only with respect to index installation.
+Record the installed wheel and loaded/disk identity independently, then
+requalify the exact client after refresh. Retain current deployment SQLite
+source/vendor WAL-fix provenance, capacity and offline restore obligations.
+[Full migration, replay and external gates](../repairs/2026-10-23-postimplementation.md).

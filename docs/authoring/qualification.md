@@ -247,3 +247,11 @@ leaves actual ordinary-Pro/current-native/Docker/service/reboot/power-loss,
 long-history/mixed-host cohorts and economic claims unqualified. S08 manual
 offline restore activation remains the selected contract. A local source or
 wheel pass does not authorize deployment or certify native macOS behavior.
+
+Postimplementation fixtures now cover coexistence of qualification observations
+for different principals, roles and output profiles, actual in-process HTTP/MCP
+context mutations, atomic migration, concurrent readers/writers, historical
+replay and offline backup restoration. Their `write_supported` records are
+synthetic and disposable; they establish core gate mechanics only. They do not
+qualify an account or solve a missing lawful ordinary-Pro bootstrap route.
+[Follow-up evidence and remaining prerequisites](../repairs/2026-10-23-postimplementation.md).

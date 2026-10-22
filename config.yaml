@@ -161,6 +161,8 @@ artifacts:
     - http
     - https
   download_timeout_seconds: 60
+  import_timeout_seconds: 60  # Overall monotonic budget, including extraction/publication.
+  max_concurrent_imports: 2  # Slots remain held until the writer exits after cleanup.
   max_archive_bytes: 134217728
   max_unpacked_bytes: 536870912
   max_file_count: 10000

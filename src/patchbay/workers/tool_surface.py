@@ -314,7 +314,7 @@ WORKER_TOOLS = [
         "name": "codex_worker_inbox",
         "description": (
             "Use this when ChatGPT needs to send a generated file or zip package to local Codex workers. "
-            "action=import_file downloads the provided Apps file into a local artifact inbox without editing "
+            "action=import_file admits a bounded background import with an overall deadline; on timeout or lost response inspect the inbox before any new import. It downloads the provided Apps file into a local artifact inbox without editing "
             "the repo. action=list and action=inspect help choose artifact ids. Then pass artifact ids in "
             "context_from_artifacts on codex_worker_start or codex_worker_message so an isolated worker can "
             "read them. action=cleanup removes local inbox copies only; if the artifact belongs to another "
@@ -649,7 +649,7 @@ WORKER_TOOLS = [
     {
         "name": "codex_worker_wait",
         "description": (
-            "Read current worker status, return actionable work immediately, or wait for a meaningful status change within the server cap. Use this instead of repeatedly calling "
+            "Read current worker status, return newly observed completion or urgent work immediately, or wait for a meaningful status change within the server cap. Repeated unchanged mixed completed/running selections wait within the budget for this caller and scope. Use this instead of repeatedly calling "
             "codex_worker_status every few seconds while workers are active or quiet. The normal manager pattern "
             "is: assign workers, wait about 20-30 seconds, read compact status, then either wait again, ask a "
             "worker a natural-language follow-up after its turn completes, or inspect only when there is a real "

@@ -253,3 +253,14 @@ ChatGPT can inspect mode choices with `codex_tool_mode_info` and request a sessi
 ## Runtime state
 
 PatchBay keeps local paths, raw session ids, worker worktree paths, process logs, and runtime files behind the local control boundary unless a specific public tool is designed to expose a bounded summary. Private evidence files can include full ChatGPT tool calls and full worker/Codex prompts when explicitly enabled; they are private runtime evidence, not repository data.
+
+## Artifact import execution limits
+
+In `artifacts`, `max_concurrent_imports: 2` bounds complete import writers per
+store; excess calls are refused without queueing. `import_timeout_seconds: 60`
+is the overall monotonic deadline; `download_timeout_seconds` remains a socket
+wait cap. Both deadlines are positive and finite. Cancelling the observer does
+not release a writer slot or delete staging until the writer exits after its
+cleanup attempt. On timeout/lost response inspect the inbox before another
+import. Blocked I/O may outlive the caller; this is cooperative cancellation.
+See [writer ownership and recovery](../repairs/2026-10-23-postimplementation.md).

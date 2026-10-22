@@ -9,3 +9,11 @@ Preserve byte-exact pinned source, task revision CAS, writer fencing, whole-pack
 Each command runs in its own owned supervisor. Docker verification has no network or host credential/socket mounts. Trusted-local is explicitly not an adversarial sandbox; never advertise it as strict isolation. Keep setup, verification, publication, remote CI, integration, and merging distinct.
 
 Keep modules cohesive. Extend the existing package core rather than creating separate validation paths for UI, CLI, or MCP. Test failures, source changes, stale contexts, duplicate uploads, lost responses, cancellation, and backup restoration. Add results to the qualification record only when those exact checks ran; source presence is not execution evidence.
+
+## Postimplementation follow-up
+
+Run `tests/authoring/test_postimplementation.py` with the full serial matrix and
+offline install checks. Keep synthetic process/qualification observations
+separate from actual client evidence. Qualification migration is an authorized
+core transaction, never a read-side grant or client bootstrap bypass. See
+[follow-up contract](../../../docs/repairs/2026-10-23-postimplementation.md).

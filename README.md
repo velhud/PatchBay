@@ -168,3 +168,11 @@ The [final capability disposition](docs/repairs/2026-10-22-s10-final-composition
 accounts for all inherited findings and separates checked local mechanics from
 actual Pro/native/service/capacity gates. A structurally valid evidence record
 is not an independent product acceptance certificate.
+
+## Postimplementation reliability
+
+Manager artifact imports run in bounded background writers; repeated waits on
+unchanged mixed teams respect the wait budget. Author rejects hidden JUnit
+outcomes and retains separate principal/role/profile qualifications. Existing
+homes need explicit quiescent index maintenance, immutable release verification
+and actual client requalification. See [postimplementation repairs and qualification limits](docs/repairs/2026-10-23-postimplementation.md).

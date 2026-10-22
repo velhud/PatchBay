@@ -1,0 +1,835 @@
+{
+  "programme": "Postimplementation focused follow-up after S01-S10; no new numbered stage",
+  "starting_main": "39b0b626446a07dcdbbcafd7b8449ef70598d349",
+  "baseline_local_reproduction": {
+    "failed": 18,
+    "passed": 0,
+    "scope": "Controlled real shipped Manager protocol and Author gates, not live Pro/full deployed application"
+  },
+  "source_reconciliation": "Current public main; no historical overlay. All newer/concurrent work must be preserved by publication gate.",
+  "findings": [
+    {
+      "id": "PF-01",
+      "disposition": "FIXED_AND_LOCALLY_TESTED",
+      "owners": [
+        "src/patchbay/artifacts.py",
+        "src/patchbay/tools/handler_legacy.py"
+      ],
+      "limits": [
+        "Per-store bounded cooperative writer lifetime; uninterruptible I/O can outlive awaiter.",
+        "Cancellation/response loss can race a complete publication; inspect inbox before any new import.",
+        "Cleanup failure is explicit; private orphan retirement requires offline ownership proof."
+      ]
+    },
+    {
+      "id": "PF-02",
+      "disposition": "FIXED_AND_LOCALLY_TESTED",
+      "owners": [
+        "src/patchbay/authoring/execution/reports.py"
+      ],
+      "limits": [
+        "Supported JUnit dialect only; synthetic process receipt fixtures are not actual execution/client proof."
+      ]
+    },
+    {
+      "id": "TEXT-01",
+      "disposition": "FIXED_AND_LOCALLY_TESTED",
+      "owners": [
+        "src/patchbay/workers/runtime_legacy.py"
+      ],
+      "witnesses": [
+        "tests/test_postimplementation_control.py::test_default_wait_does_not_repeat_old_completion_in_mixed_team",
+        "tests/test_postimplementation_control.py::test_wait_callers_scopes_reconnect_and_real_transition",
+        "tests/test_postimplementation_control.py::test_wait_new_work_urgent_cleanup_and_observer_cancellation",
+        "tests/test_postimplementation_control.py::test_wait_preserves_persistent_urgent_liveness",
+        "tests/test_postimplementation_control.py::test_wait_detects_new_work_when_team_count_is_unchanged",
+        "tests/test_postimplementation_control.py::test_wait_observes_meaningful_event_between_calls_once"
+      ],
+      "limits": [
+        "Bounded TTL/LRU advisory observations; reconnect/eviction/restart can establish a fresh first observation. No durable/cross-caller acknowledgment or authority."
+      ]
+    },
+    {
+      "id": "TEXT-02",
+      "disposition": "FIXED_AND_LOCALLY_TESTED",
+      "owners": [
+        "src/patchbay/authoring/interfaces/auth.py",
+        "src/patchbay/authoring/interfaces/http.py"
+      ],
+      "witnesses": [
+        "tests/authoring/test_postimplementation.py::test_qualification_coexists_for_two_admissible_principals",
+        "tests/authoring/test_postimplementation.py::test_qualification_profiles_http_catalog_and_mutation_gates",
+        "tests/authoring/test_postimplementation.py::test_qualification_replacement_restart_replay_and_legacy_migration",
+        "tests/authoring/test_postimplementation.py::test_qualification_concurrent_writers_and_readers",
+        "tests/authoring/test_postimplementation.py::test_qualification_stale_binding_and_corruption_fail_closed",
+        "tests/authoring/test_postimplementation.py::test_qualification_lost_reply_after_commit_does_not_reactivate_on_retry",
+        "tests/authoring/test_postimplementation.py::test_qualification_invalid_legacy_never_silently_migrates"
+      ],
+      "limits": [
+        "Scoped principals cannot perform global qualification. No new grants; fixture support records never qualify a real client.",
+        "Historical restore preserves historical authority state and requires offline reconciliation before activation."
+      ]
+    },
+    {
+      "id": "PF-03",
+      "disposition": "RETAIN_MANUAL_NON_IDEMPOTENT; NO_AUTOMATIC_RETRY",
+      "owners": [
+        "src/patchbay/pro_requests/tool_surface.py",
+        "src/patchbay/tools/handler.py"
+      ],
+      "limits": [
+        "No keyed replay support or second journal selected. Inspect request/origin worker before deliberate repeat; Hub contract separate."
+      ]
+    },
+    {
+      "id": "PF-04",
+      "disposition": "LOCAL_INSTALL_MAINTENANCE_VERIFIED; EXTERNAL_CAPABILITIES_UNQUALIFIED",
+      "owners": [
+        "docs/authoring/operations.md",
+        "docs/authoring/qualification.md",
+        "docs/repairs/2026-10-23-postimplementation.md"
+      ],
+      "limits": [
+        "Actual ordinary-Pro/fresh-chat/bootstrap, deployed installed/loaded identity, vendor WAL-fix provenance, service-unit drain/activation, combined host capacity and physical durability remain external obligations."
+      ]
+    }
+  ],
+  "supplied_specification_count": 26,
+  "specifications": [
+    {
+      "id": "PF-01-T01",
+      "finding": "PF-01",
+      "scenario": "Slow import overlaps local MCP status/control calls",
+      "required_result": "Synchronization proves actual overlap; unrelated observation/control completes while import is blocked.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_import_actual_protocol_keeps_control_responsive"
+      ]
+    },
+    {
+      "id": "PF-01-T02",
+      "finding": "PF-01",
+      "scenario": "Multiple imports exceed configured I/O capacity",
+      "required_result": "Admission remains bounded; no unbounded thread/task growth or silent dropped work.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_concurrent_imports_capture_request_identity_and_exact_archive",
+        "tests/test_postimplementation_control.py::test_deadline_does_not_release_a_still_blocked_writer"
+      ]
+    },
+    {
+      "id": "PF-01-T03",
+      "finding": "PF-01",
+      "scenario": "Slow progressing HTTP body below byte cap",
+      "required_result": "Overall monotonic import deadline ends the operation; socket activity does not extend it indefinitely.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_import_slow_drip_http_has_overall_deadline"
+      ]
+    },
+    {
+      "id": "PF-01-T04",
+      "finding": "PF-01",
+      "scenario": "Disconnect/cancellation during extraction",
+      "required_result": "No premature staging deletion while a writer is active; no published partial artifact.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_cancelled_import_retains_capacity_and_owned_stage_until_writer_exits"
+      ]
+    },
+    {
+      "id": "PF-01-T05",
+      "finding": "PF-01",
+      "scenario": "Successful bounded import",
+      "required_result": "Exact bytes/hash/metadata retained, existing response contract preserved.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_concurrent_imports_capture_request_identity_and_exact_archive"
+      ]
+    },
+    {
+      "id": "PF-01-T06",
+      "finding": "PF-01",
+      "scenario": "Malformed/oversized archive",
+      "required_result": "Existing byte/count/path rules refuse and clean only owned temporary state.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_protocol_import_archive_refusal_is_owned_and_bounded",
+        "tests/test_s09_capacity.py::test_archive_entry_budget_and_duplicate_paths"
+      ]
+    },
+    {
+      "id": "PF-01-T07",
+      "finding": "PF-01",
+      "scenario": "Metadata publication failure after bytes arrive",
+      "required_result": "Outcome is truthful and recoverable or explicitly rejected; no implicit duplicate intake on lost reply.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_import_failure_truthful_and_preserves_foreign_data",
+        "tests/test_postimplementation_control.py::test_import_atomic_visibility_and_no_clobber"
+      ]
+    },
+    {
+      "id": "PF-01-T08",
+      "finding": "PF-01",
+      "scenario": "Import while an existing worker is running",
+      "required_result": "Abandoning the import does not cancel the worker or falsely change its execution state.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_cancelled_import_retains_capacity_and_owned_stage_until_writer_exits"
+      ]
+    },
+    {
+      "id": "PF-02-T01",
+      "finding": "PF-02",
+      "scenario": "Testcase properties contains a structural failure/error/skipped/testcase",
+      "required_result": "Reject as unsupported/incomplete evidence, never passing.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_testcase_informational_outcomes_are_incomplete"
+      ]
+    },
+    {
+      "id": "PF-02-T02",
+      "finding": "PF-02",
+      "scenario": "Testcase system-out/system-err contains outcome elements",
+      "required_result": "Reject structural outcome hiding at the testcase level.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_testcase_informational_outcomes_are_incomplete"
+      ]
+    },
+    {
+      "id": "PF-02-T03",
+      "finding": "PF-02",
+      "scenario": "Namespaced structural outcome nested inside testcase information",
+      "required_result": "Apply the same supported-dialect refusal as at suite level.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_testcase_informational_outcomes_are_incomplete"
+      ]
+    },
+    {
+      "id": "PF-02-T04",
+      "finding": "PF-02",
+      "scenario": "Escaped XML-looking text in informational content",
+      "required_result": "Accept valid information; do not confuse text with actual elements.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_junit_parser_canonical_receipt_feedback_gate"
+      ]
+    },
+    {
+      "id": "PF-02-T05",
+      "finding": "PF-02",
+      "scenario": "Normal supported nested suites and UTF-16 reports",
+      "required_result": "Existing successful interpretation is retained.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_junit_parser_canonical_receipt_feedback_gate"
+      ]
+    },
+    {
+      "id": "PF-02-T06",
+      "finding": "PF-02",
+      "scenario": "Nonzero process exit with malformed report",
+      "required_result": "Remain failed; parser incompleteness cannot erase observed process failure.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_junit_parser_canonical_receipt_feedback_gate"
+      ]
+    },
+    {
+      "id": "PF-02-T07",
+      "finding": "PF-02",
+      "scenario": "Malformed report through receipt and feedback gates",
+      "required_result": "No READY_FOR_REVIEW or publication-ready state; preserve report digest and reasons.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_junit_parser_canonical_receipt_feedback_gate"
+      ]
+    },
+    {
+      "id": "PF-02-T08",
+      "finding": "PF-02",
+      "scenario": "Existing suite totals, DTD and executed-count regressions",
+      "required_result": "Retain previous rules, skips/coverage labels and bounded parsing.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCALLY_TESTED_CONTROLLED",
+      "reason": "Named controlled application-path witnesses; no actual client/provider/native macOS qualification. Synthetic process outcomes in Author receipt fixtures are explicitly synthetic.",
+      "local_witnesses": [
+        "tests/authoring/test_s07_reports.py",
+        "tests/authoring/test_s07_evidence.py"
+      ]
+    },
+    {
+      "id": "PF-03-T01",
+      "finding": "PF-03",
+      "scenario": "Lost local dispatch reply after origin follow-up admission",
+      "required_result": "Same deliberate dispatch recovers original identity; no new turn if retry support is implemented.",
+      "input_status": "NOT_RUN",
+      "disposition": "NOT_APPLICABLE_KEYED_REPLAY; LOCAL_NO_AUTORETRY_TESTED",
+      "reason": "Selected manual-only non-idempotent contract; no durable keyed dispatch recovery promised. Controlled actual-route effect loss invokes the inert effect once.",
+      "local_witnesses": [
+        "tests/test_postimplementation_control.py::test_optional_pro_dispatch_lost_response_is_never_automatically_retried"
+      ]
+    },
+    {
+      "id": "PF-03-T02",
+      "finding": "PF-03",
+      "scenario": "Changed response revision/content with same dispatch key",
+      "required_result": "Conflict, not silent replacement.",
+      "input_status": "NOT_RUN",
+      "disposition": "NOT_APPLICABLE",
+      "reason": "Local dispatch deliberately has no dispatch key. No changed-key replay contract added.",
+      "local_witnesses": []
+    },
+    {
+      "id": "PF-03-T03",
+      "finding": "PF-03",
+      "scenario": "New deliberate dispatch with a new key",
+      "required_result": "Allowed under current authority, not over-deduplicated.",
+      "input_status": "NOT_RUN",
+      "disposition": "RETAINED_LOCAL_NON_IDEMPOTENT_DISPATCH",
+      "reason": "New deliberate dispatch remains available under current authority; there is no new-key parameter or automatic replay.",
+      "local_witnesses": [
+        "tests/test_pro_requests_dispatch.py::test_dispatch_to_new_worker_starts_isolated_worker"
+      ]
+    },
+    {
+      "id": "PF-03-T04",
+      "finding": "PF-03",
+      "scenario": "Busy worker and new-worker name conflict",
+      "required_result": "Remain explicit outcomes; do not claim these alone prove idempotence.",
+      "input_status": "NOT_RUN",
+      "disposition": "RETAINED_LOCALLY_TESTED",
+      "reason": "Existing busy/name-conflict semantics retained; these are refusal tests, not idempotence proof.",
+      "local_witnesses": [
+        "tests/test_pro_requests_dispatch.py::test_dispatch_to_busy_origin_worker_is_blocked_not_queued",
+        "tests/test_worker_runtime.py::test_duplicate_worker_names_are_rejected_case_insensitively"
+      ]
+    },
+    {
+      "id": "PF-03-T05",
+      "finding": "PF-03",
+      "scenario": "Local versus Hub replay paths",
+      "required_result": "Record which boundary was actually exercised; no cross-surface guarantee inferred.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCAL_CONTRACTS_TESTED; CROSS_SURFACE_GUARANTEE_NOT_CLAIMED",
+      "reason": "Local inert route and Hub adapter tests remain separate. No local replay guarantee is inferred from Hub journaling.",
+      "local_witnesses": [
+        "tests/test_pro_requests_dispatch.py",
+        "tests/test_hub_pro_request_adapter_v2.py"
+      ]
+    },
+    {
+      "id": "PF-04-T01",
+      "finding": "PF-04",
+      "scenario": "New build on an existing Author home",
+      "required_result": "Installed/loaded source and additive-index state are independently recorded.",
+      "input_status": "NOT_RUN",
+      "disposition": "DISPOSABLE_LOCAL_INSTALL_AND_OLD_HOME_TESTED; DEPLOYMENT_NOT_RUN",
+      "reason": "Offline wheel bytes/loaded identity and explicit additive indexes on disposable schema-1 state. No live home or deployment changed.",
+      "local_witnesses": [
+        "tests/authoring/test_s09_repeated_use.py::test_index_upgrade_is_explicit_and_preserves_old_schema_state",
+        "offline installed wheel + disposable existing-home index verification"
+      ]
+    },
+    {
+      "id": "PF-04-T02",
+      "finding": "PF-04",
+      "scenario": "First actual ordinary-Pro write trial",
+      "required_result": "Legitimate scoped authority and actual client witness; no self-certified write-supported assertion.",
+      "input_status": "NOT_RUN",
+      "disposition": "BLOCKED_ENVIRONMENT; ACTUAL_CLIENT_NOT_RUN",
+      "reason": "Needs lawful exact ordinary-Pro account/client/model/route authority, metadata refresh and actual permitted observed write canary. No bypass or fabricated support record.",
+      "local_witnesses": []
+    },
+    {
+      "id": "PF-04-T03",
+      "finding": "PF-04",
+      "scenario": "Fresh chat recovers already accepted work",
+      "required_result": "Exact operations/candidates retained without replacement jobs or changed authority.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCAL_RECOVERY_TESTED; ACTUAL_FRESH_CHAT_NOT_RUN",
+      "reason": "Controlled HTTP/MCP recovery and exact operation/candidate/lease inverses are local evidence only. Exact client fresh-chat recovery requires authorized client witness.",
+      "local_witnesses": [
+        "tests/authoring/test_http_principal_contracts.py::test_named_author_mcp_draft_loop_and_lost_response_keys_cross_http_boundary",
+        "tests/authoring/test_s10_composition.py::test_lost_accepted_revision_autocheck_then_lease_takeover_and_progress"
+      ]
+    },
+    {
+      "id": "PF-04-T04",
+      "finding": "PF-04",
+      "scenario": "Unsupported or unqualified write route",
+      "required_result": "Keep that capability blocked; artifact/read-only alternatives remain honestly described.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCAL_GATES_TESTED; CLIENT_NOT_RUN",
+      "reason": "Unqualified role/profile/stale/corrupt route stays gated. Artifact/read-only alternatives retained; no ordinary-Pro acceptance inferred.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_qualification_stale_binding_and_corruption_fail_closed",
+        "tests/authoring/test_controller_contracts.py"
+      ]
+    },
+    {
+      "id": "PF-04-T05",
+      "finding": "PF-04",
+      "scenario": "Service-unit maintenance and restore",
+      "required_result": "Use supported drain/offline reconciliation; do not infer reboot/power-loss qualification.",
+      "input_status": "NOT_RUN",
+      "disposition": "LOCAL_BACKUP_RESTORE_AND_ENDPOINT_RESTART_TESTED; SERVICE_UNIT_NOT_RUN",
+      "reason": "Disposable core restore and production-entrypoint old-schema rehearsal only. Real service drain/activation, deployment SQLite WAL provenance and physical durability remain operator obligations.",
+      "local_witnesses": [
+        "tests/authoring/test_postimplementation.py::test_qualification_replacement_restart_replay_and_legacy_migration",
+        "scripts/production_entrypoint_restart_eval.py --json --rehearse-old-schema"
+      ]
+    }
+  ],
+  "all_original_research_statuses": "NOT_RUN; immutable supplied inputs unchanged",
+  "additional_witness_modules": [
+    "tests/test_postimplementation_control.py",
+    "tests/authoring/test_postimplementation.py"
+  ],
+  "verification_scope": "Exact actual results and retained intermediate failures are in POSTIMPLEMENTATION_RECEIPT.json; local repository mechanics only.",
+  "external_not_run": [
+    "ordinary-Pro exact client/account/model/route/write/bootstrap/fresh-chat",
+    "current installed native Luna/provider trial",
+    "native macOS cleanup",
+    "Docker isolation image/daemon",
+    "live service-unit deployment/drain/activation",
+    "reboot/power-loss and physical WAL/storage durability",
+    "long-history/mixed-host fleet capacity/soak",
+    "billed usage/model/economic claims"
+  ],
+  "sqlite_vendor_wal_fix_provenance": "NOT_ESTABLISHED; version/source ID alone not proof",
+  "direct_author_and_manager_boundaries_preserved": true,
+  "live_homes_accounts_providers_or_services_changed": false,
+  "reader_compatibility": "Reader capability inspection of its own sanitized observation is retained; mcp_write_actions stays false. Existing unchanged privacy regression covers this.",
+  "actual_local_verification": {
+    "full_suite": {
+      "passed": 1685,
+      "skipped": 7,
+      "failed": 0
+    },
+    "dedicated_author_suite": {
+      "passed": 402,
+      "skipped": 4,
+      "failed": 0
+    },
+    "real_185_second_local_check_seconds": 185.54,
+    "repository_checks": [
+      {
+        "check": "compile",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "full",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "audit",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "author",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "mcp",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "mcp-terminal",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "hub-edge",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "hub-v2",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "restart",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "interface",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "requirements",
+        "exit_code": 1,
+        "expected_exit_code": 1
+      },
+      {
+        "check": "pip-check",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "wheel",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      },
+      {
+        "check": "diff-check",
+        "exit_code": 0,
+        "expected_exit_code": 0
+      }
+    ],
+    "wheel_source_python_files_matched": 167,
+    "offline_install_and_disposable_existing_home_indexes": "PASS; no deployment",
+    "fixture_filesystem": "Final full/Author use owned tmpfs; affected disk runs retained separately. Physical durability not qualified.",
+    "research_requirements_register": "52 NOT_RUN; expected evaluator exit 1; no external cases promoted",
+    "failed_attempts": "Initial full: 1681 passed, 1 failed, 7 skipped (reader capability compatibility corrected without changing its assertions). Early interrupted run and focused fixture-correction failures retained in implementation evidence."
+  },
+  "added_case_inventory": [
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[failure-properties]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[failure-system-out]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[failure-system-err]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[error-properties]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[error-system-out]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[error-system-err]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[skipped-properties]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[skipped-system-out]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[skipped-system-err]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[testcase-properties]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[testcase-system-out]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[testcase-system-err]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[{urn:fixture}failure-properties]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[{urn:fixture}failure-system-out]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_testcase_informational_outcomes_are_incomplete[{urn:fixture}failure-system-err]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_coexists_for_two_admissible_principals",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[properties-0]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[properties-7]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[system-out-0]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[system-out-7]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[system-err-0]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[system-err-7]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[positive-utf16-0]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_junit_parser_canonical_receipt_feedback_gate[positive-utf16-7]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_profiles_http_catalog_and_mutation_gates",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_replacement_restart_replay_and_legacy_migration",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_concurrent_writers_and_readers",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[expiry]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[source]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[runtime]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[instance]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[catalog]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[role]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[profile]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[corrupt]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[key]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_stale_binding_and_corruption_fail_closed[marker]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_lost_reply_after_commit_does_not_reactivate_on_retry",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.authoring.test_postimplementation::test_qualification_invalid_legacy_never_silently_migrates",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_import_actual_protocol_keeps_control_responsive",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_default_wait_does_not_repeat_old_completion_in_mixed_team",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_cancelled_import_retains_capacity_and_owned_stage_until_writer_exits[download]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_cancelled_import_retains_capacity_and_owned_stage_until_writer_exits[extraction]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_cancelled_import_retains_capacity_and_owned_stage_until_writer_exits[metadata]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_import_slow_drip_http_has_overall_deadline",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_import_failure_truthful_and_preserves_foreign_data[publication]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_import_failure_truthful_and_preserves_foreign_data[cleanup]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_wait_callers_scopes_reconnect_and_real_transition",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_wait_new_work_urgent_cleanup_and_observer_cancellation",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_concurrent_imports_capture_request_identity_and_exact_archive",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_protocol_import_archive_refusal_is_owned_and_bounded[../escape]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_protocol_import_archive_refusal_is_owned_and_bounded[large.txt]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_optional_pro_dispatch_lost_response_is_never_automatically_retried",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_deadline_does_not_release_a_still_blocked_writer",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_import_atomic_visibility_and_no_clobber[final-marker]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_import_atomic_visibility_and_no_clobber[existing-destination]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_wait_preserves_persistent_urgent_liveness[lost]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_wait_preserves_persistent_urgent_liveness[stale]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_wait_preserves_persistent_urgent_liveness[terminal-runtime-alive]",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_wait_detects_new_work_when_team_count_is_unchanged",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    },
+    {
+      "test": "tests.test_postimplementation_control::test_wait_observes_meaningful_event_between_calls_once",
+      "actual_local_result": "PASS",
+      "evidence_class": "Controlled shipped application-path fixture; synthetic dependencies/process observations explicitly declared. No client/provider/platform capability promotion."
+    }
+  ]
+}

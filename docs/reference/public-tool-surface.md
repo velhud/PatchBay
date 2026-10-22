@@ -173,3 +173,11 @@ launch provenance distinguishes requested model/effort from unknown observed
 values, and connector/catalog availability from static/native/workflow/client
 qualification. The adapter is headless; see the
 [S04 contract](../repairs/2026-10-22-s04-native-execution.md).
+
+Inbox imports use bounded writer admission and an overall deadline. Inspect
+before retry after timeout/loss; a cancelled caller does not prove writer exit.
+Wait observations distinguish first/new completion from an unchanged mixed team
+for each caller and selection. Local Pro Request dispatch remains non-idempotent
+and must never be automatically retried. Author qualifications coexist by exact
+principal/role/profile/release binding without widening grants. See the
+[postimplementation contract](../repairs/2026-10-23-postimplementation.md).

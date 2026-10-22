@@ -1,6 +1,14 @@
 """Local artifact inbox for ChatGPT-to-Codex file transfer."""
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import copy
+import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+
 import hashlib
 import json
 import mimetypes
@@ -30,6 +38,30 @@ DEFAULT_IMPORT_LIMITS = {"max_archive_bytes": 128 * 1024**2,
                          "max_file_count": 10000}
 
 
+class _ImportControl:
+    def __init__(self, seconds):
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("import_timeout_seconds must be positive and finite")
+        self.deadline = time.monotonic() + seconds
+        self.cancelled = threading.Event()
+
+    def remaining(self):
+        return self.deadline - time.monotonic()
+
+    def check(self):
+        if self.cancelled.is_set() or self.remaining() <= 0:
+            raise ValueError("Artifact import cancelled or deadline exceeded before publication")
+
+
+_IMPORT_CONTROL = contextvars.ContextVar("artifact_import_control", default=None)
+
+
+def _import_checkpoint():
+    control = _IMPORT_CONTROL.get()
+    if control is not None:
+        control.check()
+
+
 class ArtifactStore:
     """Persist ChatGPT-supplied files outside the repository checkout."""
 
@@ -38,6 +70,43 @@ class ArtifactStore:
         configured_root = config.get("artifacts", {}).get("root")
         self.root = resolve_runtime_path(configured_root, "artifacts")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        capacity = config.get('artifacts', {}).get('max_concurrent_imports', 2)
+        if type(capacity) is not int or capacity <= 0:
+            raise ValueError("max_concurrent_imports must be a positive integer")
+        self._import_slots = threading.BoundedSemaphore(capacity)
+        self._import_pool = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix='artifact-import')
+
+    def _import_control(self):
+        return _ImportControl(float(self.config.get('artifacts', {}).get('import_timeout_seconds', 60)))
+
+    async def import_file_async(self, **kwargs):
+        """Bound the complete writer, not merely its awaiting coroutine.
+
+        Slots are released by the underlying writer's completion, including
+        cancellation and timeout. No asyncio cancellation deletes its staging.
+        """
+        control = self._import_control()
+        if not self._import_slots.acquire(blocking=False):
+            raise ValueError("Artifact import capacity busy; no new import was admitted")
+        try:
+            kwargs = copy.deepcopy({k:v for k,v in kwargs.items() if k != 'request_context'}) | {
+                'request_context': replace(kwargs['request_context'], session_data=None) if kwargs.get('request_context') else None}
+            writer = self._import_pool.submit(self.import_file, **kwargs, _control=control)
+        except BaseException:
+            self._import_slots.release()
+            raise
+        writer.add_done_callback(lambda _: self._import_slots.release())
+        future = asyncio.wrap_future(writer)
+        future.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), timeout=max(.001, control.remaining()))
+        except asyncio.CancelledError:
+            control.cancelled.set()
+            raise
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            control.cancelled.set()
+            raise ValueError("Artifact import deadline exceeded; writer cleanup may still be pending. "
+                             "A racing complete publication may exist; inspect the inbox before a new import") from exc
 
     def import_file(
         self,
@@ -46,7 +115,16 @@ class ArtifactStore:
         artifact_file: dict[str, Any],
         label: str = "",
         request_context: RequestContext | None = None,
+        _control=None,
     ) -> dict[str, Any]:
+        token = _IMPORT_CONTROL.set(_control or self._import_control())
+        try:
+            return self._import_file(repo_path=repo_path, artifact_file=artifact_file, label=label, request_context=request_context)
+        finally:
+            _IMPORT_CONTROL.reset(token)
+
+    def _import_file(self, *, repo_path, artifact_file, label, request_context):
+        _import_checkpoint()
         repo_path = self._validated_repo_path(repo_path)
         if not isinstance(artifact_file, dict):
             raise ValueError("artifact_file is required for import_file")
@@ -58,10 +136,10 @@ class ArtifactStore:
         workspace_id = self.workspace_id(repo_path)
         artifact_id = f"art_{uuid.uuid4().hex[:20]}"
         artifact_dir = self._artifact_dir(workspace_id, artifact_id)
-        raw_dir = artifact_dir / "raw"
-        unpacked_dir = artifact_dir / "unpacked"
-        raw_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
-        unpacked_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+        staging = artifact_dir.parent / ('.import-' + uuid.uuid4().hex)
+        raw_dir = staging / "raw"
+        unpacked_dir = staging / "unpacked"
+        owned_destination = committed = False
 
         original_name = self._safe_file_name(
             artifact_file.get("file_name")
@@ -70,8 +148,13 @@ class ArtifactStore:
             or "artifact"
         )
         raw_path = raw_dir / original_name
+        staging.mkdir(mode=0o700, parents=True, exist_ok=False)
         try:
+            raw_dir.mkdir(mode=0o700)
+            unpacked_dir.mkdir(mode=0o700)
+            _import_checkpoint()
             total_bytes, sha256 = self._download(download_url, raw_path)
+            _import_checkpoint()
             mime_type = str(artifact_file.get("mime_type") or mimetypes.guess_type(original_name)[0] or "")
             if zipfile.is_zipfile(raw_path):
                 kind = "archive"
@@ -81,7 +164,12 @@ class ArtifactStore:
                 self._check_optional_limit("max_single_file_bytes", total_bytes, "artifact file")
                 self._check_optional_limit("max_unpacked_bytes", total_bytes, "unpacked artifact")
                 self._check_optional_limit("max_file_count", 1, "artifact file count")
-                shutil.copy2(raw_path, unpacked_dir / original_name)
+                target = unpacked_dir / original_name
+                with raw_path.open('rb') as source, target.open('xb') as output:
+                    while chunk := source.read(65536):
+                        _import_checkpoint()
+                        output.write(chunk)
+                shutil.copystat(raw_path, target)
                 manifest = [{"path": original_name, "bytes": total_bytes}]
 
             file_count = len(manifest)
@@ -107,17 +195,39 @@ class ArtifactStore:
                 },
                 request_context,
             )
-            self._write_json(artifact_dir / "artifact.json", metadata)
-            self._write_json(artifact_dir / "manifest.json", {"files": manifest})
+            self._write_json(staging / "artifact.json", metadata)
+            self._write_json(staging / "manifest.json", {"files": manifest})
+            _import_checkpoint()
+            # Reserve exclusively. Never replace an existing destination, even
+            # an empty one. Metadata is the final atomic visibility marker.
+            artifact_dir.mkdir(mode=0o700, exist_ok=False)
+            owned_destination = True
+            for item in (raw_dir, unpacked_dir, staging / 'manifest.json'):
+                _import_checkpoint()
+                item.rename(artifact_dir / item.name)
+            _import_checkpoint()
+            (staging / 'artifact.json').rename(artifact_dir / 'artifact.json')
+            committed = True
             response = self._public_record(metadata, request_context=request_context)
             response["next_step"] = (
                 "Pass this artifact_id in context_from_artifacts on codex_worker_start "
                 "or codex_worker_message when a worker should use it."
             )
             return response
-        except Exception:
-            shutil.rmtree(artifact_dir, ignore_errors=True)
-            raise
+        finally:
+            # Only this writer cleans the exclusively owned directories. A
+            # complete published artifact survives any lost/cancelled response.
+            cleanup_errors = []
+            for owned in ([artifact_dir] if owned_destination and not committed else []) + [staging]:
+                try:
+                    shutil.rmtree(owned)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    cleanup_errors.append(exc)
+            if cleanup_errors:
+                raise ValueError("Artifact writer exited with incomplete owned staging cleanup; "
+                                 "a complete publication may exist. Inspect the inbox before a new import") from cleanup_errors[0]
 
     def list_artifacts(
         self,
@@ -259,12 +369,23 @@ class ArtifactStore:
 
     def _download(self, download_url: str, raw_path: Path) -> tuple[int, str]:
         timeout = float(self.config.get("artifacts", {}).get("download_timeout_seconds", 60))
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("download_timeout_seconds must be positive and finite")
+        control = _IMPORT_CONTROL.get()
+        _import_checkpoint()
+        if control is not None:
+            timeout = min(timeout, max(.001, control.remaining()))
         request = Request(download_url, headers={"User-Agent": "patchbay-artifact-inbox"})
         digest = hashlib.sha256()
         total = 0
         with urlopen(request, timeout=timeout) as response, raw_path.open("wb") as output:
             while True:
-                chunk = response.read(1024 * 1024)
+                _import_checkpoint()
+                sock = getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None)
+                if sock is not None and control is not None:
+                    sock.settimeout(min(timeout, max(.001, control.remaining())))
+                chunk = getattr(response, 'read1', response.read)(65536)
+                _import_checkpoint()
                 if not chunk:
                     break
                 total += len(chunk)
@@ -308,6 +429,7 @@ class ArtifactStore:
             stream.seek(start)
             count = consumed = 0
             while consumed < size:
+                _import_checkpoint()
                 header = stream.read(zipfile.sizeCentralDir)
                 if len(header) != zipfile.sizeCentralDir:
                     raise ValueError("Archive directory is truncated")
@@ -332,6 +454,7 @@ class ArtifactStore:
             self._check_optional_limit("max_file_count", len(archive.infolist()), "artifact archive entry count")
             seen = set()
             for info in archive.infolist():
+                _import_checkpoint()
                 rel_path = self._safe_zip_member_path(info)
                 if not rel_path:
                     continue
@@ -350,6 +473,7 @@ class ArtifactStore:
                 observed = 0
                 with archive.open(info) as source, target.open("xb") as output:
                     while chunk := source.read(65536):
+                        _import_checkpoint()
                         observed += len(chunk)
                         self._check_optional_limit("max_single_file_bytes", observed, f"artifact file {rel_path}")
                         self._check_optional_limit("max_unpacked_bytes", total_unpacked - int(info.file_size) + observed, "unpacked artifact")

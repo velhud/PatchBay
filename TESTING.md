@@ -455,3 +455,33 @@ Each receipt records its fixture filesystem. A full run with an owned tmpfs
 certify disk latency, physical durability or power-loss behavior. Retain disk
 attempts and affected disk/integration results separately. Do not combine
 different runs into an invented all-green disk qualification.
+
+## Postimplementation joined regressions
+
+```bash
+python -m pytest tests/test_postimplementation_control.py tests/authoring/test_postimplementation.py -q
+```
+
+Run the complete matrix above serially, dedicated Author with the long local
+check enabled, old-schema restart and offline wheel/install parity. The new
+fixtures enter actual Manager MCP/handler/runtime paths with inert execution;
+synchronized imports prove control overlap, saturation, slow-drip deadline,
+writer-owned cancellation/cleanup and publication/no-clobber boundaries. Wait
+fixtures cover actual defaults, per-caller selection and fresh reconnect, new
+turns/completion, persistent liveness/cleanup urgency and observer cancellation.
+Author parser-to-canonical-receipt/feedback/publication fixtures label synthetic
+process evidence; HTTP/MCP qualification fixtures preserve global/scoped
+authority, full bindings, migration/replay, corruption, revocation and backup.
+The original 26 suggested specifications remain research NOT_RUN records; see
+[individual dispositions](docs/testing/postimplementation-disposition.json).
+
+Retain initial failures and corrected fixture assertions separately. No
+ordinary-Pro, native macOS, live Luna, Docker, service-unit, deployment, physical
+durability, fleet/soak or economic claim follows. The original S01–S10 programme
+is complete; this is a focused follow-up, not a new numbered stage.
+
+The recorded follow-up candidate passed 1685 full-suite tests (7 skipped) and
+402 dedicated Author tests (4 skipped), including the real 185-second
+local check. All required local gates/build/install passed; requirements
+evaluation remained INCOMPLETE with all 52 NOT_RUN. Initial failures and
+fixture filesystems are retained in the [follow-up record](docs/repairs/2026-10-23-postimplementation.md).

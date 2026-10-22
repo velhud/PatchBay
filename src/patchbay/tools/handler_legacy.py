@@ -246,7 +246,7 @@ class ToolHandler:
         action = str(args.get("action") or "list").strip().lower()
         repo = self._repo_from_args(args)
         if action == "import_file":
-            return self.artifact_store.import_file(
+            return await self.artifact_store.import_file_async(
                 repo_path=repo,
                 artifact_file=args.get("artifact_file") or {},
                 label=args.get("label", ""),
