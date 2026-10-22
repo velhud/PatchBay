@@ -289,3 +289,5 @@ offline installation-manifest helper, source bounds and separate native/client
 qualification recipe. No canary runs automatically.
 
 Before enabling publication, explicitly select downstream-effect consent or an operator-controlled no-automation destination policy. Checks provide evidence for review; exit success and candidate-authored reports are not independent acceptance. See [S07 evidence and migration](docs/repairs/2026-10-22-s07-evidence-authority.md).
+
+Before installed service maintenance, use the [release and offline cutover runbook](docs/maintainer/workflows/deployment-release-cutover.md). Use immutable releases/venvs, drain before owning-unit restarts, compare loaded/configuration identities, and requalify the exact client route. Manager supplied-Origin allowlisting is independent of CORS and bearer authentication; absent-Origin MCP clients remain supported.

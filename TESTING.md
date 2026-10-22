@@ -366,3 +366,23 @@ python -m pytest tests/authoring/test_s07_*.py tests/test_s07_source_views.py -q
 ```
 
 These parser, fake-CI, real-store, no-model source-view and isolated-command fixtures cover contradictory reports, encoded declarations, opt-in executed counts, incomplete scans, receipt consistency, approval revocation and literal feedback. Synthetic receipt fixtures are persistence inputs, not executed checks. Keep all required full checks and S01–S06 regressions. [S07 contracts and remaining gates](docs/repairs/2026-10-22-s07-evidence-authority.md) distinguish local checks from native/client/deployment qualification.
+
+
+## S08 release, configuration and restore boundaries
+
+```bash
+python -m pytest tests/authoring/test_s08_backup_reference_integrity.py tests/authoring/test_s08_release_restore.py tests/test_s08_config_publication.py tests/test_s08_deployment.py -q
+```
+
+Run the full matrix above serially, the dedicated Author suite with the optional
+long execution enabled, old-schema restart, and offline wheel/install parity.
+The S08 subset covers loaded/disk drift, stale qualification and child-release
+refusal; SQL/Git relation and private retention checks; restore file/directory
+sync order and publication uncertainty; atomic private launch generations and
+child config identity; explicit Origin before session/auth work; shared shutdown
+budget and actual Hub WAL/FULL settings. Recording teardown tests do not run a
+live tunnel or prove native fleet shutdown. Offline historical restore is not
+automated authority activation. See [S08 limits](docs/repairs/2026-10-22-s08-deployment-durability.md)
+and the [component custody template](docs/maintainer/deployment-custody.template.json).
+Actual unit/cgroup, Docker, reboot/power-loss, native Mac/Luna and ordinary-Chat
+qualification remain separate NOT_RUN gates.

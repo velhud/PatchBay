@@ -6,6 +6,7 @@ import ipaddress
 import os
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
+from urllib.parse import urlsplit
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -92,6 +93,36 @@ def request_is_authorized(
         return True
     token = request_token(headers, query_params, policy)
     return token_matches(policy, token)
+
+
+def request_origin_allowed(config: Mapping[str, object], headers: Mapping[str, str]) -> bool:
+    """Origin is an independent early gate, never derived from request Host.
+
+    Absent Origin supports nonbrowser MCP clients. Explicit origins must be
+    serialized HTTP(S) origins from operator config; wildcard/null are refused.
+    """
+    if sum(key.lower() == "origin" for key in headers) > 1:
+        return False
+    origin = _header_get(headers, "origin")
+    if not origin:
+        return not any(key.lower() == "origin" for key in headers)
+    def normalized(value):
+        if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 for c in value):
+            return None
+        try:
+            parts = urlsplit(value)
+            if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username is not None or parts.password is not None or parts.path or parts.query or parts.fragment:
+                return None
+            port = parts.port
+            return parts.scheme, parts.hostname.lower(), port if port is not None else (443 if parts.scheme == "https" else 80)
+        except ValueError:
+            return None
+    server = _mapping(config.get("server"))
+    port = server.get("port", 8000)
+    allowed = server.get("allowed_origins", [f"http://localhost:{port}", f"http://127.0.0.1:{port}", f"http://[::1]:{port}"])
+    expected = {normalized(v) for v in allowed} if isinstance(allowed, (list, tuple)) else set()
+    received = normalized(origin)
+    return received is not None and received in expected
 
 
 def request_token(

@@ -269,3 +269,76 @@ class Store:
         for sha in hashes:
             require(self.blobs.verify(sha), "CORRUPT_STATE", "Referenced bytes failed verification", sha256=sha)
         return {"database": "ok", "referenced_blobs": len(hashes), "instance_id": self.identity["instance_id"]}
+
+    def source_integrity(self) -> dict:
+        """Explicit maintenance-only SQL/Git join, including historical custody.
+
+        Batch unique commit metadata once per mirror. Private refs and their
+        ancestors prove retention, separately from mere object existence.
+        No checkout, candidate code, network fetch or ordinary polling scan.
+        """
+        import re
+        from ..repositories import Repositories
+        references = []
+        tasks = {r["id"]: r for r in self.rows("SELECT * FROM tasks LIMIT 100001")}
+        require(len(tasks) <= 100000, "RESOURCE_LIMIT", "Source relation inventory exceeds its bound")
+        def add(repository, owner, commit, tree=None):
+            require(len(references) < 100000, "RESOURCE_LIMIT", "Source relation inventory exceeds its bound")
+            references.append({"repository_id": repository, "record": owner, "commit": commit, "tree": tree})
+        for task in tasks.values():
+            current = self.one("SELECT commit_oid,tree_oid FROM revisions WHERE task_id=? AND number=?",
+                               (task["id"], task["current_revision"]))
+            require(current["commit_oid"] == task["current_commit"], "SOURCE_STATE_INCONSISTENT",
+                    "Current task and revision disagree", task_id=task["id"])
+            add(task["repository_id"], "task:" + task["id"], task["current_commit"], current["tree_oid"])
+            add(task["repository_id"], "origin:" + task["id"], task["origin_commit"])
+        for table, owner in (("revisions", "task_id"), ("contexts", "id"), ("drafts", "id"),
+                             ("runs", "id"), ("approvals", "id"), ("publications", "id")):
+            for row in self.rows("SELECT * FROM " + table + " LIMIT 100001"):
+                task = tasks[row["task_id"]]
+                record = table + ":" + str(row[owner]) + (":" + str(row["number"]) if table == "revisions" else "")
+                add(task["repository_id"], record, row["commit_oid"], row.get("tree_oid"))
+                if table == "revisions":
+                    add(task["repository_id"], "base:" + row["task_id"] + ":" + str(row["number"]), row["base_commit"])
+        for row in self.rows("SELECT v.*,d.task_id FROM draft_versions v JOIN drafts d ON v.draft_id=d.id LIMIT 100001"):
+            add(tasks[row["task_id"]]["repository_id"], "draft_version:" + row["draft_id"] + ":" + str(row["version"]), row["commit_oid"], row["tree_oid"])
+        pending = self.rows("SELECT id,task_id,payload FROM operations WHERE state NOT IN ('completed','failed','blocked','cancelled','timed_out') LIMIT 100001")
+        require(len(pending) <= 100000, "RESOURCE_LIMIT", "Pending source intent inventory exceeds its bound")
+        for row in pending:
+            payload = json.loads(row["payload"])
+            for field in ("commit", "base_commit", "resolved_base", "origin_commit"):
+                if not payload.get(field):
+                    continue
+                task_id = row["task_id"] if row["task_id"] in tasks else payload.get("task_id")
+                repository = tasks[task_id]["repository_id"] if task_id in tasks else payload.get("repository_id")
+                require(repository, "SOURCE_STATE_INCONSISTENT", "Pending source intent lacks repository identity", operation_id=row["id"])
+                add(repository, "pending:" + row["id"] + ":" + field, payload[field], payload.get("tree") if field == "commit" else None)
+        unique = 0
+        for repository in sorted({r["repository_id"] for r in references}):
+            rows = [r for r in references if r["repository_id"] == repository]
+            git = Repositories(self).git(repository)
+            for row in rows:
+                require(re.fullmatch("[0-9a-f]{" + str(git.oid_length) + "}", str(row["commit"]))
+                        and (row["tree"] is None or re.fullmatch("[0-9a-f]{" + str(git.oid_length) + "}", str(row["tree"]))),
+                        "SOURCE_STATE_INCONSISTENT", "Malformed SQL source identity", record=row["record"])
+            commits = sorted({r["commit"] for r in rows}); unique += len(commits)
+            try:
+                metadata = git.run(["log", "--no-walk=unsorted", "--format=%H %T", "--stdin"],
+                                   data=("\n".join(commits) + "\n").encode(), timeout=300)
+                trees = dict(line.split() for line in metadata.decode("ascii").splitlines())
+                anchors = git.run(["for-each-ref", "--count=100001", "--format=%(objectname)", "refs/author/"])
+                require(anchors, "SOURCE_STATE_INCONSISTENT", "Source has no private retention anchor", repository_id=repository)
+                require(len(anchors.splitlines()) <= 100000, "RESOURCE_LIMIT", "Private source anchors exceed the verification bound")
+                reachable = git.run(["rev-list", "--max-count=500001", "--stdin"], data=anchors, timeout=300).decode("ascii").splitlines()
+                require(len(reachable) <= 500000, "RESOURCE_LIMIT", "Private source ancestry exceeds the verification bound")
+                retained = set(reachable)
+            except AuthorError as exc:
+                raise AuthorError("SOURCE_STATE_INCONSISTENT", "Managed source relation scan failed", repository_id=repository, cause=exc.code) from exc
+            for row in rows:
+                require(row["commit"] in trees and row["commit"] in retained
+                        and (row["tree"] is None or trees[row["commit"]] == row["tree"]),
+                        "SOURCE_STATE_INCONSISTENT", "SQL source is missing, mismatched, or not retained",
+                        repository_id=repository, record=row["record"], commit=row["commit"])
+        references.sort(key=lambda r: (r["repository_id"], r["record"], r["commit"], r["tree"] or ""))
+        return {"version": 1, "references": len(references), "unique_commits": unique,
+                "inventory_sha256": digest_fingerprint(references), "retention_basis": "private_refs_and_commit_ancestors"}

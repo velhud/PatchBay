@@ -63,6 +63,8 @@ class Checks:
 
     def dispatch(self, *, operation_ids: list[str] | None = None) -> dict:
         """Explicit scheduler action. It never retries an uncertain execution."""
+        from ..interfaces.catalog import assert_current_release
+        release = assert_current_release()
         require(sys.platform == "linux", "BLOCKED_ENVIRONMENT", "Execution supervisors require Linux/WSL2; no unsupported platform fallback")
         launched, waiting = [], []
         if operation_ids is not None:
@@ -100,6 +102,9 @@ class Checks:
                     self.store.event(conn, "checks.launching", row["task_id"], {"operation_id": row["id"]})
                 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(root),
                        "PYTHONPATH": str(Path(__file__).resolve().parents[3]), "PYTHONDONTWRITEBYTECODE": "1"}
+                env["PATCHBAY_AUTHOR_EXPECTED_RELEASE"] = release
+                if os.environ.get("PATCHBAY_AUTHOR_DEPLOYMENT_SHA256"):
+                    env["PATCHBAY_AUTHOR_DEPLOYMENT_SHA256"] = os.environ["PATCHBAY_AUTHOR_DEPLOYMENT_SHA256"]
                 try:
                     with (root / "supervisor.log").open("xb") as log:
                         child = subprocess.Popen([sys.executable, "-m", "patchbay.authoring.execution.worker",

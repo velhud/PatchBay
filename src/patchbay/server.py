@@ -22,6 +22,7 @@ from patchbay.auth import (
     AuthConfigurationError,
     auth_public_metadata,
     build_auth_policy,
+    request_origin_allowed,
     request_is_authorized,
     request_token,
 )
@@ -58,8 +59,12 @@ def _default_config_path() -> Path:
 
 
 config_path = Path(os.environ.get("PATCHBAY_CONFIG", _default_config_path()))
-with open(config_path) as f:
-    config = yaml.safe_load(f)
+config_bytes = config_path.read_bytes()
+import hashlib
+configuration_sha256 = hashlib.sha256(config_bytes).hexdigest()
+if os.environ.get("PATCHBAY_CONFIG_SHA256") and os.environ["PATCHBAY_CONFIG_SHA256"] != configuration_sha256:
+    raise RuntimeError("Launch configuration identity changed before child load")
+config = yaml.safe_load(config_bytes)
 normalize_logging_paths(config)
 
 try:
@@ -296,6 +301,8 @@ async def _read_limited_json(request: Request) -> Any:
 
 
 def _authorize_request(request: Request) -> Optional[JSONResponse]:
+    if not request_origin_allowed(config, request.headers):
+        return JSONResponse(status_code=403, content={"error": "Forbidden origin"})
     if request_is_authorized(auth_policy, request.headers, request.query_params):
         return None
     logger.warning("Unauthorized request rejected: method=%s path=%s", request.method, request.url.path)
@@ -310,6 +317,7 @@ async def root(request: Request):
         return unauthorized
     return {
         "name": "patchbay",
+        "configuration_sha256": configuration_sha256,
         "version": "0.1.0",
         "transport": "streamable-http",
         "status": "running",

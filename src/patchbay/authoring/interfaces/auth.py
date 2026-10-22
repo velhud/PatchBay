@@ -161,11 +161,16 @@ class Access:
     def require_mutation(self, role: str, *, operator_only: bool = False, mcp: bool = False, output_profile: str | None = None) -> None:
         require(role in ({"operator"} if operator_only else {"operator", "author"}),
                 "FORBIDDEN", "This action exceeds the current runtime role", status=403)
+        from .catalog import assert_current_release
+        assert_current_release()
         if mcp:
             require(self.qualified(role, output_profile=output_profile) is not None, "QUALIFICATION_REQUIRED",
                     "Live MCP writes are not qualified for this runtime; use the artifact import workflow", status=403)
 
     def qualified(self, role: str | None = None, *, output_profile: str | None = None) -> dict | None:
+        from .catalog import STARTUP_SOURCE_SHA256, observed_source_digest
+        if observed_source_digest() != STARTUP_SOURCE_SHA256:
+            return None
         path = self.store.home / "client-qualification.json"
         if not path.is_file() or path.is_symlink():
             return None
@@ -187,6 +192,8 @@ class Access:
     @mutation
     def qualify(self, evidence: dict, *, actor: str, key: str | None = None) -> dict:
         self.assert_global_operator()
+        from .catalog import assert_current_release
+        assert_current_release()
         allowed = {"model", "effort", "client", "client_version", "account_label", "mode", "role", "protocol", "ingress",
                    "plugin_version", "ordinary_chat", "write_supported", "probe_description", "observed_at", "output_profile"}
         allowed.add("principal_id")

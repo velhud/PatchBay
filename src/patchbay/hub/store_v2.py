@@ -400,7 +400,9 @@ class HubStoreV2:
             raise HubStoreV2Error(f"Hub V2 requires WAL journal mode, got {journal_mode!r}")
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._connection.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
-        self._connection.execute("PRAGMA synchronous=NORMAL")
+        self._connection.execute("PRAGMA synchronous=FULL")
+        if self._connection.execute("PRAGMA synchronous").fetchone()[0] != 2:
+            raise RuntimeError("Hub authoritative state requires SQLite FULL synchronization")
         if int(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise HubStoreV2Error("Hub V2 requires SQLite foreign keys")
 

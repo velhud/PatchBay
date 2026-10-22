@@ -38,6 +38,7 @@ class Maintenance:
         with file_lock(self.store.home / "locks/maintenance", blocking=False):
             self._quiescent()
             self.store.integrity()
+            relations = self.store.source_integrity()
             with tempfile.TemporaryDirectory(prefix=".author-backup-", dir=self.store.home.parent) as temporary:
                 temporary = Path(temporary)
                 database = temporary / "author.sqlite3"
@@ -66,7 +67,8 @@ class Maintenance:
                             files[path.relative_to(self.store.home).as_posix()] = path
                 require(len(files) <= 500000, "RESOURCE_LIMIT", "Backup inventory is too large")
                 manifest = {"format_version": 1, "schema_version": SCHEMA_VERSION,
-                            "instance_id": self.store.identity["instance_id"], "created": utc_now(), "files": {}}
+                            "instance_id": self.store.identity["instance_id"], "created": utc_now(), "files": {},
+                            "source_relations": relations}
                 total = 0
                 archive_path = temporary / "backup.zip"
                 with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
@@ -125,6 +127,7 @@ class Maintenance:
         require(Path(archive_path).is_file() and not Path(archive_path).is_symlink(), "INVALID_BACKUP", "Backup must be a regular archive")
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=".author-restore-", dir=destination.parent))
+        published = False
         try:
             temporary.chmod(0o700)
             with zipfile.ZipFile(archive_path) as archive:
@@ -171,8 +174,9 @@ class Maintenance:
                             size += len(chunk)
                             require(size <= metadata["bytes"], "INVALID_BACKUP", "Backup member exceeded its declared length")
                             h.update(chunk); output.write(chunk)
-                        output.flush(); os.fsync(output.fileno())
-                    target.chmod(metadata["mode"])
+                        output.flush()
+                        os.fchmod(output.fileno(), metadata["mode"])
+                        os.fsync(output.fileno())
                     require(size == metadata["bytes"] and h.hexdigest() == metadata.get("sha256"), "INVALID_BACKUP", "Backup content checksum failed", path=name)
             for name in ("blobs", "repositories", "locks", "uploads", "staging", "runs", "operator-leases"):
                 (temporary / name).mkdir(exist_ok=True, mode=0o700)
@@ -180,10 +184,29 @@ class Maintenance:
             store.integrity()
             for repo in store.rows("SELECT id FROM repositories"):
                 Repositories(store).git(repo["id"]).run(["fsck", "--full", "--no-reflogs"], timeout=300)
-            os.rename(temporary, destination); fsync_dir(destination.parent)
+            relations = store.source_integrity()
+            if manifest.get("source_relations") is not None:
+                require(relations == manifest["source_relations"], "INVALID_BACKUP", "Restored SQL/Git relation inventory differs")
+            # Validation may create SQLite WAL/SHM files: sync final file names
+            # and metadata, then every directory bottom-up before root publish.
+            def traversal_error(error):
+                raise error
+            for directory, dirs, names in os.walk(temporary, topdown=False, onerror=traversal_error):
+                for name in names:
+                    target = Path(directory) / name
+                    require(target.is_file() and not target.is_symlink(), "INVALID_BACKUP", "Restore produced an unsupported file")
+                    with target.open("rb") as stream:
+                        os.fsync(stream.fileno())
+                fsync_dir(Path(directory))
+            os.rename(temporary, destination)
+            published = True
+            fsync_dir(destination.parent)
             return Store(destination, expected_instance=manifest["instance_id"])
-        except BaseException:
+        except BaseException as exc:
             shutil.rmtree(temporary, ignore_errors=True)
+            if published:
+                raise AuthorError("RESTORE_PUBLICATION_UNCERTAIN", "Restored destination exists but final publication durability is unconfirmed; preserve it for inspection",
+                                  publication_state="published_durability_unknown") from exc
             raise
 
     @replayable("maintenance.gc")

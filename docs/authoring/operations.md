@@ -329,8 +329,8 @@ backup media.
 Restored credentials and writer epochs also rewind. Keep the restored service
 isolated, reconcile post-backup revocations/claims and external effects, and
 establish current credentials/leases before reopening admission. Current state
-does not supply a cross-restore global anti-replay epoch. Automated restore and
-deduplication-horizon policy remain separate S08/S09 qualification work; S02
+does not supply a cross-restore global anti-replay epoch. Automated restore activation remains unsupported under the S08 manual cutover
+contract. Deduplication-horizon policy remains separate S09 work; S02
 does not claim replay safety after discarded evidence or an old backup.
 
 ## Retention and garbage-collection recovery
@@ -445,3 +445,5 @@ handoff requires a separate service-owner update and renewed client qualificatio
 JUnit checks may set `min_executed` (default 0) in addition to `min_tests`; this changes the admitted profile digest. Skips still require `allow_skipped=true`. Reported executed count means collected minus skipped. Exit-only checks prove process success and have no test counts. Version-2 receipts distinguish complete boundary observation from unknown source equality. Historical receipts remain historical.
 
 Enabled publication now requires `allow_external_ci=true` for the default `remote_effects=downstream_possible`, whether or not `github_repository` is configured. An operator may explicitly select `remote_effects=controlled_no_automation` only after establishing that destination contract. No destination is inferred safe by its URL. This does not suppress server hooks. Existing uncertain pushes retain original-address readback without fresh effects. See the [S07 contract](../repairs/2026-10-22-s07-evidence-authority.md) for dialect, provenance, receipt compatibility and client requalification.
+
+S08 source relation validation now joins SQL commits/trees to the correct mirror and retained private-ref ancestry at backup and restore. Restore syncs finalized files and directories before publication and preserves a published destination on `RESTORE_PUBLICATION_UNCERTAIN`. Keep it offline for inspection. Follow the [S08 manual cutover](../maintainer/workflows/deployment-release-cutover.md); restored historical credentials/epochs grant no automatic activation approval.

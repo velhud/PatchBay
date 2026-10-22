@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from ..errors import AuthorError, require
@@ -21,7 +22,9 @@ def git_environment(home: Path | None = None) -> dict:
 
 def invoke(root: Path | None, args: list[str], *, data: bytes | None = None, env: dict | None = None,
            check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess:
-    command = ["git"] + (["-C", str(root)] if root else []) + args
+    if args and args[0] in {"clone", "fetch", "update-ref", "hash-object", "write-tree", "commit-tree"}:
+        ensure_durable_git()
+    command = ["git", "-c", "core.fsync=committed", "-c", "core.fsyncMethod=fsync"] + (["-C", str(root)] if root else []) + args
     try:
         result = subprocess.run(command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env={**git_environment(root), **(env or {})}, timeout=timeout)
@@ -32,6 +35,15 @@ def invoke(root: Path | None, args: list[str], *, data: bytes | None = None, env
         raise AuthorError("GIT_ERROR", "Git rejected the requested operation", operation=args[0],
                           exit_code=result.returncode, stderr=result.stderr.decode("utf-8", "replace")[-4000:])
     return result
+
+
+@lru_cache(maxsize=1)
+def ensure_durable_git() -> None:
+    """Immutable installed Git must support acknowledged source/ref fsync."""
+    version = invoke(None, ["version"]).stdout.decode("ascii", "replace")
+    match = re.search(r"git version (\d+)\.(\d+)", version)
+    require(match and tuple(map(int, match.groups())) >= (2, 36), "BLOCKED_ENVIRONMENT",
+            "Durable Author source writes require Git 2.36 or newer")
 
 
 class Git:
@@ -109,6 +121,11 @@ class Git:
 
     def create_candidate(self, parent: str, replacements: dict, *, operation_id: str, created: float,
                          ref: str, staging: Path) -> tuple[str, str]:
+        # Git 2.36 introduced component-based object/ref fsync. Never rely on
+        # an ambient repository default before SQL can acknowledge this source.
+        ensure_durable_git()
+        self.run(["config", "core.fsync", "committed"])
+        self.run(["config", "core.fsyncMethod", "fsync"])
         parent = self.resolve(parent)
         require(ref.startswith("refs/author/") and not any(c.isspace() for c in ref), "INVALID_REQUEST", "Candidate refs must stay in the author namespace")
         staging.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,110 @@
+{
+  "format_version": 1,
+  "evidence_status": "TEMPLATE_NOT_EVIDENCE",
+  "workflow": "SELECT_AUTHOR_OR_MANAGER_LUNA",
+  "activation_status": "OFFLINE_NOT_AUTHORIZED",
+  "release": {
+    "commit": "RECORD",
+    "wheel_sha256": "RECORD",
+    "installed_manifest_sha256": "RECORD",
+    "loaded_runtime_sha256": "RECORD",
+    "interpreter_dependencies_manifest_sha256": "RECORD"
+  },
+  "deployment": {
+    "private_manifest_sha256": "RECORD",
+    "configuration_sha256": "RECORD",
+    "authority_route_profile_sha256": "RECORD",
+    "owning_unit_cgroup_observation": "RECORD_PRIVATELY",
+    "service_stop_contract": "drain_before_owning_unit_restart",
+    "mount_and_durability_observation": "RECORD_PRIVATELY"
+  },
+  "recovery_point": {
+    "observed_at_utc": "RECORD",
+    "logical_identity_sha256": "RECORD",
+    "old_writer_fenced": false,
+    "post_backup_effects_reconciled": false,
+    "current_credentials_leases_reviewed": false
+  },
+  "components": [
+    {
+      "kind": "author_sql_blobs_mirrors_identity_authority",
+      "required_for": "Author",
+      "status": "NOT_RUN",
+      "archive_sha256": null,
+      "restore_evidence_sha256": null,
+      "authoritative_owner": "RECORD_PRIVATELY",
+      "consistency_time_utc": null,
+      "external_dependencies": [],
+      "exclusions": []
+    },
+    {
+      "kind": "hub_database_and_manifest",
+      "required_for": "Hub",
+      "status": "NOT_RUN",
+      "archive_sha256": null,
+      "restore_evidence_sha256": null,
+      "authoritative_owner": "RECORD_PRIVATELY",
+      "consistency_time_utc": null,
+      "external_dependencies": [],
+      "exclusions": []
+    },
+    {
+      "kind": "each_edge_database_and_manifest",
+      "required_for": "Edge",
+      "status": "NOT_RUN",
+      "archive_sha256": null,
+      "restore_evidence_sha256": null,
+      "authoritative_owner": "RECORD_PRIVATELY",
+      "consistency_time_utc": null,
+      "external_dependencies": [],
+      "exclusions": []
+    },
+    {
+      "kind": "manager_durable_job_metadata_owner_namespace_and_artifacts",
+      "required_for": "Manager/Luna",
+      "status": "NOT_RUN",
+      "archive_sha256": null,
+      "restore_evidence_sha256": null,
+      "authoritative_owner": "RECORD_PRIVATELY",
+      "consistency_time_utc": null,
+      "external_dependencies": [],
+      "exclusions": []
+    },
+    {
+      "kind": "manager_owned_repositories_worktrees_delivery_snapshots",
+      "required_for": "Manager/Luna",
+      "status": "NOT_RUN",
+      "archive_sha256": null,
+      "restore_evidence_sha256": null,
+      "authoritative_owner": "RECORD_PRIVATELY",
+      "consistency_time_utc": null,
+      "external_dependencies": [],
+      "exclusions": []
+    },
+    {
+      "kind": "native_home_sessions_rules_distribution_companion_files",
+      "required_for": "Manager/Luna",
+      "status": "NOT_RUN",
+      "archive_sha256": null,
+      "restore_evidence_sha256": null,
+      "authoritative_owner": "RECORD_PRIVATELY",
+      "consistency_time_utc": null,
+      "external_dependencies": [],
+      "exclusions": []
+    }
+  ],
+  "exclusions_and_reasons": [],
+  "qualification": {
+    "offline_relations": "NOT_RUN",
+    "installed_entrypoints": "NOT_RUN",
+    "service_owner_lifecycle": "NOT_RUN",
+    "native_continuation": "NOT_RUN",
+    "ordinary_chat_exact_route": "NOT_RUN",
+    "reboot_power_storage": "NOT_RUN"
+  },
+  "operator_decision": {
+    "actor": "RECORD_PRIVATELY",
+    "observed_at_utc": null,
+    "decision": "NOT_AUTHORIZED"
+  }
+}

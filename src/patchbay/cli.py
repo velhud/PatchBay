@@ -189,6 +189,7 @@ def start_main(argv: Iterable[str] | None = None) -> int:
 
     env = dict(os.environ)
     env["PATCHBAY_CONFIG"] = str(prepared["runtime_config_path"])
+    env["PATCHBAY_CONFIG_SHA256"] = prepared["runtime_config_sha256"]
     _prepend_source_path(env)
     runtime_config = prepared["runtime_config"]
     auth_mode = runtime_config.get("auth", {}).get("tunnel_mode", "none")
@@ -1184,12 +1185,12 @@ def _wait_supervised(server: subprocess.Popen[str], tunnel: subprocess.Popen[str
             return int(server_code)
         tunnel_code = tunnel.poll()
         if tunnel_code is not None:
-            terminate_process(server)
+            terminate_process(server, timeout_seconds=45.0)
             return int(tunnel_code or 1)
         control = _read_control_key()
         if control == "q":
             terminate_process(tunnel)
-            terminate_process(server)
+            terminate_process(server, timeout_seconds=45.0)
             return 0
         if control == "u":
             print(server_url, flush=True)
@@ -1203,7 +1204,7 @@ def _wait_supervised(server: subprocess.Popen[str], tunnel: subprocess.Popen[str
             time.sleep(0.25)
         except KeyboardInterrupt:
             terminate_process(tunnel)
-            terminate_process(server)
+            terminate_process(server, timeout_seconds=45.0)
             return 130
 
 

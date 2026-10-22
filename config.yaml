@@ -14,6 +14,8 @@ server:
   job_cleanup_after_hours: 24
   max_request_bytes: 16777216
   enable_cors: false
+  # Supplied-Origin authorization gate even when CORS is off; no Origin is allowed.
+  # Use exact HTTP(S) origins; Host/forwarded headers never grant origin authority.
   allowed_origins:
     - http://127.0.0.1:3000
     - http://localhost:3000

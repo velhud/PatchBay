@@ -62,15 +62,19 @@ def test_typed_timeout_after_push_keeps_original_operation_recoverable(
     fault_enabled = {"value": True}
 
     def lose_ack_at_lower_wrapper(command, *args, **kwargs):
-        if fault_enabled['value'] and isinstance(command, list) and len(command)>3 and command[3]=='ls-remote':
+        # Global Git durability options precede -C. Match the actual subcommand
+        # without pinning unrelated option positions; still inject after the
+        # real disposable push, preserving the original recovery oracle.
+        subcommand = None
+        if isinstance(command, (list, tuple)) and command and command[0] == "git" and "-C" in command:
+            position = command.index("-C") + 2
+            if position < len(command):
+                subcommand = command[position]
+        if fault_enabled['value'] and subcommand == 'ls-remote':
             if fault == 'preflight_timeout' or (fault == 'readback_timeout' and pushes):
                 raise subprocess.TimeoutExpired(command, kwargs.get('timeout', 60))
         result = original_run(command, *args, **kwargs)
-        is_push = (
-            isinstance(command, (list, tuple)) and len(command) > 3
-            and command[0] == "git" and command[1] == "-C"
-            and command[3] == "push"
-        )
+        is_push = subcommand == "push"
         if is_push:
             pushes.append(tuple(command))
             # The real disposable push has completed. The wrapper must not turn

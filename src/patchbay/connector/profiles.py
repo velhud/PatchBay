@@ -8,6 +8,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
+import tempfile
+import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -175,11 +178,14 @@ def write_runtime_config(
     root: str | Path,
     config: Mapping[str, Any],
     environ: Mapping[str, str] | None = None,
+    *, immutable: bool = False,
 ) -> str:
     normalized_root = normalize_root(root)
     target = runtime_config_path_for_root(normalized_root, environ)
+    if immutable:
+        target = target.with_name(target.stem + "-launch-" + uuid.uuid4().hex + ".yaml")
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _write_private_text(target, yaml.safe_dump(dict(config), sort_keys=False))
+    _write_private_text(target, yaml.safe_dump(dict(config), sort_keys=False), exclusive=immutable)
     return str(target)
 
 
@@ -220,9 +226,31 @@ def _is_sensitive_key(key: str) -> bool:
     return any(token_key in lowered for token_key in TOKEN_KEYS)
 
 
-def _write_private_text(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
+def _write_private_text(path: Path, text: str, *, exclusive: bool = False) -> None:
+    """Private same-directory publication; no partial or symlink target writes.
+
+    A post-publication directory-sync error leaves the target for inspection.
+    Parent ancestry is operator-controlled, not a hostile namespace sandbox.
+    """
+    path = Path(path)
+    if path.is_symlink() or path.parent.is_symlink() or (path.exists() and not stat.S_ISREG(path.stat().st_mode)):
+        raise ValueError("Private publication requires a regular destination and trusted parent")
+    descriptor, temporary = tempfile.mkstemp(prefix=".publish-", dir=path.parent)
     try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(text.encode("utf-8")); stream.flush(); os.fsync(stream.fileno())
+        if path.is_symlink():
+            raise ValueError("Private publication destination became a symlink")
+        if exclusive:
+            os.link(temporary, path)
+            os.unlink(temporary)
+        else:
+            os.replace(temporary, path)
+        parent = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)

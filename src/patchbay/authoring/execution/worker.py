@@ -65,9 +65,18 @@ def run(home: Path, operation_id: str) -> int:
             return changes
         try:
             await_launch(root, operation_id)
+            from ..interfaces.catalog import assert_current_release
+            release = assert_current_release()
+            require(not os.environ.get("PATCHBAY_AUTHOR_EXPECTED_RELEASE") or
+                    os.environ["PATCHBAY_AUTHOR_EXPECTED_RELEASE"] == release,
+                    "BLOCKED_ENVIRONMENT", "Supervisor release differs from the admitted API release")
             enable_subreaper()
             subreaper_ready = True
             profile, environment = qualify(profile, root)
+            environment["loaded_release_sha256"] = release
+            environment["service_stop_contract"] = "drain_before_execution_owner_unit_restart"
+            from ..util import fingerprint
+            environment["environment_digest"] = fingerprint({k: v for k, v in environment.items() if k != "environment_digest"})
             receipt.update(environment=environment, environment_digest=environment["environment_digest"])
             git = Repositories(store).git(task["repository_id"])
             expected = expected_source(git, row["commit_oid"])

@@ -86,7 +86,8 @@ operation ID and expected acknowledged/unacknowledged boundary.
 
 Run the service under a dedicated systemd unit and place the disposable
 operation in a controlled long-running check. Capture unit/cgroup identity and
-operation receipts, then restart only the endpoint:
+operation receipts. The following restarts the entire owning unit and tests an
+unsupported continuity boundary; it is not an endpoint-process-only restart:
 
 ```bash
 systemctl show patchbay-author-lab.service -p MainPID -p ControlGroup -p ActiveState
@@ -218,3 +219,5 @@ separate lab runs. Ordinary Chat A/B, account route, metadata refresh and
 human-scored prompt selection are also not proven by local tests. The evaluator
 shows absent runs explicitly; do not report a release-qualified profile until
 the required environment-specific evidence exists.
+
+The [S08 contract](../repairs/2026-10-22-s08-deployment-durability.md) distinguishes startup loaded identity from disk observation. In-place source drift invalidates writes and qualification; immutable release/venv paths and explicit deployment bindings remain operator responsibilities. Endpoint-process restart tests do not qualify owning-unit or reboot continuity.

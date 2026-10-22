@@ -107,12 +107,15 @@ def prepare_start(
     if save_profile:
         profile_path = save_workspace_profile(effective_root, _profile_from_config(config, effective_public_base_url), env)
 
-    runtime_config_path = write_runtime_config(effective_root, config, env)
+    runtime_config_path = write_runtime_config(effective_root, config, env, immutable=True)
+    import hashlib
+    config_sha256 = hashlib.sha256(Path(runtime_config_path).read_bytes()).hexdigest()
     status = connector_status(config, environ=env, public_base_url=effective_public_base_url)
 
     return {
         "runtime_config": config,
         "runtime_config_path": runtime_config_path,
+        "runtime_config_sha256": config_sha256,
         "profile": {
             "used": bool(profile),
             "saved": bool(profile_path),
@@ -135,6 +138,7 @@ def launcher_json_payload(prepared: Mapping[str, Any]) -> dict[str, Any]:
         "name": "patchbay",
         "ready": status.get("ready"),
         "runtime_config_path": prepared.get("runtime_config_path"),
+        "runtime_config_sha256": prepared.get("runtime_config_sha256"),
         "profile": sanitize_workspace_profile(prepared.get("profile", {})),
         "connection": status.get("connection", {}),
         "auth": status.get("auth", {}),

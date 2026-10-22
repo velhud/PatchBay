@@ -170,3 +170,5 @@ similar-looking state as approval for a changed source. Current-schema and
 provably new databases do not require a marker. For subsequent V2 rollouts,
 online backup is supported. If `--drain-timeout-seconds` expires, backup fails
 without publishing or deleting another process's manifest.
+
+Hub V2 authoritative writes now select WAL/FULL; Edge already uses FULL. This does not qualify hardware power-loss durability. These bundles remain database-only custody. Use the [deployment component template](../deployment-custody.template.json) and [manual cutover runbook](deployment-release-cutover.md) for source/worktrees/native state and post-backup authority reconciliation.
