@@ -13,11 +13,15 @@ from .builder import _write_zip
 def from_commit(store, task_id: str, *, revision: int, target_commit: str, output: Path, summary: str = "") -> dict:
     task = Tasks(store).get(task_id)
     base = Tasks(store).revision(task_id, revision)
-    context = Snapshots(store).export(task_id, revision=revision)
     git = Repositories(store).git(task["repository_id"])
     original, target = git.entries(base["commit_oid"]), git.entries(target_commit)
+    changed_paths = [path for path in sorted(set(original) | set(target)) if original.get(path) != target.get(path)]
+    require(changed_paths, 'NO_CHANGES', 'The proposed tree has no changes to accept')
+    baseline_paths = [path for path in changed_paths if path in original]
+    context = Snapshots(store).export(task_id, revision=revision, paths=baseline_paths,
+                                      identity_only=not baseline_paths)
     operations, members = [], {}
-    for path in sorted(set(original) | set(target)):
+    for path in changed_paths:
         before, after = original.get(path), target.get(path)
         if before == after:
             continue

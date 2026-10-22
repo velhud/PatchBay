@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import tempfile
+import uuid
 from pathlib import Path
 
 from ..errors import require
@@ -69,6 +70,86 @@ class Blobs:
         data = path.read_bytes()
         require(hashlib.sha256(data).hexdigest() == sha, "CORRUPT_STATE", "Stored content hash mismatch", sha256=sha)
         return data
+
+    def open_verified(self, sha: str, *, limit: int = 512 * 1024**2):
+        """Return the same regular descriptor that was verified, positioned at zero.
+
+        Content storage is private and immutable. Path replacement after open
+        cannot substitute a different file for delivery through this handle.
+        """
+        path = self.path(sha)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                                 | getattr(os, 'O_NONBLOCK', 0))
+        except OSError as exc:
+            from ..errors import AuthorError
+            raise AuthorError('CORRUPT_STATE', 'Referenced artifact cannot be opened', sha256=sha) from exc
+        stream = os.fdopen(descriptor, 'rb')
+        try:
+            before = os.fstat(descriptor)
+            require(stat.S_ISREG(before.st_mode), 'CORRUPT_STATE', 'Artifact is not a regular file')
+            require(before.st_size <= limit, 'RESOURCE_LIMIT', 'Artifact exceeds the delivery budget')
+            h, count = hashlib.sha256(), 0
+            for chunk in iter(lambda: stream.read(65536), b''):
+                h.update(chunk)
+                count += len(chunk)
+                require(count <= before.st_size, 'CORRUPT_STATE', 'Artifact changed during verification')
+            after = os.fstat(descriptor)
+            binding = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+            require(count == before.st_size and binding(before) == binding(after)
+                    and h.hexdigest() == sha, 'CORRUPT_STATE', 'Stored artifact hash or size mismatch', sha256=sha)
+            stream.seek(0)
+            return stream
+        except BaseException:
+            stream.close()
+            raise
+
+    @staticmethod
+    def delivery_chunks(stream, sha: str, expected_bytes: int):
+        """Keep the final chunk until delivery identity is checked again."""
+        h, count, pending = hashlib.sha256(), 0, b''
+        for chunk in iter(lambda: stream.read(65536), b''):
+            h.update(chunk)
+            count += len(chunk)
+            require(count <= expected_bytes, 'CORRUPT_STATE', 'Artifact grew during delivery')
+            if pending:
+                yield pending
+            pending = chunk
+        require(count == expected_bytes and h.hexdigest() == sha,
+                'CORRUPT_STATE', 'Artifact changed during delivery', sha256=sha)
+        if pending:
+            yield pending
+
+    def export(self, sha: str, output: Path) -> dict:
+        """Verify, sync and expose a complete sibling file without clobbering."""
+        output = Path(output)
+        parent = os.open(output.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)
+                         | getattr(os, 'O_NOFOLLOW', 0))
+        temporary = '.author-export-' + uuid.uuid4().hex
+        created = False
+        try:
+            with self.open_verified(sha) as source:
+                size = os.fstat(source.fileno()).st_size
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+                created = True
+                with os.fdopen(descriptor, 'wb') as target:
+                    for chunk in self.delivery_chunks(source, sha, size):
+                        target.write(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                try:
+                    os.link(temporary, output.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                except FileExistsError as exc:
+                    from ..errors import AuthorError
+                    raise AuthorError('OUTPUT_EXISTS', 'Export destination already exists; choose a new filename') from exc
+                os.fsync(parent)
+                return {'output': str(output), 'sha256': sha, 'bytes': size, 'delivery': 'verified'}
+        finally:
+            try:
+                if created:
+                    os.unlink(temporary, dir_fd=parent)
+            finally:
+                os.close(parent)
 
     def verify(self, sha: str) -> bool:
         path = self.path(sha)

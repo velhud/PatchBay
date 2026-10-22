@@ -335,3 +335,20 @@ qualification. After explicit authorization, run the exact native/client recipe
 in that contract and section 8, retaining the pinned distribution, source,
 profile, typed events, report pages, exit and cleanup evidence separately.
 All required existing checks above remain required; S04 does not waive them.
+
+### S05 Author custody and transactional boundaries
+
+```bash
+python -m pytest tests/authoring/test_s05_sources.py \
+  tests/authoring/test_s05_contexts.py tests/authoring/test_s05_artifacts.py \
+  tests/authoring/test_s05_publication.py tests/authoring/test_s05_authority.py \
+  tests/authoring/test_s05_dirty.py -q
+```
+
+These regressions use real disposable Git/SQLite/MCP/HTTP/helper owners and
+controlled read, copy, push-acknowledgement, policy and lease races. Publication
+uses local bare remotes only; its synthetic receipt is persistence input, not
+backend qualification. Admission-only tests disable dispatch and qualify no
+Linux supervisor. The [S05 contract](docs/repairs/2026-10-22-s05-author-custody.md)
+describes exact compatibility and trusted-local limits. Keep all full checks,
+source/install identity checks and separate native/client gates above.

@@ -30,6 +30,8 @@ class RuntimeLimits(Contract):
     total_storage_bytes: int = Field(20 * 1024**3, ge=1024**2)
     minimum_free_bytes: int = Field(512 * 1024**2, ge=0)
     snapshot_bytes: int = Field(512 * 1024**2, ge=1024)
+    context_inventory_paths: int = Field(100000, ge=1, le=1000000)
+    context_inventory_bytes: int = Field(16 * 1024**2, ge=1024, le=128 * 1024**2)
     max_events: int = Field(10000, ge=100, le=1000000)
     lease_seconds: int = Field(86400, ge=60, le=604800)
     native_download_hosts: list[str] = Field(default_factory=lambda: ["files.oaiusercontent.com", "*.oaiusercontent.com"])

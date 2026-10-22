@@ -7,12 +7,12 @@ import uuid
 from functools import wraps
 from pathlib import Path
 
-from ..errors import require
+from ..errors import AuthorError, require
 from ..util import fingerprint
 from .locks import file_lock
 
 
-def replayable(kind: str):
+def replayable(kind: str, *, reject_errors: bool = False, legacy_defaults: dict | None = None):
     """Add a caller retry key without creating a second mutation implementation.
 
     Exports are reconstructed from frozen revision inputs after an interrupted
@@ -30,6 +30,11 @@ def replayable(kind: str):
             arguments = {name: value for name, value in bound.arguments.items() if name != "self"}
             request = {name: str(value) if isinstance(value, Path) else value.wire() if hasattr(value, "wire") else value
                        for name, value in arguments.items()}
+            # Newly optional neutral arguments must not change the fingerprint
+            # of a retained pre-upgrade request with the same semantics.
+            for name, default in (legacy_defaults or {}).items():
+                if request.get(name) == default:
+                    request.pop(name, None)
             task_id = arguments.get("task_id", "")
             if not task_id and arguments.get("operation_id"):
                 task_id = self.store.one("SELECT task_id FROM operations WHERE id=?", (arguments["operation_id"],))["task_id"]
@@ -44,7 +49,12 @@ def replayable(kind: str):
                     return json.loads(current["result"])
                 require(current["state"] not in {"blocked", "failed"}, "OPERATION_FAILED", "Use the recorded request failure before a deliberate new attempt")
                 values = json.loads(current["payload"])["arguments"]
-                result = method(self, **values)
+                try:
+                    result = method(self, **values)
+                except AuthorError as error:
+                    if reject_errors:
+                        self.store.finish(operation['id'], 'failed', error=error.as_dict())
+                    raise
                 if isinstance(result, dict):
                     result = {**result, "request_operation_id": operation["id"]}
                 self.store.finish(operation["id"], "completed", result=result)

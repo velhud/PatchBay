@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from patchbay.mcp_versions import validate_mcp_version_header
@@ -31,6 +31,35 @@ from . import inputs as I
 from ..persistence.control import Control
 from ..authority import current_identity, request_context
 from .ingress import IngressAdmission
+
+
+class VerifiedBlobResponse(StreamingResponse):
+    """Own the preverified descriptor even if response iteration is cancelled."""
+    def __init__(self, source, content, **kwargs):
+        self.source = source
+        super().__init__(content, **kwargs)
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.source.close()
+
+
+async def open_delivery_source(blobs, sha):
+    """Cancellation cannot abandon a descriptor returned by a verifier thread."""
+    task = asyncio.create_task(asyncio.to_thread(blobs.open_verified, sha))
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        def release(done):
+            if not done.cancelled():
+                try:
+                    done.result().close()
+                except BaseException:
+                    pass
+        task.add_done_callback(release)
+        raise
 
 
 class BodyLimit:
@@ -221,6 +250,7 @@ def create_app(home: Path, *, expected_instance: str | None = None, scheduler: b
         params = await body(request, I.ExportContext)
         result = await invoke(service.snapshots.export, **params.wire())
         return {"context_id": result["id"], "revision": result["revision"], "blob_sha": result["bundle_sha"],
+                'identity_only': result.get('identity_only', False), 'inventory_format_version': result.get('inventory_format_version', 1),
                 "request_operation_id": result["request_operation_id"],
                 "download": "/api/blobs/" + result["bundle_sha"]}
 
@@ -286,11 +316,19 @@ def create_app(home: Path, *, expected_instance: str | None = None, scheduler: b
     @app.get("/api/blobs/{sha}")
     async def blob(sha: str, request: Request):
         await invoke(authorize_blob, sha=sha)
-        path = service.store.blobs.path(sha)
-        require(path.is_file(), "NOT_FOUND", "Referenced artifact is unavailable")
-        is_zip = await asyncio.to_thread(zipfile.is_zipfile, path)
-        return FileResponse(path, media_type="application/zip" if is_zip else "application/octet-stream",
-                            filename="patchbay-author-" + sha[:12] + (".zip" if is_zip else ".bin"))
+        source = await open_delivery_source(service.store.blobs, sha)
+        try:
+            is_zip = zipfile.is_zipfile(source)
+            source.seek(0)
+            size = os.fstat(source.fileno()).st_size
+            filename = 'patchbay-author-' + sha[:12] + ('.zip' if is_zip else '.bin')
+            return VerifiedBlobResponse(source, service.store.blobs.delivery_chunks(source, sha, size),
+                media_type='application/zip' if is_zip else 'application/octet-stream',
+                headers={'Content-Length': str(size), 'ETag': '"' + sha + '"', 'X-Content-SHA256': sha,
+                         'Content-Disposition': 'attachment; filename="' + filename + '"'})
+        except BaseException:
+            source.close()
+            raise
 
     @app.get("/api/tasks/{task_id}/publication-preview")
     async def publication_preview(task_id: str, request: Request, revision: int):

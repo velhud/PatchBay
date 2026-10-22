@@ -188,6 +188,13 @@ patchbay-author --home "$AUTHOR_HOME" context \
   --output "$PWD/task-context.zip"
 ```
 
+For a small context add `--path src/file.py`; unrelated payloads are omitted
+while complete path presence remains recorded. Use `--identity-only` for a
+new-file-only context with no baseline payloads; an empty path list still means
+full export. Extract the bundle, use its included helper to prepare `edited/`,
+and keep the completion marker beside that directory. Build outside `edited/`.
+A directory containing only changed files is not a prepared complete tree.
+
 ChatGPT Pro writes a package matching the Author package schema. Apply it with an idempotency key:
 
 ```bash
@@ -239,6 +246,13 @@ reads, select `context_id` alone, or `draft_id` with its exact positive
 `draft_version`. Recovery exposes existing IDs and draft versions. After
 `INVALID_OUTPUT` or a response-size error, follow the returned read-only recovery
 actions and original retry key before attempting another mutation.
+
+For a huge line or binary source use `author_read_file` with the same selector,
+`byte_offset=0` and `max_bytes=65536`. Concatenate decoded `data_base64` bytes
+while following `next_byte_offset`; verify the full source hash and never mix
+draft versions. This read-only route also works before sealing. See the
+[S05 custody contract](docs/repairs/2026-10-22-s05-author-custody.md) for
+inventory/helper compatibility, verified exports and publication recovery.
 
 For history during ongoing activity, call `author_recent_operations` with
 `traversal="snapshot"`, then carry its unchanged cursor and `next_offset` until

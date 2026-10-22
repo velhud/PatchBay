@@ -72,6 +72,11 @@ Recovery is available through `author_recover_task` and `patchbay-author recover
 
 Author MCP exposes eleven read tools; a qualified author profile adds nine writes, and a separately qualified operator profile adds approval and publication. Qualification binds the exact runtime, schemas, role, client route, and output profile. The compatibility output profile remains the default; concise structured output requires its own observed client qualification. No PR creation or automatic merge is part of this workflow.
 
+S05 strengthens selected-context exports, exact unsealed-draft byte reads,
+verified artifact delivery, transactional policy/cancellation fences and uncertain
+publication readback. See the [Author custody contract and operator handoff](docs/repairs/2026-10-22-s05-author-custody.md).
+These source changes do not update or qualify a running connector.
+
 ## Installation and entrypoints
 
 Python 3.10+, Git, and the project dependencies are required. Manager/worker execution also requires a configured Codex CLI. Author Mode does not require Codex workers, but check execution is subject to its Linux/WSL2 qualification guard and task policy.

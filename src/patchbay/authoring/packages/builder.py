@@ -16,6 +16,43 @@ import uuid
 import zipfile
 from pathlib import Path
 
+BUILDER_VERSION = 2
+
+
+def _context(context: Path):
+    metadata = json.loads((context / 'CONTEXT.json').read_text())
+    inventory = json.loads((context / 'INVENTORY.json').read_text())
+    if type(metadata.get('format_version', 1)) is not int or metadata.get('format_version', 1) not in {1, 2}:
+        raise ValueError('Unsupported context format version')
+    if type(inventory.get('format_version', 1)) is not int or inventory.get('format_version', 1) not in {1, 2}:
+        raise ValueError('Unsupported inventory format version')
+    if metadata.get('format_version') == 2 and (inventory.get('format_version') != 2 or inventory.get('complete') is not True):
+        raise ValueError('Version 2 contexts require a complete version 2 presence inventory')
+    return metadata, inventory
+
+
+def _preparation_path(edited: Path) -> Path:
+    return edited.parent / ('.' + edited.name + '.patchbay-preparation.json')
+
+
+def _preparation_record(metadata, inventory, state):
+    return {'format_version': BUILDER_VERSION, 'context_id': metadata['context_id'],
+            'inventory_sha256': _sha(_json(inventory)), 'state': state}
+
+
+def _write_preparation(path: Path, record, *, initial=False):
+    if initial:
+        with path.open('xb') as stream:
+            stream.write(_json(record)); stream.flush(); os.fsync(stream.fileno())
+        return
+    temporary = path.with_name(path.name + '.part-' + uuid.uuid4().hex)
+    try:
+        with temporary.open('xb') as stream:
+            stream.write(_json(record)); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -59,10 +96,13 @@ def _write_zip(path: Path, members: dict[str, tuple[bytes, int]]) -> None:
 
 
 def prepare(context: Path, destination: Path) -> None:
-    inventory = json.loads((context / "INVENTORY.json").read_text())
+    metadata, inventory = _context(context)
     if destination.exists():
         raise ValueError("Preparation destination must not already exist")
     source = context / "source"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    marker = _preparation_path(destination)
+    _write_preparation(marker, _preparation_record(metadata, inventory, 'incomplete'), initial=True)
     destination.mkdir(parents=True)
     for path, entry in inventory["files"].items():
         if not entry["included"]:
@@ -75,15 +115,26 @@ def prepare(context: Path, destination: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         target.chmod(0o755 if entry["mode"] == "100755" else 0o644)
+        if _sha(_regular(target)) != entry['sha256']:
+            raise ValueError(f'Prepared source does not match its inventory: {path}')
+    _write_preparation(marker, _preparation_record(metadata, inventory, 'complete'))
 
 
 def build(context: Path, edited: Path, output: Path, *, requested_checks: list[str] | None = None,
-          summary: str = "", submission_id: str | None = None) -> dict:
-    metadata = json.loads((context / "CONTEXT.json").read_text())
-    inventory = json.loads((context / "INVENTORY.json").read_text())["files"]
+          summary: str = "", submission_id: str | None = None, manual_tree: bool = False) -> dict:
+    metadata, complete_inventory = _context(context)
+    inventory = complete_inventory['files']
     originals = context / "source"
     if edited.resolve() == originals.resolve() or not edited.is_dir() or edited.is_symlink():
         raise ValueError("Use a separate prepared working copy, not immutable source/")
+    if output.absolute().is_relative_to(edited.absolute()) or output.resolve().is_relative_to(edited.resolve()):
+        raise ValueError('Write the package outside the edited source tree, including temporary output')
+    marker = _preparation_path(edited)
+    if not manual_tree and (metadata.get('format_version') == 2 or marker.exists() or marker.is_symlink()):
+        if not marker.is_file() or marker.is_symlink():
+            raise ValueError('Use a completed prepared tree; --manual-tree explicitly declares a complete manual tree, including deletions')
+        if json.loads(_regular(marker)) != _preparation_record(metadata, complete_inventory, 'complete'):
+            raise ValueError('Preparation is incomplete or belongs to another context')
     included = {p: e for p, e in inventory.items() if e["included"]}
     present: dict[str, Path] = {}
     excluded = {".git", "__pycache__", ".pytest_cache", ".author-reports"}
@@ -166,6 +217,7 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--check", action="append", default=[])
     parser.add_argument("--summary", default="")
+    parser.add_argument('--manual-tree', action='store_true', help='Explicitly treat a complete manually assembled tree as authoritative, including missing-file deletions. Not a sparse-edits mode.')
     args = parser.parse_args(argv)
     try:
         if args.prepare:
@@ -173,7 +225,8 @@ def main(argv=None) -> int:
         else:
             if not args.edited or not args.output:
                 parser.error("--edited and --output are required when not preparing a working copy")
-            result = build(args.context, args.edited, args.output, requested_checks=args.check, summary=args.summary)
+            result = build(args.context, args.edited, args.output, requested_checks=args.check, summary=args.summary,
+                           manual_tree=args.manual_tree)
             print(json.dumps({"output": str(args.output), "operations": len(result["operations"])}))
         return 0
     except (ValueError, OSError, KeyError) as exc:

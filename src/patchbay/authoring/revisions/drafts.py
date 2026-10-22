@@ -129,15 +129,21 @@ class Drafts:
                 self.store.event(conn, "draft.updated", task_id, result)
             return result
 
-    def read(self, draft_id: str, version: int, path: str, *, start_line: int = 1, max_lines: int = 200, max_bytes: int = 65536) -> dict:
-        from ..source_windows import read_window
+    def read(self, draft_id: str, version: int, path: str, *, start_line: int = 1, max_lines: int = 200, max_bytes: int = 65536,
+             byte_offset: int | None = None) -> dict:
+        from ..source_windows import read_window, bind_source_retrieval
         require(type(version) is int and version > 0, "INVALID_REQUEST", "Invalid draft version")
         draft = self.store.one("SELECT * FROM drafts WHERE id=?", (draft_id,))
         snapshot = self.store.one("SELECT * FROM draft_versions WHERE draft_id=? AND version=?", (draft_id, version))
         task = self.tasks.get(draft["task_id"])
-        result = read_window(self.repositories.git(task["repository_id"]), snapshot["commit_oid"], path,
-                             start_line=start_line, max_lines=max_lines, max_bytes=max_bytes)
-        return {"draft_id": draft_id, "version": version, **result}
+        selector = {'draft_id': draft_id, 'draft_version': version}
+        try:
+            result = read_window(self.repositories.git(task['repository_id']), snapshot['commit_oid'], path,
+                                 start_line=start_line, max_lines=max_lines, max_bytes=max_bytes, byte_offset=byte_offset)
+        except AuthorError as error:
+            bind_source_retrieval(error.details, selector)
+            raise
+        return {'draft_id': draft_id, 'version': version, **bind_source_retrieval(result, selector)}
 
     @mutation
     def seal(self, draft_id: str, *, expected_version: int, key: str, token: str, epoch: int) -> dict:

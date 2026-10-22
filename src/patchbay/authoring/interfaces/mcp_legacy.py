@@ -25,7 +25,7 @@ CATALOG = [
     ("author_capabilities", I.Empty, "Inspect Author Mode transport, execution, and qualification status. Does not start work.", False),
     ("author_list_tasks", I.Page, "List a bounded page of durable author tasks. Use returned next_offset for continuation.", False),
     ("author_get_task", I.TaskRef, "Inspect a task, its exact current revision, approved policy, and pinned dependencies. No execution is scheduled.", False),
-    ("author_read_file", I.ReadFile, "Read a bounded file window from an exact context or draft version. Omitted source remains available at the same pinned commit.", False),
+    ("author_read_file", I.ReadFile, "Read bounded line windows or exact base64 byte windows (byte_offset, at most 65536 decoded bytes) from an exact context or draft version. Follow next_byte_offset with the same selector. Omitted source remains available at the same pinned commit.", False),
     ("author_search", I.Search, "Perform a bounded literal source search at an immutable context identity. Results explicitly indicate partial coverage.", False),
     ("author_get_feedback", I.FeedbackPage, "Read canonical check evidence for the requested task revision. Missing or unknown evidence is never a pass.", False),
     ("author_operation_status", I.OperationRef, "Observe one durable operation without launching, reconciling, cancelling, or retrying any work.", False),
@@ -108,6 +108,7 @@ class MCP:
             context = service.snapshots.export(**params)
             return {"context_id": context["id"], "revision": context["revision"], "blob_sha": context["bundle_sha"],
                     "inventory_sha": context["inventory_sha"], "download": "/api/blobs/" + context["bundle_sha"],
+                    'identity_only': context.get('identity_only', False), 'inventory_format_version': context.get('inventory_format_version', 1),
                     "request_operation_id": context["request_operation_id"]}
         if name == "author_export_feedback": return Feedback(service.store).export(**params)
         if name == "author_create_task": return service.tasks.create(**params)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 import subprocess
 import tempfile
@@ -25,7 +26,8 @@ def invoke(root: Path | None, args: list[str], *, data: bytes | None = None, env
         result = subprocess.run(command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env={**git_environment(root), **(env or {})}, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise AuthorError("GIT_ERROR", "Git operation could not complete", operation=args[0] if args else "git") from exc
+        raise AuthorError("GIT_ERROR", "Git operation could not complete", operation=args[0] if args else "git",
+                          failure_kind='timeout' if isinstance(exc, subprocess.TimeoutExpired) else 'io') from exc
     if check and result.returncode:
         raise AuthorError("GIT_ERROR", "Git rejected the requested operation", operation=args[0],
                           exit_code=result.returncode, stderr=result.stderr.decode("utf-8", "replace")[-4000:])
@@ -73,30 +75,31 @@ class Git:
         return result
 
     def blob(self, oid: str, *, limit: int = 128 * 1024**2) -> bytes:
-        require(re.fullmatch(r"[0-9a-f]{" + str(self.oid_length) + r"}", oid), "INVALID_REQUEST", "Invalid Git blob identity")
-        size = int(self.text(["cat-file", "-s", oid]))
-        require(size <= limit, "RESOURCE_LIMIT", "Git object exceeds the content budget")
-        return self.run(["cat-file", "blob", oid])
+        with self.open_blob(oid, limit=limit) as stream:
+            return stream.read()
 
     @contextmanager
-    def open_blob(self, oid: str, *, limit: int = 128 * 1024**2):
-        """Stream immutable bytes without allocating the object's complete size."""
-        require(re.fullmatch(r"[0-9a-f]{" + str(self.oid_length) + r"}", oid), "INVALID_REQUEST", "Invalid Git blob identity")
-        size = int(self.text(["cat-file", "-s", oid]))
-        require(size <= limit, "RESOURCE_LIMIT", "Git object exceeds the content budget")
-        process = subprocess.Popen(["git", "-C", str(self.root), "cat-file", "blob", oid],
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_environment(self.root))
+    def open_blob(self, oid: str, *, limit: int = 128 * 1024**2, mode: str = 'complete', timeout: float = 30):
+        """Complete consumers require exact size/exit; prefix consumers declare it."""
+        from .streams import GitReadStream
+        require(isinstance(timeout, (int, float)) and math.isfinite(timeout) and 0 < timeout <= 120,
+                'INVALID_REQUEST', 'Git read deadline must be finite and within 120 seconds')
+        require(mode in {'complete', 'prefix'}, 'INVALID_REQUEST', 'Invalid Git consumption mode')
+        require(re.fullmatch(r'[0-9a-f]{' + str(self.oid_length) + r'}', oid), 'INVALID_REQUEST', 'Invalid Git blob identity')
+        size = int(self.text(['cat-file', '-s', oid]))
+        require(size <= limit, 'RESOURCE_LIMIT', 'Git object exceeds the content budget')
         try:
-            yield process.stdout
+            process = subprocess.Popen(['git', '-C', str(self.root), 'cat-file', 'blob', oid],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_environment(self.root))
+        except OSError as exc:
+            raise AuthorError('SOURCE_READ_FAILED', 'Git blob producer could not start') from exc
+        stream = GitReadStream(process, expected_bytes=size, timeout=timeout)
+        try:
+            yield stream
+            if mode == 'complete' or stream.eof:
+                stream.finish()
         finally:
-            process.stdout.close()
-            if process.poll() is None:
-                process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            stream.close()
 
     def read_file(self, commit: str, path: str) -> bytes:
         entry = self.entries(commit).get(safe_path(path))
@@ -118,7 +121,7 @@ class Git:
             for path in replacements:
                 old = original_entries.get(path)
                 if old and old["mode"] in {"100644", "100755"}:
-                    with self.open_blob(old["oid"]) as stream:
+                    with self.open_blob(old["oid"], mode="prefix") as stream:
                         require(not stream.read(64).startswith(b"version https://git-lfs.github.com/spec/v1\n"),
                                 "UNSUPPORTED_FILE", "LFS pointer mutation requires an LFS-aware workflow", path=path)
             self.run(["read-tree", parent], env=env)
@@ -180,37 +183,30 @@ class Git:
         args = ["git", "-C", str(self.root), "diff", "--no-ext-diff", "--no-textconv", "--binary", self.resolve(base), self.resolve(commit), "--"]
         if path:
             args.append(safe_path(path))
-        # Stop after a bounded prefix instead of accumulating an arbitrarily large binary diff.
-        import selectors
-        import time
-        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_environment(self.root))
-        selector = selectors.DefaultSelector()
-        os.set_blocking(process.stdout.fileno(), False)
-        selector.register(process.stdout, selectors.EVENT_READ)
-        data, truncated, timed_out = bytearray(), False, False
-        deadline = time.monotonic() + 30
+        from .streams import GitReadStream
         try:
-            while selector.get_map() and len(data) <= limit:
-                if time.monotonic() >= deadline:
-                    timed_out = True
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_environment(self.root))
+        except OSError as exc:
+            raise AuthorError('SOURCE_READ_FAILED', 'Git diff producer could not start') from exc
+        stream = GitReadStream(process, timeout=30)
+        data, truncated, timed_out = bytearray(), False, False
+        try:
+            while len(data) <= limit:
+                chunk = stream.read1(min(65536, limit+1-len(data)))
+                if not chunk:
+                    stream.finish()
                     break
-                for key, _ in selector.select(.1):
-                    chunk = os.read(key.fileobj.fileno(), min(65536, limit + 1 - len(data)))
-                    if chunk:
-                        data.extend(chunk)
-                    else:
-                        selector.unregister(key.fileobj)
+                data.extend(chunk)
                 if len(data) > limit:
                     truncated = True
                     break
+        except AuthorError as error:
+            if error.code != 'SOURCE_READ_TIMEOUT':
+                raise
+            timed_out = True
         finally:
-            selector.close()
-            process.stdout.close()
-            if process.poll() is None:
-                process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill(); process.wait()
-        return {"diff": bytes(data[:limit]).decode("utf-8", "replace"), "truncated": truncated or timed_out,
-                "returned_bytes": min(len(data), limit), "timed_out": timed_out}
+            stream.close()
+        return {'diff': bytes(data[:limit]).decode('utf-8', 'replace'), 'truncated': truncated or timed_out,
+                'partial': truncated or timed_out, 'complete': not truncated and not timed_out,
+                'returned_bytes': min(len(data), limit), 'timed_out': timed_out,
+                'next_action': 'Request a narrower path or a larger bounded diff limit' if truncated or timed_out else None}

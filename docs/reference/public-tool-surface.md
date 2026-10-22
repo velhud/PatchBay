@@ -129,6 +129,14 @@ and permits complete traversal during new activity; states stay live per page.
 Carry both cursor and offset, respect partial flags, then recover current
 authority before writing. This is not a durable snapshot across restore/pruning.
 
+Author's existing `author_read_file` also supports exact base64 byte pages via
+`byte_offset` (maximum 65,536 decoded bytes). Select one context or exact draft
+version, including unsealed versions; follow byte continuation without switching
+sources. Export selection retains complete presence metadata and exposes
+`identity_only` explicitly. No tool was added: Author still has 11/20/22 tools
+by qualified role. The [S05 contract](../repairs/2026-10-22-s05-author-custody.md)
+describes changed schemas and separate client qualification.
+
 ## Result and safety contracts
 
 - JSON-RPC requests are validated before dispatch.

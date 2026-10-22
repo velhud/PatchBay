@@ -44,8 +44,10 @@ class Checks:
             def initialize(conn, operation):
                 self.leases.assert_owned(task_id, token, epoch, conn=conn)
                 Control(self.store).assert_admission(task_id, conn=conn)
-                current = conn.execute("SELECT current_revision FROM tasks WHERE id=?", (task_id,)).fetchone()[0]
-                require(current == revision, "STALE_BASE", "Task changed while checks were submitted")
+                current = conn.execute("SELECT current_revision,policy_digest FROM tasks WHERE id=?", (task_id,)).fetchone()
+                require(current['current_revision'] == revision, "STALE_BASE", "Task changed while checks were submitted")
+                require(current['policy_digest'] == task['policy_digest'], 'STALE_POLICY',
+                        'Task policy changed before check admission; inspect the current approved profile')
                 conn.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,'queued','not_required',NULL,?,?)",
                              (operation["id"], task_id, revision, exact_revision["commit_oid"], exact_revision["tree_oid"],
                               canonical(policy.profile.wire()).decode(), fingerprint(policy.profile.wire()), None,
@@ -140,11 +142,15 @@ class Checks:
             self.store.event(conn, "checks.admission_wait", row["task_id"], {"operation_id": operation_id, "reason": reason})
 
     @mutation
-    @replayable("checks.cancel")
+    @replayable("checks.cancel", reject_errors=True)
     def cancel(self, operation_id: str, *, token: str, epoch: int) -> dict:
         run = self.store.one("SELECT * FROM runs WHERE id=?", (operation_id,))
         self.leases.assert_owned(run["task_id"], token, epoch)
         with self.store.transaction() as conn:
+            # Cancellation linearizes at this durable intent mutation. A
+            # committed earlier intent remains replayable after takeover.
+            self.leases.assert_owned(run['task_id'], token, epoch, conn=conn)
+            Control(self.store).assert_granted(run['task_id'], conn=conn)
             op = conn.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
             if op["state"] in TERMINAL:
                 return self.store.public_operation(dict(op))

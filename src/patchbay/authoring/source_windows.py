@@ -1,6 +1,8 @@
 """Lossless source coordinates with bounded per-line memory at pinned Git objects."""
 from __future__ import annotations
 
+import base64
+import codecs
 import hashlib
 import io
 import re
@@ -55,27 +57,59 @@ def lines(stream, *, preview_bytes: int, query: str | None = None):
         text.detach()
 
 
-def read_window(git, commit: str, path: str, *, start_line: int, max_lines: int, max_bytes: int) -> dict:
+def read_window(git, commit: str, path: str, *, start_line: int, max_lines: int, max_bytes: int,
+                byte_offset: int | None = None) -> dict:
     require(start_line >= 1 and 1 <= max_lines <= 1000 and 1 <= max_bytes <= 262144,
-            "INVALID_REQUEST", "Invalid source window")
+            'INVALID_REQUEST', 'Invalid source window')
+    if byte_offset is not None:
+        require(type(byte_offset) is int and byte_offset >= 0 and max_bytes <= 65536
+                and start_line == 1 and max_lines == 200, 'INVALID_REQUEST',
+                'Byte windows require a nonnegative byte_offset, max_bytes <= 65536, and no line cursor')
     entry = git.entries(commit).get(safe_path(path))
-    require(entry is not None, "NOT_FOUND", "File is absent from the pinned revision", path=path)
-    require(entry["mode"] in {"100644", "100755"}, "UNSUPPORTED_FILE", "Unsupported pinned file mode", path=path)
-    h, byte_count = hashlib.sha256(), 0
-    with git.open_blob(entry["oid"]) as stream:
-        for chunk in iter(lambda: stream.read(65536), b""):
+    require(entry is not None, 'NOT_FOUND', 'File is absent from the pinned revision', path=path)
+    require(entry['mode'] in {'100644', '100755'}, 'UNSUPPORTED_FILE', 'Unsupported pinned file mode', path=path)
+    retrieval = {'tool': 'author_read_file', 'arguments': {'path': path, 'byte_offset': 0, 'max_bytes': 65536}}
+    h, byte_count, selected = hashlib.sha256(), 0, bytearray()
+    decoder, binary = codecs.getincrementaldecoder('utf-8')(), False
+    with git.open_blob(entry['oid']) as stream:
+        for chunk in iter(lambda: stream.read(65536), b''):
             h.update(chunk)
+            if byte_offset is not None:
+                begin = max(0, byte_offset-byte_count)
+                end = min(len(chunk), byte_offset+max_bytes-byte_count)
+                if end > begin:
+                    selected.extend(chunk[begin:end])
+                if not binary:
+                    try:
+                        decoder.decode(chunk, final=False)
+                        binary = b'\0' in chunk
+                    except UnicodeDecodeError:
+                        binary = True
             byte_count += len(chunk)
+    binding = {'commit': commit, 'tree': git.tree(commit), 'path': path, 'blob_oid': entry['oid'],
+               'mode': entry['mode'], 'sha256': h.hexdigest(), 'bytes': byte_count, 'producer_complete': True}
+    if byte_offset is not None:
+        if not binary:
+            try: decoder.decode(b'', final=True)
+            except UnicodeDecodeError: binary = True
+        require(byte_offset <= byte_count, 'INVALID_REQUEST', 'Byte cursor is outside this exact source', bytes=byte_count)
+        following = byte_offset+len(selected)
+        return {**binding, 'content_encoding': 'base64', 'data_base64': base64.b64encode(selected).decode('ascii'),
+                'binary': binary, 'byte_offset': byte_offset, 'returned_bytes': len(selected),
+                'chunk_sha256': hashlib.sha256(selected).hexdigest(),
+                'next_byte_offset': following if following < byte_count else None,
+                'has_more': following < byte_count, 'window_covers_full_file': byte_offset == 0 and following == byte_count}
     chosen, used, total_lines, next_line = [], 0, 0, None
     try:
-        with git.open_blob(entry["oid"]) as stream:
+        with git.open_blob(entry['oid']) as stream:
             for number, text, size, _ in lines(stream, preview_bytes=max_bytes + 1):
                 total_lines = number
                 if number < start_line:
                     continue
                 if len(chosen) >= max_lines or used + size > max_bytes:
-                    require(chosen or number != start_line, "RESOURCE_LIMIT",
-                            "One source line exceeds the response budget; use the pinned archive", path=path, line=number)
+                    require(chosen or number != start_line, 'RESOURCE_LIMIT',
+                            'One source line exceeds the response budget; read the same source with byte_offset=0',
+                            path=path, line=number, next_read=retrieval)
                     if next_line is None:
                         next_line = number
                     continue
@@ -83,7 +117,14 @@ def read_window(git, commit: str, path: str, *, start_line: int, max_lines: int,
                     chosen.append(text)
                     used += size
     except UnicodeDecodeError:
-        return {"commit": commit, "path": path, "sha256": h.hexdigest(), "bytes": byte_count,
-                "binary": True, "next_action": "Use the pinned archive for exact binary bytes"}
-    return {"commit": commit, "path": path, "sha256": h.hexdigest(), "start_line": start_line,
-            "text": "".join(chosen), "total_lines": total_lines, "next_start_line": next_line}
+        return {**binding, 'binary': True, 'next_read': retrieval,
+                'next_action': 'Read this exact source with byte_offset=0 and max_bytes=65536 for base64 bytes'}
+    return {**binding, 'start_line': start_line, 'text': ''.join(chosen),
+            'total_lines': total_lines, 'next_start_line': next_line}
+
+
+def bind_source_retrieval(value: dict, selector: dict) -> dict:
+    """Make a read hint actionable without inventing another source version."""
+    if isinstance(value.get('next_read'), dict):
+        value['next_read']['arguments'].update(selector)
+    return value

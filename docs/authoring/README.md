@@ -14,6 +14,8 @@ needed to rely on it.
   authoring or worker delegation, prepare scope and recover durable work.
 - [Linux evidence](../testing/linux-qualification-2026-10-20.md): published
   candidate results, repaired failures and remaining deployment/lab boundaries.
+- [S05 custody and operator handoff](../repairs/2026-10-22-s05-author-custody.md):
+  selected contexts, byte reads, verified transfer and publication recovery.
 - [Operations](operations.md): profile, authentication, ingress, recovery,
   backups, upgrades, rollback and retention.
 - [Qualification](qualification.md): runnable checks and the Linux lab fault

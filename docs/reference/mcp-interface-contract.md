@@ -37,6 +37,17 @@ Unknown fields, booleans used as integers and unsafe paths remain rejected.
 JSON Schema's [mathematical integer type](https://json-schema.org/understanding-json-schema/reference/numeric#integer) cannot distinguish the JSON numeric
 representations `1` and `1.0`; strict runtime integer validation still applies.
 
+Line windows remain the default. For arbitrary bytes, supply `byte_offset` and
+at most 65,536 decoded `max_bytes`, without nondefault line cursors. Follow
+`next_byte_offset` on the exact same selector and concatenate decoded
+`data_base64`. Full-object SHA/byte count and chunk SHA/range metadata distinguish
+verified source from page coverage. Long-line and binary hints name this same
+read-only action; reading does not create a draft export. Context exports add
+explicit `identity_only`; it excludes nonempty `paths`, while `paths=[]` still
+means full export. Context/inventory format 2 keeps complete omitted presence
+with null unmaterialized byte/hash metadata. See the
+[S05 custody contract](../repairs/2026-10-22-s05-author-custody.md).
+
 Input-model errors retain `INVALID_REQUEST` and identify
 `arguments_rejected_before_effect`. At most eight safe field errors name
 declared locations and constraints, with an omitted count. Unknown property

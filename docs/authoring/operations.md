@@ -148,7 +148,10 @@ patchbay-author --home "$PATCHBAY_AUTHOR_HOME" claim TASK_ID --label controlled-
 ```
 
 To capture an operator-selected dirty source subset without changing the
-source checkout, pass each approved path explicitly. Policy changes require
+source checkout, pass each approved path explicitly. Capture verifies stable
+per-file reads and unchanged HEAD, not a globally atomic filesystem snapshot.
+Keep selected files, selected absences and parent paths quiescent for coherent
+coupled edits. The result reports this consistency limit. Policy changes require
 an expected-current digest, actor, and idempotency key. Pause/resume/revoke
 controls require an actor and key; `restore-task` restores that task's grant but does not resume a paused service or execution:
 
@@ -418,9 +421,21 @@ mutating handler, not proof that an effect succeeded.
 Unexpected domain exceptions instead return `EFFECT_OUTCOME_UNAVAILABLE`
 (`READ_RESULT_UNAVAILABLE` for reads), with `effect_returned=false` and no raw
 exception text. They still require durable readback. A publication interrupted
-by an unexpected exception remains `publication_unknown`; explicit same-key
-replay checks the exact remote feature ref and skips an already completed push.
+after a possible push (including typed timeout/I/O) remains `publication_unknown`;
+explicit same-key replay reads the retained exact remote/ref and never repeats a
+possible push. A confirmed past effect remains recoverable after policy changes,
+with historical labeling and no new CI. Proven pre-effect refusal is blocked;
+a mismatched or unconfirmed destination remains fenced.
 This does not approve publication or authorize any new destination.
 New exports remain writes. The compatibility output profile stays the default.
 See the [MCP interface contract](../reference/mcp-interface-contract.md) for
 selectors, bounded input diagnostics, roles and supported protocol versions.
+
+## S05 source, packaging and transfer contract
+
+Selected version-2 contexts retain complete presence inventory without loading
+omitted payloads. Use explicit `identity_only` for no payloads. Exact draft byte
+paging, completed preparation markers, legacy bundle compatibility, atomic
+no-clobber delivery and policy/cancellation transaction boundaries are documented
+in the [S05 contract](../repairs/2026-10-22-s05-author-custody.md). Its deployment
+handoff requires a separate service-owner update and renewed client qualification.

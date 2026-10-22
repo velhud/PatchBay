@@ -97,7 +97,10 @@ class DirtySnapshots:
 
     def _record(self, op, repository_id, paths, base, snapshot, tree):
         result = {"repository_id": repository_id, "commit": snapshot, "tree": tree, "upstream_commit": base,
-                  "selected_paths": paths, "uncommitted_source": True, "source_checkout_modified": False}
+                  "selected_paths": paths, "uncommitted_source": True, "source_checkout_modified": False,
+                  "capture_consistency": "per_file_stable_reads_and_unchanged_head",
+                  "globally_atomic": False,
+                  "consistency_requirement": "Keep selected files and their parent paths quiescent during capture for a coherent coupled edit"}
         with self.store.transaction() as conn:
             conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)", ("source-snapshot:" + snapshot, canonical(result).decode()))
             conn.execute("UPDATE operations SET state='completed',phase='terminal',result=?,updated=? WHERE id=?",

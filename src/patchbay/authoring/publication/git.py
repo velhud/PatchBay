@@ -144,8 +144,23 @@ class Publisher:
             if observed["state"] == "completed":
                 return observed["result"]
             require(observed["state"] not in {"failed", "blocked"}, "OPERATION_FAILED", "This publication was rejected; resolve the recorded cause before a new authorization")
+            retained = self.store.one('SELECT * FROM publications WHERE id=?', (op['id'],), required=False)
+            effect_possible = bool(retained and (retained['state'] in {'push_attempted', 'pushed', 'published'}
+                                   or observed['state'] == 'publication_unknown'))
             try:
                 self.leases.assert_owned(task_id, token, epoch)
+                if effect_possible:
+                    # A retained attempt is observed using its original address,
+                    # even if current candidate/policy no longer permits a push.
+                    git = self.repositories.git(repo_id)
+                    actual = remote_head(git, retained['remote'], retained['branch'])
+                    if actual == retained['commit_oid']:
+                        return self._finish_previous_attempt(op, approval, retained)
+                    require(actual in {None, retained['expected_head']}, 'REMOTE_CHANGED',
+                            'The retained publication destination advanced independently; no push was repeated',
+                            operation_id=op['id'])
+                    raise AuthorError('PUBLICATION_UNKNOWN', 'The previous push is not confirmed; preserve its original intent for operator recovery',
+                                      operation_id=op['id'], phase='remote_readback', external_effect_possible=True)
                 require(not approval["revoked"], "STALE_APPROVAL", "Approval was revoked")
                 task, candidate, policy, feedback = self._candidate(task_id, approval["revision"])
                 require(candidate["commit_oid"] == approval["commit_oid"] and candidate["tree_oid"] == approval["tree_oid"]
@@ -156,6 +171,12 @@ class Publisher:
                 branch = policy.publication.branch_prefix + task_id
                 require(branch != repo["default_branch"], "POLICY_DENIED", "Default-branch publication is not allowed")
                 git = self.repositories.git(repo_id)
+                unresolved = self.store.one("""SELECT p.id FROM publications p JOIN operations o ON o.id=p.id
+                    WHERE p.task_id=? AND p.id<>? AND
+                    (o.state='publication_unknown' OR p.state IN ('push_attempted','pushed')) LIMIT 1""",
+                    (task_id, op['id']), required=False)
+                require(not unresolved, 'PUBLICATION_UNKNOWN', 'Recover the retained publication before creating a successor push',
+                        operation_id=unresolved['id'] if unresolved else None, external_effect_possible=False)
                 target_head = remote_head(git, repo["remote"], repo["default_branch"])
                 if policy.publication.require_target_unchanged:
                     require(target_head == approval["target_head"], "STALE_BASE", "The target moved after approval")
@@ -180,10 +201,18 @@ class Publisher:
                     # An explicit expected-head lease closes the read/push race.
                     # The ancestry gate above forbids non-fast-forward history rewrites.
                     lease = "--force-with-lease=" + ref + ":" + (current or "")
+                    with self.store.transaction() as conn:
+                        self.leases.assert_owned(task_id, token, epoch, conn=conn)
+                        Control(self.store).assert_granted(task_id, conn=conn)
+                        conn.execute("UPDATE publications SET state='push_attempted',updated=? WHERE id=?", (utc_now(), op['id']))
+                        conn.execute("UPDATE operations SET phase='push_attempted',updated=? WHERE id=?", (utc_now(), op['id']))
+                        self.store.event(conn, 'publication.push_attempted', task_id, {'operation_id': op['id']})
+                    effect_possible = True
                     attempt = invoke(git.root, ["push", "--porcelain", lease, "--", repo["remote"], approval["commit_oid"] + ":" + ref],
                                      env=network_environment(), check=False, timeout=120)
                     after = remote_head(git, repo["remote"], branch)
                     require(after == approval["commit_oid"], "PUBLICATION_UNKNOWN", "Push did not yield a confirmed exact remote commit", exit_code=attempt.returncode)
+                effect_possible = True
                 with self.store.transaction() as conn:
                     conn.execute("UPDATE publications SET state='pushed',updated=? WHERE id=?", (utc_now(), op["id"]))
                     conn.execute("UPDATE operations SET phase='pushed',updated=? WHERE id=?", (utc_now(), op["id"]))
@@ -199,7 +228,8 @@ class Publisher:
                         ci = {"state": "unknown", "error": exc.as_dict()}
                 result = {"task_id": task_id, "revision": approval["revision"], "commit": approval["commit_oid"],
                           "tree": approval["tree_oid"], "branch": branch, "pushed": True, "pull_request": pr,
-                          "ci": ci, "merged": False, "receipt_sha": approval["receipt_sha"]}
+                          "ci": ci, "merged": False, "receipt_sha": approval["receipt_sha"],
+                          "reconciled_previous_attempt": False, "historical": False}
                 with self.store.transaction() as conn:
                     conn.execute("UPDATE publications SET state='published',pull_request=?,updated=? WHERE id=?",
                                  (canonical(pr).decode() if pr else None, utc_now(), op["id"]))
@@ -208,16 +238,36 @@ class Publisher:
                 self.store.finish(op["id"], "completed", result=result)
                 return result
             except AuthorError as exc:
-                uncertain = exc.code in {"PUBLICATION_UNKNOWN", "GITHUB_UNAVAILABLE", "GITHUB_ERROR"}
-                self.store.finish(op["id"], "publication_unknown" if uncertain else "blocked", error=exc.as_dict())
+                exc.details.update(phase='remote_effect_or_readback' if effect_possible else 'pre_effect',
+                                   external_effect_possible=effect_possible)
+                error = exc.as_dict()
+                self.store.finish(op["id"], "publication_unknown" if effect_possible else "blocked", error=error)
                 raise
             except Exception:
                 # A lost subprocess reply may follow a successful remote push.
                 # Keep the admitted identity recoverable; finish preserves any
                 # already committed terminal outcome. Explicit same-key replay
                 # performs exact remote readback before considering another push.
-                self.store.finish(op["id"], "publication_unknown", error={
+                self.store.finish(op["id"], "publication_unknown" if effect_possible else "blocked", error={
                     "code": "PUBLICATION_UNKNOWN",
-                    "message": "Publication outcome requires exact remote readback",
+                    "message": "Publication outcome requires exact remote readback" if effect_possible else 'Publication stopped before a push attempt',
+                    'details': {'phase': 'remote_effect_or_readback' if effect_possible else 'pre_effect',
+                                'external_effect_possible': effect_possible},
                 })
                 raise
+
+    def _finish_previous_attempt(self, operation, approval, publication):
+        """Record an observed past effect without granting fresh publication/CI."""
+        task = self.tasks.get(approval['task_id'])
+        result = {'task_id': approval['task_id'], 'revision': approval['revision'],
+                  'commit': publication['commit_oid'], 'tree': approval['tree_oid'],
+                  'branch': publication['branch'], 'pushed': True, 'pull_request': None,
+                  'ci': {'state': 'not_requested_during_recovery'}, 'merged': False,
+                  'receipt_sha': approval['receipt_sha'], 'reconciled_previous_attempt': True,
+                  'historical': task['current_commit'] != approval['commit_oid'] or
+                                task['policy_digest'] != approval['policy_digest']}
+        with self.store.transaction() as conn:
+            conn.execute("UPDATE publications SET state='published',updated=? WHERE id=?", (utc_now(), operation['id']))
+            self.store.event(conn, 'publication.readback_confirmed', approval['task_id'], {'operation_id': operation['id']})
+        self.store.finish(operation['id'], 'completed', result=result)
+        return result

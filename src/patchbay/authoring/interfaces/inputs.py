@@ -86,9 +86,20 @@ class Leased(TaskRef):
 
 
 class ExportContext(TaskRef):
+    model_config = {"json_schema_extra": {"allOf": [{
+        "if": {"required": ["identity_only"], "properties": {"identity_only": {"const": True}}},
+        "then": {"properties": {"paths": {"anyOf": [{"type": "null"}, {"type": "array", "maxItems": 0}]}}},
+    }]}}
     revision: StrictInt | None = Field(None, ge=0)
     paths: list[str] | None = Field(None, max_length=20000)
+    identity_only: bool = Field(False, strict=True, description='Export complete presence inventory without source payloads. Mutually exclusive with nonempty paths; paths=[] otherwise retains the historical full-export meaning.')
     key: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode='after')
+    def selection_contract(self):
+        if self.identity_only and self.paths:
+            raise ValueError('identity_only cannot select source paths')
+        return self
 
 
 class ReadFile(Contract):
@@ -97,7 +108,10 @@ class ReadFile(Contract):
             "context_id": {"type": "string"}, "draft_id": {"type": "null"}, "draft_version": {"type": "null"}}},
         {"required": ["draft_id", "draft_version"], "properties": {
             "context_id": {"type": "null"}, "draft_id": {"type": "string"}, "draft_version": {"type": "integer"}}},
-    ]}}
+    ], "allOf": [{
+        "if": {"required": ["byte_offset"], "properties": {"byte_offset": {"type": "integer"}}},
+        "then": {"properties": {"max_bytes": {"maximum": 65536}, "start_line": {"const": 1}, "max_lines": {"const": 200}}},
+    }]}}
     context_id: str | None = Field(None, pattern=r"^ctx_[0-9a-f]{40}$",
         description="Immutable context ID from task recovery or an existing export; excludes draft_id and draft_version.")
     draft_id: str | None = Field(None, pattern=r"^draft_[0-9a-f]{32}$",
@@ -108,6 +122,7 @@ class ReadFile(Contract):
     start_line: StrictInt = Field(1, ge=1)
     max_lines: StrictInt = Field(200, ge=1, le=1000)
     max_bytes: StrictInt = Field(65536, ge=1, le=262144)
+    byte_offset: StrictInt | None = Field(None, ge=0, description='Select exact raw-byte retrieval, including unsealed drafts, encoded as bounded base64. Follow next_byte_offset with the same source selector; max_bytes is decoded bytes and capped at 65536. Omit for line windows.')
 
     @model_validator(mode="after")
     def selector(self):
@@ -115,6 +130,8 @@ class ReadFile(Contract):
             raise PydanticCustomError("source_selector", "Select context_id alone or draft_id with exact draft_version")
         if (self.draft_id is None) != (self.draft_version is None):
             raise PydanticCustomError("source_selector", "Select context_id alone or draft_id with exact draft_version")
+        if self.byte_offset is not None and (self.max_bytes > 65536 or self.start_line != 1 or self.max_lines != 200):
+            raise ValueError('Byte windows require max_bytes <= 65536 and no line cursor')
         safe_path(self.path)
         return self
 

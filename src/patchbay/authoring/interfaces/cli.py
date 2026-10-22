@@ -95,7 +95,9 @@ def parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("context")
     cmd.add_argument("task_id")
     cmd.add_argument("--output", type=Path, required=True)
-    cmd.add_argument("--path", action="append")
+    selection = cmd.add_mutually_exclusive_group()
+    selection.add_argument("--path", action="append")
+    selection.add_argument('--identity-only', action='store_true', help='Complete inventory without source payloads, for new-file-only work.')
     cmd.add_argument("--revision", type=int)
     cmd.add_argument("--key")
     cmd = sub.add_parser("apply")
@@ -281,11 +283,7 @@ def copy_blob(store: Store, sha: str, output: Path) -> dict:
         "OUTPUT_EXISTS",
         "Export destination already exists; choose a new filename",
     )
-    with store.blobs.path(sha).open("rb") as source, output.open("xb") as target:
-        shutil.copyfileobj(source, target, 65536)
-        target.flush()
-        os.fsync(target.fileno())
-    return {"output": str(output), "sha256": sha}
+    return store.blobs.export(sha, output)
 
 
 def wait_for(
@@ -393,6 +391,7 @@ def run(args) -> object:
             args.task_id,
             revision=args.revision,
             paths=args.path,
+            identity_only=args.identity_only,
             key=args.key,
         )
         return {

@@ -112,6 +112,19 @@ class Source(Output):
     next_start_line: int | None = None
     bytes: int | None = None
     next_action: str | None = None
+    tree: str | None = None
+    blob_oid: str | None = None
+    mode: str | None = None
+    producer_complete: bool | None = None
+    next_read: dict[str, Any] | None = None
+    content_encoding: str | None = None
+    data_base64: str | None = None
+    byte_offset: int | None = None
+    returned_bytes: int | None = None
+    chunk_sha256: str | None = None
+    next_byte_offset: int | None = None
+    has_more: bool | None = None
+    window_covers_full_file: bool | None = None
 
 
 class Match(Output):
@@ -192,6 +205,8 @@ class Context(Output):
     inventory_sha: str
     download: str
     request_operation_id: str
+    identity_only: bool = False
+    inventory_format_version: int = 1
 
 
 class Log(Output):
@@ -286,6 +301,8 @@ class Published(Output):
     merged: bool
     receipt_sha: str
     pull_request: dict[str, Any] | None
+    reconciled_previous_attempt: bool = False
+    historical: bool = False
 
 
 class Approval(Preview):

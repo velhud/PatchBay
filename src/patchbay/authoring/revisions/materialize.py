@@ -114,6 +114,9 @@ class Materializer:
         with self.store.transaction() as conn:
             self.leases.assert_owned(task["id"], token, epoch, conn=conn)
             Control(self.store).assert_admission(task["id"], conn=conn)
+            current_policy = conn.execute('SELECT policy_digest FROM tasks WHERE id=?', (task['id'],)).fetchone()
+            require(current_policy['policy_digest'] == task['policy_digest'], 'STALE_POLICY',
+                    'Approved policy changed before candidate and automatic-check admission')
             changed = conn.execute("UPDATE tasks SET current_revision=?,current_commit=?,status='candidate_ready',updated=? WHERE id=? AND current_revision=? AND current_commit=?",
                                    (revision, commit, utc_now(), task["id"], task["current_revision"], task["current_commit"]))
             require(changed.rowcount == 1, "STALE_BASE", "A newer candidate won the revision race")
