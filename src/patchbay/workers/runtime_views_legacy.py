@@ -138,14 +138,16 @@ class RuntimeViewFixes:
             return {"file_path": rel_path, "diff": "", "complete": False,
                     "truncated": False, "error": "protected_source_path", "representation": "withheld"}
         try:
+            max_bytes = int(self.config.get("security", {}).get("max_diff_bytes", 200_000))
             result = _run_git(root, ["--literal-pathspecs", "diff", "--binary", "--full-index",
                 "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none",
-                snapshot.baseline_revision, snapshot.tree_sha, "--", rel_path])
+                snapshot.baseline_revision, snapshot.tree_sha, "--", rel_path],
+                max_output_bytes=max_bytes, truncate_stdout=True)
             text = result.stdout.decode("utf-8", errors="replace")
             safe = self._safe_public_text(text, {root})
             max_bytes = int(self.config.get("security", {}).get("max_diff_bytes", 200_000))
             encoded = safe.encode("utf-8")
-            truncated = len(encoded) > max_bytes
+            truncated = result.stdout_truncated or len(encoded) > max_bytes
             if truncated:
                 safe = encoded[:max_bytes].decode("utf-8", errors="ignore") + "\n[worker diff truncated]"
             return {"file_path": rel_path, "diff": safe, "truncated": truncated,

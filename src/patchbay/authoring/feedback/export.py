@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import tempfile
 import zipfile
@@ -122,8 +123,9 @@ class Feedback:
         members = {"RESULT.json": (canonical(result), 0o644), "FEEDBACK.md": (self.markdown(result).encode(), 0o644),
                    "CONTINUE.md": (continuation.encode(), 0o644)}
         # Include source as a nested archive to keep export memory bounded for large contexts.
-        members["task-context.zip"] = (self.store.blobs.read(context["bundle_sha"]), 0o644)
-        with tempfile.TemporaryDirectory(prefix="feedback-", dir=self.store.home / "staging") as temporary:
+        with self.store.blobs.open_verified(context["bundle_sha"]) as source, tempfile.TemporaryDirectory(prefix="feedback-", dir=self.store.home / "staging") as temporary:
+            members["task-context.zip"] = (self.store.blobs.delivery_chunks(
+                source, context["bundle_sha"], os.fstat(source.fileno()).st_size), 0o644)
             path = Path(temporary) / "feedback.zip"
             _write_zip(path, members)
             sha = self.store.blobs.put_file(path, limit=self.store.limits.archive.expanded_bytes + 32 * 1024**2)

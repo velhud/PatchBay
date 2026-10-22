@@ -77,7 +77,23 @@ class Checks:
             if operation_ids is not None:
                 sql += " AND r.id IN (" + ",".join("?" for _ in operation_ids) + ")"
                 args = tuple(operation_ids)
-            pending = self.store.rows(sql + " ORDER BY r.created LIMIT 100", args)
+            if operation_ids is None:
+                cursor = self.store.one("SELECT value FROM metadata WHERE key='scheduler:queued_after'", required=False)
+                after = json.loads(cursor["value"]) if cursor else None
+                require(after is None or (isinstance(after, list) and len(after) == 2
+                        and isinstance(after[0], (int, float)) and isinstance(after[1], str)),
+                        "CORRUPT_STATE", "Invalid scheduler cursor; inspect scheduler metadata")
+                pending = self.store.rows(sql + (" AND (r.created,r.id)>(?,?)" if after else "")
+                                          + " ORDER BY r.created,r.id LIMIT 100", tuple(after or ()))
+                if not pending and after:
+                    pending = self.store.rows(sql + " ORDER BY r.created,r.id LIMIT 100")
+                if pending:
+                    with self.store.transaction() as conn:
+                        conn.execute("INSERT INTO metadata VALUES('scheduler:queued_after',?) "
+                                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                     (canonical([pending[-1]["created"], pending[-1]["id"]]).decode(),))
+            else:
+                pending = self.store.rows(sql + " ORDER BY r.created,r.id LIMIT 100", args)
             for row in pending:
                 active = self.store.rows("SELECT * FROM runs WHERE state IN ('launching','running','cancelling','unknown_execution') OR cleanup='unresolved'")
                 if any(other["task_id"] == row["task_id"] and (other["state"] == "unknown_execution" or other["cleanup"] == "unresolved") for other in active):

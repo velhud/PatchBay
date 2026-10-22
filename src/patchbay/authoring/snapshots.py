@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,11 @@ from .tasks import Tasks
 from .util import canonical, digest, fingerprint, safe_path, utc_now
 
 AUTHOR_INSTRUCTION = """You are the implementation author. Read the pinned task context and applicable repository instructions. Modify actual source and tests in an edited copy. Do not substitute another plan or delegate implementation to Codex or another inference service. PatchBay performs deterministic validation, test execution, and authorized Git operations. Use tools/build_change_package.py to prepare a working copy and construct the final package. Do not modify source/ or calculate hashes manually. Keep the completed preparation marker beside edited/. A manually assembled full tree requires --manual-tree and explicitly treats missing included files as deletions; a sparse replacement directory is not a complete tree. Author-environment checks are not canonical executor receipts. Ask for precise additional source when required. Return the implementation ZIP, changed behavior, tests actually run, and remaining uncertainty.\n"""
+
+
+def _spool_chunks(path):
+    with path.open("rb") as stream:
+        yield from iter(lambda: stream.read(65536), b"")
 
 
 class Snapshots:
@@ -39,7 +45,7 @@ class Snapshots:
                     "commit": candidate["commit_oid"], "selection": selection, "policy_digest": task["policy_digest"],
                     'identity_only': identity_only, 'inventory_format_version': 2}
         context_id = "ctx_" + fingerprint(identity)[:40]
-        with file_lock(self.store.home / ("locks/context-" + context_id)):
+        with file_lock(self.store.home / ("locks/context-" + context_id)), tempfile.TemporaryDirectory(prefix="context-", dir=self.store.home / "staging") as temporary:
             previous = self.store.one("SELECT * FROM contexts WHERE id=?", (context_id,), required=False)
             if previous:
                 return {**previous, 'identity_only': identity_only, 'inventory_format_version': 2}
@@ -53,14 +59,23 @@ class Snapshots:
             for path, entry in sorted(entries.items()):
                 regular = entry["mode"] in {"100644", "100755"}
                 included = regular and not identity_only and (not selection or any(path == item or path.startswith(item + "/") for item in selection))
-                data = git.blob(entry["oid"], limit=self.store.limits.archive.member_bytes) if included else None
-                total += len(data) if included else 0
-                require(total <= self.store.limits.snapshot_bytes, "RESOURCE_LIMIT", "Context exceeds the source-byte budget")
-                files[path] = {**entry, "sha256": digest(data) if included else None, "bytes": len(data) if included else None, "included": included,
+                size, sha = None, None
+                if included:
+                    spool = Path(temporary) / ("source-" + str(len(members)))
+                    h, size = hashlib.sha256(), 0
+                    with git.open_blob(entry["oid"], limit=self.store.limits.archive.member_bytes) as source, spool.open("xb") as target:
+                        while chunk := source.read(65536):
+                            size += len(chunk)
+                            total += len(chunk)
+                            require(total <= self.store.limits.snapshot_bytes, "RESOURCE_LIMIT", "Context exceeds the source-byte budget")
+                            h.update(chunk)
+                            target.write(chunk)
+                    sha = h.hexdigest()
+                files[path] = {**entry, "sha256": sha, "bytes": size, "included": included,
                                'content_metadata': 'verified' if included else 'not_materialized',
                                "reason": "included" if included else "outside_selection" if regular else "unsupported_mode"}
                 if included:
-                    members["source/" + path] = (data, 0o755 if entry["mode"] == "100755" else 0o644)
+                    members["source/" + path] = (_spool_chunks(spool), 0o755 if entry["mode"] == "100755" else 0o644)
             require(len(members) + 6 <= self.store.limits.archive.members, 'RESOURCE_LIMIT', 'Context selected payload exceeds its member budget')
             builder = Path(__file__).parent / "packages/builder.py"
             metadata = {**identity, "context_id": context_id, "tree": candidate["tree_oid"],
@@ -76,10 +91,9 @@ class Snapshots:
                             "INVENTORY.json": (canonical(inventory), 0o644), "ACCEPTANCE.md": (acceptance.encode(), 0o644),
                             "tools/build_change_package.py": (builder.read_bytes(), 0o755),
                             "tools/PACKAGING.md": (b"Keep source/ unchanged. Prepare a separate edited/ tree with the included helper. Keep the completed preparation marker beside edited/. Version 2 presence inventory includes omitted paths with null byte/hash metadata; omission is not absence. Only included files can be deleted or replaced. Request a supplemental pinned context for omitted files. --manual-tree explicitly acknowledges a complete manual tree including missing-file deletions; it is not sparse-edit mode. Output the change ZIP outside edited/.\n", 0o644)})
-            with tempfile.TemporaryDirectory(prefix="context-", dir=self.store.home / "staging") as temporary:
-                archive = Path(temporary) / "context.zip"
-                _write_zip(archive, members)
-                bundle_sha = self.store.blobs.put_file(archive, limit=self.store.limits.archive.expanded_bytes)
+            archive = Path(temporary) / "context.zip"
+            _write_zip(archive, members)
+            bundle_sha = self.store.blobs.put_file(archive, limit=self.store.limits.archive.expanded_bytes)
             inventory_sha = self.store.blobs.put(canonical(inventory))
             with self.store.transaction() as conn:
                 conn.execute("INSERT INTO contexts VALUES(?,?,?,?,?,?,?,?,?)", (context_id, task_id, revision,

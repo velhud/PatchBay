@@ -447,3 +447,24 @@ JUnit checks may set `min_executed` (default 0) in addition to `min_tests`; this
 Enabled publication now requires `allow_external_ci=true` for the default `remote_effects=downstream_possible`, whether or not `github_repository` is configured. An operator may explicitly select `remote_effects=controlled_no_automation` only after establishing that destination contract. No destination is inferred safe by its URL. This does not suppress server hooks. Existing uncertain pushes retain original-address readback without fresh effects. See the [S07 contract](../repairs/2026-10-22-s07-evidence-authority.md) for dialect, provenance, receipt compatibility and client requalification.
 
 S08 source relation validation now joins SQL commits/trees to the correct mirror and retained private-ref ancestry at backup and restore. Restore syncs finalized files and directories before publication and preserves a published destination on `RESTORE_PUBLICATION_UNCERTAIN`. Keep it offline for inspection. Follow the [S08 manual cutover](../maintainer/workflows/deployment-release-cutover.md); restored historical credentials/epochs grant no automatic activation approval.
+
+## Repeated-use and maintenance limits
+
+Automatic check dispatch rotates stable `(created,id)` windows of 100 across
+calls and process reconstruction. Targeted submissions do not reset that
+cursor. Blocked/unknown tasks keep their existing fences. A scheduler pass is
+an explicit action; pure recovery does not launch or reconcile checks.
+
+Fresh state includes queue and receipt-history indexes. Existing quiescent
+schema-1 state supports local operator `optimize-admission`; opening state
+never installs them. Context exports spool and hash complete Git source before
+publishing ZIP/blob/SQL references; feedback streams its verified nested
+context. Prefer a single context export to many tiny pages for large source.
+Exports still require staging disk and a complete storage census. Per-mode
+job counts are not a combined host resource reservation.
+
+GC skips absent workspace receipts because it is a deletion operation; use
+`doctor`/backup for integrity validation. It still validates evidence before
+removing an existing workspace. No automatic age retirement of retry keys,
+unknown operations or retained evidence is supported. See the complete
+[S09 disposition](../repairs/2026-10-22-s09-repeated-use.md).

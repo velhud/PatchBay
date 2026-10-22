@@ -618,10 +618,25 @@ class ProRequestStore:
         if not path.exists():
             return []
         events = []
-        for line in path.read_text(encoding="utf-8").splitlines()[-100:]:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            position = stream.tell()
+            chunks, size, newlines = [], 0, 0
+            while position and size < 1024 * 1024 and newlines <= 100:
+                count = min(position, 65536, 1024 * 1024 - size)
+                position -= count
+                stream.seek(position)
+                chunk = stream.read(count)
+                chunks.append(chunk)
+                size += len(chunk)
+                newlines += chunk.count(b"\n")
+            lines = b"".join(reversed(chunks)).splitlines()
+            if position and lines:
+                lines = lines[1:]  # The oldest fragment is not a complete event.
+        for line in lines[-100:]:
             try:
                 events.append(json.loads(line))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
         return events
 

@@ -161,10 +161,10 @@ artifacts:
     - http
     - https
   download_timeout_seconds: 60
-  max_archive_bytes:
-  max_unpacked_bytes:
-  max_file_count:
-  max_single_file_bytes:
+  max_archive_bytes: 134217728
+  max_unpacked_bytes: 536870912
+  max_file_count: 10000
+  max_single_file_bytes: 67108864
 
 pro_requests:
   root:

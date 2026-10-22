@@ -138,7 +138,7 @@ class RuntimeIntegrationFixes:
         except CandidateSnapshotError:
             return True
 
-    def _candidate_snapshot(self, jobs: list[Any]) -> CandidateSnapshot:
+    def _candidate_snapshot(self, jobs: list[Any], *, include_patch: bool = True) -> CandidateSnapshot:
         if self._delivery_baseline_repair_required(jobs):
             raise CandidateSnapshotError('Delivery is recorded but its baseline needs repair; preserve this workspace')
         workspace = self._workspace_for_jobs(jobs)
@@ -152,6 +152,7 @@ class RuntimeIntegrationFixes:
             root,
             baseline,
             excluded_paths=self._candidate_exclusions(jobs, root),
+            include_patch=include_patch, max_patch_bytes=_legacy.MAX_INTEGRATION_PATCH_BYTES,
         )
 
     def _changed_files(self, jobs: list[Any]) -> list[str]:
@@ -163,7 +164,7 @@ class RuntimeIntegrationFixes:
             # cannot certify integration: _candidate_snapshot still rejects a
             # missing delivery baseline rather than guessing from current HEAD.
             return porcelain_paths(self._execution_path_for_workspace(workspace))
-        return list(self._candidate_snapshot(jobs).changed_files)
+        return list(self._candidate_snapshot(jobs, include_patch=False).changed_files)
 
     def _git_untracked_files(self, base_repo: str) -> list[str]:
         return untracked_paths(base_repo)
@@ -184,7 +185,7 @@ class RuntimeIntegrationFixes:
         patch_bytes = snapshot.patch
         skipped: list[str] = []
         truncated = False
-        if len(patch_bytes) > _legacy.MAX_INTEGRATION_PATCH_BYTES:
+        if not snapshot.patch_complete or len(patch_bytes) > _legacy.MAX_INTEGRATION_PATCH_BYTES:
             skipped = list(snapshot.changed_files)
             patch_bytes = b""
             truncated = True

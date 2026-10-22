@@ -386,3 +386,29 @@ automated authority activation. See [S08 limits](docs/repairs/2026-10-22-s08-dep
 and the [component custody template](docs/maintainer/deployment-custody.template.json).
 Actual unit/cgroup, Docker, reboot/power-loss, native Mac/Luna and ordinary-Chat
 qualification remain separate NOT_RUN gates.
+
+## S09 repeated-use regression and measurement boundary
+
+```bash
+python -m pytest tests/test_s09_capacity.py tests/authoring/test_s09_repeated_use.py -q
+```
+
+Run the full matrix serially, dedicated Author long execution, old-schema
+restart and offline wheel/install parity. These cases exercise >100 queued
+blockers with equal timestamps and restart, explicit additive indexes, complete
+streamed archives and failed producers, no-op GC versus corrupt retained
+evidence, bounded binary patch/identity capture, actual expanded-byte limits,
+entry/duplicate rejection, honest inbox pages, edit-preserving materialization
+and bounded event tails. Recording launch refusal proves dispatch opportunity,
+not a native worker launch. Keep historical research's 80 NOT_RUN specifications
+separate from these tests. [S09](docs/repairs/2026-10-22-s09-repeated-use.md)
+records the measured synthetic history/serialization scope and retained costs;
+no workload, native, client or economic qualification follows from the counts.
+
+Session lifecycle fixtures that exercise real owned child cleanup use external
+safety guards derived from the existing supervisor/executor proof budgets.
+Their synthetic children outlive those guards; completion, exact result, PID
+absence and mutation-lock assertions remain mandatory. These tests do not
+certify four-second native cleanup under arbitrary host load. Use a unique
+owned `--basetemp` for long runs so other sessions' temporary-root rotation
+cannot remove diagnostic fixtures; retain failed roots and logs separately.

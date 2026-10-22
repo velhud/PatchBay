@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 import hashlib
 import os
 import stat
+import selectors
+import signal
+import time
 from pathlib import Path
 import subprocess
 import tempfile
@@ -33,6 +36,7 @@ class CandidateSnapshot:
     patch: bytes
     entries: dict = field(default_factory=dict)
     object_format: str = "sha1"
+    patch_complete: bool = True
 
     @property
     def patch_sha256(self) -> str:
@@ -40,31 +44,76 @@ class CandidateSnapshot:
 
 
 def _run_git(
-    root: str | Path,
-    args: Sequence[str],
-    *,
-    env: Mapping[str, str] | None = None,
-    input_bytes: bytes | None = None,
-    timeout: int = 30,
-    ok_returncodes: Iterable[int] = (0,),
+    root: str | Path, args: Sequence[str], *, env: Mapping[str, str] | None = None,
+    input_bytes: bytes | None = None, timeout: int = 30,
+    ok_returncodes: Iterable[int] = (0,), max_output_bytes: int = 32 * 1024**2,
+    truncate_stdout: bool = False,
 ) -> subprocess.CompletedProcess[bytes]:
+    """Finite memory and deadline, complete producer exit, explicit prefixes.
+
+    Oversized stdout is allowed only for a display/patch consumer that checks
+    stdout_truncated. Identity inventories refuse rather than certify a prefix.
+    """
     command = ["git", *args]
+    process = None
+    complete = False
     try:
-        result = subprocess.run(
-            command, cwd=str(root), env=dict(env) if env is not None else None,
-            input=input_bytes, capture_output=True, timeout=timeout,
-        )
+        with tempfile.TemporaryFile() as source, selectors.DefaultSelector() as selector:
+            if input_bytes is not None:
+                source.write(input_bytes)
+            source.seek(0)
+            process = subprocess.Popen(command, cwd=str(root), env=dict(env) if env is not None else None,
+                                       stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=True)
+            parts = {"stdout": bytearray(), "stderr": bytearray()}
+            truncated = False
+            for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, label)
+            deadline = time.monotonic() + timeout
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CandidateSnapshotError("Git observation exceeded its deadline")
+                for key, _ in selector.select(min(.1, remaining)):
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    label = key.data
+                    limit = max_output_bytes if label == "stdout" else 65536
+                    available = max(0, limit - len(parts[label]))
+                    parts[label].extend(chunk[:available])
+                    if len(chunk) > available:
+                        if label == "stdout" and truncate_stdout:
+                            truncated = True
+                        else:
+                            raise CandidateSnapshotError("Git observation exceeds its output byte budget", reason="source_output_limit")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CandidateSnapshotError("Git observation exceeded its deadline")
+            result = subprocess.CompletedProcess(command, process.wait(timeout=remaining),
+                                                  bytes(parts["stdout"]), bytes(parts["stderr"]))
+            result.stdout_truncated = truncated
+            # wait() has reaped the leader. Never signal its numeric group ID
+            # after this point: a future unrelated process could reuse it.
+            complete = True
+            if result.returncode not in set(ok_returncodes):
+                detail = (result.stderr or result.stdout)[:4000].decode("utf-8", errors="replace").strip()
+                raise CandidateSnapshotError(f"Git observation failed with exit code {result.returncode}: {detail}")
+            return result
     except (OSError, subprocess.TimeoutExpired) as error:
         raise CandidateSnapshotError("Git observation failed or exceeded its deadline") from error
-    if result.returncode not in set(ok_returncodes):
-        detail = (result.stderr or result.stdout).decode(
-            "utf-8", errors="replace"
-        ).strip()
-        raise CandidateSnapshotError(
-            f"{' '.join(command)} failed with exit code {result.returncode}: "
-            f"{detail or 'no diagnostic'}"
-        )
-    return result
+    finally:
+        if process is not None:
+            if not complete:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
 
 
 def decode_nul_paths(payload: bytes) -> list[str]:
@@ -129,6 +178,8 @@ def build_candidate_snapshot(
     *,
     excluded_paths: Iterable[str] = (),
     timeout: int = 60,
+    include_patch: bool = True,
+    max_patch_bytes: int = 2_000_000,
 ) -> CandidateSnapshot:
     """Build a complete candidate tree and binary patch from a workspace.
 
@@ -197,21 +248,7 @@ def build_candidate_snapshot(
                      env=env, input_bytes=b"\0".join(present)+b"\0", timeout=timeout)
 
         for path in _normalize_exclusions(excluded_paths):
-            result = subprocess.run(
-                ["git", "reset", "-q", baseline, "--", path],
-                cwd=str(root_path),
-                env=env,
-                capture_output=True,
-                timeout=timeout,
-            )
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout).decode(
-                    "utf-8", errors="replace"
-                ).strip()
-                raise CandidateSnapshotError(
-                    f"git reset of excluded path {path!r} failed: "
-                    f"{detail or 'no diagnostic'}"
-                )
+            _run_git(root_path, ["reset", "-q", baseline, "--", path], env=env, timeout=timeout)
 
         tree_sha = _run_git(
             root_path, ["write-tree"], env=env, timeout=timeout
@@ -233,23 +270,29 @@ def build_candidate_snapshot(
             env=env,
             timeout=timeout,
         )
-        patch = _run_git(
-            root_path,
-            [
-                "diff",
-                "--binary",
-                "--full-index",
-                "--no-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--ignore-submodules=none",
-                baseline,
-                tree_sha,
-                "--",
-            ],
-            env=env,
-            timeout=timeout,
-        ).stdout
+        patch_complete = False
+        patch = b""
+        if include_patch:
+            patch_result = _run_git(
+                root_path,
+                [
+                    "diff",
+                    "--binary",
+                    "--full-index",
+                    "--no-renames",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--ignore-submodules=none",
+                    baseline,
+                    tree_sha,
+                    "--",
+                ],
+                env=env,
+                timeout=timeout, max_output_bytes=max_patch_bytes, truncate_stdout=True,
+            )
+            patch_complete = not patch_result.stdout_truncated
+            patch = patch_result.stdout if patch_complete else b""
+
 
     changed_paths = tuple(sorted(dict.fromkeys(decode_nul_paths(changed.stdout))))
     before_entries, after_entries = tree_entries(root_path, baseline), tree_entries(root_path, tree_sha)
@@ -270,6 +313,7 @@ def build_candidate_snapshot(
         patch=patch,
         entries=after_entries,
         object_format=object_format,
+        patch_complete=patch_complete,
     )
 
 

@@ -232,8 +232,10 @@ class Maintenance:
                         path.unlink(); removed_blobs += 1
             for row in self.store.rows("SELECT id,receipt_sha FROM runs WHERE cleanup='proven' AND receipt_sha IS NOT NULL AND updated<?", (cutoff,)):
                 safe_id(row["id"])
-                require(row["receipt_sha"] in referenced and self.store.blobs.verify(row["receipt_sha"]), "CORRUPT_STATE", "Execution evidence must be retained before workspace cleanup")
                 path = self.store.home / "runs" / row["id"]
+                if not path.exists() and not path.is_symlink():
+                    continue
+                require(row["receipt_sha"] in referenced and self.store.blobs.verify(row["receipt_sha"]), "CORRUPT_STATE", "Execution evidence must be retained before workspace cleanup")
                 if path.is_symlink():
                     path.unlink()
                 elif path.is_dir():

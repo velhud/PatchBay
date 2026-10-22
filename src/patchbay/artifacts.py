@@ -6,6 +6,7 @@ import json
 import mimetypes
 import shutil
 import stat
+import struct
 import time
 import uuid
 import zipfile
@@ -23,6 +24,10 @@ from patchbay.security import validate_allowed_path
 ARTIFACT_STORE_VERSION = 1
 DEFAULT_INSPECT_BYTES = 100_000
 DEFAULT_TREE_ENTRIES = 200
+DEFAULT_IMPORT_LIMITS = {"max_archive_bytes": 128 * 1024**2,
+                         "max_unpacked_bytes": 512 * 1024**2,
+                         "max_single_file_bytes": 64 * 1024**2,
+                         "max_file_count": 10000}
 
 
 class ArtifactStore:
@@ -73,6 +78,9 @@ class ArtifactStore:
                 manifest = self._unpack_zip(raw_path, unpacked_dir)
             else:
                 kind = "file"
+                self._check_optional_limit("max_single_file_bytes", total_bytes, "artifact file")
+                self._check_optional_limit("max_unpacked_bytes", total_bytes, "unpacked artifact")
+                self._check_optional_limit("max_file_count", 1, "artifact file count")
                 shutil.copy2(raw_path, unpacked_dir / original_name)
                 manifest = [{"path": original_name, "bytes": total_bytes}]
 
@@ -116,14 +124,21 @@ class ArtifactStore:
         *,
         repo_path: str,
         request_context: RequestContext | None = None,
+        offset: int = 0,
+        limit: int = 100,
     ) -> dict[str, Any]:
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("Artifact list requires offset >= 0 and limit between 1 and 200")
         workspace_id = self.workspace_id(self._validated_repo_path(repo_path))
         records = [self._public_record(meta, request_context=request_context) for meta in self._iter_metadata(workspace_id)]
-        records.sort(key=lambda item: float(item.get("imported_at") or 0), reverse=True)
+        records.sort(key=lambda item: (float(item.get("imported_at") or 0), item["artifact_id"]), reverse=True)
         return {
             "workspace_id": workspace_id,
-            "artifacts": records,
+            "artifacts": records[offset:offset + limit],
             "count": len(records),
+            "offset": offset,
+            "next_offset": offset + limit if offset + limit < len(records) else None,
+            "pagination_consistency": "current_list; imports or cleanup may shift offsets",
             "note": "Artifacts are local inbox context only; importing them does not edit the repository.",
         }
 
@@ -206,12 +221,37 @@ class ArtifactStore:
             metadata = self._metadata(workspace_id, artifact_id)
             source = self._artifact_dir(workspace_id, metadata["artifact_id"]) / "unpacked"
             target = destination_root / metadata["artifact_id"]
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(source, target, symlinks=False)
+            if target.exists() or target.is_symlink():
+                if not self._same_materialization(source, target):
+                    raise ValueError("Artifact destination changed; preserve edits and choose a new context directory")
+            else:
+                shutil.copytree(source, target, symlinks=False)
             records.append(self._public_record(metadata))
         self._write_artifact_index(destination_root, records)
         return records
+
+    @staticmethod
+    def _same_materialization(source: Path, target: Path) -> bool:
+        def inventory(root):
+            if root.is_symlink() or not root.is_dir():
+                return None
+            result = {}
+            for path in root.rglob("*"):
+                if path.is_symlink():
+                    return None
+                if path.is_file():
+                    h = hashlib.sha256()
+                    with path.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(65536), b""):
+                            h.update(chunk)
+                    result[path.relative_to(root).as_posix()] = (path.stat().st_mode & 0o777, h.hexdigest())
+                elif path.is_dir():
+                    result[path.relative_to(root).as_posix()] = ("directory",)
+                else:
+                    return None
+            return result
+        original = inventory(source)
+        return original is not None and original == inventory(target)
 
     def workspace_id(self, repo_path: str) -> str:
         normalized = str(Path(repo_path).expanduser().resolve(strict=False))
@@ -244,14 +284,60 @@ class ArtifactStore:
         if parsed.scheme.lower() not in allowed_set:
             raise ValueError("artifact_file.download_url must use an allowed HTTP(S) scheme")
 
+    def _preflight_zip_entries(self, raw_path: Path) -> None:
+        """Count directory records before ZipFile allocates ZipInfo objects.
+
+        The stdlib end-record reader handles ZIP64. This is only a bounded
+        capacity preflight; ZipFile still validates and extracts every member.
+        """
+        with raw_path.open("rb") as stream:
+            end = zipfile._EndRecData(stream)
+            if not end:
+                raise ValueError("Archive end record is missing")
+            self._check_optional_limit("max_file_count", end[zipfile._ECD_ENTRIES_TOTAL], "artifact archive entry count")
+            size = end[zipfile._ECD_SIZE]
+            self._check_optional_limit("max_archive_bytes", size, "artifact directory")
+            start = end[zipfile._ECD_LOCATION] - size
+            # Older Python releases leave the ZIP64 trailer in the location.
+            if size and end[zipfile._ECD_SIGNATURE] == zipfile.stringEndArchive64:
+                stream.seek(max(0, start))
+                if stream.read(4) != zipfile.stringCentralDir:
+                    start -= zipfile.sizeEndCentDir64 + zipfile.sizeEndCentDir64Locator
+            if start < 0:
+                raise ValueError("Archive central directory offset is invalid")
+            stream.seek(start)
+            count = consumed = 0
+            while consumed < size:
+                header = stream.read(zipfile.sizeCentralDir)
+                if len(header) != zipfile.sizeCentralDir:
+                    raise ValueError("Archive directory is truncated")
+                fields = struct.unpack(zipfile.structCentralDir, header)
+                if fields[zipfile._CD_SIGNATURE] != zipfile.stringCentralDir:
+                    raise ValueError("Archive directory signature is invalid")
+                count += 1
+                self._check_optional_limit("max_file_count", count, "artifact archive entry count")
+                extra = sum(fields[i] for i in (zipfile._CD_FILENAME_LENGTH, zipfile._CD_EXTRA_FIELD_LENGTH, zipfile._CD_COMMENT_LENGTH))
+                consumed += zipfile.sizeCentralDir + extra
+                if consumed > size:
+                    raise ValueError("Archive directory entry exceeds its boundary")
+                stream.seek(extra, 1)
+            if count != end[zipfile._ECD_ENTRIES_TOTAL]:
+                raise ValueError("Archive directory count differs from its end record")
+
     def _unpack_zip(self, raw_path: Path, unpacked_dir: Path) -> list[dict[str, Any]]:
+        self._preflight_zip_entries(raw_path)
         manifest: list[dict[str, Any]] = []
         total_unpacked = 0
         with zipfile.ZipFile(raw_path) as archive:
+            self._check_optional_limit("max_file_count", len(archive.infolist()), "artifact archive entry count")
+            seen = set()
             for info in archive.infolist():
                 rel_path = self._safe_zip_member_path(info)
                 if not rel_path:
                     continue
+                if rel_path.rstrip("/") in seen:
+                    raise ValueError("Archive contains a duplicate path")
+                seen.add(rel_path.rstrip("/"))
                 if info.is_dir():
                     (unpacked_dir / rel_path).mkdir(parents=True, exist_ok=True)
                     continue
@@ -261,9 +347,16 @@ class ArtifactStore:
                 self._check_optional_limit("max_file_count", len(manifest) + 1, "artifact file count")
                 target = unpacked_dir / rel_path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output)
-                manifest.append({"path": rel_path, "bytes": int(info.file_size)})
+                observed = 0
+                with archive.open(info) as source, target.open("xb") as output:
+                    while chunk := source.read(65536):
+                        observed += len(chunk)
+                        self._check_optional_limit("max_single_file_bytes", observed, f"artifact file {rel_path}")
+                        self._check_optional_limit("max_unpacked_bytes", total_unpacked - int(info.file_size) + observed, "unpacked artifact")
+                        output.write(chunk)
+                if observed != info.file_size:
+                    raise ValueError("Archive member size differs from its metadata")
+                manifest.append({"path": rel_path, "bytes": observed})
         return manifest
 
     def _safe_zip_member_path(self, info: zipfile.ZipInfo) -> str:
@@ -488,10 +581,10 @@ class ArtifactStore:
 
     def _check_optional_limit(self, key: str, value: int, label: str) -> None:
         configured = self.config.get("artifacts", {}).get(key)
-        if configured in (None, ""):
-            return
-        limit = int(configured)
-        if limit > 0 and value > limit:
+        limit = DEFAULT_IMPORT_LIMITS[key] if configured in (None, "") else int(configured)
+        if limit <= 0:
+            raise ValueError(f"{key} must be a positive finite byte/count budget")
+        if value > limit:
             raise ValueError(f"{label} exceeds configured {key} limit")
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:

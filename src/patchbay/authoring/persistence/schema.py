@@ -30,6 +30,11 @@ STATE_CLOCK_TRIGGERS = (
     END""",
 )
 
+ADMISSION_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS runs_queue_window ON runs(state,created,id)",
+    "CREATE INDEX IF NOT EXISTS runs_profile_receipts ON runs(profile_digest,updated DESC) WHERE receipt_sha IS NOT NULL",
+)
+
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -93,4 +98,4 @@ CREATE INDEX operations_state ON operations(state,created);
 CREATE INDEX runs_task_revision ON runs(task_id,revision,created);
 CREATE INDEX tasks_updated ON tasks(updated);
 CREATE INDEX contexts_task ON contexts(task_id,revision);
-""" + ";\n".join(STATE_CLOCK_TRIGGERS)
+""" + ";\n".join((*STATE_CLOCK_TRIGGERS, *ADMISSION_INDEXES))

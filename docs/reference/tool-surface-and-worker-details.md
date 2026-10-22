@@ -122,3 +122,20 @@ Discovery retains start identity through signalling; available Linux pidfds bind
 the final signal, while numeric fallback has a residual race. Unknown cleanup
 stays fenced. See the [S04 contract](../repairs/2026-10-22-s04-native-execution.md)
 for exact limits, owners and separately authorized native/client qualification.
+
+## Manager inbox pages and repeated use
+
+`codex_worker_inbox` action `list` accepts `offset` (default 0) and `limit`
+(default 100, maximum 200). `count` is the full current total; `next_offset`
+indicates another page. Concurrent imports/cleanup can shift offset pages.
+Imported archives default to 128 MiB compressed, 512 MiB expanded, 64 MiB per
+file and 10,000 entries, including directories. Blank settings select finite
+defaults, and nonpositive settings refuse. Actual expanded bytes are checked
+while unpacking. An unchanged context copy can be reused; changed copies are
+preserved and refused rather than silently overwritten.
+
+Candidate inventory omits patch rendering; integration still requires the
+complete exact binary patch within the existing 2,000,000-byte envelope.
+Oversized/failed producers cannot become an applicable empty patch. Retained
+review/retry metadata is deliberately not expired by age. See
+[S09 decisions and unqualified history scope](../repairs/2026-10-22-s09-repeated-use.md).

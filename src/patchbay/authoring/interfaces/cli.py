@@ -129,6 +129,7 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--offset", type=int, default=0)
     cmd.add_argument("--limit", type=int, default=65536)
     sub.add_parser("dispatch")
+    sub.add_parser("optimize-admission", help="Install additive admission indexes on quiescent schema-1 state")
     cmd = sub.add_parser("recover")
     cmd.add_argument("operation_id")
     cmd = sub.add_parser(
@@ -526,6 +527,9 @@ def run(args) -> object:
         return Access(store).issue(args.principal_id, args.role, args.task_ids, key=args.key)
     if command == "token-revoke":
         return Access(store).revoke(args.credential_id, key=args.key)
+    if command == "optimize-admission":
+        from ..persistence.admission_indexes import install
+        return install(store)
     if command == "upgrade-state":
         from ..persistence.state_clock import install
         return install(store)

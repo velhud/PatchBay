@@ -369,6 +369,8 @@ WORKER_TOOLS = [
                     "type": "integer",
                     "description": "Maximum entries returned for view=tree or view=raw_manifest. This limits tool output, not artifact import size.",
                 },
+                "offset": {"type": "integer", "minimum": 0, "description": "Current-list offset for action=list; concurrent imports/cleanup may shift pages."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Artifacts per list page; default 100. count is the full current total."},
                 **WORKER_TAKEOVER_PROPERTIES,
             },
             "required": ["action"],

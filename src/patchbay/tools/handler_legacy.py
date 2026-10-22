@@ -253,7 +253,8 @@ class ToolHandler:
                 request_context=self.current_request_context(),
             )
         if action == "list":
-            return self.artifact_store.list_artifacts(repo_path=repo, request_context=self.current_request_context())
+            return self.artifact_store.list_artifacts(repo_path=repo, request_context=self.current_request_context(),
+                                                      offset=args.get("offset", 0), limit=args.get("limit", 100))
         if action == "inspect":
             return self.artifact_store.inspect_artifact(
                 repo_path=repo,

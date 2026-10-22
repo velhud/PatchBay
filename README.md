@@ -155,3 +155,9 @@ do not update existing trial deployments.
 The [S07 evidence contract](docs/repairs/2026-10-22-s07-evidence-authority.md) separates executor observations, program assertions and acceptance; documents strict JUnit, explicit executed-test policy, transformed source views and downstream publication consent. Publication does not qualify a deployed/client route.
 
 S08 defines [immutable releases, service lifetime and durability](docs/repairs/2026-10-22-s08-deployment-durability.md), with a manual offline restore/cutover contract. Owning-unit maintenance drains work; source publication does not qualify a deployed service.
+
+S09 bounds candidate Git capture, streams Author context/feedback export, rotates
+queued check windows, and provides finite Manager inbox import defaults and
+list pages. Existing Author state can explicitly install admission indexes.
+See [repeated-use limits and retention decisions](docs/repairs/2026-10-22-s09-repeated-use.md);
+these local mechanics do not qualify native/client throughput or cost savings.

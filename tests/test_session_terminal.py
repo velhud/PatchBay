@@ -52,6 +52,18 @@ def make_config(tmp_path):
     }
 
 
+def owned_execution_fixture_guard(executor):
+    """Test safety guard includes the real bounded ownership-proof phases.
+
+    This is not a four-second product latency contract. Synthetic children in
+    these tests outlive this guard, so natural exit cannot fake proven cleanup.
+    """
+    cleanup = executor._post_completion_cleanup_timeout_seconds()
+    return (executor._session_start_timeout_seconds()
+            + JobExecutor._post_completion_cleanup_call_timeout_seconds(cleanup, supervisor_contract=True)
+            + cleanup_proof_budget_seconds() + 1)
+
+
 def write_session(codex_home, session_id, records):
     path = codex_home / "sessions" / "2026" / "07" / "11" / f"rollout-test-{session_id}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2205,7 +2217,7 @@ async def test_invalid_utf8_is_tolerated_and_reaps_child_before_releasing_lock(
     script = f"""
 import json, os, pathlib, subprocess, sys
 child = subprocess.Popen(
-    [sys.executable, '-c', 'import time; time.sleep(30)'],
+    [sys.executable, '-c', 'import time; time.sleep(300)'],
     stdin=subprocess.DEVNULL,
     stdout=subprocess.DEVNULL,
     stderr=subprocess.DEVNULL,
@@ -2218,7 +2230,7 @@ os.write(2, b'\\xff')
         "_build_codex_command",
         lambda *args, **kwargs: [sys.executable, "-u", "-c", script],
     )
-    await asyncio.wait_for(executor.execute_job(job_id), timeout=4)
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=owned_execution_fixture_guard(executor))
 
     durable = manager.get_job(job_id)
     assert durable.state == JobState.COMPLETED
@@ -2508,7 +2520,7 @@ print(json.dumps({{'type': 'thread.started', 'thread_id': {session_id!r}}}), flu
 time.sleep(0.1)
 with path.open('a', encoding='utf-8') as handle:
     handle.write(json.dumps({{'timestamp': now, 'type': 'event_msg', 'payload': {{'type': 'task_complete', 'last_agent_message': json.dumps({result!r})}}}}) + '\\n')
-time.sleep(30)
+time.sleep(300)
 """
     monkeypatch.setattr(
         executor,
@@ -2535,7 +2547,7 @@ time.sleep(30)
 
     monkeypatch.setattr(executor, "_terminate_process", delayed_terminate)
 
-    await asyncio.wait_for(executor.execute_job(job_id), timeout=4)
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=owned_execution_fixture_guard(executor))
     await asyncio.wait_for(async_cleanup_started.wait(), timeout=2)
     durable = manager.get_job(job_id)
     assert durable.state == JobState.COMPLETED
@@ -2545,7 +2557,7 @@ time.sleep(30)
         await executor.repo_locks.acquire(repo, operation="overlapping_mutation")
 
     permit_reap.set()
-    await asyncio.wait_for(executor.cleanup_tasks[job_id], timeout=3)
+    await asyncio.wait_for(executor.cleanup_tasks[job_id], timeout=2 * cleanup_proof_budget_seconds() + 5)
     assert manager.get_job(job_id).wrapper_cleanup_outcome == (
         "terminated_after_terminal_async"
     )
@@ -2634,12 +2646,12 @@ now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).i
 with path.open('a', encoding='utf-8') as handle:
     handle.write(json.dumps({{'timestamp': now, 'type': 'event_msg', 'payload': {{'type': 'agent_message', 'message': json.dumps({final_result!r})}}}}) + '\\n')
     handle.write(json.dumps({{'timestamp': now, 'type': 'event_msg', 'payload': {{'type': 'task_complete', 'last_agent_message': json.dumps({final_result!r})}}}}) + '\\n')
-subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
-time.sleep(30)
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
+time.sleep(300)
 """
     monkeypatch.setattr(executor, "_build_codex_command", lambda *args, **kwargs: [sys.executable, "-u", "-c", script])
 
-    await asyncio.wait_for(executor.execute_job(job_id), timeout=6)
+    await asyncio.wait_for(executor.execute_job(job_id), timeout=owned_execution_fixture_guard(executor))
 
     job = manager.get_job(job_id)
     assert job.state == JobState.COMPLETED

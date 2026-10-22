@@ -79,7 +79,7 @@ def _regular(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def _write_zip(path: Path, members: dict[str, tuple[bytes, int]]) -> None:
+def _write_zip(path: Path, members: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".part-" + uuid.uuid4().hex)
     try:
@@ -89,7 +89,14 @@ def _write_zip(path: Path, members: dict[str, tuple[bytes, int]]) -> None:
                 info.create_system = 3
                 info.external_attr = (stat.S_IFREG | mode) << 16
                 info.compress_type = zipfile.ZIP_DEFLATED
-                archive.writestr(info, data)
+                if isinstance(data, bytes):
+                    archive.writestr(info, data)
+                else:
+                    # Internal exporters can supply bounded chunk iterators.
+                    # An iterator failure prevents publication of the archive.
+                    with archive.open(info, "w", force_zip64=True) as target:
+                        for chunk in data:
+                            target.write(chunk)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
