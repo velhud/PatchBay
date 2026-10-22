@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.util
+import errno
 import json
 import os
 import select
@@ -24,7 +25,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 
 _PR_SET_CHILD_SUBREAPER = 36
@@ -55,6 +56,9 @@ _CLEANUP_REASON_CODES = frozenset(
         "owned_children_remain_after_kill_grace",
         "supervisor_exception",
         "unclassified_cleanup_unproven",
+        "owned_process_identity_unavailable",
+        "owned_process_identity_changed",
+        "owned_process_signal_failed",
     }
 )
 
@@ -127,30 +131,27 @@ def _process_identity(pid: int) -> str:
     except OSError:
         pass
     if sys.platform == "darwin":
-        try:
-            library = ctypes.CDLL(
-                ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
-            )
-            function = library.proc_pidinfo
-            function.argtypes = [
-                ctypes.c_int,
-                ctypes.c_int,
-                ctypes.c_uint64,
-                ctypes.c_void_p,
-                ctypes.c_int,
-            ]
-            function.restype = ctypes.c_int
-            value = _DarwinBSDInfo()
-            size = ctypes.sizeof(value)
-            written = int(function(pid, 3, 0, ctypes.byref(value), size))
-        except (AttributeError, OSError, TypeError, ValueError):
-            return ""
-        if written == size and int(value.pbi_pid) == pid:
+        value = _darwin_process_info(pid)
+        if value is not None and int(value.pbi_status) != 5:
             return (
                 f"darwin:{int(value.pbi_start_tvsec)}:"
                 f"{int(value.pbi_start_tvusec)}"
             )
     return ""
+
+
+def _darwin_process_info(pid):
+    try:
+        library = ctypes.CDLL(ctypes.util.find_library('proc') or '/usr/lib/libproc.dylib')
+        function = library.proc_pidinfo
+        function.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        function.restype = ctypes.c_int
+        value = _DarwinBSDInfo()
+        size = ctypes.sizeof(value)
+        written = int(function(pid, 3, 0, ctypes.byref(value), size))
+        return value if written == size and int(value.pbi_pid) == pid else None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
 
 
 class _StopRequested(BaseException):
@@ -249,6 +250,30 @@ def _descendants(root_pid: int) -> set[int] | None:
 def _pid_live(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == 'darwin':
+        value = _darwin_process_info(pid)
+        # Darwin SDK sys/proc.h: SZOMB=5. Like Linux state Z, an exited
+        # child awaiting reaping cannot mutate or receive meaningful signals.
+        if value is not None and int(value.pbi_status) == 5:
+            return False
+        if value is None:
+            # proc_pidinfo returns ESRCH for a Darwin zombie even while
+            # kill(pid, 0) still succeeds. A bounded status query distinguishes
+            # that exited child from a live process whose identity is unknown.
+            # Failed discovery remains live/unknown below, never proof of exit.
+            try:
+                observed = subprocess.run(
+                    ['ps', '-p', str(pid), '-o', 'stat='], capture_output=True,
+                    text=True, timeout=_DISCOVERY_COMMAND_TIMEOUT_SECONDS,
+                    check=False,
+                )
+                status = observed.stdout.strip()
+                if observed.returncode == 0 and status.startswith('Z'):
+                    return False
+                if observed.returncode == 1 and not status and not observed.stderr.strip():
+                    return False
+            except (OSError, subprocess.SubprocessError):
+                pass
     try:
         stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
         _, separator, suffix = stat_text.rpartition(")")
@@ -430,14 +455,52 @@ class _DarwinTracker:
             self._queue.close()
 
 
-def _signal_pids(pids: Iterable[int], sig: signal.Signals) -> None:
-    for pid in sorted(set(pids), reverse=True):
+class OwnedProcessReference(NamedTuple):
+    pid: int
+    identity: str
+    basis: str
+
+
+def _signal_pids(pids: Iterable[OwnedProcessReference], sig: signal.Signals) -> bool:
+    """Keep discovery identity through the signal boundary.
+
+    Linux pidfds bind the final signal to the opened process. Start-marker
+    fallback on other/older platforms retains a residual check-to-kill race.
+    """
+    certain = True
+    for reference in sorted(set(pids), key=lambda item: item.pid, reverse=True):
+        pid = reference.pid
         if not _pid_live(pid):
             continue
-        try:
-            os.kill(pid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
+        if not reference.identity or _process_identity(pid) != reference.identity:
+            certain = certain and not _pid_live(pid)
             continue
+        descriptor = None
+        try:
+            if (sys.platform.startswith('linux') and hasattr(os, 'pidfd_open')
+                    and hasattr(signal, 'pidfd_send_signal')):
+                try:
+                    descriptor = os.pidfd_open(pid, 0)
+                except OSError as error:
+                    if error.errno not in {errno.ENOSYS, errno.ENODEV, errno.EINVAL}:
+                        raise
+            # Recheck after pidfd acquisition, never validate a reused PID and
+            # then direct a numeric kill at a later incarnation on Linux.
+            if _process_identity(pid) != reference.identity:
+                certain = certain and not _pid_live(pid)
+                continue
+            if descriptor is not None:
+                signal.pidfd_send_signal(descriptor, sig, None, 0)
+            else:
+                os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            certain = False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    return certain
 
 
 def _reap_children() -> None:
@@ -452,34 +515,40 @@ def _reap_children() -> None:
             return
 
 
-def _owned_pids(supervisor_pid: int, tracker: _DarwinTracker) -> set[int]:
+def _owned_pids(supervisor_pid: int, tracker: _DarwinTracker) -> set[OwnedProcessReference]:
     tracker.poll(0)
     observed = _descendants(supervisor_pid)
     if observed is None:
         tracker.mark_uncertain("descendant_census_incomplete")
-    owned = {
-        pid
-        for pid, identity in tracker.tracked.items()
-        if identity and _process_identity(pid) == identity
-    }
+    owned = {}
+    for pid, identity in tracker.tracked.items():
+        current = _process_identity(pid)
+        if identity and current == identity:
+            owned[pid] = OwnedProcessReference(pid, identity, 'tracked')
+        elif _pid_live(pid) and (not current or not identity):
+            tracker.mark_uncertain('owned_process_identity_unavailable')
     if observed is not None:
-        owned.update(observed)
         for pid in observed:
             identity = _process_identity(pid)
             if identity:
                 tracker.tracked[pid] = identity
+                owned[pid] = OwnedProcessReference(pid, identity, 'descendant')
+            elif _pid_live(pid):
+                tracker.mark_uncertain('owned_process_identity_unavailable')
     marked = _marker_pids(tracker.job_marker)
     if marked is None:
         if sys.platform == "darwin" and tracker.fork_seen:
             tracker.mark_uncertain("marker_census_incomplete")
     else:
-        owned.update(marked)
         for pid in marked:
             identity = _process_identity(pid)
             if identity:
                 tracker.tracked[pid] = identity
-    owned.discard(supervisor_pid)
-    return {pid for pid in owned if _pid_live(pid)}
+                owned[pid] = OwnedProcessReference(pid, identity, 'marker')
+            elif _pid_live(pid):
+                tracker.mark_uncertain('owned_process_identity_unavailable')
+    owned.pop(supervisor_pid, None)
+    return {reference for pid,reference in owned.items() if _pid_live(pid)}
 
 
 def _marker_pids(marker: str) -> set[int] | None:
@@ -551,7 +620,8 @@ def _terminate_owned(supervisor_pid: int, tracker: _DarwinTracker) -> bool:
             if absence_stable:
                 return not tracker.tracking_uncertain
             continue
-        _signal_pids(owned, signal.SIGTERM)
+        if not _signal_pids(owned, signal.SIGTERM):
+            tracker.mark_uncertain('owned_process_signal_failed')
         if time.monotonic() >= deadline:
             break
         tracker.poll(min(0.02, max(0.0, deadline - time.monotonic())))
@@ -571,7 +641,8 @@ def _terminate_owned(supervisor_pid: int, tracker: _DarwinTracker) -> bool:
             if absence_stable:
                 return not tracker.tracking_uncertain
             continue
-        _signal_pids(owned, signal.SIGKILL)
+        if not _signal_pids(owned, signal.SIGKILL):
+            tracker.mark_uncertain('owned_process_signal_failed')
         if time.monotonic() >= deadline:
             tracker.reason_codes.add("owned_children_remain_after_kill_grace")
             return False

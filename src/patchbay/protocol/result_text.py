@@ -5,6 +5,7 @@ import json
 from collections.abc import Mapping
 
 FIELDS = (
+    "report_completeness", "report_truncated", "report_source", "report_source_unavailable", "source_sha256", "returned_source_sha256", "redacted", "offset_basis", "report_offset", "total_bytes", "max_bytes_applied", "view", "next_offset", "has_more",
     "worker_id", "name", "worker", "task_id", "work_group_id", "operation_id", "request_operation_id",
     "state", "status", "accepted", "request_replayed", "request_ref", "resync_required", "projection_observed_at", "observation_refresh_seconds", "wait_outcome", "applied", "blocked", "reason", "conflict_summary", "error",
     "stopped", "stop_confirmation_required", "discard_confirmation_required", "workspace_cleaned",
@@ -39,6 +40,10 @@ def decision_metadata(payload: Mapping) -> dict:
                 omitted.append(key)
         elif key == "error" and isinstance(value, Mapping):
             result[key] = {k: v for k in ("code", "message") if isinstance((v := value.get(k)), str) and len(v.encode("utf-8")) <= 128}
+        elif key == 'report_source' and isinstance(value, Mapping):
+            source_hash = value.get('sha256')
+            if isinstance(source_hash, str) and len(source_hash.encode('utf-8')) <= 128:
+                result['report_source_sha256'] = source_hash
     if omitted:
         result["summary_omitted_fields"] = omitted
     return result

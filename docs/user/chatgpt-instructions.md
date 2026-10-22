@@ -129,3 +129,17 @@ See [heavy-task setup and copy/paste prompts](chatgpt-heavy-tasks.md) for choosi
 between direct Author coding and worker delegation. Read these instructions once
 when orienting a conversation; routine status calls do not need the whole guide
 pasted back into the task.
+
+## Native worker evidence
+
+The native exec adapter is headless. A typed native failure or identity conflict
+cannot be cleared by generic completion or a plausible report. Preserve the
+same worker and cleanup fence; resolve an identity conflict before continuing
+or accepting it. Do not share its native conversation with an external caller.
+
+When `report_truncated=true`, retrieve `view="report_source"` through that
+worker inspect tool using the returned SHA-256 and `report_offset`; follow
+`next_offset` until `has_more=false`. Retain explicit source-unavailable and
+partial flags. Connector readiness, installation matching, requested Luna
+selection, observed native identity and client qualification are separate facts.
+See the [S04 contract](../repairs/2026-10-22-s04-native-execution.md).

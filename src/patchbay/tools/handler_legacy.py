@@ -364,6 +364,8 @@ class ToolHandler:
             end_line=args.get("end_line"),
             max_bytes=args.get("max_bytes"),
             accepted_dirty_base=args.get("accepted_dirty_base"),
+            report_source_sha256=args.get('report_source_sha256'),
+            report_offset=args.get('report_offset', 0),
             request_context=self.current_request_context(),
         )
 

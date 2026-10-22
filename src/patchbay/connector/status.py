@@ -110,6 +110,12 @@ def connector_status(
     return {
         "name": "patchbay",
         "ready": not any(check["status"] == "fail" for check in checks),
+        "qualification": {
+            "connector_ready": not any(check['status']=='fail' for check in checks),
+            "static_native_installation": "not_checked_by_connector_status",
+            "native_execution_qualified": False, "workflow_qualified": False,
+            "client_qualified": False, "nested_helpers_qualified": False,
+        },
         "checks": checks,
         "connection": {
             "local_mcp_url": f"{local_base}/mcp",

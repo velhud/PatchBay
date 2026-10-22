@@ -31,6 +31,14 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "wait_outcome": {"type":"string", "enum":["actionable","status_changed","timeout"]},
         "view": {"type": "string"},
         "report": {"type": "string"},
+        "report_truncated": {"type": ["boolean", "null"]},
+        "report_completeness": {"type": "string"},
+        "report_source": {"type": ["object", "null"], "additionalProperties": True},
+        "report_source_unavailable": {"type": ["boolean", "null"]},
+        "native_execution_provenance": {"type": ["object", "null"], "additionalProperties": True},
+        "source_sha256": {"type": "string"},
+        "next_offset": {"type": ["integer", "null"]},
+        "has_more": {"type": "boolean"},
         "status_line": {"type": "string"},
         "compact_status": {"type": "object", "additionalProperties": True},
         "activity_since_last_check": {"type": "object", "additionalProperties": True},
@@ -706,13 +714,17 @@ WORKER_TOOLS = [
                 },
                 "view": {
                     "type": "string",
-                    "enum": ["report", "compact", "status", "diagnostics", "changes", "diff", "file", "integration_preview"],
-                    "description": "Report by default. Use compact for a tiny liveness snapshot, status for liveness and latest-turn diagnostics without the full answer, diagnostics for the full lifecycle payload, changes for file inventory, diff with file_path, file with file_path for worker-created file content, or integration_preview before accepting a worker result.",
+                    "enum": ["report", "report_source", "compact", "status", "diagnostics", "changes", "diff", "file", "integration_preview"],
+                    "description": "Report by default. Use report_source to page a retained complete report by its returned source hash, compact for a tiny liveness snapshot, status for liveness, diagnostics for full lifecycle details, changes/diff/file for source, or integration_preview before accepting a worker result.",
                 },
                 "file_path": {
                     "type": "string",
                     "description": "Workspace-relative path required for view=diff or view=file.",
                 },
+                "report_source_sha256": {"type":"string", "pattern":"^[0-9a-f]{64}$",
+                    "description":"For view=report_source, exact immutable complete-report identity returned by the worker report. Omit to select the latest retained report."},
+                "report_offset": {"type":"integer", "minimum":0,
+                    "description":"For view=report_source, UTF-8 byte offset in the returned representation. Follow next_offset with the same report_source_sha256; max_bytes is capped at 65536."},
                 "start_line": {
                     "type": "integer",
                     "description": "1-based start line for view=file. Default: 1.",
@@ -723,7 +735,7 @@ WORKER_TOOLS = [
                 },
                 "max_bytes": {
                     "type": "integer",
-                    "description": "Maximum bytes for view=file, capped by server policy. Use start_line/end_line for pagination when a file is larger than the cap.",
+                    "description": "Maximum bytes for view=file or report_source, capped by server policy. File pagination uses start_line/end_line; report_source pagination uses report_offset and next_offset with the same source hash.",
                 },
                 "accepted_dirty_base": {
                     "type": "array",

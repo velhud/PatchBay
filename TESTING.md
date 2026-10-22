@@ -310,3 +310,28 @@ creates a disposable task/context and blank observations; it does not execute
 ordinary Chat or enable MCP writes. Use a new output directory for each exact
 candidate. See the [Linux qualification record](docs/testing/linux-qualification-2026-10-20.md)
 for evidence boundaries and the repaired failure classes.
+
+### S04 native evidence and lifecycle regressions
+
+```bash
+python -m pytest tests/test_s04_native_evidence.py tests/test_s04_native_profile.py \
+  tests/test_s04_process_identity.py tests/test_s04_startup.py \
+  tests/test_session_terminal.py tests/test_job_executor_cancellation.py \
+  tests/test_process_supervisor.py tests/test_worker_tool_surface.py \
+  tests/test_hub_worker_adapter_v2.py -q
+```
+
+These use real application persistence/recovery, owned disposable Python
+subprocesses and recording-only identity races. They invoke no native model.
+The Linux pidfd branches are recorded by mocks on macOS; their pass is not a
+Linux execution qualification. A Darwin zombie whose BSD info is unavailable
+must be recognized as exited, while unknown live identities remain fenced.
+
+The [S04 contract](docs/repairs/2026-10-22-s04-native-execution.md) specifies the
+explicit offline static-manifest helper and its limits. Use a disposable complete
+distribution manifest; missing required companions must fail even when the
+launcher remains present. Static matching never implies native/tool/client
+qualification. After explicit authorization, run the exact native/client recipe
+in that contract and section 8, retaining the pinned distribution, source,
+profile, typed events, report pages, exit and cleanup evidence separately.
+All required existing checks above remain required; S04 does not waive them.

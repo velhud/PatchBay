@@ -5,6 +5,8 @@ server:
   queue_enabled: true
   job_timeout_seconds: 0  # 0/none/unlimited disables Codex turn timeout
   codex_session_start_timeout_seconds: 180  # fail only if Codex starts but no JSON session appears
+  codex_supervisor_ready_timeout_seconds: 10  # pre-target supervisor handshake only; bounded 0.1..120 seconds
+  native_installation_receipt:  # optional private receipt from the explicit offline manifest check; no canary is run
   codex_post_completion_exit_grace_seconds: 2  # wrapper cleanup only after an authoritative terminal event
   codex_post_completion_cleanup_timeout_seconds: 3  # bound pipe/process cleanup after the final report is durable
   codex_startup_serialization_enabled: true  # serialize auth/session startup only; full turns still run concurrently

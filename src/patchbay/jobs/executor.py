@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from patchbay.codex_home import resolve_codex_home
+from patchbay.native_profile import launch_profile, digest as native_digest
 from patchbay.jobs.manager import (
     JobManager,
     JobState,
@@ -187,6 +188,7 @@ class JobExecutor:
         self._terminal_cleanup_transition_lock = threading.RLock()
         self._terminal_cleanup_completed: set[str] = set()
         self._cancellation_intents: set[str] = set()
+        self._recovery_observers = {}
         self.repo_locks = RepoMutationLockManager(config)
         server_config = config.get("server", {})
         max_concurrent = int(server_config.get("max_concurrent_jobs", 1) or 0)
@@ -259,6 +261,8 @@ class JobExecutor:
             if job.state != JobState.RUNNING:
                 continue
             checked += 1
+            if self._recover_native_outcome(job):
+                continue
             if job.terminal_source in {
                 "session_task_complete",
                 "stdout_turn_completed",
@@ -273,6 +277,8 @@ class JobExecutor:
                     continue
                 if self._recover_completion_evidence(job, event_loop=event_loop):
                     recovered_completed.append(job_id)
+                    continue
+                if job.state != JobState.RUNNING or (job.options or {}).get('_session_scan_pending'):
                     continue
             runtime_live = self._job_has_live_runtime(job_id)
             untrusted_live = self._recorded_cleanup_has_untrusted_live_members(job)
@@ -389,12 +395,41 @@ class JobExecutor:
         session_id = str(getattr(job, "session_id", "") or resume_session_id).strip()
         if not session_id:
             return False
+        if self._native_failure(job):
+            self._recover_native_outcome(job)
+            return False
+        provenance = getattr(job, 'native_execution_provenance', None) or {}
+        if (provenance.get('home_id') and provenance['home_id'] !=
+                native_digest(str(resolve_codex_home(self.config)))):
+            self.job_manager.mutate_job_options(job.job_id, lambda current: {
+                **current, '_session_scan_pending': False,
+                '_session_scan_status': 'native_home_binding_changed'})
+            return False
         not_before = float(getattr(job, "process_started_at", None) or getattr(job, "started_at", None) or 0)
-        snapshot = self._session_terminal_observer(
-            session_id,
-            not_before=not_before,
-            initial_offset=self._session_observation_offset(job, session_id),
-        ).poll()
+        if isinstance(options, dict) and options.get('_session_baseline_proven') is False:
+            return False
+        key = (job.job_id, session_id, not_before, self._session_observation_offset(job, session_id))
+        with self._terminal_cleanup_transition_lock:
+            for old, reader in list(self._recovery_observers.items()):
+                owner = self.job_manager.get_job(old[0])
+                if (owner is None or owner.state != JobState.RUNNING
+                        or time.monotonic()-getattr(reader, '_recovery_touched', 0) > 60):
+                    self._recovery_observers.pop(old, None)
+            observer = self._recovery_observers.get(key)
+            if observer is None:
+                observer = CodexSessionTerminalObserver(self.config, session_id, not_before=not_before,
+                    initial_offset=key[-1], checkpoint=(options or {}).get('_session_scan_checkpoint'))
+                self._recovery_observers[key] = observer
+                # Active recovery only; no permanent observer per historical job.
+                while len(self._recovery_observers) > max(1,min(self.job_manager.max_concurrent or 1,32)):
+                    self._recovery_observers.pop(next(iter(self._recovery_observers)))
+            observer._recovery_touched = time.monotonic()
+            snapshot = observer.poll()
+            checkpoint = observer.checkpoint()
+            scan = dict(_session_scan_checkpoint=checkpoint, _session_scan_pending=observer.has_unread_bytes,
+                        _session_scan_status=snapshot.source_status)
+            if any((job.options or {}).get(k) != v for k,v in scan.items()):
+                self.job_manager.mutate_job_options(job.job_id, lambda current: {**current, **scan})
         if not snapshot.completed:
             return False
 
@@ -416,8 +451,9 @@ class JobExecutor:
                 return False
             result_file = self.job_logs_dir / f"{job.job_id}_result.json"
             result = self._result_from_session_message(
-                snapshot.final_message, result_file
+                snapshot.final_message, result_file, snapshot=snapshot, observer=observer
             )
+            self._recovery_observers.pop(key, None)
             # Recovery has no surviving in-process lease. Establish the
             # turnstile before terminal state is visible to another process.
             if job.job_id not in self._terminal_cleanup_completed:
@@ -441,6 +477,41 @@ class JobExecutor:
                 self._reconcile_terminal_cleanup(recovered, event_loop=event_loop)
         logger.info("Recovered completed Codex session for durable job %s", job.job_id)
         return True
+
+    def _native_failure(self, job):
+        receipt = getattr(job, 'native_outcome', None)
+        if not isinstance(receipt, dict) or receipt.get('version') != 1 or receipt.get('job_id') != job.job_id:
+            return None
+        kind = receipt.get('kind')
+        if kind not in {'turn.failed', 'error', 'session_identity_conflict'}:
+            return None
+        if kind == 'session_identity_conflict':
+            return dict(category='codex_session_identity_conflict', exit_code=job.exit_code,
+                public_message='Native session identity conflicts with the expected worker session.',
+                manager_guidance='Preserve this worker and its evidence. Resolve the identity conflict before continuation or acceptance.',
+                retry_without_operator_action=False)
+        failure = self._classify_codex_failure(json.dumps({'type':kind,
+            'message':receipt.get('diagnostic','')}).encode(), b'', job.exit_code)
+        return failure or dict(category='codex_fatal_error', exit_code=job.exit_code,
+            public_message='Codex emitted a terminal error before successful completion.',
+            manager_guidance='Inspect the retained native failure; generic transcript completion cannot erase it.',
+            retry_without_operator_action=False)
+
+    def _recover_native_outcome(self, job):
+        failure = self._native_failure(job)
+        if not failure or job.state in {JobState.FAILED, JobState.CANCELLED}:
+            return False
+        fallback = (self._completion_evidence_result(job) if job.completion_evidence_source else
+            dict(summary=failure['public_message'], files_changed=[], report_completeness='partial',
+                 final_structured_result=False, parsed_output_schema_valid=False))
+        result = self._attach_failure_diagnostic(job.result or fallback, failure)
+        result['native_outcome'] = dict(job.native_outcome)
+        self._ensure_cleanup_repo_block(job)
+        return self._transition_job_terminal_with_cleanup(job.job_id, JobState.FAILED,
+            result=self._write_result_file(self.job_logs_dir/f'{job.job_id}_result.json',result),
+            error=failure['public_message'], terminal_source='codex_process_failed',
+            terminal_observed_at=job.native_outcome['observed_at'],
+            _authoritative_process_failure=True, wrapper_cleanup_outcome='cleanup_pending')
 
     def _completion_evidence_result(self, job: Any) -> Dict[str, Any]:
         persisted = getattr(job, "completion_evidence_result", None)
@@ -484,6 +555,9 @@ class JobExecutor:
         )
 
     def _transition_from_completion_evidence(self, job: Any) -> bool:
+        if self._native_failure(job):
+            self._recover_native_outcome(job)
+            return False
         source = str(getattr(job, "completion_evidence_source", "") or "")
         if source != "stdout_turn_completed" or job.state != JobState.RUNNING:
             return False
@@ -618,6 +692,8 @@ class JobExecutor:
                 **current,
                 _SESSION_OBSERVATION_ID_OPTION: session_id,
                 _SESSION_OBSERVATION_OFFSET_OPTION: initial_offset,
+                '_session_baseline_proven': bool(observer.checkpoint()) and not observer._source_error,
+                '_session_scan_checkpoint': observer.checkpoint(),
             },
         )
         # A restart may happen after this durable cursor is recorded but before
@@ -661,6 +737,7 @@ class JobExecutor:
             lambda current: {
                 **current,
                 _JOB_PROCESS_SUPERVISOR_LAUNCHING_OPTION: True,
+                '_supervisor_target_gate_committed': False,
             },
         )
 
@@ -668,6 +745,7 @@ class JobExecutor:
         def mark(current: dict[str, Any]) -> dict[str, Any]:
             current.pop(_JOB_PROCESS_SUPERVISOR_LAUNCHING_OPTION, None)
             current[_JOB_PROCESS_SUPERVISOR_SPAWNED_OPTION] = True
+            current['_supervisor_readiness_pending'] = True
             return current
 
         self.job_manager.mutate_job_options(
@@ -676,7 +754,7 @@ class JobExecutor:
         )
 
     def _publish_supervisor_gated_state(self, job_id: str, supervisor_pid: int) -> None:
-        """Durably confirm that a ready supervisor has not released its target."""
+        """Record a supervisor whose parent-owned target gate was never released."""
 
         job = self.job_manager.get_job(job_id)
         options = dict(getattr(job, "options", None) or {}) if job else {}
@@ -1531,7 +1609,7 @@ class JobExecutor:
             and recorded_identity != current_identity
         )
 
-    def _result_from_session_message(self, final_message: str, result_file: Path) -> Dict[str, Any]:
+    def _result_from_session_message(self, final_message: str, result_file: Path, *, snapshot=None, observer=None) -> Dict[str, Any]:
         text = str(final_message or "").strip()
         parsed: Any = None
         if text:
@@ -1554,6 +1632,32 @@ class JobExecutor:
             }
         result["result_source"] = "session_task_complete"
         result["turn_completed_seen"] = True
+        result['session_turn_attribution'] = 'managed_single_owner_assumption'
+        result['external_session_use_qualified'] = False
+        if snapshot is not None:
+            result.update(report_completeness='truncated' if snapshot.report_truncated else 'complete',
+                report_truncated=snapshot.report_truncated, report_original_characters=snapshot.original_characters,
+                report_original_bytes=snapshot.original_bytes, report_retained_ranges=list(snapshot.retained_ranges),
+                session_source_status=snapshot.source_status, oversized_session_records=snapshot.oversized_records)
+            if snapshot.report_truncated:
+                result['parsed_output_schema_valid'] = result['final_structured_result'] = False
+            complete = (observer.complete_report() if observer is not None
+                        and hasattr(observer, 'complete_report') else None)
+            if complete is not None:
+                sha = hashlib.sha256(complete.encode()).hexdigest()
+                target = result_file.parent / (result_file.stem.removesuffix('_result')+'_report_'+sha+'.txt')
+                descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix='.report-')
+                try:
+                    with os.fdopen(descriptor, 'wb') as handle:
+                        handle.write(complete.encode()); handle.flush(); os.fsync(handle.fileno())
+                    os.chmod(temporary, 0o600)
+                    os.replace(temporary, target)
+                finally:
+                    Path(temporary).unlink(missing_ok=True)
+                result['report_source'] = dict(sha256=sha, bytes=len(complete.encode()),
+                    retrieval=dict(view='report_source', report_source_sha256=sha, report_offset=0))
+            elif snapshot.report_truncated:
+                result['report_source_unavailable'] = True
         return self._write_result_file(result_file, result)
 
     def _structured_result_is_valid(self, value: Any) -> bool:
@@ -2487,6 +2591,7 @@ class JobExecutor:
                     "stderr_bytes_seen": int(getattr(job, "stderr_bytes_seen", 0) or 0),
                     "process_started": bool(getattr(job, "process_started_at", None)),
                     "session_created": bool(getattr(job, "session_id", None)),
+                    "session_source_status": (getattr(job, 'options', None) or {}).get('_session_scan_status', 'unobserved'),
                 },
             }
         )
@@ -2664,6 +2769,8 @@ class JobExecutor:
         final_message: str,
         stdout: bytes,
         stderr: bytes,
+        snapshot=None,
+        observer=None,
     ) -> None:
         """Persist authoritative Codex completion before wrapper cleanup can stall."""
         result_file = self.job_logs_dir / f"{job_id}_result.json"
@@ -2672,6 +2779,9 @@ class JobExecutor:
         with self._terminal_cleanup_transition_lock:
             current = self.job_manager.get_job(job_id)
             if current is None:
+                return
+            if self._native_failure(current):
+                self._recover_native_outcome(current)
                 return
             if current.state in {
                 JobState.COMPLETED,
@@ -2685,7 +2795,7 @@ class JobExecutor:
                     terminal_observed_at=observed_at,
                 )
                 return
-            result = self._result_from_session_message(final_message, result_file)
+            result = self._result_from_session_message(final_message, result_file, snapshot=snapshot, observer=observer)
             self._write_process_artifact(stdout_log, stdout)
             self._write_process_artifact(stderr_log, stderr)
             if (
@@ -2806,6 +2916,70 @@ class JobExecutor:
             if current_task is not None and self.tasks.get(job_id) is current_task:
                 self.tasks.pop(job_id, None)
 
+    async def _await_supervisor_ready(self, descriptor: int, job_id: str) -> bytes:
+        """Cancellable nonblocking descriptor observation; no abandoned I/O thread."""
+        try:
+            budget = float(self.config.get('server', {}).get('codex_supervisor_ready_timeout_seconds', 10))
+        except (ValueError, TypeError):
+            budget = 10
+        if not 0.1 <= budget <= 120:
+            budget = 10
+        deadline = time.monotonic()+budget
+        os.set_blocking(descriptor, False)
+        while True:
+            if self._job_launch_blocked(job_id):
+                raise asyncio.CancelledError()
+            try:
+                return os.read(descriptor, 1)
+            except BlockingIOError:
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                await asyncio.sleep(min(.02, remaining))
+
+    async def _abort_pre_ready_supervisor(self, job_id, process, reason, *, cancelled):
+        """Reap only this exact unreaped child after closing its unreleased gate."""
+        job = self.job_manager.get_job(job_id)
+        self.processes[job_id] = process
+        self._ensure_cleanup_repo_block(job)
+        self.job_manager.update_job_state(job_id, job.state,
+            process_pid=process.pid, process_pgid=process.pid,
+            process_identity=self._process_identity(process.pid),
+            current_phase='supervisor_startup_ending')
+        wait = asyncio.create_task(process.wait())
+        try:
+            for action in (process.terminate, process.kill):
+                if process.returncode is None:
+                    try:
+                        action()  # Direct child, never a discovered/recycled PID.
+                    except ProcessLookupError:
+                        pass
+                try:
+                    await asyncio.wait_for(asyncio.shield(wait), timeout=1)
+                    break
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            if not wait.done():
+                wait.cancel()
+                await asyncio.gather(wait, return_exceptions=True)
+        current = self.job_manager.get_job(job_id)
+        reaped = process.returncode is not None
+        unreleased = (current.options or {}).get('_supervisor_target_gate_committed') is False
+        if reaped and unreleased:
+            # This parent closed its sole gate without writing release. The
+            # trusted supervisor cannot fork a target before that capability.
+            self._publish_supervisor_gated_state(job_id, process.pid)
+        self._transition_job_terminal_with_cleanup(job_id,
+            JobState.CANCELLED if cancelled or self._job_is_cancelled(job_id) else JobState.FAILED,
+            error=reason, result=self._minimal_cancelled_result(reason) if cancelled else
+                dict(summary=reason, files_changed=[], native_target_released=False),
+            terminal_source=current.terminal_source or 'supervisor_startup', terminal_observed_at=time.time(),
+            wrapper_cleanup_outcome='cleanup_pending' if reaped and unreleased else
+                'cleanup_blocked_untrusted_process_identity')
+        if reaped and unreleased:
+            self._complete_terminal_cleanup(job_id, 'supervisor_unreleased_reaped')
+
     async def _execute_job_now(self, job_id: str):
         """Execute a Codex job asynchronously."""
         job = self.job_manager.get_job(job_id)
@@ -2871,9 +3045,22 @@ class JobExecutor:
             # Install the supervisor proof contract only after the cancellable
             # startup-gate wait. Before this point no supervisor can exist, so a
             # cancelled queued worker can release its repository lock directly.
-            self._persist_process_marker_contract(job_id)
-            job = self.job_manager.get_job(job_id) or job
+            try:
+                self._persist_process_marker_contract(job_id)
+                job = self.job_manager.get_job(job_id) or job
+                launch_environment = self._build_env(job_id=job_id)
+                cmd, provenance = launch_profile(cmd, environment=launch_environment,
+                    cwd=job.worktree_path or job.repo_path, config=self.config, schema=self.schema_path)
+                expected = (job.options or {}).get('_expected_native_binding') or {}
+                if any(expected.get(key) and expected[key] != provenance[key] for key in ('home_id','workspace_id')):
+                    raise ValueError('Native resume home/workspace binding changed; restore the expected binding before continuation')
+                self.job_manager.update_job_state(job_id, JobState.RUNNING, native_execution_provenance=provenance)
             
+            except BaseException:
+                if startup_gate is not None:
+                    startup_gate.release('native_profile_or_marker_refused')
+                raise
+
             launch_gate_read: int | None = None
             launch_gate_write: int | None = None
             supervisor_ready_read: int | None = None
@@ -2928,7 +3115,7 @@ class JobExecutor:
                         ),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
-                        env=self._build_env(job_id=job_id),
+                        env=launch_environment,
                         start_new_session=True,
                         **spawn_options,
                     ),
@@ -2953,27 +3140,40 @@ class JobExecutor:
                     os.close(supervisor_ready_write)
                     supervisor_ready_write = None
                 if supervisor_ready_read is not None:
-                    ready_task = asyncio.create_task(
-                        asyncio.to_thread(os.read, supervisor_ready_read, 1),
-                        name=f"patchbay-supervisor-ready-{job_id}",
-                    )
-                    while not ready_task.done():
-                        try:
-                            await asyncio.shield(ready_task)
-                        except asyncio.CancelledError:
-                            # Cancellation is recorded, but the supervisor is
-                            # not signalled until it confirms that its TERM/INT
-                            # handlers and cleanup-proof path are installed.
-                            launch_cancelled = True
-                            current_task = asyncio.current_task()
-                            if current_task is not None and hasattr(
-                                current_task, "uncancel"
-                            ):
-                                current_task.uncancel()
-                    if ready_task.result() != b"1":
-                        raise RuntimeError(
-                            "Codex process supervisor exited before publishing readiness"
-                        )
+                    readiness_error = None
+                    try:
+                        if launch_cancelled:
+                            raise asyncio.CancelledError()
+                        if await self._await_supervisor_ready(supervisor_ready_read, job_id) != b'1':
+                            readiness_error = 'Supervisor readiness was missing or invalid.'
+                    except asyncio.CancelledError:
+                        launch_cancelled = True
+                        current_task = asyncio.current_task()
+                        if current_task is not None and hasattr(current_task, 'uncancel'):
+                            current_task.uncancel()
+                        readiness_error = 'Supervisor startup cancelled before target release.'
+                    except asyncio.TimeoutError:
+                        readiness_error = 'Supervisor readiness timed out before target release.'
+                    except OSError:
+                        readiness_error = 'Supervisor readiness descriptor failed before target release.'
+                    if readiness_error:
+                        # Close the sole target-release capability first. The
+                        # exact unreaped child handle remains owned throughout.
+                        os.close(launch_gate_write)
+                        launch_gate_write = None
+                        cleanup = asyncio.create_task(self._abort_pre_ready_supervisor(
+                            job_id, process, readiness_error, cancelled=launch_cancelled))
+                        while not cleanup.done():
+                            try:
+                                await asyncio.shield(cleanup)
+                            except asyncio.CancelledError:
+                                current_task = asyncio.current_task()
+                                if current_task is not None and hasattr(current_task, 'uncancel'):
+                                    current_task.uncancel()
+                        cleanup.result()
+                        if startup_gate is not None:
+                            startup_gate.release('supervisor_readiness_ended')
+                        return
                     self._publish_supervisor_gated_state(
                         job_id, int(getattr(process, "pid", 0) or 0)
                     )
@@ -3018,6 +3218,8 @@ class JobExecutor:
                         launch_cancelled or self._job_launch_blocked(job_id)
                     )
                     if not cancelled_during_launch and launch_gate_write is not None:
+                        self.job_manager.mutate_job_options(job_id, lambda current: {**current,
+                            '_supervisor_target_gate_committed': True, '_supervisor_readiness_pending': False})
                         os.write(launch_gate_write, b"1")
                         os.close(launch_gate_write)
                         launch_gate_write = None
@@ -3025,7 +3227,8 @@ class JobExecutor:
                     if launch_gate_write is not None:
                         os.close(launch_gate_write)
                         launch_gate_write = None
-                    startup_gate.release("cancelled_during_process_launch")
+                    if startup_gate is not None:
+                        startup_gate.release("cancelled_during_process_launch")
                     current = self.job_manager.get_job(job_id)
                     if current is not None and current.state not in {
                         JobState.COMPLETED,
@@ -3083,6 +3286,11 @@ class JobExecutor:
             except Exception:
                 if startup_gate is not None:
                     startup_gate.release("process_launch_failed")
+                if spawn_task is not None and spawn_task.done() and not spawn_task.cancelled():
+                    try:
+                        self.processes[job_id] = spawn_task.result()
+                    except Exception:
+                        pass  # Failed spawn has no returned handle; keep its durable uncertainty.
                 raise
             finally:
                 for descriptor in (
@@ -3243,6 +3451,12 @@ class JobExecutor:
                     )
                 
                 result = redact_sensitive_output(result)
+                result['native_terminal_evidence'] = bool(
+                    capture.semantic_terminal_seen or capture.stdout_turn_completed_seen
+                )
+                if not result['native_terminal_evidence']:
+                    result['native_finality'] = 'process_exit_only'
+                    result.setdefault('report_completeness', 'partial_unconfirmed_native_terminal')
                 
                 stdout_lines = [
                     line for line in stdout.decode("utf-8", errors="replace").splitlines()
@@ -3251,7 +3465,7 @@ class JobExecutor:
                 explicit_turn_failure = self._json_event_type_seen(
                     stdout_lines, "turn.failed"
                 )
-                failure = (
+                failure = self._native_failure(completed_job) or (
                     self._classify_codex_failure(stdout, stderr, process.returncode)
                     if process.returncode not in (None, 0) or explicit_turn_failure
                     else None
@@ -3262,6 +3476,8 @@ class JobExecutor:
                     # A recognized process-level failure is stronger evidence
                     # than that generic session completion signal.
                     result = self._attach_failure_diagnostic(result, failure)
+                    if getattr(completed_job, 'native_outcome', None):
+                        result['native_outcome'] = dict(completed_job.native_outcome)
                     result.setdefault("failure_diagnostic", {})["prior_completion_source"] = (
                         capture.terminal_source
                         if capture.semantic_terminal_seen
@@ -3766,7 +3982,10 @@ class JobExecutor:
                     int(getattr(process, "pid", 0) or 0),
                 )
                 session_id = str(state.get("session_id") or "")
-                if session_id and session_observer is None:
+                current_job = self.job_manager.get_job(job_id)
+                transcript_baseline_proven = (current_job is None or
+                    (current_job.options or {}).get('_session_baseline_proven') is not False)
+                if session_id and session_observer is None and transcript_baseline_proven:
                     session_observer = self._session_terminal_observer(
                         session_id,
                         not_before=process_started_at,
@@ -3776,7 +3995,14 @@ class JobExecutor:
                             else 0
                         ),
                     )
-                current_job = self.job_manager.get_job(job_id)
+                    if current_job is not None and hasattr(session_observer, '_checkpoint'):
+                        session_observer._checkpoint = dict(
+                            (current_job.options or {}).get('_session_scan_checkpoint') or {})
+                if current_job is not None and self._native_failure(current_job):
+                    self._recover_native_outcome(current_job)
+                    state['native_terminal_failed'] = True
+                    await self._terminate_process(job_id, process)
+                    break
                 durable_completion = bool(
                     current_job is not None
                     and current_job.state == JobState.COMPLETED
@@ -3797,6 +4023,8 @@ class JobExecutor:
                             final_message=terminal.final_message,
                             stdout=stdout_capture.value(),
                             stderr=stderr_capture.value(),
+                            snapshot=terminal,
+                            observer=session_observer,
                         )
                 if (
                     state.get("stdout_turn_completed_seen")
@@ -3889,7 +4117,7 @@ class JobExecutor:
                     state["total_timed_out"] = True
                     await self._terminate_process(job_id, process)
                     break
-            if state.get("semantic_terminal_seen"):
+            if state.get("semantic_terminal_seen") or state.get('native_terminal_failed'):
                 settled = await self._settle_process_tasks_bounded(
                     tasks,
                     timeout_seconds=self._post_completion_cleanup_timeout_seconds(),
@@ -4072,6 +4300,8 @@ class JobExecutor:
         now = time.time()
         item: Dict[str, Any] = {}
         stdout_completion_observed = False
+        event = None
+        announced_session_id = None
         if text:
             try:
                 event = json.loads(text)
@@ -4081,6 +4311,7 @@ class JobExecutor:
                 event_label = str(event.get("type") or "json_event")
                 progress = self._event_progress_label(event)
                 session_id = self._session_id_from_event(event)
+                announced_session_id = session_id
                 checkpoint = self._checkpoint_from_event(event)
                 item = self._event_item_from_event(event)
                 candidate = self._completion_candidate_from_event(event)
@@ -4092,6 +4323,22 @@ class JobExecutor:
                     state["stdout_turn_completed_at"] = now
                     stdout_completion_observed = True
         job = self.job_manager.get_job(job_id)
+        if isinstance(event, dict) and job is not None:
+            expected = str(state.get('session_id') or job.session_id or (job.options or {}).get('resume_session_id') or '')
+            if announced_session_id:
+                state['observed_session_id'] = announced_session_id
+            mismatch = bool(session_id and expected and session_id != expected)
+            if mismatch or event_label in {'turn.failed', 'error'}:
+                detail = event.get('error') if isinstance(event.get('error'),dict) else {}
+                self.job_manager.record_native_outcome(job_id,
+                    kind='session_identity_conflict' if mismatch else event_label,
+                    expected_session_id=expected, observed_session_id=str(state.get('observed_session_id') or ''),
+                    diagnostic=str(detail.get('message') or event.get('message') or '')[:2048],
+                    payload_sha256=hashlib.sha256(chunk).hexdigest(),
+                    stream_offset=int(job.stdout_bytes_seen or 0)+len(chunk))
+                if mismatch:
+                    state['session_identity_conflict'] = True
+                    session_id = None
         if stdout_completion_observed and job is not None:
             candidate_result = state.get("stdout_completion_candidate")
             if not isinstance(candidate_result, dict):
@@ -4134,6 +4381,9 @@ class JobExecutor:
             session_started = True
         else:
             session_started = False
+        if announced_session_id and job is not None and isinstance(job.native_execution_provenance, dict):
+            updates['native_execution_provenance'] = {**job.native_execution_provenance,
+                'observed_session_id': announced_session_id}
         self.job_manager.update_job_state(
             job_id, JobState.RUNNING,
             _telemetry=not (checkpoint or session_started or stdout_completion_observed), **updates)
@@ -4362,18 +4612,11 @@ class JobExecutor:
         return text[:MAX_CHECKPOINT_TEXT_CHARS].rstrip() + "\n...[checkpoint truncated]"
 
     def _session_id_from_event(self, event: Dict[str, Any]) -> Optional[str]:
-        if event.get("type") == "thread.started":
-            thread_id = event.get("thread_id") or event.get("data", {}).get("thread_id")
-            if thread_id:
-                return str(thread_id)
-        for container_name in ("thread", "data", "payload"):
-            container = event.get(container_name)
-            if isinstance(container, dict):
-                thread_id = container.get("thread_id") or container.get("threadId") or container.get("id")
-                if thread_id:
-                    return str(thread_id)
-        thread_id = event.get("thread_id")
-        return str(thread_id) if thread_id else None
+        if event.get('type') != 'thread.started':
+            return None
+        data = event.get('data') if isinstance(event.get('data'),dict) else {}
+        value = event.get('thread_id') or data.get('thread_id')
+        return value if isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}',value) else None
 
     def _event_progress_label(self, event: Dict[str, Any]) -> str:
         event_type = str(event.get("type") or "json_event")
@@ -4901,25 +5144,15 @@ class JobExecutor:
             try:
                 event = json.loads(line)
                 if isinstance(event, dict):
-                    # Look for thread.started event
-                    if event.get('type') == 'thread.started':
-                        thread_id = event.get('thread_id') or event.get('data', {}).get('thread_id')
-                        if thread_id:
-                            return thread_id
-                    # Also check for thread_id in any event
-                    if 'thread_id' in event:
-                        return event['thread_id']
+                    selected = self._session_id_from_event(event)
+                    if selected:
+                        return selected
             except json.JSONDecodeError:
                 continue
         return None
     
     def _extract_session_id(self, stderr: str) -> Optional[str]:
-        """Extract Codex session ID from stderr (fallback)."""
-        for line in stderr.split('\n'):
-            if 'session' in line.lower() or 'id' in line.lower():
-                match = re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', line)
-                if match:
-                    return match.group(0)
+        """Untyped stderr UUIDs are diagnostic text, never continuation authority."""
         return None
     
     async def cancel_job(self, job_id: str, reason: str = "Cancelled by request") -> Dict[str, Any]:
@@ -5035,8 +5268,8 @@ class JobExecutor:
             and not executor_task.done()
             and latest_options.get(_JOB_PROCESS_SUPERVISOR_VERSION_OPTION)
             == _JOB_PROCESS_SUPERVISOR_VERSION
-            and latest_options.get(_JOB_PROCESS_SUPERVISOR_LAUNCHING_OPTION)
-            is True
+            and (latest_options.get(_JOB_PROCESS_SUPERVISOR_LAUNCHING_OPTION) is True
+                 or latest_options.get('_supervisor_readiness_pending') is True)
             and not getattr(latest_after_cancel, "process_pid", None)
         )
         if launch_cleanup_owned:

@@ -92,4 +92,7 @@ def worker_option_menu(config, *, model=None, max_models=12, include_model_detai
                                        "reasoning_effort": "high (default), xhigh, or max only."},
                   next_step="Start a Luna worker if available; otherwise report the availability blocker.")
     result["reasoning_efforts"] = [item for item in result["reasoning_efforts"] if item["effort"] in WORKER_EFFORTS] if available else []
+    result['execution_qualification'] = dict(catalog_availability_observed=bool(available),
+        native_execution_qualified=False, observed_model=None, nested_helpers_qualified=False,
+        note='Requested root policy and catalog metadata do not qualify native commands, provider routing or nested helpers.')
     return result

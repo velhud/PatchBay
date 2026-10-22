@@ -255,3 +255,19 @@ is recorded externally and does not authorize publication or persist acceptance.
 ## Verify the source and deployment
 
 Run the exact matrix in [TESTING.md](TESTING.md). Mac checks verify portable mechanics; Linux/WSL2 execution and the deployed ordinary-Chat route require their own qualification. No PR is created by the Author workflow. See [Author operations](docs/authoring/operations.md) for explicit inbox watch, recovery, pause, revocation and policy changes.
+
+### Native execution evidence
+
+The supported native adapter is headless `codex exec` / exact-session resume.
+Its finite pre-target supervisor handshake defaults to 10 seconds; it is separate
+from the model turn budget. Typed native failures and identity conflicts cannot
+be erased by generic completion. Preserve cleanup fences and resolve identity
+conflicts before continuation or acceptance.
+
+When a report returns `report_truncated=true`, use the same worker inspect tool
+with `view="report_source"`, its `report_source.sha256`, `report_offset=0` and
+`max_bytes`; follow `next_offset` until `has_more=false`. The returned UTF-8
+representation can be privacy-filtered. A missing complete source stays explicit.
+See the [S04 contract](docs/repairs/2026-10-22-s04-native-execution.md) for the
+offline installation-manifest helper, source bounds and separate native/client
+qualification recipe. No canary runs automatically.

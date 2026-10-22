@@ -165,7 +165,7 @@ async def test_parse_codex_agent_message_content_list_jsonl(tmp_path):
     executor = JobExecutor(config, manager)
     result_file = tmp_path / "result.json"
     stdout = (
-        '{"type":"thread.started","thread":{"id":"session-nested"}}\n'
+        '{"type":"thread.started","thread_id":"session-nested"}\n'
         '{"type":"item.completed","item":{"id":"item_1","type":"agent_message",'
         '"content":[{"type":"output_text","text":"{\\"summary\\":\\"CONTENT_OK\\",'
         '\\"detailed_report\\":\\"Parsed from content list.\\",\\"evidence\\":[\\"file A\\"],'
@@ -203,7 +203,8 @@ async def test_parse_codex_agent_message_content_list_jsonl(tmp_path):
     assert result["summary"] == "CONTENT_OK"
     assert result["detailed_report"] == "Parsed from content list."
     assert result["evidence"] == ["file A"]
-    assert executor._session_id_from_event({"type": "thread.started", "thread": {"id": "session-nested"}}) == "session-nested"
+    assert executor._session_id_from_event({"type": "thread.started", "thread_id": "session-nested"}) == "session-nested"
+    assert executor._session_id_from_event({"type": "thread.started", "thread": {"id": "session-nested"}}) is None
     assert checkpoint["summary"] == "Checkpoint content list."
     assert checkpoint["evidence_count"] == 1
 

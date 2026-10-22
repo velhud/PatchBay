@@ -148,3 +148,18 @@ The [MCP interface contract](mcp-interface-contract.md) specifies safe selector
 errors, supported versions, bounded text decisions, post-effect fault recovery
 and the complete Author effect/annotation table. Full evidence remains structured
 or paged; source publication does not establish native-client qualification.
+
+## Native evidence and complete report source
+
+The existing local and Hub worker inspect tools accept `view="report_source"`,
+`report_source_sha256`, `report_offset` and `max_bytes`. Resolve the same worker,
+follow returned `next_offset` while `has_more=true`, and preserve raw versus
+returned source hashes and privacy filtering. Truncated previews expose their
+original sizes, retained ranges and complete-source availability. No tool was
+added; canonical Hub still has 31 tools.
+
+Native identity conflicts block messaging and integration preview. Public
+launch provenance distinguishes requested model/effort from unknown observed
+values, and connector/catalog availability from static/native/workflow/client
+qualification. The adapter is headless; see the
+[S04 contract](../repairs/2026-10-22-s04-native-execution.md).

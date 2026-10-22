@@ -138,3 +138,10 @@ Its local measurements leave native mixed-workload and client qualification expl
 - [Unified reconciliation record](docs/repairs/2026-10-20-unified-reconciliation.md)
 - [Security](SECURITY.md)
 - [CodexPro attribution](NOTICE)
+
+The [S04 native execution contract](docs/repairs/2026-10-22-s04-native-execution.md)
+adds durable typed failure evidence, restart-safe bounded session cursors,
+explicit clipped reports with complete-source paging, bounded supervisor readiness
+and passive launch provenance. Connector readiness, static installation matching,
+native execution and client qualification remain separate. These source changes
+do not update existing trial deployments.

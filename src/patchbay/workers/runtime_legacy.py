@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -55,7 +56,7 @@ from patchbay.repo_locks import (
     job_requires_repo_mutation_lock,
     mark_repo_lock_options,
 )
-from patchbay.security import redact_sensitive_output, validate_allowed_path
+from patchbay.security import redact_sensitive_output, redact_text, validate_allowed_path
 from patchbay.tools.errors import WorkerNameConflict
 
 
@@ -395,6 +396,12 @@ class WorkerRuntime:
         )
         if refusal:
             return refusal
+        if (latest.native_outcome or {}).get('kind') == 'session_identity_conflict':
+            view = self._public_view(jobs, request_context=request_context)
+            view.update(accepted=False, can_message=False, can_message_now=False,
+                can_message_reason='native_session_identity_conflict',
+                note='Resolve the native identity conflict before continuing this worker; do not replace its session implicitly.')
+            return view
         cleanup_blocker = self._workspace_cleanup_blocker_for_jobs(jobs)
         if (
             latest.state not in (JobState.PENDING, JobState.RUNNING)
@@ -503,6 +510,10 @@ class WorkerRuntime:
             existing_options=latest.options or {},
         )
         options["resume_session_id"] = session_id
+        prior = next((job.native_execution_provenance for job in reversed(jobs)
+            if isinstance(job.native_execution_provenance, dict)), None)
+        if prior:
+            options['_expected_native_binding'] = {key:prior[key] for key in ('home_id','workspace_id') if key in prior}
         if takeover:
             options["_mcp_takeover_reason"] = clean_takeover_reason(takeover_reason)
             options["_mcp_takeover_at"] = time.time()
@@ -557,6 +568,8 @@ class WorkerRuntime:
         start_line: Optional[int] = None,
         end_line: Optional[int] = None,
         max_bytes: Optional[int] = None,
+        report_source_sha256: Optional[str] = None,
+        report_offset: int = 0,
         accepted_dirty_base: Optional[list[str]] = None,
         request_context: Optional[RequestContext] = None,
     ) -> Dict[str, Any]:
@@ -632,6 +645,8 @@ class WorkerRuntime:
                     return payload
                 if view == "changes":
                     return self._changes_view(jobs, request_context=request_context)
+                if view == 'report_source':
+                    return self._report_source_view(jobs, report_source_sha256, report_offset, max_bytes)
                 if view == "diff":
                     return self._diff_view(jobs, file_path=file_path, request_context=request_context)
                 if view == "file":
@@ -649,8 +664,54 @@ class WorkerRuntime:
                         accepted_dirty_base=accepted_dirty_base,
                         request_context=request_context,
                     )
-                raise ValueError("view must be one of: report, compact, status, diagnostics, changes, diff, file, integration_preview")
+                raise ValueError("view must be one of: report, report_source, compact, status, diagnostics, changes, diff, file, integration_preview")
             await asyncio.sleep(0.25)
+
+    def _report_source_view(self, jobs, source_sha, offset, max_bytes):
+        """Read only an immutable report belonging to this resolved worker."""
+        if source_sha is not None and not re.fullmatch(r'[0-9a-f]{64}', source_sha):
+            raise ValueError('report_source_sha256 must identify an exact retained report')
+        selected = next((job for job in reversed(jobs) if isinstance(job.result, dict)
+            and isinstance(job.result.get('report_source'), dict)
+            and (source_sha is None or job.result['report_source'].get('sha256') == source_sha)), None)
+        if selected is None:
+            raise ValueError('No matching complete report source is retained for this worker')
+        source_sha = selected.result['report_source']['sha256']
+        if not re.fullmatch(r'[0-9a-f]{64}', source_sha):
+            raise ValueError('Invalid retained report identity')
+        root = self.job_manager.job_logs_dir
+        path = root/f'{selected.job_id}_report_{source_sha}.txt'
+        if path.is_symlink() or path.resolve().parent != root.resolve():
+            raise ValueError('Unsafe retained report source')
+        from patchbay.native_profile import open_regular
+        with open_regular(path) as handle:
+            raw = handle.read(4*1024*1024+1)
+        if len(raw) > 4*1024*1024 or hashlib.sha256(raw).hexdigest() != source_sha:
+            raise ValueError('Retained report source changed or exceeds policy')
+        text = raw.decode('utf-8')
+        returned = self._safe_public_text(text, self._private_paths_for_jobs(jobs),
+            max_chars=len(text), truncation_label='report source').encode('utf-8')
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= len(returned):
+            raise ValueError('Invalid report_offset')
+        limit = max(1, min(int(max_bytes or 8192), 65536))
+        chunk = returned[offset:offset+limit]
+        while chunk:
+            try:
+                content = chunk.decode('utf-8')
+                break
+            except UnicodeDecodeError as error:
+                if error.start == 0:
+                    raise ValueError('report_offset or max_bytes splits a UTF-8 character') from error
+                chunk = chunk[:error.start]
+        else:
+            content = ''
+        following = offset+len(chunk)
+        worker_id, name = self._worker_identity(jobs)
+        return dict(worker_id=worker_id, name=name, view='report_source', text=content,
+            source_sha256=source_sha, returned_source_sha256=hashlib.sha256(returned).hexdigest(),
+            redacted=returned != raw, offset_basis='returned_utf8', report_offset=offset,
+            next_offset=following if following < len(returned) else None,
+            has_more=following < len(returned), total_bytes=len(returned), max_bytes_applied=limit)
 
     async def _locked_integration_preview(
         self,
@@ -2441,6 +2502,7 @@ class WorkerRuntime:
                 and workspace["available"]
                 and turn_state not in {"queued", "starting", "working"}
                 and not cleanup_blocker["blocked"]
+                and (latest.native_outcome or {}).get('kind') != 'session_identity_conflict'
             ),
             "cleanup_pending": cleanup_pending,
             "cleanup_unresolved": cleanup_unresolved,
@@ -3264,6 +3326,9 @@ class WorkerRuntime:
             "current_command": self._manager_command_snapshot(view),
             "latest_partial_note": view.get("latest_partial_note"),
             "report_files_note": view.get("worker_report_files_note"),
+            "report_truncated": view.get('report_truncated'),
+            "report_source": view.get('report_source'),
+            "report_source_unavailable": view.get('report_source_unavailable'),
             "suggested_action": liveness.get("suggested_action"),
             "status_line": view.get("status_line"),
             "can_message_now": view.get("can_message_now"),
@@ -3277,6 +3342,11 @@ class WorkerRuntime:
 
     def _report_worker_view(self, view: Dict[str, Any]) -> Dict[str, Any]:
         keys = [
+            'session_turn_attribution', 'external_session_use_qualified', 'native_finality',
+            'native_terminal_evidence', 'session_source_status',
+            'native_execution_provenance',
+            'report_completeness', 'report_truncated', 'report_original_characters',
+            'report_original_bytes', 'report_retained_ranges', 'report_source', 'report_source_unavailable',
             "worker_id",
             "name",
             "workspace_id",
@@ -4303,6 +4373,10 @@ class WorkerRuntime:
     ) -> Dict[str, Any]:
         view = self._changes_view(jobs, request_context=request_context)
         latest = jobs[-1]
+        if (latest.native_outcome or {}).get('kind') == 'session_identity_conflict':
+            view.update(view='integration_preview', can_apply=False, applied=False,
+                apply_check='native_session_identity_conflict')
+            return view
         workspace = self._workspace_for_jobs(jobs)
         view.update(
             {
@@ -4609,6 +4683,7 @@ class WorkerRuntime:
             and bool(session_id)
             and workspace_available
             and not cleanup_blocker["blocked"]
+            and (latest.native_outcome or {}).get('kind') != 'session_identity_conflict'
         )
         liveness = self._liveness_for_job(latest, session_id=session_id, latest_partial_note=latest_partial_note)
 
@@ -4635,6 +4710,7 @@ class WorkerRuntime:
             "workspace_available": workspace_available,
             "state": state,
             "report": self._report_for_jobs(jobs),
+            'native_execution_provenance': latest.native_execution_provenance,
             "has_session": bool(session_id),
             "can_message": can_message,
             "can_message_reason": self._can_message_reason(
@@ -4668,6 +4744,15 @@ class WorkerRuntime:
             view["changes_checked"] = False
         else:
             view["worker_report_files"] = self._worker_report_files(jobs)
+        if isinstance(latest.result, dict):
+            for field in ('report_completeness', 'report_truncated', 'report_original_characters',
+                          'report_original_bytes', 'report_retained_ranges', 'report_source', 'report_source_unavailable',
+                          'session_turn_attribution', 'external_session_use_qualified', 'native_finality',
+                          'native_terminal_evidence', 'session_source_status'):
+                if field in latest.result:
+                    view[field] = latest.result[field]
+        if (latest.native_outcome or {}).get('kind') == 'session_identity_conflict':
+            view['can_message_reason'] = 'native_session_identity_conflict'
         if model:
             view["model"] = model
         if reasoning_effort:

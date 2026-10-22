@@ -227,3 +227,19 @@ See [qualification](../authoring/qualification.md),
 [TESTING.md](../../TESTING.md). Local tests, generated catalogs and source
 publication do not establish native Pro, Linux execution, deployment, reboot,
 power-loss or macOS worker-cleanup qualification.
+
+## Native reports and qualification boundaries
+
+Worker inspect adds a read-only `report_source` view to its existing tool. Its
+`report_source_sha256` selects an exact source of that worker; `report_offset`
+and `max_bytes` page the returned privacy-filtered UTF-8 representation. Preserve
+`next_offset`, `has_more`, original/returned hashes, completeness and missing
+source fields across adapters. Compact text retains the scalar decision metadata
+and source hash; complete bodies and nested details remain in structured output. A report preview does not
+substitute for required omitted evidence. The canonical Hub count remains 31.
+
+Typed negative native evidence outranks generic completion. Identity conflicts
+block continuation/integration and cleanup remains independently fenced. Readiness
+and catalog results expose their qualification scope; no model canary, nested
+helper assurance or interactive approval channel is implied. See the
+[S04 contract](../repairs/2026-10-22-s04-native-execution.md).

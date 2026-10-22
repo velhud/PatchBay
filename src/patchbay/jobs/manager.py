@@ -115,6 +115,8 @@ class JobInfo:
     completion_evidence_result_status: Optional[str] = None
     completion_evidence_version: Optional[int] = None
     completion_evidence_result: Optional[Dict[str, Any]] = None
+    native_outcome: Optional[Dict[str, Any]] = None
+    native_execution_provenance: Optional[Dict[str, Any]] = None
     wrapper_cleanup_outcome: Optional[str] = None
     late_terminal_source: Optional[str] = None
     late_terminal_observed_at: Optional[float] = None
@@ -140,6 +142,8 @@ class JobInfo:
             data["completion_evidence_result"] = redact_sensitive_output(
                 self.completion_evidence_result
             )
+        if self.native_outcome:
+            data['native_outcome'] = redact_sensitive_output(self.native_outcome)
         if self.checkpoints:
             data["checkpoints"] = redact_sensitive_output(self.checkpoints)
         if self.error:
@@ -541,6 +545,7 @@ class JobManager:
                 state in {JobState.FAILED, JobState.CANCELLED}
                 and job.state in (JobState.PENDING, JobState.RUNNING)
                 and job.terminal_source in {"session_task_complete", "stdout_turn_completed"}
+                and not authoritative_process_failure
             ):
                 job.late_terminal_source = str(kwargs.get("terminal_source") or "manager_cancellation")
                 job.late_terminal_observed_at = float(kwargs.get("terminal_observed_at") or time.time())
@@ -617,6 +622,9 @@ class JobManager:
             job = self.jobs.get(job_id)
             if job is None:
                 raise ValueError(f"Unknown job: {job_id}")
+            if job.native_outcome and not job.native_outcome.get('conflicting_positive_source'):
+                job.native_outcome['conflicting_positive_source'] = source
+                self._persist_job(job)
             if job.state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
                 return False
             if job.completion_evidence_source:
@@ -631,8 +639,32 @@ class JobManager:
             job.completion_evidence_result_status = bounded_status
             job.completion_evidence_version = 1
             job.completion_evidence_result = bounded_result
+            if job.native_outcome:
+                job.native_outcome['conflicting_positive_source'] = source
             self._persist_job(job)
             return True
+
+    def record_native_outcome(self, job_id: str, *, kind: str, expected_session_id: str,
+                              observed_session_id: str, diagnostic: str, payload_sha256: str,
+                              stream_offset: int) -> None:
+        """Latch typed negative facts before display-tail trimming or throttling."""
+        if kind not in {'turn.failed', 'error', 'session_identity_conflict'}:
+            raise ValueError('Unsupported native terminal evidence')
+        with self._state_lock:
+            job = self.jobs[job_id]
+            if job.native_outcome and (kind != 'session_identity_conflict'
+                    or job.native_outcome.get('kind') == 'session_identity_conflict'):
+                return
+            prior = dict(job.native_outcome) if job.native_outcome else None
+            job.native_outcome = dict(version=1, job_id=job_id, source='exec-jsonl-v1',
+                kind=kind, expected_session_id=str(expected_session_id)[:160],
+                observed_session_id=str(observed_session_id)[:160],
+                diagnostic=redact_sensitive_output(str(diagnostic)[:2048]),
+                payload_sha256=payload_sha256, stream_offset=max(0, int(stream_offset)),
+                observed_at=time.time(), conflicting_positive_source=job.completion_evidence_source)
+            if prior:
+                job.native_outcome['prior_negative'] = prior
+            self._persist_job(job)
 
     def _bounded_completion_evidence_result(
         self,

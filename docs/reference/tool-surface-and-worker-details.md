@@ -101,3 +101,22 @@ The Linux/WSL2 guard remains part of the execution qualification contract.
 ## Compatibility and exclusions
 
 Export-only branches and temporary delivery workflow material are not production behavior and are not imported merely to merge every branch name. Separate dependency maintenance and external Desktop bridge work remain separate until independently qualified.
+
+## Native evidence, ownership and report sources
+
+Typed top-level native failure receipts survive bounded display logs and restart.
+Expected/observed session IDs stay separate, and identity conflicts refuse
+continuation and acceptance. Transcript recovery persists exact-source cursors
+with bounded reconstruction; home/workspace drift cannot silently select another
+conversation. External concurrent use of a managed native session is unqualified.
+
+Clipped reports explicitly return completeness, original sizes and ranges. Use
+`view="report_source"` on the existing worker inspect tool, with the source hash
+and returned byte offset, until `has_more=false`. Pages are UTF-8-safe and scoped
+to retained artifacts of the resolved worker; hashes and filtering are explicit.
+
+Supervisor startup has a finite readiness handshake before target-gate release.
+Discovery retains start identity through signalling; available Linux pidfds bind
+the final signal, while numeric fallback has a residual race. Unknown cleanup
+stays fenced. See the [S04 contract](../repairs/2026-10-22-s04-native-execution.md)
+for exact limits, owners and separately authorized native/client qualification.

@@ -105,6 +105,8 @@ EDGE_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
         "start_line",
         "end_line",
         "max_bytes",
+        "report_source_sha256",
+        "report_offset",
         "accepted_dirty_base",
     ),
     "codex_worker_integrate": (
