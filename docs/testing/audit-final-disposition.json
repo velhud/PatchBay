@@ -1,0 +1,2955 @@
+{
+  "programme": "original S01-S10; ends at10",
+  "baseline_before_S10": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3",
+  "research_pin": "60817e37c910ce578b43a7c623a166576787bb69",
+  "counts": {
+    "prior_findings": 82,
+    "S10_findings": 7,
+    "total_findings": 89,
+    "inherited_risks": 42,
+    "original_operational_cases": 52,
+    "inherited_work_packages": 22,
+    "crosswalk_entries": 116,
+    "composed_counterexamples": 28,
+    "S10_research_specs": 42
+  },
+  "findings": [
+    {
+      "stage": "S01",
+      "id": "PB-S01-F001",
+      "title": "PB-S01-F001",
+      "historical_disposition": "implemented_verified_locally",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S01",
+      "id": "PB-S01-F002",
+      "title": "PB-S01-F002",
+      "historical_disposition": "implemented_verified_locally",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S01",
+      "id": "PB-S01-F003",
+      "title": "PB-S01-F003",
+      "historical_disposition": "implemented_verified_locally",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S01",
+      "id": "PB-S01-F004",
+      "title": "PB-S01-F004",
+      "historical_disposition": "implemented_local_contract_live_qualification_pending",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S01",
+      "id": "PB-S01-F005",
+      "title": "PB-S01-F005",
+      "historical_disposition": "implemented_verified_locally",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S01",
+      "id": "PB-S01-F006",
+      "title": "PB-S01-F006",
+      "historical_disposition": "implemented_verified_locally",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S01",
+      "id": "PB-S01-F007",
+      "title": "PB-S01-F007",
+      "historical_disposition": "retain_existing_hints_experiment_deferred",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S01",
+      "id": "PB-S01-F008",
+      "title": "PB-S01-F008",
+      "historical_disposition": "local_inventory_and_contracts_implemented_native_qualification_deferred",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "6b747503e66bccee6db25098ddaa7c4179587beb"
+    },
+    {
+      "stage": "S02",
+      "id": "S02-F01",
+      "title": "S02-F01",
+      "historical_disposition": "IMPLEMENTED_AND_S01_RETAINED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "34fcdd92fe9481a0b6e9b68c580d555e829f93d5"
+    },
+    {
+      "stage": "S02",
+      "id": "S02-F02",
+      "title": "S02-F02",
+      "historical_disposition": "IMPLEMENTED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "34fcdd92fe9481a0b6e9b68c580d555e829f93d5"
+    },
+    {
+      "stage": "S02",
+      "id": "S02-F03",
+      "title": "S02-F03",
+      "historical_disposition": "IMPLEMENTED_WITH_EXPLICIT_COMPATIBILITY",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "34fcdd92fe9481a0b6e9b68c580d555e829f93d5"
+    },
+    {
+      "stage": "S02",
+      "id": "S02-F04",
+      "title": "S02-F04",
+      "historical_disposition": "IMPLEMENTED_AND_EXISTING_AUTHORITY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "34fcdd92fe9481a0b6e9b68c580d555e829f93d5"
+    },
+    {
+      "stage": "S02",
+      "id": "S02-F05",
+      "title": "S02-F05",
+      "historical_disposition": "IMPLEMENTED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "34fcdd92fe9481a0b6e9b68c580d555e829f93d5"
+    },
+    {
+      "stage": "S02",
+      "id": "S02-F06",
+      "title": "S02-F06",
+      "historical_disposition": "LOCAL_SCOPE_VERIFIED_NATIVE_DEBT",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "34fcdd92fe9481a0b6e9b68c580d555e829f93d5"
+    },
+    {
+      "stage": "S02",
+      "id": "S02-F07",
+      "title": "S02-F07",
+      "historical_disposition": "DOCUMENTED_DEFERRED_S08_S09",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "34fcdd92fe9481a0b6e9b68c580d555e829f93d5"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F001",
+      "title": "PB-S03-F001",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F002",
+      "title": "PB-S03-F002",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F003",
+      "title": "PB-S03-F003",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F004",
+      "title": "PB-S03-F004",
+      "historical_disposition": "deferred_with_measured_mitigation",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F005",
+      "title": "PB-S03-F005",
+      "historical_disposition": "implemented_local_native_deferred",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F006",
+      "title": "PB-S03-F006",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F007",
+      "title": "PB-S03-F007",
+      "historical_disposition": "implemented_manager_author_wait_deferred",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F008",
+      "title": "PB-S03-F008",
+      "historical_disposition": "deferred_optional_profile",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S03",
+      "id": "PB-S03-F009",
+      "title": "PB-S03-F009",
+      "historical_disposition": "deferred_native_client_gate",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "070d5a2ccfeb67c993386b5c69f372e4718744fc"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F01",
+      "title": "S04-F01",
+      "historical_disposition": "implemented_local",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F02",
+      "title": "S04-F02",
+      "historical_disposition": "implemented_local",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F03",
+      "title": "S04-F03",
+      "historical_disposition": "implemented_local_with_explicit_attribution_boundary",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F04",
+      "title": "S04-F04",
+      "historical_disposition": "implemented_local_native_linux_gate_remaining",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F05",
+      "title": "S04-F05",
+      "historical_disposition": "implemented_local",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F06",
+      "title": "S04-F06",
+      "historical_disposition": "implemented_local",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F07",
+      "title": "S04-F07",
+      "historical_disposition": "implemented_passive_native_client_gates_remaining",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S04",
+      "id": "S04-F08",
+      "title": "S04-F08",
+      "historical_disposition": "headless_profile_retained_optional_migration_not_justified",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "74d9e2e1653d6fcc59c2ac1818ca4022d5f6249a"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F01",
+      "title": "S05-F01",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F02",
+      "title": "S05-F02",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F03",
+      "title": "S05-F03",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F04",
+      "title": "S05-F04",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F05",
+      "title": "S05-F05",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F06",
+      "title": "S05-F06",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F07",
+      "title": "S05-F07",
+      "historical_disposition": "implemented_optional_safeguard",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F08",
+      "title": "S05-F08",
+      "historical_disposition": "implemented",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S05",
+      "id": "S05-F09",
+      "title": "S05-F09",
+      "historical_disposition": "implemented_documented_weaker_contract",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "c3b2ef8bde321711151b7ccfd96f029b3e8ff2b8"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F01",
+      "title": "S06-F01",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F02",
+      "title": "S06-F02",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F03",
+      "title": "S06-F03",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F04",
+      "title": "S06-F04",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F05",
+      "title": "S06-F05",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F06",
+      "title": "S06-F06",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F07",
+      "title": "S06-F07",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F08",
+      "title": "S06-F08",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F09",
+      "title": "S06-F09",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F10",
+      "title": "S06-F10",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F11",
+      "title": "S06-F11",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S06",
+      "id": "S06-F12",
+      "title": "S06-F12",
+      "historical_disposition": "IMPLEMENTED_AND_LOCALLY_VERIFIED",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "current_disposition": "PUBLISHED_PRIOR_LOCAL_MECHANICS_RETAINED; EXTERNAL_GATES_NOT_PROMOTED",
+      "published_implementation": "60817e37c910ce578b43a7c623a166576787bb69"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F01",
+      "title": "JUnit verdict ignores contradictory suite evidence; declaration rejection is encoding-sensitive",
+      "historical_disposition": "source-established conditional defects",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F02",
+      "title": "Collected-count and exit-only checks do not establish an exercised test suite",
+      "historical_disposition": "policy-dependent assurance gap, not a default-policy bypass",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F03",
+      "title": "source_unchanged can be true when source observation never completed",
+      "historical_disposition": "source-established misleading evidence field",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F04",
+      "title": "Executor provenance is stronger than author prose, but is not an independent acceptance oracle",
+      "historical_disposition": "architectural assurance gap with explicit policy choices",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F05",
+      "title": "CI observation collapses distinct producers and can choose green over pending/failing evidence",
+      "historical_disposition": "source-established conditional false-green path",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F06",
+      "title": "Downstream-publication consent is coupled to optional GitHub observation metadata",
+      "historical_disposition": "source-established conditional policy-enforcement gap",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F07",
+      "title": "Feedback mixes trusted decisions with untrusted report text using breakable Markdown framing",
+      "historical_disposition": "source-established presentation weakness; model-exploitation risk unqualified",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F08",
+      "title": "Redacted Manager source lacks explicit transformed-view identity",
+      "historical_disposition": "source-established fidelity limitation and conditional review risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S07",
+      "id": "S07-F09",
+      "title": "Canonical receipt admission validates identity but trusts derived verdict consistency",
+      "historical_disposition": "optional integrity hardening at a trusted boundary",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED_WITH_STATED_LIMITS",
+      "published_implementation": "77bcc72312f5339bb1bcd033e06f653ad2f3a174"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F01",
+      "title": "Detached Author supervisors are not automatically independent of the installed service cgroup",
+      "historical_disposition": "deployment-dependent lifecycle risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "SUPPORTED_CONTRACT_DOCUMENTED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F02",
+      "title": "On-disk source hashing can describe a different release from the code already loaded",
+      "historical_disposition": "conditional qualification-identity risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F03",
+      "title": "Acknowledged state has different durability boundaries across Hub, Edge, blobs and Git",
+      "historical_disposition": "source-established durability-policy mismatch with conditional power-loss risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F04",
+      "title": "Author restore validates each store, but not every SQL-to-Git content reference",
+      "historical_disposition": "source-established integrity-check omission; failure reproduction not run",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F05",
+      "title": "Author restore does not explicitly sync all newly populated directory entries before publication",
+      "historical_disposition": "conditional filesystem durability gap",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F06",
+      "title": "Restore rewinds authority and qualification; activation remains a manual safety boundary",
+      "historical_disposition": "documented limitation with optional fail-closed hardening",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "MANUAL_OFFLINE_CONTRACT_SELECTED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F07",
+      "title": "Root-keyed launcher configuration is written in place and can be torn or replaced before child load",
+      "historical_disposition": "source-established file-publication defect",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F08",
+      "title": "Tunnel-exit and interactive-quit paths still use the three-second server kill default",
+      "historical_disposition": "source-established shutdown-budget inconsistency",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F09",
+      "title": "A verified Hub/Edge database backup is not yet a complete Manager work-recovery package",
+      "historical_disposition": "operational custody/qualification gap, not a defect in the DB backup API",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "DEPLOYMENT_RUNBOOK_AND_TEMPLATE_DELIVERED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S08",
+      "id": "S08-F10",
+      "title": "Local Manager HTTP authorizes bearer possession but does not validate the supplied Origin",
+      "historical_disposition": "source-established ingress contract gap; exposure is configuration-dependent",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "published_implementation": "e1d23d9889edef5c35d9cfead0f501a89dc1b60d"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F01",
+      "title": "Keyed Manager admission scans all retained jobs while holding one cross-repository admission lock",
+      "historical_disposition": "source-established scaling and serialization risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "RETAIN_AUTHORITATIVE_SCAN_MEASURED_LIMITS",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F02",
+      "title": "Retained review inventories live inside hot job snapshots and amplify state copying and persistence",
+      "historical_disposition": "source-established representation/retention risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "RETAIN_IMMUTABLE_TARGETS_LARGE_AGGREGATES_DEFERRED",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F03",
+      "title": "Manager candidate construction buffers full Git output before the integration response limit is applied",
+      "historical_disposition": "source-established pre-limit allocation risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "IMPLEMENTED_BOUNDED_COMPLETE_PRODUCER_CAPTURE",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F04",
+      "title": "The automatic Author scheduler can repeatedly skip a runnable request beyond its first 100 queued rows",
+      "historical_disposition": "conditional source-established liveness defect; not runtime reproduced",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "IMPLEMENTED_PERSISTENT_FAIR_WINDOW",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F05",
+      "title": "Author admission repeatedly scans and re-hashes historical receipts while holding the scheduler reservation",
+      "historical_disposition": "source-established query/I/O amplification; performance unmeasured",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "IMPLEMENTED_INDEXES_RETAIN_FRESH_RECEIPT_READS",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F06",
+      "title": "Small Author source and feedback pages can reprocess the complete immutable source or receipt on every call",
+      "historical_disposition": "source-established repeated-read amplification",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "STRONG_READER_RETAINED_EXPORT_ROUTE_DOCUMENTED",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F07",
+      "title": "Context and feedback assembly have large finite memory envelopes outside the native-job admission budget",
+      "historical_disposition": "source-established aggregate memory risk",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "IMPLEMENTED_STREAMING_WITH_DISK_LIMITS",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F08",
+      "title": "Conservative evidence retention lacks a complete bounded hot/archive lifecycle; even no-op GC can revisit historical evidence",
+      "historical_disposition": "source-established growth characteristic plus retirement-policy gap",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "IMPLEMENTED_NOOP_GC_AND_EVENT_TAIL_RETAIN_PROTECTIVE_HISTORY",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F09",
+      "title": "The Manager artifact inbox ships with optional size/count caps unset and repeats whole-artifact work across consumers",
+      "historical_disposition": "configuration-dependent capacity risk and local optimization opportunity",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "IMPLEMENTED_FINITE_IMPORT_STREAM_PAGES_AND_NO_CLOBBER",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S09",
+      "id": "S09-F10",
+      "title": "Repeated-use capacity, cache validity and engineering economics still require a versioned operating envelope",
+      "historical_disposition": "qualification gap and explicit policy/maintainability decision",
+      "scope": "Selected local mechanisms only; original external/compound obligations retained",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "current_disposition": "VERSIONED_LOCAL_ENVELOPE_EXTERNAL_QUALIFICATION_DEFERRED",
+      "published_implementation": "4eb9ba96c41f66ad1a2a009b63e9fcda95bf3ba3"
+    },
+    {
+      "stage": "S10",
+      "id": "S10-F01",
+      "title": "A newly constructed Manager review target can lose its brief identity after job reload",
+      "current_disposition": "IMPLEMENTED_AND_LOCALLY_CHECKED",
+      "related_local_tests": [
+        "tests/test_s10_review_provenance.py"
+      ],
+      "scope": "Local source and recorded fixture checks only; complete research recipes and external qualification are not inferred"
+    },
+    {
+      "stage": "S10",
+      "id": "S10-F02",
+      "title": "Single-boundary recovery coverage does not yet close the composed lost-reply, authority-change and recovery schedules",
+      "current_disposition": "EXISTING_CONTROLS_RETAINED_COMPOSED_LOCAL_PROOF",
+      "related_local_tests": [
+        "tests/authoring/test_s10_composition.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s05_publication.py"
+      ],
+      "scope": "Local source and recorded fixture checks only; complete research recipes and external qualification are not inferred"
+    },
+    {
+      "stage": "S10",
+      "id": "S10-F03",
+      "title": "The qualification record has enforced server bindings and separately declared client facts; they must not be conflated",
+      "current_disposition": "SERVER_BINDINGS_RETAINED_DECLARED_PROFILE_LIMIT_EXPLICIT",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_principals.py",
+        "tests/authoring/test_controller_contracts.py"
+      ],
+      "scope": "Local source and recorded fixture checks only; complete research recipes and external qualification are not inferred"
+    },
+    {
+      "stage": "S10",
+      "id": "S10-F04",
+      "title": "Final acceptance must join source, check interpretation, review and delivery without promoting weaker evidence",
+      "current_disposition": "S07_S06_CONTROLS_RETAINED_JOINED_LOCAL_PROOF",
+      "related_local_tests": [
+        "tests/authoring/test_s10_composition.py",
+        "tests/test_s06_group_contract.py",
+        "tests/test_s06_review.py",
+        "tests/authoring/test_s07_evidence.py"
+      ],
+      "scope": "Local source and recorded fixture checks only; complete research recipes and external qualification are not inferred"
+    },
+    {
+      "stage": "S10",
+      "id": "S10-F05",
+      "title": "Evaluator success is evidence about a named oracle and barrier, not a substitute for current product/client execution",
+      "current_disposition": "EVALUATOR_SCOPE_AND_ORACLE_CUSTODY_IMPLEMENTED",
+      "related_local_tests": [
+        "tests/test_s10_evidence_scope.py",
+        "tests/test_live_hub_v2_eval.py"
+      ],
+      "scope": "Local source and recorded fixture checks only; complete research recipes and external qualification are not inferred"
+    },
+    {
+      "stage": "S10",
+      "id": "S10-F06",
+      "title": "Recovery and efficiency changes need a measured operating envelope and proof that their inverses remain safe",
+      "current_disposition": "S09_SAFE_PATHS_RETAINED_INVERSES_LOCALLY_CHECKED",
+      "related_local_tests": [
+        "tests/authoring/test_s10_composition.py",
+        "tests/authoring/test_s09_repeated_use.py",
+        "tests/test_s09_capacity.py",
+        "tests/test_s02_worker_retry.py"
+      ],
+      "scope": "Local source and recorded fixture checks only; complete research recipes and external qualification are not inferred"
+    },
+    {
+      "stage": "S10",
+      "id": "S10-F07",
+      "title": "Actual ordinary-Pro and installed native qualification remain a capability-specific release gate",
+      "current_disposition": "FINAL_CAPABILITY_SPECIFIC_DISPOSITION_NO_NEW_STAGE",
+      "related_local_tests": [],
+      "scope": "Local source and recorded fixture checks only; complete research recipes and external qualification are not inferred"
+    }
+  ],
+  "inherited_crosswalk": [
+    {
+      "original_id": "F01",
+      "original_title": "UI interruption mistaken for stopped execution",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F02",
+      "original_title": "Turn ends before final persistence",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F03",
+      "original_title": "Conversation unavailable",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F04",
+      "original_title": "Context/summary drift",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F05",
+      "original_title": "Ephemeral author environment loss",
+      "primary_stage": "S05",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "F06",
+      "original_title": "Quota or model fallback changes execution assumptions",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F07",
+      "original_title": "Unknown host tool/generation budget",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F08",
+      "original_title": "Protective stop retried as transient failure",
+      "primary_stage": "S07",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "F09",
+      "original_title": "Plugin not selected for a new message",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F10",
+      "original_title": "Stale catalog confused with partial host discovery",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F11",
+      "original_title": "Pre-ingress discovery failure misdiagnosed",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F12",
+      "original_title": "Catalog overlap and workflow call overhead",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F13",
+      "original_title": "Mixed, repetitive, or historically patched prompts",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F14",
+      "original_title": "Oversized or duplicated model-facing evidence",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F15",
+      "original_title": "Lost success response creates duplicate effects",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F16",
+      "original_title": "Regenerate/new chat creates a different-key duplicate",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F17",
+      "original_title": "Acceptance precedes durable storage",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F18",
+      "original_title": "HTTP lifecycle owns durable jobs",
+      "primary_stage": "S08",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "F19",
+      "original_title": "Uncertain effect is retried as known failure",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F20",
+      "original_title": "Transport session mistaken for task owner",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F21",
+      "original_title": "Lease expires during reasoning",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F22",
+      "original_title": "Source or destination drift",
+      "primary_stage": "S06",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Complete raw Git candidates, retained review, no-commit delivery, explicit dependency source and combined generations retained. Controller combined attestations are not canonical execution receipts.",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ]
+    },
+    {
+      "original_id": "F23",
+      "original_title": "Inconsistent pages create missing evidence or false absence",
+      "primary_stage": "S05",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "F24",
+      "original_title": "Acknowledgment or worker prose becomes false completion",
+      "primary_stage": "S07",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "F25",
+      "original_title": "Monolithic call crosses transport deadline",
+      "primary_stage": "S03",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "F26",
+      "original_title": "Retry/poll storm",
+      "primary_stage": "S03",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "F27",
+      "original_title": "Expired auth or unstable client registration",
+      "primary_stage": "S08",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "F28",
+      "original_title": "Approval ambiguity or stale authority",
+      "primary_stage": "S07",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "F29",
+      "original_title": "Liveness/cancellation/cleanup misclassification",
+      "primary_stage": "S04",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Typed native/process/report and cleanup controls retained with owned local-process fixtures; actual Luna/native Mac/provider/profile gates NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ]
+    },
+    {
+      "original_id": "F30",
+      "original_title": "Worker fan-out starves the control plane",
+      "primary_stage": "S09",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S09 is published and receipted before S10. Bound captures/imports, fair windows, indexes, streaming and GC/tail refinements retained. No new cache/retirement owner; long-history, mixed-native and economic qualification remains open.",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ]
+    },
+    {
+      "original_id": "F31",
+      "original_title": "Storage, backup, or retention breaks claimed durability",
+      "primary_stage": "S08",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "F32",
+      "original_title": "Ingress outage or buffering looks like failed work",
+      "primary_stage": "S08",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "F33",
+      "original_title": "Protocol upgrade is treated as resilience switch",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "F34",
+      "original_title": "Recovery expands scope to unrelated tools or infrastructure",
+      "primary_stage": "S07",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "F35",
+      "original_title": "File transport acceptance confused with candidate acceptance",
+      "primary_stage": "S05",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "F36",
+      "original_title": "Prompt injection through logs/source/worker reports",
+      "primary_stage": "S07",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "F37",
+      "original_title": "Partial source context causes invented implementation facts",
+      "primary_stage": "S05",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "F38",
+      "original_title": "Event notification assumed to awaken ordinary Chat",
+      "primary_stage": "S02",
+      "integration_disposition": "EXPLICIT_RESUME_AND_TWO_MODE_CONTRACT_RETAINED; NO_AUTOWAKE_PROMISE",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F39",
+      "original_title": "No correlated evidence for fault attribution",
+      "primary_stage": "S03",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "F40",
+      "original_title": "Partial external publication or ambiguous readback",
+      "primary_stage": "S06",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Complete raw Git candidates, retained review, no-commit delivery, explicit dependency source and combined generations retained. Controller combined attestations are not canonical execution receipts.",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ]
+    },
+    {
+      "original_id": "F41",
+      "original_title": "Local automation crosses a judgment boundary",
+      "primary_stage": "S02",
+      "integration_disposition": "EXPLICIT_RESUME_AND_TWO_MODE_CONTRACT_RETAINED; NO_AUTOWAKE_PROMISE",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "F42",
+      "original_title": "Qualification silently goes stale",
+      "primary_stage": "S10",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Final source/mechanism disposition with strict evidence classes. F42 is partly enforced by existing bindings; T52/B19 actual ordinary-Pro repeated acceptance remains NOT_RUN. No next numbered stage.",
+      "related_local_tests": [
+        "tests/test_s10_review_provenance.py",
+        "tests/authoring/test_s10_composition.py",
+        "tests/test_s10_evidence_scope.py"
+      ]
+    },
+    {
+      "original_id": "T01",
+      "original_title": "Qualify the exact ordinary-Pro-Chat read path",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T02",
+      "original_title": "Qualify a permitted mutation, not merely a visible schema",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T03",
+      "original_title": "Read-only Author route remains useful",
+      "primary_stage": "S05",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "T04",
+      "original_title": "Follow-up app selection",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T05",
+      "original_title": "Golden prompt tool-selection suite",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T06",
+      "original_title": "Catalog evolution in old and new chats",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T07",
+      "original_title": "Manager/Author instruction isolation",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T08",
+      "original_title": "Requested versus observed model and quota state",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T09",
+      "original_title": "Missing capability does not widen scope",
+      "primary_stage": "S07",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "T10",
+      "original_title": "Browser interruption after durable acceptance",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T11",
+      "original_title": "Effect succeeds but the response is lost",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T12",
+      "original_title": "Idempotency key reuse with different content",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T13",
+      "original_title": "Regeneration produces different keys against the same revision",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T14",
+      "original_title": "Crash at each acceptance boundary",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T15",
+      "original_title": "Restart HTTP without losing owned execution",
+      "primary_stage": "S08",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "T16",
+      "original_title": "Host reboot and uncertain execution",
+      "primary_stage": "S08",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "T17",
+      "original_title": "Fresh chat recovery without old conversation text",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T18",
+      "original_title": "Abrupt stop before a final checkpoint call",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T19",
+      "original_title": "Old summary conflicts with current state",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T20",
+      "original_title": "Sandbox replacement after artifact receipt",
+      "primary_stage": "S05",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "T21",
+      "original_title": "Partial upload, corrupt package, and duplicate transfer",
+      "primary_stage": "S05",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "T22",
+      "original_title": "Signed download expires before versus after ingestion",
+      "primary_stage": "S05",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "T23",
+      "original_title": "Long tool call versus durable job",
+      "primary_stage": "S03",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "T24",
+      "original_title": "Proxy/SSE behavior and response recovery",
+      "primary_stage": "S03",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "T25",
+      "original_title": "429, overload, and retry amplification",
+      "primary_stage": "S03",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "T26",
+      "original_title": "Authentication expiration and renewal",
+      "primary_stage": "S08",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "T27",
+      "original_title": "Grant revocation between acceptance and effect",
+      "primary_stage": "S07",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "T28",
+      "original_title": "Two chats and cross-owner isolation",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T29",
+      "original_title": "Lease expires during a long thinking interval",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T30",
+      "original_title": "Repository and branch drift",
+      "primary_stage": "S06",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Complete raw Git candidates, retained review, no-commit delivery, explicit dependency source and combined generations retained. Controller combined attestations are not canonical execution receipts.",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ]
+    },
+    {
+      "original_id": "T31",
+      "original_title": "Evidence invalidation and source-changing checks",
+      "primary_stage": "S07",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "T32",
+      "original_title": "Versioned pagination and lossless boundaries",
+      "primary_stage": "S05",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "T33",
+      "original_title": "Actual client handling of bounded outputs",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T34",
+      "original_title": "Quiet-but-healthy versus stalled work",
+      "primary_stage": "S03",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "T35",
+      "original_title": "Cancellation, descendants, and cleanup barrier",
+      "primary_stage": "S04",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Typed native/process/report and cleanup controls retained with owned local-process fixtures; actual Luna/native Mac/provider/profile gates NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ]
+    },
+    {
+      "original_id": "T36",
+      "original_title": "Resource saturation with reserved control capacity",
+      "primary_stage": "S09",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S09 is published and receipted before S10. Bound captures/imports, fair windows, indexes, streaming and GC/tail refinements retained. No new cache/retirement owner; long-history, mixed-native and economic qualification remains open.",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ]
+    },
+    {
+      "original_id": "T37",
+      "original_title": "Disk full during admission and result persistence",
+      "primary_stage": "S08",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "T38",
+      "original_title": "Declared durability under power-loss class faults",
+      "primary_stage": "S08",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "T39",
+      "original_title": "Coherent backup and restore",
+      "primary_stage": "S08",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "T40",
+      "original_title": "Retention, old retries, and garbage collection",
+      "primary_stage": "S09",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S09 is published and receipted before S10. Bound captures/imports, fair windows, indexes, streaming and GC/tail refinements retained. No new cache/retirement owner; long-history, mixed-native and economic qualification remains open.",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ]
+    },
+    {
+      "original_id": "T41",
+      "original_title": "Protective pause and denied action",
+      "primary_stage": "S07",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "T42",
+      "original_title": "Untrusted evidence cannot expand authority",
+      "primary_stage": "S07",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "T43",
+      "original_title": "Incomplete source context and missing evidence",
+      "primary_stage": "S05",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "T44",
+      "original_title": "End-to-end completion and truthful closure",
+      "primary_stage": "S07",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "T45",
+      "original_title": "Partial publication and lost remote acknowledgment",
+      "primary_stage": "S06",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Complete raw Git candidates, retained review, no-commit delivery, explicit dependency source and combined generations retained. Controller combined attestations are not canonical execution receipts.",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ]
+    },
+    {
+      "original_id": "T46",
+      "original_title": "Unknown host limit versus explicit limit",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T47",
+      "original_title": "Discovery failure with no server ingress",
+      "primary_stage": "S01",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "T48",
+      "original_title": "Protocol/session compatibility",
+      "primary_stage": "S08",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "T49",
+      "original_title": "No ordinary-Chat wake-up assumption",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T50",
+      "original_title": "Approved mechanics versus new judgment",
+      "primary_stage": "S02",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "T51",
+      "original_title": "Author no-inference qualification",
+      "primary_stage": "S05",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "T52",
+      "original_title": "Repeated qualification and regression evidence",
+      "primary_stage": "S10",
+      "integration_disposition": "NOT_RUN_ORIGINAL_OPERATIONAL_CASE; NO_LOCAL_SUITE_AUTO_PROMOTION",
+      "integration_rationale": "Final source/mechanism disposition with strict evidence classes. F42 is partly enforced by existing bindings; T52/B19 actual ordinary-Pro repeated acceptance remains NOT_RUN. No next numbered stage.",
+      "related_local_tests": [
+        "tests/test_s10_review_provenance.py",
+        "tests/authoring/test_s10_composition.py",
+        "tests/test_s10_evidence_scope.py"
+      ]
+    },
+    {
+      "original_id": "B01",
+      "original_title": "Exact-client capability and deployment profile",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "B02",
+      "original_title": "Continuously recoverable task capsule",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "B03",
+      "original_title": "Durable acceptance and dispatch ownership",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "B04",
+      "original_title": "Ambiguous-result reconciliation and retry discovery",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "B05",
+      "original_title": "Controller identity, leases, and authority fencing",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "B06",
+      "original_title": "Content-bound completion and truthful closure",
+      "primary_stage": "S07",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "B07",
+      "original_title": "Effective prompt consolidation",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "B08",
+      "original_title": "Measured tool-surface experiment",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "B09",
+      "original_title": "Bounded typed result and evidence contract",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "B10",
+      "original_title": "Durable Author artifact round trip",
+      "primary_stage": "S05",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Local package/source/export/policy/lease custody retained; source transport is not acceptance and does not reconstruct untransferred bytes.",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py"
+      ]
+    },
+    {
+      "original_id": "B11",
+      "original_title": "Finite authorized local workflow and waiting states",
+      "primary_stage": "S02",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Durable admission, principal/lease fencing, historical readback and pure recovery retained; selected new composed local witnesses do not qualify an actual controller/client cohort.",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ]
+    },
+    {
+      "original_id": "B12",
+      "original_title": "Auth renewal and catalog refresh runbook",
+      "primary_stage": "S08",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "B13",
+      "original_title": "Ingress deadlines and bounded waits",
+      "primary_stage": "S03",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "B14",
+      "original_title": "Linux execution ownership and restart policy",
+      "primary_stage": "S04",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Typed native/process/report and cleanup controls retained with owned local-process fixtures; actual Luna/native Mac/provider/profile gates NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py"
+      ]
+    },
+    {
+      "original_id": "B15",
+      "original_title": "Admission control and control-plane reserves",
+      "primary_stage": "S09",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S09 is published and receipted before S10. Bound captures/imports, fair windows, indexes, streaming and GC/tail refinements retained. No new cache/retirement owner; long-history, mixed-native and economic qualification remains open.",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ]
+    },
+    {
+      "original_id": "B16",
+      "original_title": "Durability, backup, and retention qualification",
+      "primary_stage": "S08",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "B17",
+      "original_title": "Correlated diagnostics and operator recovery",
+      "primary_stage": "S03",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Existing shared observation/urgent ingress/liveness repairs retained; current mixed native/history load and deployed deadline qualification NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s03_monitoring.py",
+        "tests/test_s03_observation_cost.py",
+        "tests/authoring/test_s03_ingress.py"
+      ]
+    },
+    {
+      "original_id": "B18",
+      "original_title": "Protocol/extension compatibility matrix",
+      "primary_stage": "S01",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "Published interface/schema/framing/role/output controls retained; actual full ordinary-Pro catalog/selection/rendering NOT_RUN.",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ]
+    },
+    {
+      "original_id": "B19",
+      "original_title": "Actual ordinary-Chat acceptance suite",
+      "primary_stage": "S10",
+      "integration_disposition": "ACTUAL_ORDINARY_CHAT_ACCEPTANCE_NOT_RUN",
+      "integration_rationale": "Final source/mechanism disposition with strict evidence classes. F42 is partly enforced by existing bindings; T52/B19 actual ordinary-Pro repeated acceptance remains NOT_RUN. No next numbered stage.",
+      "related_local_tests": [
+        "tests/test_s10_review_provenance.py",
+        "tests/authoring/test_s10_composition.py",
+        "tests/test_s10_evidence_scope.py"
+      ]
+    },
+    {
+      "original_id": "B20",
+      "original_title": "Versioned rollout and rollback",
+      "primary_stage": "S08",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S08 is published and locally checked; loaded release/atomic config/SQL-Git closure/Origin/durability mechanics retained. Manual offline activation, exact native/service corpus and vendor SQLite WAL-fix provenance remain separate gates.",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ]
+    },
+    {
+      "original_id": "B21",
+      "original_title": "Denied-action and untrusted-content handling",
+      "primary_stage": "S07",
+      "integration_disposition": "LOCAL_CONTROLS_AND_SCOPED_RESIDUAL_GATES_MAPPED",
+      "integration_rationale": "S07 is published and locally checked; strict reports/source observation/receipt consistency/CI producer-consent and literal provenance retained. Independent semantic acceptance remains separate.",
+      "related_local_tests": [
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ]
+    },
+    {
+      "original_id": "B22",
+      "original_title": "Measured economics and model provenance",
+      "primary_stage": "S09",
+      "integration_disposition": "ECONOMICS_UNKNOWN; SOURCE_MODEL_POLICY_IS_NOT_USAGE_PROOF",
+      "integration_rationale": "S09 is published and receipted before S10. Bound captures/imports, fair windows, indexes, streaming and GC/tail refinements retained. No new cache/retirement owner; long-history, mixed-native and economic qualification remains open.",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ]
+    }
+  ],
+  "composed_counterexamples": [
+    {
+      "id": "S10-C01",
+      "title": "Lost successful package response + expiry + fresh chat",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_s10_composition.py::test_lost_accepted_revision_autocheck_then_lease_takeover_and_progress"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C02",
+      "title": "Lost worker-start response + a different transport + regenerated key",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py",
+        "tests/authoring/test_s02_response_recovery.py",
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C03",
+      "title": "Structured-summary recovery + uncertainty outside the short history window",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_s02_history_traversal.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C04",
+      "title": "Clipped report + stale source selector + persuasive finish message",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py",
+        "tests/authoring/test_s07_evidence.py",
+        "tests/authoring/test_s07_ci_identity.py",
+        "tests/test_s07_source_views.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C05",
+      "title": "Cancellation races receipt preparation while task policy advances",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_s10_composition.py::test_cancel_after_receipt_blob_preparation_cannot_persist_green",
+        "tests/authoring/test_s10_composition.py::test_late_old_policy_receipt_is_historical_after_current_policy_wins"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C06",
+      "title": "Native terminal evidence arrives after stop/takeover and before integration",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s04_native_evidence.py",
+        "tests/test_s04_process_identity.py",
+        "tests/test_session_terminal.py",
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C07",
+      "title": "Browser rendering and ingress fail at different times",
+      "integration_disposition": "EXTERNAL_COMPOSITION_NOT_RUN",
+      "related_local_tests": [],
+      "integration_limit": "Actual browser/client/ingress composition NOT_RUN; local ASGI/protocol tests are not that witness."
+    },
+    {
+      "id": "S10-C08",
+      "title": "MCP session disappears while domain operation survives",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_linux_continuity.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C09",
+      "title": "Restore before an acknowledged remote push + revoked credential revived",
+      "integration_disposition": "EXTERNAL_COMPOSITION_NOT_RUN",
+      "related_local_tests": [
+        "tests/authoring/test_s05_sources.py",
+        "tests/authoring/test_s05_publication.py",
+        "tests/authoring/test_s05_authority.py",
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "integration_limit": "Old-backup authority/remote reconciliation remains a manual offline activation contract; no automatic restore quarantine is claimed."
+    },
+    {
+      "id": "S10-C10",
+      "title": "Hub database restored without the matching Edge/job/worktree evidence",
+      "integration_disposition": "EXTERNAL_COMPOSITION_NOT_RUN",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "integration_limit": "Local DB restart/backup is not complete private Manager/Edge/worktree/native-session corpus qualification."
+    },
+    {
+      "id": "S10-C11",
+      "title": "Immutable blob cache hit after task access or policy changes",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_principals.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C12",
+      "title": "Cached absent admission followed by another process committing it",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s02_worker_retry.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C13",
+      "title": "Scoped gateway trial passes; full production catalog is assumed qualified",
+      "integration_disposition": "EXTERNAL_COMPOSITION_NOT_RUN",
+      "related_local_tests": [
+        "tests/test_s01_mcp_contracts.py",
+        "tests/authoring/test_s01_interface_contracts.py"
+      ],
+      "integration_limit": "Scoped gateway/static/full catalogs remain distinct; actual full ordinary-Pro profile NOT_RUN."
+    },
+    {
+      "id": "S10-C14",
+      "title": "Model changed while a prior operator-recorded client qualification still matches server code",
+      "integration_disposition": "EXTERNAL_COMPOSITION_NOT_RUN",
+      "related_local_tests": [
+        "tests/authoring/test_controller_contracts.py"
+      ],
+      "integration_limit": "Operator-declared model/client/route labels are not server observations; actual profile change NOT_RUN."
+    },
+    {
+      "id": "S10-C15",
+      "title": "Files on disk updated while service still runs old loaded code",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_s08_release_restore.py",
+        "tests/authoring/test_s08_backup_reference_integrity.py",
+        "tests/test_s08_config_publication.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C16",
+      "title": "Rebuild a review target after reload when prompt bodies were intentionally omitted",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s10_review_provenance.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C17",
+      "title": "The 52-case register and a valid evidence manifest are presented as 52 new executions",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s10_evidence_scope.py"
+      ],
+      "integration_limit": "The structural validator can accept 52 hash-correct but irrelevant declared records; separate review rejects the operational execution claim. Original statuses remain unchanged; no 52 client/native trials occurred."
+    },
+    {
+      "id": "S10-C18",
+      "title": "An expected-broken probe is counted as a passing regression",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s10_review_provenance.py"
+      ],
+      "integration_limit": "Original current-source baseline and restored mutable-prompt implementation both fail the corrected oracle; these expected failures are not counted as passes."
+    },
+    {
+      "id": "S10-C19",
+      "title": "Worker completion is asserted before Edge outbox acknowledgement",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_live_hub_v2_eval.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C20",
+      "title": "A fake executor clears a real or unresolved cleanup fence",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_live_hub_v2_eval.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C21",
+      "title": "Unknown execution + expired lease + new owner produces a permanent dead end",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_operator_resolution.py",
+        "tests/authoring/test_s10_composition.py"
+      ],
+      "integration_limit": "Known quiescent local recovery has positive witnesses; real/unknown native ownership remains fenced and requires exact evidence, not timeout clearing."
+    },
+    {
+      "id": "S10-C22",
+      "title": "A complete source read is technically possible but history and full-blob work exhaust the practical request budget",
+      "integration_disposition": "EXTERNAL_COMPOSITION_NOT_RUN",
+      "related_local_tests": [
+        "tests/test_s09_capacity.py",
+        "tests/authoring/test_s09_repeated_use.py"
+      ],
+      "integration_limit": "Strong fresh readers and selected streams remain; no history-heavy deployed request latency or aggregate host-capacity claim."
+    },
+    {
+      "id": "S10-C23",
+      "title": "Every proposal is built, creating a second scheduler, cache owner and recovery journal",
+      "integration_disposition": "DESIGN_BOUNDARY_RETAINED_NOT_A_RUNTIME_PASS",
+      "related_local_tests": [],
+      "integration_limit": "Rejected broad redesign; no second scheduler, cache authority, recovery journal or dashboard."
+    },
+    {
+      "id": "S10-C24",
+      "title": "Native/Events adapter migration is treated as a generic resilience upgrade",
+      "integration_disposition": "DESIGN_BOUNDARY_RETAINED_NOT_A_RUNTIME_PASS",
+      "related_local_tests": [],
+      "integration_limit": "Rejected protocol/native adapter migration without a causal capability requirement."
+    },
+    {
+      "id": "S10-C25",
+      "title": "Candidate-controlled report contradicts its suite totals while exit code is zero",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_s10_composition.py::test_report_to_receipt_feedback_and_publication_gate"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C26",
+      "title": "Cache or resource optimization is measured by final response bytes only",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/authoring/test_s10_composition.py::test_admission_refreshes_capacity_selection_and_corruption_evidence"
+      ],
+      "integration_limit": "SQL work/files/bytes/serialization/fixture counts are local measures; provider usage, billed tokens and savings UNKNOWN."
+    },
+    {
+      "id": "S10-C27",
+      "title": "Reviewed candidate + no-commit integration + dependent lane starts from ambient HEAD",
+      "integration_disposition": "RELATED_LOCAL_MECHANISMS_CHECKED; COMPLETE_RECIPE_NOT_CLAIMED",
+      "related_local_tests": [
+        "tests/test_s06_candidate_contracts.py",
+        "tests/test_s06_review.py",
+        "tests/test_s06_delivery_commit.py",
+        "tests/test_s06_group_contract.py",
+        "tests/test_s10_review_provenance.py"
+      ],
+      "integration_limit": "Exact local test witnesses are separate from the full research schedule and its actual-client/native/platform assumptions."
+    },
+    {
+      "id": "S10-C28",
+      "title": "Accepted work continues but a new implementation decision is needed after the chat ends",
+      "integration_disposition": "DESIGN_BOUNDARY_RETAINED_NOT_A_RUNTIME_PASS",
+      "related_local_tests": [],
+      "integration_limit": "Explicit controller continuation remains required for a new judgment; no hidden author, replacement model or ordinary-Chat wake-up."
+    }
+  ],
+  "capability_disposition": [
+    {
+      "id": "D01",
+      "capability": "Repository research and source delivery",
+      "disposition": "AVAILABLE_WITH_EXPLICIT_EVIDENCE_SCOPE",
+      "limit": "Original programme ends at S10; source publication and local verification do not certify every product capability."
+    },
+    {
+      "id": "D02",
+      "capability": "Actual ordinary-Pro read route",
+      "disposition": "NOT_QUALIFIED; NOT_RUN",
+      "limit": "Requires exact permitted client/account/route/catalog/render observation; local or scoped-gateway success is insufficient."
+    },
+    {
+      "id": "D03",
+      "capability": "Author artifact/candidate/check mechanics",
+      "disposition": "SELECTED_LOCAL_LINUX_MECHANISMS_CHECKED",
+      "limit": "Packages, exact Git/SQLite/blob custody and approved command mechanics have local witnesses. Exact installed/client profile and independent acceptance remain separate."
+    },
+    {
+      "id": "D04",
+      "capability": "Actual ordinary-Pro Author mutation route",
+      "disposition": "NOT_QUALIFIED; NOT_RUN",
+      "limit": "There is no unqualified MCP-write bypass or established first-canary bootstrap here. Require actual permitted capability evidence; otherwise keep this capability blocked/unrun. Never assert write_supported from a schema or operator label, widen role or disguise a mutation."
+    },
+    {
+      "id": "D05",
+      "capability": "Manager single-lane source/review/delivery mechanics",
+      "disposition": "SELECTED_RECORDING_AND_LOCAL_PROCESS_MECHANISMS_CHECKED",
+      "limit": "Stable brief identity, retained targets and delivery controls have fixtures. Actual current Luna/session/client/native profile NOT_RUN."
+    },
+    {
+      "id": "D06",
+      "capability": "Repeated multi-lane and history-heavy capacity",
+      "disposition": "OUTSIDE_QUALIFIED_ENVELOPE",
+      "limit": "Synthetic query/history measurements are not mixed Author/Manager host reservations, native throughput, long-duration cohort or deployment latency."
+    },
+    {
+      "id": "D07",
+      "capability": "Optional downstream publication and external CI",
+      "disposition": "CAPABILITY_QUALIFICATION_NOT_RUN",
+      "limit": "Exact local bare-remote recovery and producer/consent controls are checked. Default task publication is disabled; this integration only authorizes public repository main publication, not a product publication trial."
+    },
+    {
+      "id": "D08",
+      "capability": "Installed service, native storage/restore activation",
+      "disposition": "NOT_CERTIFIED; MANUAL_OFFLINE_CONTRACT",
+      "limit": "Local restart/backup/reference/sync fixtures do not prove unit/cgroup, full corpus, Docker, native Mac, reboot/power-loss or live authority reconciliation. SQLite vendor WAL-fix provenance remains unestablished."
+    },
+    {
+      "id": "D09",
+      "capability": "Ordinary-Chat automatic wake-up/new judgment",
+      "disposition": "NOT_SUPPORTED_PROMISE",
+      "limit": "Explicit controller continuation is required. No Events migration, autonomous manager or hidden inference fallback was added."
+    },
+    {
+      "id": "D10",
+      "capability": "Universal reliability or economic savings",
+      "disposition": "NOT_SUPPORTED_CLAIM",
+      "limit": "No paid-provider/ordinary-Pro cohort, accepted-task economic denominator, billed-token or savings measurement. Local bytes and CPU/SQL work are not billing."
+    }
+  ],
+  "whole_product_qualified": false,
+  "next_stage": null,
+  "coverage_limits": [
+    "Complete Git/source-byte inventory is distinct from manual content review. Named defining owners/callers and retained prior-stage evidence form the review scope.",
+    "No actual ordinary-Pro/current-native/Docker/service/reboot/power-loss/production/customer/account/provider trial was run. Linux never qualifies native macOS.",
+    "All 52 original operational cases and complete research recipes retain their execution limits; local suite totals overlap and are not summed.",
+    "No new cache, evidence retirement, automatic restore activation or universal semantic judge is claimed.",
+    "Source/specification/hash/AST transfer checks are not product execution."
+  ]
+}

@@ -13,24 +13,67 @@ from . import runtime_legacy as _legacy
 
 
 class RuntimeViewFixes:
+    _REVIEW_DESCRIPTOR_FIELDS = ("format_version", "worker_id", "turn_job_id", "baseline_revision",
+                                 "tree_sha", "changed_files", "contract_sha256", "evidence_refs")
+
+    def _review_brief_identity(self, jobs, worker_id):
+        job = jobs[-1]
+        sha, count = job.prompt_sha256, job.prompt_bytes
+        empty = hashlib.sha256(b"").hexdigest()
+        if sha is None and count is None:
+            # Old records omitted body and metadata. A nonempty same-turn digest
+            # can be recovered from a content-bound retained target. The old
+            # empty hash is ambiguous after reload, so never treat it as proof.
+            digests = set()
+            for candidate_id, target in ((job.options or {}).get("_worker_review_targets") or {}).items():
+                if target.get("turn_job_id") != job.job_id or target.get("worker_id") != worker_id:
+                    continue
+                value = target.get("contract_sha256")
+                if value in (None, empty):
+                    continue
+                descriptor = {key: target.get(key) for key in self._REVIEW_DESCRIPTOR_FIELDS}
+                if (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                        or target.get("candidate_id") != candidate_id
+                        or hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest() != candidate_id):
+                    raise CandidateSnapshotError("Retained brief identity is corrupt; preserve the record", reason="brief_identity_invalid")
+                self._review_target(jobs, candidate_id, require_anchor=True)
+                digests.add(value)
+            if len(digests) > 1:
+                raise CandidateSnapshotError("Same-turn retained brief identities conflict", reason="brief_identity_invalid")
+            return {"state": "retained_target_digest" if digests else "legacy_unknown",
+                    "sha256": next(iter(digests)) if digests else None, "utf8_bytes": None}
+        if (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)
+                or type(count) is not int or count < 0 or (count == 0) != (sha == empty)):
+            raise CandidateSnapshotError("Admitted brief metadata is invalid; preserve and inspect the record", reason="brief_identity_invalid")
+        return {"state": "admitted_metadata", "sha256": sha, "utf8_bytes": count}
+
     def _retain_review_target(self, jobs, snapshot):
         worker_id, _ = self._worker_identity(jobs)
+        brief_identity = self._review_brief_identity(jobs, worker_id)
         descriptor = {
             "format_version": 1, "worker_id": worker_id, "turn_job_id": jobs[-1].job_id,
             "baseline_revision": snapshot.baseline_revision, "tree_sha": snapshot.tree_sha,
             "changed_files": list(snapshot.changed_files),
-            "contract_sha256": hashlib.sha256(jobs[-1].prompt.encode()).hexdigest(),
+            "contract_sha256": brief_identity["sha256"],
             "evidence_refs": (jobs[-1].result or {}).get("report_source", {}),
         }
         candidate_id = hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()
         ref = self._integration_ref_name(jobs).rsplit("/", 1)[0] + "/reviews/" + candidate_id
         current = self.job_manager.get_job(jobs[-1].job_id)
         targets = (current.options or {}).get('_worker_review_targets') or {}
+        if candidate_id in targets:
+            previous = targets[candidate_id]
+            if (previous.get("candidate_id") != candidate_id
+                    or {key: previous.get(key) for key in self._REVIEW_DESCRIPTOR_FIELDS} != descriptor):
+                raise CandidateSnapshotError("Retained review target identity conflict", reason="brief_identity_invalid")
+            self._review_target(jobs, candidate_id, require_anchor=True)
+            return json.loads(json.dumps(previous))  # Preserve historical bytes/IDs and avoid an alias.
         if candidate_id not in targets and len(targets) >= 128:
             raise CandidateSnapshotError('Retained review target budget exhausted; preserve existing targets', reason='review_target_budget_exhausted')
         record = {**descriptor, "candidate_id": candidate_id, "snapshot_commit": "0"*len(snapshot.tree_sha), "snapshot_ref": ref,
                   "retrieval": {"view": "file", "candidate_id": candidate_id},
-                  "scope": "source_review_target", "semantic_verdict": "unreviewed"}
+                  "scope": "source_review_target", "semantic_verdict": "unreviewed",
+                  "contract_identity": brief_identity}
         if len(json.dumps(record).encode()) > 2*1024*1024:
             raise CandidateSnapshotError('Review target inventory exceeds retained metadata policy', reason='review_target_budget_exhausted')
         root = self._execution_path_for_workspace(self._workspace_for_jobs(jobs))
@@ -55,7 +98,7 @@ class RuntimeViewFixes:
         self.job_manager.mutate_job_options(jobs[-1].job_id, retain)
         return record
 
-    def _review_target(self, jobs, candidate_id):
+    def _review_target(self, jobs, candidate_id, *, require_anchor=False):
         if not re.fullmatch(r"[0-9a-f]{64}", str(candidate_id)):
             raise ValueError("candidate_id must identify a retained review target")
         record = next(((job.options or {}).get("_worker_review_targets", {}).get(candidate_id)
@@ -67,6 +110,12 @@ class RuntimeViewFixes:
         tree = _run_git(root, ["rev-parse", record["snapshot_commit"]+"^{tree}"]).stdout.decode().strip()
         if tree != record["tree_sha"]:
             raise CandidateSnapshotError("Retained review source is unavailable or changed")
+        if require_anchor:
+            expected_ref = self._integration_ref_name(jobs).rsplit("/", 1)[0] + "/reviews/" + candidate_id
+            anchor = _run_git(root, ["rev-parse", "--verify", expected_ref], ok_returncodes=(0, 128))
+            if (record.get("snapshot_ref") != expected_ref or anchor.returncode != 0
+                    or anchor.stdout.decode().strip() != record.get("snapshot_commit")):
+                raise CandidateSnapshotError("Retained brief anchor is unavailable or changed", reason="brief_identity_invalid")
         return root, record
 
     def _retained_candidate_view(self, jobs, *, candidate_id, view="file", file_path=None,

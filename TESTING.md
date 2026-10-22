@@ -412,3 +412,46 @@ absence and mutation-lock assertions remain mandatory. These tests do not
 certify four-second native cleanup under arbitrary host load. Use a unique
 owned `--basetemp` for long runs so other sessions' temporary-root rotation
 cannot remove diagnostic fixtures; retain failed roots and logs separately.
+
+## Final S10 composed verification
+
+```bash
+python -m pytest tests/test_s10_review_provenance.py \
+  tests/authoring/test_s10_composition.py tests/test_s10_evidence_scope.py -q
+```
+
+Run the required full matrix serially, the dedicated Author suite with its long
+local command enabled, old-schema restart and offline wheel/install parity.
+S10 adds logging-off UTF-8 brief identity, reload/legacy/empty/invalid metadata,
+retained descriptor/ref corruption, immutable old selectors and source/turn
+invalidation; accepted revision/auto-check reply loss plus lease takeover and
+legitimate progress; cancellation after receipt-blob preparation with/without
+policy change; stale-policy evidence; joined JUnit/source-observation/receipt/
+feedback/Publisher candidate gates; fresh capacity/receipt/corruption inverses;
+and the hash-correct irrelevant-artifact governance negative. Synthetic process
+receipts test persistence/gate mechanics and are never native execution proof.
+
+Keep baseline/restored-bug failures separate from passing corrected assertions.
+Do not treat structural validator PASS as semantic, installed/loaded or actual
+client acceptance. Preserve the original T01–T52 bytes/statuses and keep all
+42 research recipes and 28 composed schedules scoped to their actual witnesses.
+[Final capability gates](docs/repairs/2026-10-22-s10-final-composition.md) explicitly
+leave ordinary-Pro/native/Mac/Docker/deployment/power-loss/soak/economics outside
+this local qualification. The original programme stops at S10.
+
+S10 retained an initial disk-fixture full run with five timeouts, rather than
+calling a focused retry a full pass. The startup regression now uses the existing
+owner-derived proof guard; its inert children outlive that guard. The restart
+evaluator gives the follow-up the same bounded 65-second lifecycle allowance as
+the initial turn. Production deadlines and all terminal/cleanup/identity
+assertions remain unchanged. Duplicate-claim coverage waits for three actual
+polls while the first effect is blocked, checks both 20 ms and 80 ms polling,
+and always shuts down its owned runner. The observed original failure was a
+five-second first-handler timeout; the separate delayed-poll negative control
+demonstrates why the old 60 ms sampling step was also inadequate.
+
+Each receipt records its fixture filesystem. A full run with an owned tmpfs
+`--basetemp` reduces disk-stall interference for those fixtures; it does not
+certify disk latency, physical durability or power-loss behavior. Retain disk
+attempts and affected disk/integration results separately. Do not combine
+different runs into an invented all-green disk qualification.

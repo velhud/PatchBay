@@ -87,3 +87,19 @@ Do not begin in one mode and recover by silently delegating into the other. Swit
 Manager reports are worker-authored assertions; native completion is lifecycle evidence. Author receipts record observed processes and identities, while report assertions originate in the candidate program. Passing checks permit review, not implicit acceptance or publication. Source boundary equality is not continuous immutability. See [S07](../repairs/2026-10-22-s07-evidence-authority.md).
 
 For both workflows, the supported initial maintenance contract drains work before restarting its owning service unit. Author process detachment is not cgroup independence. Manager/Luna native continuation has separate custody and qualification. See [S08](../repairs/2026-10-22-s08-deployment-durability.md).
+
+## Final audit interpretation
+
+Manager admission retains brief identity without body logging; historical target
+selectors remain immutable, while legacy missing identity is explicit unknown.
+Author remains an independent deterministic path with no delegated recovery.
+The [final S10 disposition](../repairs/2026-10-22-s10-final-composition.md) maps all
+inherited obligations and preserves capability-specific limits.
+
+Server enforcement of role, principal scope, leases, current source/policy and
+loaded Author release differs from operator declarations about model, account,
+client or route. An actual permitted canary must establish the latter. A source
+update does not activate a service or qualify a client. New judgment still needs
+explicit controller continuation; there is no ordinary-Chat automatic wake-up
+or hidden model fallback. Native Mac and actual Luna/Pro/service/storage/soak
+and economic outcomes remain separate from Linux fixture results.

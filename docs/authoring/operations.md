@@ -468,3 +468,17 @@ GC skips absent workspace receipts because it is a deletion operation; use
 removing an existing workspace. No automatic age retirement of retry keys,
 unknown operations or retained evidence is supported. See the complete
 [S09 disposition](../repairs/2026-10-22-s09-repeated-use.md).
+
+## Final qualification custody
+
+The final S10 disposition separates server-enforced identity/source/policy and
+loaded-release checks from declared client/model/route labels and observed
+canaries. Read-only bootstrap does not qualify writes; there is no unqualified
+MCP-write bypass. Keep the mutation capability blocked/unrun when permitted
+bootstrap is unavailable, and use the separate authorized artifact path.
+
+`author_requirements_eval.py` now exposes structural evidence scope explicitly.
+Review claim relevance independently before accepting a capability; a matching
+HEAD and hash cannot certify loaded/install identity or actual external work.
+See [evidence adjudication](../testing/evidence-adjudication.md) and the
+[final release matrix](../repairs/2026-10-22-s10-final-composition.md).

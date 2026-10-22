@@ -126,7 +126,9 @@ def evaluate(evidence_path: Path | None) -> dict[str, Any]:
                                 reasons.append(f"artifact missing or hash mismatch: {artifact['path']}")
                 elif evaluated_status in {"FAIL", "BLOCKED_ENVIRONMENT", "NOT_RUN"}:
                     reasons = [str(run.get("reason") or "recorded outcome")]
-        results.append({**source, "evaluated_status": evaluated_status, "evaluation_reasons": reasons})
+        results.append({**source, "evaluated_status": evaluated_status,
+                        "evaluated_status_scope": "evidence_record_validation",
+                        "evaluation_reasons": reasons})
 
     counts = {name: sum(row["evaluated_status"] == name for row in results) for name in STATUSES}
     overall = "FAIL" if errors or counts["FAIL"] else (
@@ -136,6 +138,12 @@ def evaluate(evidence_path: Path | None) -> dict[str, Any]:
         "schema_version": 2,
         "evaluator": "patchbay.author-requirements.v2",
         "candidate_commit": commit,
+        "validation_scope": "record_structure_commit_pin_artifact_hashes",
+        "candidate_binding": "git_head_only",
+        "independent_semantic_acceptance": False,
+        "claim_relevance_review": "required_separately",
+        "installed_or_loaded_bytes_observed": False,
+        "client_observation_performed_by_evaluator": False,
         "register_path": REGISTER.relative_to(ROOT).as_posix(),
         "register_sha256": register_digest,
         "overall": overall,

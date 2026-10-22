@@ -2569,6 +2569,7 @@ def _run_eval(
             )
             in TERMINAL_OPERATION_STATES,
             phase="worker_follow_up_terminal_after_restart",
+            timeout=65,  # Same bounded fixture lifecycle allowance as the initial turn.
         )
         workers_after_follow_up = _wait_for(
             lambda: restarted_client.call(

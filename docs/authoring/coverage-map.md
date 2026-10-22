@@ -272,3 +272,10 @@ The rows preserve the original failure scenario, required control, layer/priorit
 ## Status boundary
 
 The comparison findings and B/F assessments are pinned historical assessments. The reliability source acceptance register keeps every original status as `NOT_RUN_IN_THIS_RESEARCH`; the evaluator adds a separate `evaluated_status`. Candidate code/test anchors are not release qualification. Actual ordinary Chat, Linux lab, provider, and deployment outcomes remain unrun unless separately captured and reviewed. Byte counts do not establish tokens, cost, model selection, or model judgment.
+
+The [final S10 cumulative disposition](../repairs/2026-10-22-s10-final-composition.md)
+and [machine-readable crosswalk](../testing/audit-final-disposition.json) add the
+current S01–S10 source/fixture interpretation without rewriting historical B/F/T
+assessments. All 89 stage findings, 116 inherited questions and 28 composed cases
+have scoped dispositions. The original 52-case register remains byte-identical;
+current local tests are not automatically executions of those operational cases.

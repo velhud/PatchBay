@@ -161,3 +161,10 @@ queued check windows, and provides finite Manager inbox import defaults and
 list pages. Existing Author state can explicitly install admission indexes.
 See [repeated-use limits and retention decisions](docs/repairs/2026-10-22-s09-repeated-use.md);
 these local mechanics do not qualify native/client throughput or cost savings.
+
+The original audit programme ends at S10. Manager review targets now use durable
+admitted-brief identity across reload without restoring raw prompt logging.
+The [final capability disposition](docs/repairs/2026-10-22-s10-final-composition.md)
+accounts for all inherited findings and separates checked local mechanics from
+actual Pro/native/service/capacity gates. A structurally valid evidence record
+is not an independent product acceptance certificate.

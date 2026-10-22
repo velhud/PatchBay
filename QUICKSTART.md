@@ -299,3 +299,12 @@ inbox listing returns 100 artifacts by default with `count` and `next_offset`;
 follow pages before assuming absence. Import defaults are 128 MiB archive,
 512 MiB expanded, 64 MiB per file and 10,000 entries. Blank uses these limits;
 zero is invalid. See [S09 operating limits](docs/repairs/2026-10-22-s09-repeated-use.md).
+
+Before a new client/native deployment, use the
+[final capability gates](docs/repairs/2026-10-22-s10-final-composition.md).
+Read-only discovery, artifact round trips and MCP mutation support are separate
+capabilities. Do not predeclare `write_supported=true` to open a first canary.
+There is no unqualified MCP-write bypass; if the permitted bootstrap cannot
+exercise the capability, keep that gate blocked/unrun and use the independently
+authorized artifact path. No live deployment or client qualification follows
+from a source update or a local suite pass.

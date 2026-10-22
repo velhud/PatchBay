@@ -4,6 +4,7 @@ Handles job lifecycle, worktree management, and state tracking.
 """
 import uuid
 import time
+import hashlib
 import json
 import logging
 import os
@@ -227,6 +228,14 @@ class JobManager:
         Returns:
             job_id: Unique job identifier
         """
+        # Brief identity belongs to admission, independently of opt-in body logs.
+        # Validate before allocating a worktree or publishing a job record.
+        try:
+            prompt_data = prompt.encode("utf-8")
+        except (AttributeError, UnicodeError) as error:
+            raise ValueError("prompt must be valid UTF-8 text") from error
+        prompt_digest = hashlib.sha256(prompt_data).hexdigest()
+
         # Check concurrent limit (0 = unlimited)
         if not self.queue_enabled and self.max_concurrent > 0:
             active_count = self.active_job_count()
@@ -255,6 +264,8 @@ class JobManager:
             state=JobState.PENDING,
             mode=mode,
             prompt=prompt,
+            prompt_sha256=prompt_digest,
+            prompt_bytes=len(prompt_data),
             repo_path=repo_path,
             options=options or {}
         )
@@ -291,8 +302,6 @@ class JobManager:
         )
         if prompt_record:
             job.prompt_artifact = prompt_record["prompt_artifact"]
-            job.prompt_sha256 = prompt_record["prompt_sha256"]
-            job.prompt_bytes = prompt_record["prompt_bytes"]
             job.prompt_recorded_at = prompt_record["prompt_recorded_at"]
         
         with self._state_lock:

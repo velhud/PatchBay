@@ -139,3 +139,26 @@ complete exact binary patch within the existing 2,000,000-byte envelope.
 Oversized/failed producers cannot become an applicable empty patch. Retained
 review/retry metadata is deliberately not expired by age. See
 [S09 decisions and unqualified history scope](../repairs/2026-10-22-s09-repeated-use.md).
+
+## Admitted brief identity after reload
+
+Job admission always stores the exact prepared UTF-8 brief's SHA-256 and byte
+length, independently of optional private body logging. Rehydrated `prompt`
+stays empty. New review targets use this durable metadata and expose additive
+`contract_identity` with `state=admitted_metadata`, `sha256`, and `utf8_bytes`.
+The existing descriptor's `contract_sha256` participates in candidate identity;
+provenance annotations do not rewrite that descriptor or old target IDs.
+
+For an older record without metadata, a nonempty same-turn digest can be reused
+only after checking its descriptor/candidate ID, source tree and named private
+Git ref/commit. Such a new target can report `retained_target_digest`, with byte
+length unknown. Otherwise a fresh target reports `legacy_unknown` and null
+SHA/length. An ambiguous old empty hash does not prove an empty admitted brief;
+a newly admitted genuinely empty brief has the known empty SHA and byte count
+zero. Malformed/partial metadata or conflicting/corrupt legacy identity refuses
+new target construction without rewriting old evidence. Existing retained
+selectors stay readable and stored target records remain unchanged.
+
+A known brief digest is provenance, not semantic acceptance or mutation
+authority. Changed source and a new turn still change candidate identity.
+See [S10](../repairs/2026-10-22-s10-final-composition.md).

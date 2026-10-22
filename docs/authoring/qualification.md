@@ -221,3 +221,29 @@ shows absent runs explicitly; do not report a release-qualified profile until
 the required environment-specific evidence exists.
 
 The [S08 contract](../repairs/2026-10-22-s08-deployment-durability.md) distinguishes startup loaded identity from disk observation. In-place source drift invalidates writes and qualification; immutable release/venv paths and explicit deployment bindings remain operator responsibilities. Endpoint-process restart tests do not qualify owning-unit or reboot continuity.
+
+## Final evidence and bootstrap boundary
+
+The requirements evaluator now labels its record-validation scope and HEAD-only
+binding. `evaluated_status=PASS` checks supplied fields and hashes, while
+`independent_semantic_acceptance=false`; it does not observe installed/loaded
+bytes or an actual client. Follow the separate named-review procedure in
+[evidence adjudication](../testing/evidence-adjudication.md). An irrelevant but
+hash-correct artifact is rejected as product proof even when its record passes.
+The original 52-case meanings/statuses remain unchanged.
+
+Current server gates bind Author instance, role/principal where applicable,
+expiry, source/catalog/output and loaded release. Named credentials have exact
+principal/task scope; legacy role tokens share their compatibility principal.
+Model/account/client/route labels remain operator declarations until observed.
+Do not populate `write_supported=true` before an actual permitted write witness.
+There is no unqualified MCP-write canary bypass in this release. If lawful
+bootstrap permission is unavailable, record BLOCKED_ENVIRONMENT/NOT_RUN for that
+capability and keep the independent authorized artifact workflow available.
+Never disguise a mutation as read-only or widen a role to manufacture a pass.
+
+The [final capability matrix](../repairs/2026-10-22-s10-final-composition.md)
+leaves actual ordinary-Pro/current-native/Docker/service/reboot/power-loss,
+long-history/mixed-host cohorts and economic claims unqualified. S08 manual
+offline restore activation remains the selected contract. A local source or
+wheel pass does not authorize deployment or certify native macOS behavior.

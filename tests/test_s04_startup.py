@@ -7,7 +7,7 @@ import pytest
 
 from patchbay.jobs.executor import JobExecutor
 from patchbay.jobs.manager import JobManager, JobState
-from test_session_terminal import make_config
+from test_session_terminal import make_config, owned_execution_fixture_guard
 
 
 @pytest.mark.asyncio
@@ -28,7 +28,7 @@ async def test_pre_ready_lifecycle_is_bounded_and_never_releases_target(tmp_path
         ready_fd = int(command[command.index('--ready-fd')+1])
         script = ('import os,time\n' +
             ('os.write('+str(ready_fd)+",b'X')\n" if case == 'invalid' else '') +
-            ('pass\n' if case == 'eof' else 'time.sleep(30)\n'))
+            ('pass\n' if case == 'eof' else 'time.sleep(300)\n'))
         process = await real_spawn(sys.executable, '-u', '-c', script, **kwargs)
         owned.append(process)
         return process
@@ -43,7 +43,7 @@ async def test_pre_ready_lifecycle_is_bounded_and_never_releases_target(tmp_path
             assert owned
             result = await executor.cancel_job(job_id)
             assert result['cancelled']
-        await asyncio.wait_for(asyncio.shield(task), timeout=3)
+        await asyncio.wait_for(asyncio.shield(task), timeout=owned_execution_fixture_guard(executor))
         job = manager.get_job(job_id)
         assert job.state == (JobState.CANCELLED if case == 'cancel_no_serialization' else JobState.FAILED)
         assert all(p.returncode is not None for p in owned)
@@ -58,4 +58,4 @@ async def test_pre_ready_lifecycle_is_bounded_and_never_releases_target(tmp_path
                 await process.wait()
         if not task.done():
             task.cancel()
-            await asyncio.wait_for(asyncio.shield(task), timeout=3)
+            await asyncio.wait_for(asyncio.shield(task), timeout=owned_execution_fixture_guard(executor))

@@ -2028,29 +2028,37 @@ async def test_execution_service_tasks_are_bounded_while_claim_loop_stays_live(
 
 
 @pytest.mark.asyncio
-async def test_duplicate_claim_never_duplicates_local_toolhandler_effect(tmp_path: Path) -> None:
+@pytest.mark.parametrize("claim_interval", [0.02, 0.08])
+async def test_duplicate_claim_never_duplicates_local_toolhandler_effect(tmp_path: Path, claim_interval: float) -> None:
     capabilities = _capabilities()
     handler = FakeToolHandler(block=True)
     journal, execution = _service(tmp_path / "edge.sqlite3", handler, capabilities)
     transport = FakeHttpTransport()
     transport.repeat_claim = _attempt(capabilities)
-    runner = _runner(execution, transport, max_concurrent_tasks=4)
+    runner = _runner(execution, transport, max_concurrent_tasks=4,
+                     claim_interval_seconds=claim_interval)
 
     run_task = runner.start()
-    await asyncio.wait_for(handler.started.wait(), timeout=5)
-    await asyncio.sleep(0.06)
+    try:
+        await asyncio.wait_for(handler.started.wait(), timeout=5)
+        # Observe duplicate claims while the first effect remains blocked.
+        # A 60 ms sleep cannot witness three polls with an 80 ms interval.
+        await _wait_until(lambda: len(transport.calls[DEFAULT_ENDPOINTS.claim]) >= 3)
+        assert len(transport.calls[DEFAULT_ENDPOINTS.claim]) >= 3
+        assert len(handler.calls) == 1
+        assert runner.active_task_count == 1
 
-    assert len(transport.calls[DEFAULT_ENDPOINTS.claim]) >= 3
-    assert len(handler.calls) == 1
-    assert runner.active_task_count == 1
-
-    handler.release.set()
-    await _wait_until(lambda: bool(transport.calls[DEFAULT_ENDPOINTS.result]))
-    await runner.shutdown()
-    await asyncio.wait_for(run_task, timeout=5)
-
+        handler.release.set()
+        await _wait_until(lambda: bool(transport.calls[DEFAULT_ENDPOINTS.result]))
+        assert handler.effects == 1
+    finally:
+        handler.release.set()
+        await runner.shutdown()
+        await asyncio.wait_for(run_task, timeout=5)
+        journal.close()
+    # Retain the original post-shutdown barrier as well: a late duplicate
+    # after the first acknowledged result must still fail this oracle.
     assert handler.effects == 1
-    journal.close()
 
 
 @pytest.mark.asyncio
