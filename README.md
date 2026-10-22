@@ -1,5 +1,9 @@
 # PatchBay
 
+Author trial follow-up: recovery distinguishes source provenance from the exact
+candidate context, and nonpublishing candidates await review. See the
+[repair and deployment handoff](docs/repairs/2026-10-22-author-trial-follow-up.md).
+
 PatchBay is a local control plane for two complementary ChatGPT Pro workflows:
 
 1. **Manager/worker mode** — ChatGPT Pro plans, delegates, reviews, and coordinates while local Codex workers investigate, implement, execute, and verify inside approved repositories.

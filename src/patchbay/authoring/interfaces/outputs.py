@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from typing import Any
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Output(BaseModel):
@@ -80,7 +80,7 @@ class Capabilities(Output):
     immutable_candidates: bool
     durable_checks: bool
     execution_platform: str
-    strict_backend: str
+    strict_backend: str = Field(description="Supported strict backend, not evidence that it is installed or was used. Inspect the exact check receipt environment for the executed backend.")
     model_delegation: bool
     mcp_write_actions: bool
     qualification: dict[str, Any] | None
@@ -205,6 +205,18 @@ class Log(Output):
     truncated: bool | None = None
 
 
+class RecoveryCandidate(Output):
+    revision: int
+    commit: str
+    tree: str
+    base_commit: str
+    context_id: str | None = Field(description="Deprecated provenance alias for source_context_id; never use it as the current candidate source selector.")
+    source_context_id: str | None = Field(description="Context against which this revision was authored; may pin an older revision.")
+    source_context: dict[str, Any] | None
+    candidate_context_id: str | None = Field(description="Existing context pinned to this exact candidate revision and commit. Null means an authorized writer must export it; recovery never creates one.")
+    candidate_context: dict[str, Any] | None
+
+
 class Recovery(Output):
     format_version: int
     workflow: str
@@ -212,7 +224,7 @@ class Recovery(Output):
     repository_id: str
     goal: str
     policy_digest: str
-    candidate: dict[str, Any]
+    candidate: RecoveryCandidate
     freshness: dict[str, Any]
     operations: list[Operation]
     active_operations: list[Operation]

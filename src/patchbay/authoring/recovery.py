@@ -68,6 +68,12 @@ class Recovery:
             started_check_count = active_counts["started_checks"] or 0
             lease = conn.execute("SELECT label,epoch,expires FROM leases WHERE task_id=?", (task_id,)).fetchone()
             contexts = [dict(r) for r in conn.execute("SELECT id,revision,commit_oid,bundle_sha,created FROM contexts WHERE task_id=? AND revision=? ORDER BY created DESC LIMIT 10", (task_id, task["current_revision"]))]
+            source_context = conn.execute(
+                "SELECT id,revision,commit_oid FROM contexts WHERE task_id=? AND id=?",
+                (task_id, revision["context_id"])).fetchone()
+            candidate_context = conn.execute(
+                "SELECT id,revision,commit_oid FROM contexts WHERE task_id=? AND revision=? AND commit_oid=? ORDER BY created DESC,id DESC LIMIT 1",
+                (task_id, task["current_revision"], revision["commit_oid"])).fetchone()
             run = conn.execute("SELECT id,state,cleanup,receipt_sha,profile_digest,environment_digest FROM runs WHERE task_id=? AND revision=? ORDER BY created DESC,id DESC LIMIT 1", (task_id, task["current_revision"])).fetchone()
             pending_inbox = conn.execute(
                 "SELECT id FROM operations WHERE task_id=? AND kind='package.inbox' AND state='awaiting_approval' "
@@ -89,7 +95,10 @@ class Recovery:
             state, judgment = "awaiting_approval", "Review the recognized package and explicitly approve it under the current task lease"
         elif run and run["state"] == "completed" and run["receipt_sha"]:
             if self._receipt_is_current(run, task, revision):
-                state, judgment = "awaiting_approval", "Review the exact candidate and canonical receipt before any authorized publication"
+                if policy["publication"]["enabled"]:
+                    state, judgment = "awaiting_approval", "Review the exact candidate and canonical receipt before any authorized publication"
+                else:
+                    state, judgment = "awaiting_review", "Review the exact candidate and canonical receipt; publication is disabled. Record your review externally; no publication approval or persisted acceptance is implied"
             else:
                 state, judgment = "awaiting_controller", "The stored receipt does not prove the current candidate and policy; inspect exact feedback before treating checks as green"
         elif run and run["state"] in TERMINAL:
@@ -112,7 +121,11 @@ class Recovery:
                 "goal": task["goal"], "scope": {"writable_paths": policy["writable_paths"], "blocked_paths": policy["blocked_paths"]},
                 "policy": policy, "policy_digest": task["policy_digest"], "dependencies": json.loads(task["dependencies"]),
                 "candidate": {"revision": task["current_revision"], "commit": revision["commit_oid"], "tree": revision["tree_oid"],
-                              "base_commit": task["origin_commit"], "context_id": revision["context_id"]},
+                              "base_commit": task["origin_commit"], "context_id": revision["context_id"],
+                              "source_context_id": revision["context_id"],
+                              "source_context": dict(source_context) if source_context else None,
+                              "candidate_context_id": candidate_context["id"] if candidate_context else None,
+                              "candidate_context": dict(candidate_context) if candidate_context else None},
                 "lease": {**dict(lease), "expired": lease["expires"] <= now} if lease else None,
                 "contexts": contexts, "drafts": drafts, "verification": run, "approvals": approvals, "publications": publications,
                 "operations": [self.store.public_operation(r, summary=True) for r in recent],

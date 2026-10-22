@@ -98,6 +98,7 @@ Run on Linux or WSL2. The execution guard is part of the Author contract.
 python -m pytest tests/authoring -q
 python -m pytest tests/authoring/test_reconciliation_contracts.py -q
 python -m pytest tests/authoring/test_drafts_maintenance.py -q
+python -m pytest tests/authoring/test_trial_report_contracts.py -q
 python -m pytest tests/authoring/test_docker_lifecycle.py \
   tests/authoring/test_operator_resolution.py -q
 ```

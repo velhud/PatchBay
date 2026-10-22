@@ -1,5 +1,12 @@
 # Public tool surface
 
+Author recovery distinguishes `candidate.source_context_id` (authoring
+provenance, also exposed through deprecated `candidate.context_id`) from
+`candidate.candidate_context_id` (an existing context for the exact current
+revision and commit, otherwise null). Passing nonpublishing tasks return
+`awaiting_review`, with external review rather than publication approval.
+See the [trial follow-up contract and handoff](../repairs/2026-10-22-author-trial-follow-up.md).
+
 PatchBay presents separate public surfaces for manager/worker mode and Author Mode. Their implementation authority must remain distinct.
 
 ## Single-machine manager surface

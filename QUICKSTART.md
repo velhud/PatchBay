@@ -222,6 +222,13 @@ reads, select `context_id` alone, or `draft_id` with its exact positive
 `INVALID_OUTPUT` or a response-size error, follow the returned read-only recovery
 actions and original retry key before attempting another mutation.
 
+Select `candidate.candidate_context_id` for current candidate source; compare
+its `candidate_context` revision/commit with the candidate. If null, an authorized
+writer must export that revision first. `source_context_id` and the deprecated
+`candidate.context_id` retain authoring provenance and may identify older source.
+Passing candidates with publication disabled return `awaiting_review`; review
+is recorded externally and does not authorize publication or persist acceptance.
+
 ## Verify the source and deployment
 
 Run the exact matrix in [TESTING.md](TESTING.md). Mac checks verify portable mechanics; Linux/WSL2 execution and the deployed ordinary-Chat route require their own qualification. No PR is created by the Author workflow. See [Author operations](docs/authoring/operations.md) for explicit inbox watch, recovery, pause, revocation and policy changes.

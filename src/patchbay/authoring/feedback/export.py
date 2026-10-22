@@ -48,7 +48,10 @@ class Feedback:
                     "next_action": "Policy changed. Retain this historical receipt and run newly approved checks before review"}
         result.update(classification=receipt["classification"], receipt_sha=run["receipt_sha"], receipt=receipt,
                       verification_receipt=receipt["verification_receipt"],
-                      next_action="Review this exact candidate for publication" if receipt["classification"] == "READY_FOR_REVIEW" else "Implement corrections against the current pinned context and return a new change package")
+                      next_action=("Review this exact candidate and canonical receipt before any authorized publication"
+                                   if task["policy"]["publication"]["enabled"] else
+                                   "Review this exact candidate and canonical receipt; publication is disabled. Record your review externally; no publication approval or persisted acceptance is implied")
+                      if receipt["classification"] == "READY_FOR_REVIEW" else "Implement corrections against the current pinned context and return a new change package")
         return result
 
     def page(self, task_id: str, *, revision: int | None = None, offset: int = 0, limit: int = 10) -> dict:
@@ -86,8 +89,9 @@ class Feedback:
             lines.extend(["## Source was modified during verification", "```json", json.dumps(receipt["source_changes_during_checks"], indent=2), "```"])
         if receipt.get("error"):
             lines.extend(["## Execution problem", "```json", json.dumps(receipt["error"], indent=2), "```"])
-        lines.extend(["", "## Next action", result["next_action"], "",
-                      "Implement the correction yourself. Do not return another plan for a Codex worker. Use the bundled current context and package builder."])
+        lines.extend(["", "## Next action", result["next_action"]])
+        if result["classification"] != "READY_FOR_REVIEW":
+            lines.extend(["", "Implement the correction yourself. Do not return another plan for a Codex worker. Use the bundled current context and package builder."])
         return "\n".join(lines) + "\n"
 
     @mutation
@@ -99,6 +103,10 @@ class Feedback:
                         "Use context " + context["id"] + " at revision " + str(result["revision"]) + ", commit " + result["commit"] + ". "
                         "Prepare an edited copy with the included builder, correct source/tests, and return the new change ZIP. "
                         "Do not modify the immutable originals or delegate to another inference worker.\n")
+        if result["classification"] == "READY_FOR_REVIEW":
+            continuation = ("Review task " + task_id + ". Read FEEDBACK.md and RESULT.json, then task-context/TASK.md. "
+                            "Use context " + context["id"] + " at revision " + str(result["revision"]) + ", commit " + result["commit"] + ". "
+                            + result["next_action"] + ". Do not infer publication, acceptance or merge from passing checks.\n")
         members = {"RESULT.json": (canonical(result), 0o644), "FEEDBACK.md": (self.markdown(result).encode(), 0o644),
                    "CONTINUE.md": (continuation.encode(), 0o644)}
         # Include source as a nested archive to keep export memory bounded for large contexts.

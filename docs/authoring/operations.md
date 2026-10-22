@@ -166,7 +166,7 @@ An accepted local operation may continue only through mechanics explicitly
 authorized by the task policy. When a new source change, interpretation,
 repair choice, approval, or acceptance judgment is required, stop in an
 explicit `awaiting_controller`, `awaiting_input`, or `awaiting_approval`
-condition. The local service must not invent a decision or invoke another
+condition (`awaiting_review` for passing nonpublishing candidates). The local service must not invent a decision or invoke another
 model. A fresh Chat resumes by reading the joined recovery record, verifying
 task/revision/lease ownership, then inspecting the relevant candidate,
 operation, evidence and next required decision. An event notification or
@@ -178,6 +178,14 @@ Active and uncertain effects remain separately visible, with counts and partial
 flags. Use `author_recent_operations` versioned cursor pages to retrieve older
 history. The local CLI/domain recovery default stays 50. Read-only recovery
 does not reconcile, retry or release an execution fence.
+
+For current source, use `candidate.candidate_context_id` and check the revision
+and `commit_oid` in `candidate.candidate_context`. Null means a writer must
+export the current candidate first. `source_context_id` and `source_context`
+describe authoring provenance; the deprecated `candidate.context_id` retains
+that provenance meaning and can read an older revision. No read repoints or
+creates a context. Passing nonpublishing tasks await review; record that review
+externally without implying persisted acceptance or publication approval.
 
 For an unknown execution, preserve the run directory and journal. Establish
 supervisor/process identity from durable ownership records; never trust a PID
