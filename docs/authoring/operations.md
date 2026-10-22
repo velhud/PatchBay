@@ -439,3 +439,9 @@ paging, completed preparation markers, legacy bundle compatibility, atomic
 no-clobber delivery and policy/cancellation transaction boundaries are documented
 in the [S05 contract](../repairs/2026-10-22-s05-author-custody.md). Its deployment
 handoff requires a separate service-owner update and renewed client qualification.
+
+## S07 evidence policy and migration
+
+JUnit checks may set `min_executed` (default 0) in addition to `min_tests`; this changes the admitted profile digest. Skips still require `allow_skipped=true`. Reported executed count means collected minus skipped. Exit-only checks prove process success and have no test counts. Version-2 receipts distinguish complete boundary observation from unknown source equality. Historical receipts remain historical.
+
+Enabled publication now requires `allow_external_ci=true` for the default `remote_effects=downstream_possible`, whether or not `github_repository` is configured. An operator may explicitly select `remote_effects=controlled_no_automation` only after establishing that destination contract. No destination is inferred safe by its URL. This does not suppress server hooks. Existing uncertain pushes retain original-address readback without fresh effects. See the [S07 contract](../repairs/2026-10-22-s07-evidence-authority.md) for dialect, provenance, receipt compatibility and client requalification.

@@ -287,3 +287,5 @@ representation can be privacy-filtered. A missing complete source stays explicit
 See the [S04 contract](docs/repairs/2026-10-22-s04-native-execution.md) for the
 offline installation-manifest helper, source bounds and separate native/client
 qualification recipe. No canary runs automatically.
+
+Before enabling publication, explicitly select downstream-effect consent or an operator-controlled no-automation destination policy. Checks provide evidence for review; exit success and candidate-authored reports are not independent acceptance. See [S07 evidence and migration](docs/repairs/2026-10-22-s07-evidence-authority.md).

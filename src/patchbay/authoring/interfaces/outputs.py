@@ -155,6 +155,7 @@ class Feedback(Output):
     receipt_sha: str | None
     receipt: dict[str, Any] | None
     verification_receipt: dict[str, Any]
+    evidence_provenance: dict[str, Any]
     next_action: str
     operation: Operation | None = None
     check_results: list[dict[str, Any]] | None = None
@@ -288,6 +289,7 @@ class Preview(Output):
     merge_authorized: bool
     remote_head: str | None
     target_head: str | None
+    remote_effects: str | None = None
 
 
 class Published(Output):

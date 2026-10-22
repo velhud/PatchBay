@@ -113,18 +113,24 @@ class RuntimeViewFixes:
         if end < start and lines:
             raise ValueError("end_line must be >= start_line")
         limit = max(1, min(int(max_bytes or 8192), cap, 65536))
-        selected = []; used = 0; next_line = None
+        selected = []; originals = []; used = 0; next_line = None
         for number in range(start, min(end, len(lines))+1):
             line = self._safe_public_text(lines[number-1], {root}, max_chars=cap)
             cost = len(line.encode()) + bool(selected)
             if used + cost > limit:
                 next_line = number; break
-            selected.append(line); used += cost
+            selected.append(line); originals.append(lines[number-1]); used += cost
+        displayed = "\n".join(selected)
         return {**result, "exists": True, "entry": entry, "text": "\n".join(selected),
                 "start_line": start, "end_line": start+len(selected)-1,
                 "next_start_line": next_line, "truncated": next_line is not None,
                 "complete": next_line is None and start == 1 and end >= len(lines),
-                "representation": "sanitized_utf8_lines", "raw_blob_oid": entry["blob_oid"]}
+                "representation": "sanitized_utf8_lines", "raw_blob_oid": entry["blob_oid"],
+                "raw_sha256": hashlib.sha256(raw).hexdigest(),
+                "returned_text_sha256": hashlib.sha256(displayed.encode()).hexdigest(),
+                "representation_changed": selected != originals,
+                "exact_source_bytes": False,
+                "source_fidelity": "transformed" if selected != originals else "utf8_line_representation"}
 
     def _candidate_diff_member(self, jobs, rel_path, *, snapshot, root=None):
         root = root or self._execution_path_for_workspace(self._workspace_for_jobs(jobs))
@@ -391,6 +397,7 @@ class RuntimeViewFixes:
             f"{str(number).rjust(width)} | {_legacy.redact_sensitive_output(line)}"
             for number, line in selected
         )
+        original_numbered = "\n".join(f"{str(number).rjust(width)} | {line}" for number, line in selected)
         numbered = self._safe_public_text(
             numbered,
             self._private_paths_for_jobs(jobs) | {root},
@@ -406,6 +413,12 @@ class RuntimeViewFixes:
                 "total_lines": total_lines,
                 "bytes": size,
                 "sha256": self._file_sha256(target),
+                "sha256_basis": "raw_file_bytes_separate_read; mutable_workspace",
+                "returned_text_sha256": hashlib.sha256(numbered.encode()).hexdigest(),
+                "representation": "sanitized_numbered_utf8_lines",
+                "representation_changed": numbered != original_numbered,
+                "exact_source_bytes": False,
+                "source_fidelity": "transformed" if numbered != original_numbered else "utf8_line_representation",
                 "truncated": bool(
                     start > 1
                     or returned_end < total_lines

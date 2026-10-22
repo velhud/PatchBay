@@ -35,8 +35,11 @@ def regular_file(workspace: Path, path: str):
     return target
 
 
-def source_changes(workspace: Path, expected: dict, allowed_outputs: list[str], *, commit: str) -> list[dict]:
-    changes = []
+def source_changes(workspace: Path, expected: dict, allowed_outputs: list[str], *, commit: str,
+                   changes: list[dict] | None = None) -> list[dict]:
+    # The supervisor owns this accumulator, retaining partial negative evidence
+    # even if a later bounded inventory fails.
+    changes = [] if changes is None else changes
     for path, entry in sorted(expected.items()):
         try:
             target = regular_file(workspace, path)
@@ -61,7 +64,9 @@ def source_changes(workspace: Path, expected: dict, allowed_outputs: list[str], 
         return any(fnmatch.fnmatchcase(path, pattern) or path.startswith(pattern.rstrip("/") + "/")
                    or ("/" not in pattern and pattern in parts) for pattern in allowed_outputs)
     count = 0
-    for directory, dirs, files in os.walk(workspace, followlinks=False):
+    def scan_error(error):
+        raise error
+    for directory, dirs, files in os.walk(workspace, followlinks=False, onerror=scan_error):
         for name in list(dirs):
             target = Path(directory) / name
             path = target.relative_to(workspace).as_posix()

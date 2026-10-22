@@ -151,3 +151,5 @@ explicit clipped reports with complete-source paging, bounded supervisor readine
 and passive launch provenance. Connector readiness, static installation matching,
 native execution and client qualification remain separate. These source changes
 do not update existing trial deployments.
+
+The [S07 evidence contract](docs/repairs/2026-10-22-s07-evidence-authority.md) separates executor observations, program assertions and acceptance; documents strict JUnit, explicit executed-test policy, transformed source views and downstream publication consent. Publication does not qualify a deployed/client route.

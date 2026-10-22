@@ -14,7 +14,7 @@
     },
     "evidence": {
       "type": "array",
-      "description": "Concrete evidence supporting the report: files, functions, commands, observations, test results, or other specific signals. Use concise strings, but include enough detail for a manager to trust the report without immediately rereading files.",
+      "description": "Concrete evidence supporting the report: files, functions, commands, observations, test results, or other specific signals. Use concise strings, but include enough detail for a manager to trust the report without immediately rereading files. These are worker-authored assertions, not canonical execution receipts or independent acceptance.",
       "items": {
         "type": "string"
       }
@@ -35,7 +35,7 @@
     },
     "tests_run": {
       "type": "array",
-      "description": "List of test commands or test files that were run",
+      "description": "List of test commands or test files that were run; worker-authored claims requiring evidence review, not independently observed execution.",
       "items": {
         "type": "string"
       }

@@ -25,6 +25,7 @@ def test_lost_local_push_response_recovers_exact_remote_without_second_push(setu
     git(source, 'push', str(remote), 'main:main')
     policy = TaskPolicy.model_validate(original_repo['policy'])
     policy.publication.enabled = True
+    policy.publication.remote_effects = "controlled_no_automation"
     repo = service.repositories.register('unit-publication', source, policy, remote=str(remote))
     task = service.tasks.create(repo['id'], 'Publication mechanics fixture', key='publication-task')
     lease = service.leases.claim(task['id'])

@@ -10,7 +10,7 @@ import uuid
 import pytest
 
 from patchbay.authoring.errors import AuthorError
-from patchbay.authoring.execution.receipts import new_receipt, record_receipt
+from patchbay.authoring.execution.receipts import new_receipt, record_receipt, classify
 from patchbay.authoring.packages.archive import PackageReader
 from patchbay.authoring.persistence.maintenance import Maintenance
 from patchbay.authoring.persistence.store import Store
@@ -56,14 +56,19 @@ def _seed_check_run(service, task, *, key: str) -> tuple[dict, dict]:
 def _synthetic_receipt(service, task, run, *, passed: bool) -> dict:
     """Build only the persistence-helper input; this does not run a check."""
     receipt = new_receipt(service.store, run, task["policy_digest"])
-    receipt.update(environment={"backend": "fixture-only"}, environment_digest="fixture-environment",
+    environment = {"backend": "fixture-only", "evidence": "synthetic persistence input; no process executed"}
+    environment["environment_digest"] = fingerprint(environment)
+    receipt.update(environment=environment, environment_digest=environment["environment_digest"],
                    cleanup="proven", source_changes_during_checks=[])
     if passed:
-        receipt.update(classification="READY_FOR_REVIEW", state="completed",
-                       verification_receipt={"outcome": "passed", "source_unchanged": True})
-    else:
-        receipt.update(classification="CHECKS_INCOMPLETE", state="failed",
-                       verification_receipt={"outcome": "incomplete", "source_unchanged": True})
+        profile = json.loads(run["profile"])
+        receipt["source_observation"].update(state="complete", boundaries=["initial"])
+        for stage in ("setup", "checks"):
+            for check in profile.get(stage, []):
+                receipt[stage].append({"id": check["id"], "required": check["required"], "state": "completed",
+                    "argv": check["argv"], "exit_code": 0, "verification": "passed", "cleanup": {"state": "proven"}})
+                receipt["source_observation"]["boundaries"].append(stage + ":" + check["id"])
+    classify(receipt, {check["id"] for check in json.loads(run["profile"])["checks"] if check["required"]})
     return receipt
 
 

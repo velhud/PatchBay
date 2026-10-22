@@ -84,6 +84,8 @@ class GitHubClient:
             complete = False
             for page in range(1, 51):
                 data = self.request("GET", "/commits/" + quote(commit, safe="") + "/" + endpoint + "?per_page=100&page=" + str(page))
+                require(not key or isinstance(data, dict) and isinstance(data.get(key), list),
+                        "GITHUB_ERROR", "Unexpected CI response")
                 rows = data[key] if key else data
                 require(isinstance(rows, list), "GITHUB_ERROR", "Unexpected CI response")
                 target.extend(rows)
@@ -91,22 +93,31 @@ class GitHubClient:
                     complete = True
                     break
             require(complete, "CI_UNKNOWN", "CI pagination exceeded the supported observation budget")
+        # Status history is reduced only within one namespace/context/producer.
+        # Every returned check-run remains an obligation (including visible
+        # retries without timestamps). Legacy name policies require all sources.
         newest = {}
         for row in statuses:
-            key = row.get("context")
+            require(isinstance(row, dict) and isinstance(row.get("context"), str), "GITHUB_ERROR", "Malformed status row")
+            creator = row.get("creator") or {}
+            producer = creator.get("id") or creator.get("login") or "unknown"
+            key = (row["context"], str(producer))
             current = newest.get(key)
             stamp = row.get("updated_at") or row.get("created_at") or ""
+            value = {"name": row["context"], "state": row.get("state"), "source": "status", "producer": producer, "id": row.get("id")}
             if current is None or stamp > current[0]:
-                newest[key] = (stamp, {"name": key, "state": row.get("state"), "source": "status"})
+                newest[key] = (stamp, [value])
+            elif stamp == current[0]:
+                current[1].append(value)
+        obligations = [value for _, values in newest.values() for value in values]
         for row in checks:
+            require(isinstance(row, dict) and isinstance(row.get("name"), str), "GITHUB_ERROR", "Malformed check-run row")
             name = row.get("name")
-            stamp = row.get("completed_at") or row.get("started_at") or ""
             outcome = row.get("conclusion") if row.get("status") == "completed" else "pending"
-            current = newest.get(name)
-            if current is None or stamp >= current[0]:
-                newest[name] = (stamp, {"name": name, "state": outcome, "source": "check_run"})
-        missing = [name for name in required if name not in newest]
-        results = [newest[name][1] for name in required if name in newest]
+            obligations.append({"name": name, "state": outcome, "source": "check_run",
+                                "producer": (row.get("app") or {}).get("id", "unknown"), "id": row.get("id")})
+        missing = [name for name in required if not any(row["name"] == name for row in obligations)]
+        results = [row for row in obligations if row["name"] in required]
         failed = any(row["state"] in {"failure", "error", "cancelled", "timed_out", "action_required", "startup_failure", "stale"} for row in results)
         passed = not missing and all(row["state"] == "success" for row in results)
         return {"commit": commit, "state": "failed" if failed else "passed" if passed else "pending", "required": required, "results": results, "missing": missing}

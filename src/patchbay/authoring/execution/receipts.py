@@ -4,19 +4,21 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 
-from ..errors import require
+from ..errors import AuthorError, require
 from ..persistence.store import TERMINAL
 from ..util import atomic_write, canonical, fingerprint, utc_now
 
 
 def new_receipt(store, run: dict, policy_digest: str) -> dict:
-    return {"format_version": 1, "issuer": "patchbay-author-executor",
+    return {"format_version": 2, "issuer": "patchbay-author-executor",
             "instance_id": store.identity["instance_id"], "operation_id": run["id"],
             "task_id": run["task_id"], "revision": run["revision"],
             "commit": run["commit_oid"], "tree": run["tree_oid"],
             "profile_digest": run["profile_digest"], "policy_digest": policy_digest,
             "environment": None, "environment_digest": None, "setup": [], "checks": [],
             "source_changes_during_checks": [], "cleanup": "not_required",
+            "source_observation": {"state": "not_started", "basis": "command_boundary_comparison",
+                                   "boundaries": [], "continuous_immutability": False},
             "classification": "CHECKS_INCOMPLETE", "state": "failed",
             "resource_usage": {"observation_state": "unavailable", "method": None,
                                "rss_method": None,
@@ -26,7 +28,7 @@ def new_receipt(store, run: dict, policy_digest: str) -> dict:
             "failure_causes": [],
             "started": utc_now(), "completed": None,
             "delegated_inference_by_author_service": False,
-            "verification_receipt": {"outcome": "incomplete", "source_unchanged": False}}
+            "verification_receipt": {"outcome": "incomplete", "source_unchanged": None}}
 
 
 def classify(receipt: dict, required: set[str]) -> None:
@@ -71,15 +73,83 @@ def classify(receipt: dict, required: set[str]) -> None:
         receipt.update(classification="CHECKS_INCOMPLETE", state="failed")
     elif any(row.get("verification") == "failed" and row.get("required") for row in receipt["checks"]):
         receipt.update(classification="CHECKS_FAILED", state="failed")
-    elif receipt.get("error") or not required <= {row["id"] for row in receipt["checks"] if row.get("verification") == "passed"}:
+    elif receipt.get("error") or (receipt.get("format_version", 1) >= 2 and
+                                 receipt.get("source_observation", {}).get("state") != "complete") or not required <= {row["id"] for row in receipt["checks"] if row.get("verification") == "passed"}:
         receipt.update(classification="CHECKS_INCOMPLETE", state="failed")
     else:
         receipt.update(classification="READY_FOR_REVIEW", state="completed")
     receipt["verification_receipt"] = {
         "outcome": "passed" if receipt["classification"] == "READY_FOR_REVIEW" else "incomplete" if receipt["classification"] != "CHECKS_FAILED" else "failed",
-        "source_unchanged": not bool(receipt["source_changes_during_checks"]),
+        "source_unchanged": False if receipt["source_changes_during_checks"] else (
+            True if receipt.get("source_observation", {}).get("state") == "complete" else None),
         "required_checks": sorted(required), "commit": receipt["commit"], "tree": receipt["tree"],
         "profile_digest": receipt["profile_digest"], "environment_digest": receipt["environment_digest"]}
+
+
+def validate_semantics(receipt: dict, run: dict, selected: list[str]) -> None:
+    """Validate producer consistency once at admission, without rerunning code.
+
+    Historical terminal receipts are read as stored. Pending v1 receipts may
+    retain nonpass outcomes but cannot gain the v2 source-observation guarantee.
+    """
+    from ..models import Profile
+    raw_profile = json.loads(run["profile"])
+    require(fingerprint(raw_profile) == run["profile_digest"], "EVIDENCE_INVALID", "Admitted profile is corrupt")
+    profile = Profile.model_validate(raw_profile)
+    manifest = {c.id: c for c in profile.checks}
+    require(isinstance(selected, list) and len(selected) == len(set(selected)) and set(selected) <= manifest.keys(),
+            "EVIDENCE_INVALID", "Invalid admitted check selection")
+    required = {c.id for c in profile.checks if c.required}
+    # Legacy producers admitted all required checks even where older fixture
+    # payloads did not persist a selected manifest. No omitted row can pass.
+    allowed = {"setup": {c.id: c for c in profile.setup}, "checks": {i: manifest[i] for i in set(selected) | required}}
+    seen = set()
+    for stage in ("setup", "checks"):
+        for row in receipt.get(stage, []):
+            check_id = row.get("id")
+            require(check_id in allowed[stage] and check_id not in seen, "EVIDENCE_INVALID", "Unexpected or duplicate check result")
+            seen.add(check_id)
+            check = allowed[stage][check_id]
+            require(row.get("required") == check.required, "EVIDENCE_INVALID", "Required check flag changed")
+            if row.get("verification") == "passed":
+                require(row.get("state") == "completed" and row.get("exit_code") == 0
+                        and row.get("cleanup", {}).get("state") in {"proven", "not_required"}
+                        and row.get("argv") == check.argv,
+                        "EVIDENCE_INVALID", "Passing result contradicts admitted command/process evidence")
+                if check.report == "junit":
+                    counts = row.get("test_counts", {})
+                    require(row.get("report_sha256") and all(type(counts.get(key)) is int and counts[key] >= 0
+                            for key in ("tests", "failed", "errors", "skipped", "executed"))
+                            and counts["tests"] > 0 and counts["tests"] >= check.min_tests
+                            and counts["failed"] == counts["errors"] == 0
+                            and counts["executed"] == counts["tests"] - counts["skipped"] >= check.min_executed
+                            and (not counts["skipped"] or check.allow_skipped),
+                            "EVIDENCE_INVALID", "Passing result contradicts JUnit policy/counts")
+    require(receipt.get("format_version") in {1, 2}, "EVIDENCE_INVALID", "Unsupported pending receipt version")
+    derived = deepcopy(receipt)
+    classify(derived, required)
+    for field in ("state", "classification"):
+        require(receipt.get(field) == derived[field], "EVIDENCE_INVALID", "Receipt verdict contradicts check evidence: " + field)
+    require(receipt.get("verification_receipt", {}).get("outcome") == derived["verification_receipt"]["outcome"],
+            "EVIDENCE_INVALID", "Receipt outcome contradicts classification")
+    if receipt["format_version"] == 2:
+        require(receipt.get("verification_receipt") == derived["verification_receipt"],
+                "EVIDENCE_INVALID", "Receipt verification summary contradicts observations")
+    if receipt["classification"] == "READY_FOR_REVIEW":
+        observation = receipt.get("source_observation", {})
+        boundaries = observation.get("boundaries", [])
+        require(receipt["format_version"] == 2 and observation.get("state") == "complete"
+                and "initial" in boundaries and all(stage + ":" + row["id"] in boundaries
+                    for stage in ("setup", "checks") for row in receipt[stage]),
+                "EVIDENCE_INVALID", "A pass requires complete source boundary observations")
+        require({c.id for c in profile.setup} <= seen and required <= seen, "EVIDENCE_INVALID", "Required results missing")
+        environment = receipt.get("environment")
+        require(isinstance(environment, dict) and environment.get("environment_digest") == receipt.get("environment_digest")
+                and fingerprint({k: v for k, v in environment.items() if k != "environment_digest"}) == receipt["environment_digest"],
+                "EVIDENCE_INVALID", "Environment observation digest is inconsistent")
+        require(not run.get("environment_digest") or run["environment_digest"] == receipt["environment_digest"],
+                "EVIDENCE_INVALID", "Environment differs from admitted supervisor observation")
+        require(receipt["verification_receipt"].get("source_unchanged") is True, "EVIDENCE_INVALID", "Source comparison is unproven")
 
 
 def referenced_hashes(receipt: dict) -> list[str]:
@@ -121,6 +191,20 @@ def record_receipt(store, operation_id: str, receipt: dict) -> dict:
             if operation["state"] in TERMINAL and operation["state"] != "unknown_execution":
                 return store.public_operation(operation)
             prepared = deepcopy(original)
+            try:
+                validate_semantics(prepared, run, json.loads(operation["payload"]).get("selected", []))
+            except AuthorError as exc:
+                # Preserve the pending producer bytes and expose the rejection
+                # through the existing operation. Never schedule a replacement.
+                with store.transaction() as conn:
+                    current = conn.execute("SELECT state FROM operations WHERE id=?", (operation_id,)).fetchone()
+                    if current["state"] not in TERMINAL or current["state"] == "unknown_execution":
+                        conn.execute("UPDATE runs SET state='unknown_execution',cleanup='unresolved',updated=? WHERE id=?",
+                                     (utc_now(), operation_id))
+                        conn.execute("UPDATE operations SET state='unknown_execution',phase='receipt_rejected',error=?,updated=? WHERE id=?",
+                                     (canonical(exc.as_dict()).decode(), utc_now(), operation_id))
+                        store.event(conn, "checks.receipt_rejected", run["task_id"], {"operation_id": operation_id, "code": exc.code})
+                raise
             cancelled = bool(operation["cancel_requested"])
             if cancelled and prepared["cleanup"] != "unresolved":
                 prepared.update(classification="CANCELLED", state="cancelled")

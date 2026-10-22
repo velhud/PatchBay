@@ -29,6 +29,7 @@ def test_typed_timeout_after_push_keeps_original_operation_recoverable(
 
     policy = TaskPolicy.model_validate(original_repo["policy"])
     policy.publication.enabled = True
+    policy.publication.remote_effects = "controlled_no_automation"
     repo = service.repositories.register(
         "s05-timeout-fixture", source, policy, remote=str(remote)
     )

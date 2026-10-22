@@ -115,10 +115,8 @@ def _seed_receipt_run(service, task) -> tuple[dict, dict, dict]:
         conn.execute("UPDATE operations SET state='running',phase='verifying',updated=? WHERE id=?",
                      (now, op["id"]))
     run = service.store.one("SELECT * FROM runs WHERE id=?", (op["id"],))
-    receipt = new_receipt(service.store, run, current["policy_digest"])
-    receipt.update(environment={"backend": "storage-lab"}, environment_digest="storage-lab",
-                   cleanup="proven", source_changes_during_checks=[], classification="READY_FOR_REVIEW", state="completed",
-                   verification_receipt={"outcome": "passed", "source_unchanged": True})
+    from test_fault_boundaries import _synthetic_receipt
+    receipt = _synthetic_receipt(service, current, run, passed=True)
     return run, current, receipt
 
 

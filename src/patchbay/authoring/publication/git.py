@@ -50,6 +50,11 @@ class Publisher:
         self.tasks, self.repositories, self.leases = Tasks(store), Repositories(store), Leases(store)
         self.github = github
 
+    @staticmethod
+    def _remote_authority(policy):
+        require(policy.publication.allow_external_ci or policy.publication.remote_effects == "controlled_no_automation",
+                "POLICY_DENIED", "Remote publication requires downstream-effect consent or an explicit operator-controlled no-automation destination policy")
+
     def _candidate(self, task_id: str, revision: int) -> tuple[dict, dict, TaskPolicy, dict]:
         task = self.tasks.get(task_id)
         Control(self.store).assert_granted(task_id)
@@ -71,8 +76,7 @@ class Publisher:
         task, candidate, policy, feedback = self._candidate(task_id, revision)
         repo = self.repositories.get(task["repository_id"])
         require(repo["remote"], "PUBLICATION_BLOCKED", "No publication remote is registered")
-        if policy.publication.github_repository:
-            require(policy.publication.allow_external_ci, "POLICY_DENIED", "GitHub publication requires explicit authority for downstream repository workflows; their inference behavior is not guaranteed by Author Mode")
+        self._remote_authority(policy)
         branch = policy.publication.branch_prefix + task_id
         require(branch != repo["default_branch"], "POLICY_DENIED", "Publication cannot target the default branch")
         git = self.repositories.git(repo["id"])
@@ -84,6 +88,7 @@ class Publisher:
         return {"task_id": task_id, "revision": revision, "commit": candidate["commit_oid"], "tree": candidate["tree_oid"],
                 "policy_digest": task["policy_digest"], "receipt_sha": feedback["receipt_sha"], "branch": branch,
                 "base_branch": repo["default_branch"], "remote_head": feature_head, "target_head": target_head,
+                "remote_effects": policy.publication.remote_effects,
                 "publication_ready": True, "merge_authorized": False}
 
     @mutation
@@ -163,6 +168,7 @@ class Publisher:
                                       operation_id=op['id'], phase='remote_readback', external_effect_possible=True)
                 require(not approval["revoked"], "STALE_APPROVAL", "Approval was revoked")
                 task, candidate, policy, feedback = self._candidate(task_id, approval["revision"])
+                self._remote_authority(policy)
                 require(candidate["commit_oid"] == approval["commit_oid"] and candidate["tree_oid"] == approval["tree_oid"]
                         and task["policy_digest"] == approval["policy_digest"] and feedback["receipt_sha"] == approval["receipt_sha"],
                         "STALE_APPROVAL", "Candidate, policy, or canonical verification changed after review")
@@ -204,6 +210,11 @@ class Publisher:
                     with self.store.transaction() as conn:
                         self.leases.assert_owned(task_id, token, epoch, conn=conn)
                         Control(self.store).assert_granted(task_id, conn=conn)
+                        current_approval = conn.execute("SELECT revoked FROM approvals WHERE id=?", (approval_id,)).fetchone()
+                        require(current_approval and not current_approval["revoked"], "STALE_APPROVAL", "Approval was revoked before push intent")
+                        current_task = conn.execute("SELECT current_commit,policy_digest FROM tasks WHERE id=?", (task_id,)).fetchone()
+                        require(current_task["current_commit"] == approval["commit_oid"] and current_task["policy_digest"] == approval["policy_digest"],
+                                "STALE_APPROVAL", "Candidate or policy changed before push intent")
                         conn.execute("UPDATE publications SET state='push_attempted',updated=? WHERE id=?", (utc_now(), op['id']))
                         conn.execute("UPDATE operations SET phase='push_attempted',updated=? WHERE id=?", (utc_now(), op['id']))
                         self.store.event(conn, 'publication.push_attempted', task_id, {'operation_id': op['id']})
@@ -220,7 +231,6 @@ class Publisher:
                                      {"operation_id": op["id"], "phase": "pushed"})
                 pr, ci = None, {"state": "not_configured"}
                 if policy.publication.github_repository:
-                    require(policy.publication.allow_external_ci, "POLICY_DENIED", "Downstream GitHub workflows were not authorized")
                     client = self.github or GitHubClient(policy.publication.github_repository)
                     try:
                         ci = client.ci(approval["commit_oid"], policy.publication.required_ci)

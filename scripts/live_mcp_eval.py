@@ -741,7 +741,11 @@ def _pid_is_live(pid: int) -> bool:
 
 
 def _start_server(repo: Path, port: int, env: dict[str, str], *, tool_mode: str, config_path: Path) -> subprocess.Popen[str]:
-    return subprocess.Popen(
+    # A pipe drained only during startup can fill on Linux and block the
+    # event loop in logging.emit. Spool this finite fixture's output instead.
+    output_path = config_path.parent / "launcher.log"
+    with output_path.open("w", encoding="utf-8") as output:
+        process = subprocess.Popen(
         [
             sys.executable,
             "scripts/start.py",
@@ -760,10 +764,12 @@ def _start_server(repo: Path, port: int, env: dict[str, str], *, tool_mode: str,
         ],
         cwd=ROOT,
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=output,
         stderr=subprocess.STDOUT,
         text=True,
-    )
+        )
+    process._eval_output_path = output_path
+    return process
 
 
 def _create_pro_request(repo: Path, report_path: Path, env: dict[str, str]) -> dict[str, Any]:
@@ -840,6 +846,12 @@ def _wait_for_health(port: int, process: subprocess.Popen[str], output_tail: lis
 
 
 def _read_available_output(process: subprocess.Popen[str], output_tail: list[str]) -> None:
+    output_path = getattr(process, "_eval_output_path", None)
+    if output_path is not None:
+        with output_path.open("rb") as stream:
+            stream.seek(max(0, output_path.stat().st_size - 65536))
+            output_tail[:] = stream.read(65536).decode("utf-8", "replace").splitlines()[-80:]
+        return
     if not process.stdout:
         return
     while True:

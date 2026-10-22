@@ -38,7 +38,7 @@ def test_preparation_creates_scoped_private_credentials_and_pinned_context(tmp_p
     assert task["policy"]["profile"]["checks"] == [{
         "id": "unit", "argv": [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
         "cwd": ".", "timeout_seconds": 30, "required": True, "report": "exit",
-        "report_path": None, "min_tests": 1, "allow_skipped": False,
+        "report_path": None, "min_tests": 1, "min_executed": 0, "allow_skipped": False,
     }]
     assert repo["policy"]["writable_paths"] == ["app.py"]
     assert identities["approved_check_was_run"] is False

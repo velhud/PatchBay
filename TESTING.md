@@ -358,3 +358,11 @@ source/install identity checks and separate native/client gates above.
 Run `python -m pytest tests/test_s06_candidate_contracts.py tests/test_s06_delivery_commit.py tests/test_s06_review.py tests/test_s06_group_contract.py tests/authoring/test_s06_composition.py -q` in addition to the full required matrix. These actual Git/SQLite/application fixtures use no-model executors. They cover tracked ignored files, literal exclusions, sparse/gitlink/conversion refusal, pinned review and dependency starts, peer capture counts at 1/10/100 paths, exact postimages, atomic receipt recovery, baseline-anchor failure, safe cleanup and composition decisions. Hub protocol/adapter/group tests retain both permission and legacy retry boundaries.
 
 Revalidate all S01–S05 stage commits, input packages and retained regressions against the final S06 candidate; do not substitute earlier totals. Keep the 72 S06 proposed acceptance oracles distinct from actual tests and the separate 52-case operational requirements register. Native Linux/Docker/client/deployment tests remain unrun unless separately authorized and actually exercised. See [S06 contract and operator handoff](docs/repairs/2026-10-22-s06-candidate-delivery.md).
+
+## S07 evidence and authority regressions
+
+```bash
+python -m pytest tests/authoring/test_s07_*.py tests/test_s07_source_views.py -q
+```
+
+These parser, fake-CI, real-store, no-model source-view and isolated-command fixtures cover contradictory reports, encoded declarations, opt-in executed counts, incomplete scans, receipt consistency, approval revocation and literal feedback. Synthetic receipt fixtures are persistence inputs, not executed checks. Keep all required full checks and S01–S06 regressions. [S07 contracts and remaining gates](docs/repairs/2026-10-22-s07-evidence-authority.md) distinguish local checks from native/client/deployment qualification.

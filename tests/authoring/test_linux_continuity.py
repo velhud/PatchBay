@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,7 @@ class Endpoint:
         self.url = f"http://127.0.0.1:{self.socket.getsockname()[1]}"
         self.token = json.loads((home / "tokens.json").read_text())["operator"]
         self.logs = []
+        self.rate_backoffs = []
 
     def start(self):
         log = (self.root / f"endpoint-{len(self.logs)}.log").open("wb")
@@ -61,8 +63,23 @@ class Endpoint:
     def request(self, path, value=None):
         request = urllib.request.Request(self.url + path, data=canonical(value) if value is not None else None,
                                          headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=2) as response:
-            return json.load(response)
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429:
+                    raise
+                # S03 reserves bounded urgent capacity, not unlimited bursts.
+                # Reads and exact keyed cancels may retry the original request;
+                # never mint replacement cancellation intent to bypass the rate.
+                delay = max(.05, float(exc.headers.get("Retry-After", "1")))
+                exc.close()
+                if time.monotonic() + delay >= deadline:
+                    raise
+                self.rate_backoffs.append(delay)
+                time.sleep(delay)
 
     def stop(self):
         if self.process is not None and self.process.poll() is None:
@@ -143,6 +160,7 @@ def test_endpoint_restart_and_control_under_actual_bounded_job_saturation(setup_
             "supervisor_before_restart": owned, "endpoint_before_restart": old_endpoint,
             "endpoint_after_restart": identity(endpoint.process.pid), "queued_admission": queued["admission"],
             "control_latency_seconds": latencies, "resource_usage": receipt["resource_usage"],
+            "rate_backoff_seconds": endpoint.rate_backoffs,
             "cleanup": receipt["cleanup"], "ordinary_chat": False}))
     finally:
         endpoint.close()

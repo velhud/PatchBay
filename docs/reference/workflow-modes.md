@@ -81,3 +81,7 @@ Choose manager/worker mode when the desired system is a managed local engineerin
 Choose Author Mode when ChatGPT Pro must write the exact source and PatchBay should act only as deterministic transport, candidate builder, check runner, and evidence return path.
 
 Do not begin in one mode and recover by silently delegating into the other. Switching modes is a visible user/manager decision with a new task boundary.
+
+## Evidence origin
+
+Manager reports are worker-authored assertions; native completion is lifecycle evidence. Author receipts record observed processes and identities, while report assertions originate in the candidate program. Passing checks permit review, not implicit acceptance or publication. Source boundary equality is not continuous immutability. See [S07](../repairs/2026-10-22-s07-evidence-authority.md).

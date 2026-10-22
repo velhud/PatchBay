@@ -46,6 +46,7 @@ class Check(Contract):
     report: Literal["exit", "junit"] = "exit"
     report_path: str | None = None
     min_tests: int = Field(1, ge=0, le=10000000)
+    min_executed: int = Field(0, ge=0, le=10000000)
     allow_skipped: bool = False
 
     @field_validator("argv")
@@ -70,6 +71,8 @@ class Check(Contract):
                 raise ValueError("Reports must be under .author-reports/")
         elif self.report_path is not None:
             raise ValueError("report_path only applies to JUnit checks")
+        if self.report != "junit" and self.min_executed:
+            raise ValueError("min_executed requires a JUnit report")
         return self
 
 
@@ -112,6 +115,7 @@ class PublicationPolicy(Contract):
     require_target_unchanged: bool = True
     required_ci: list[str] = Field(default_factory=list)
     allow_external_ci: bool = False
+    remote_effects: Literal["downstream_possible", "controlled_no_automation"] = "downstream_possible"
     signing_required: bool = False
 
     @model_validator(mode="after")

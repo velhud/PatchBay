@@ -18,9 +18,12 @@ python scripts/author_interface_eval.py --json
 ```
 
 Portable Author tests exercise exact state, candidate refs, replay, fail-closed
-backup/restore, blob verification and reference-aware GC. They do not test the
-Linux process supervisor. Check the pytest report for platform skips and retain
-them as `BLOCKED_ENVIRONMENT`, never as successful cases.
+backup/restore, blob verification and reference-aware GC. Linux-only cases also
+exercise real disposable supervisors and loopback endpoints when actually run
+on Linux; portable-only passes do not qualify those paths. Check the pytest
+report for platform skips and retain them as `BLOCKED_ENVIRONMENT`, never as
+successful cases. [S07 evidence semantics](../repairs/2026-10-22-s07-evidence-authority.md)
+separate executor observations, program reports and independent acceptance.
 
 ## Evidence format
 

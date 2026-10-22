@@ -23,6 +23,7 @@ def publishable(setup_author, tmp_path):
     git(source, "push", str(remote), "main:main")
     policy = TaskPolicy.model_validate(original_repo["policy"])
     policy.publication.enabled = True
+    policy.publication.remote_effects = "controlled_no_automation"
     repo = service.repositories.register("publishable", source, policy, remote=str(remote))
     task = service.tasks.create(repo["id"], "Fix addition for publication", key="publish-task")
     lease = service.leases.claim(task["id"])

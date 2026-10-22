@@ -55,6 +55,14 @@ def run(home: Path, operation_id: str) -> int:
         workspace = root / "source"
         owned = {}
         subreaper_ready = False
+        def observe(boundary):
+            observation = receipt["source_observation"]
+            observation["state"] = "incomplete"
+            changes = source_changes(workspace, expected, profile.allowed_outputs, commit=row["commit_oid"],
+                                     changes=receipt["source_changes_during_checks"])
+            observation["boundaries"].append(boundary)
+            observation["state"] = "complete"
+            return changes
         try:
             await_launch(root, operation_id)
             enable_subreaper()
@@ -64,7 +72,7 @@ def run(home: Path, operation_id: str) -> int:
             git = Repositories(store).git(task["repository_id"])
             expected = expected_source(git, row["commit_oid"])
             git.checkout(row["commit_oid"], workspace)
-            changes = source_changes(workspace, expected, profile.allowed_outputs, commit=row["commit_oid"])
+            changes = observe("initial")
             require(not changes, "BLOCKED_ENVIRONMENT", "Checkout filters or source modes did not preserve the pinned bytes", source_changes=changes)
             with store.transaction() as conn:
                 conn.execute("UPDATE runs SET state=CASE WHEN state='cancelling' THEN state ELSE 'running' END,environment_digest=?,updated=? WHERE id=?",
@@ -92,6 +100,7 @@ def run(home: Path, operation_id: str) -> int:
                         stop = True
                         break
                     prepare_report(workspace, check)
+                    receipt["source_observation"]["state"] = "incomplete"
                     raw = execute(profile, check, workspace, root, stage=stage, sequence=sequence,
                                   cancelled=cancelled, identity_callback=child_identity)
                     sequence += 1
@@ -119,8 +128,7 @@ def run(home: Path, operation_id: str) -> int:
                                 run_usage["unavailable"].remove(label)
                     run_usage["observation_state"] = "observed" if not run_usage["unavailable"] else (
                         "partial" if run_usage["samples"] else "unavailable")
-                    observed = source_changes(workspace, expected, profile.allowed_outputs, commit=row["commit_oid"])
-                    receipt["source_changes_during_checks"] = observed
+                    observed = observe(stage + ":" + check.id)
                     # Preserve the first mutation: later checks cannot restore bytes and erase its evidence.
                     if observed or raw["cleanup"]["state"] == "unresolved" or raw["state"] in {"cancelled", "timed_out"}:
                         stop = True

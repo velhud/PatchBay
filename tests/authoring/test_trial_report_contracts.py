@@ -60,6 +60,7 @@ def test_passed_feedback_review_is_policy_aware_on_all_exports(setup_author, pub
     if publication:
         policy = s.tasks.get(task['id'])['policy']
         policy['publication']['enabled'] = True
+        policy['publication']['remote_effects'] = 'controlled_no_automation'
         update_policy(s, task['id'], policy, 'enable-publication')
     run, current = _seed_check_run(s, task, key='synthetic-review')
     # Persistence contract fixture only, never execution qualification.

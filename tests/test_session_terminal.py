@@ -2519,12 +2519,16 @@ time.sleep(30)
     async_cleanup_started = asyncio.Event()
     original_terminate = executor._terminate_process
     calls = 0
+    # Force this fixture's cleanup timeout directly. The production supervisor
+    # has a separate proof budget; its host scan cost must not decide whether
+    # this test reaches the timeout/async-reap transition.
+    monkeypatch.setattr(executor, "_post_completion_cleanup_call_timeout_seconds", lambda *a, **kw: 0.1)
 
     async def delayed_terminate(cleanup_job_id, process, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
-            await asyncio.sleep(5)
+            await asyncio.Event().wait()
         async_cleanup_started.set()
         await permit_reap.wait()
         return await original_terminate(cleanup_job_id, process, **kwargs)
