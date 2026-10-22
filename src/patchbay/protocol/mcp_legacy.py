@@ -2559,6 +2559,14 @@ class MCPProtocol:
         context: Optional[RequestContext] = None,
     ) -> Optional[Dict[str, Any]]:
         """Handle an incoming JSON-RPC 2.0 message."""
+        from patchbay.mcp_framing import request_identity, invalid_request
+        from patchbay.workers.requests import WorkerAdmissionFault
+        try:
+            has_id, msg_id = request_identity(message)
+        except ValueError as error:
+            return invalid_request(str(error))
+        if not has_id:
+            return None
         context = context or RequestContext.anonymous()
         method = message.get("method")
         msg_id = message.get("id")
@@ -2567,6 +2575,8 @@ class MCPProtocol:
         logger.info("Handling MCP method: %s", method)
 
         try:
+            if not isinstance(params, dict):
+                raise ValueError('JSON-RPC params must be an object')
             if method == "notifications/initialized":
                 logger.info("Client sent initialized notification")
                 return None
@@ -2589,6 +2599,9 @@ class MCPProtocol:
 
             return None
 
+        except WorkerAdmissionFault as error:
+            return {'jsonrpc': '2.0', 'id': msg_id, 'error': {'code': -32603,
+                'message': 'Tool result unavailable; follow read-only recovery guidance', 'data': error.details}}
         except ValueError as e:
             logger.warning("Invalid MCP request for %s: %s", method, internal_log_error(e))
             if msg_id is not None:
@@ -2687,22 +2700,32 @@ class MCPProtocol:
             and "error" not in result
         ):
             result = create_pointer_response(result, internal_tool_name)
-        result = redact_sensitive_output(result)
         result_meta = {
             "patchbay/tool_name": internal_tool_name,
             "patchbay/tool_id": _tool_display_id(internal_tool_name),
         }
 
-        return {
-            "structuredContent": result,
-            "content": [
-                {
-                    "type": "text",
-                    "text": self._tool_result_text(result, internal_tool_name),
-                }
-            ],
-            "_meta": result_meta,
-        }
+        try:
+            result = redact_sensitive_output(result)
+            rendered = {
+                "structuredContent": result,
+                "content": [{"type": "text", "text": self._tool_result_text(result, internal_tool_name)}],
+                "_meta": result_meta,
+            }
+            json.dumps(rendered, ensure_ascii=False, allow_nan=False).encode('utf-8')
+            return rendered
+        except Exception as error:
+            if internal_tool_name not in WORKER_RESULT_TOOLS:
+                raise
+            from patchbay.workers.requests import WorkerAdmissionFault, fault_details
+            kind = {'codex_worker_start': 'start_worker', 'codex_worker_message': 'message_worker'}.get(internal_tool_name)
+            details = fault_details(getattr(self.tool_handler, 'worker_runtime', None), kind, context,
+                                    internal_arguments.get('idempotency_key'))
+            from patchbay.workers.tool_surface import WORKER_NON_IDEMPOTENT_TOOLS
+            if internal_tool_name not in WORKER_NON_IDEMPOTENT_TOOLS:
+                details.update(boundary='read_result_invalid', effect_may_exist=False,
+                               guidance='Read result unavailable; no mutation was attempted. Retry a bounded read or inspect existing state.')
+            raise WorkerAdmissionFault(details) from error
 
     def _tool_result_text(self, result: Dict[str, Any], tool_name: str) -> str:
         """Return compact human-visible text without duplicating large structured payloads."""

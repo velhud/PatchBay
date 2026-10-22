@@ -172,6 +172,27 @@ and qualify the updated route rather than copying an old receipt.
 
 ## 6. Deterministic local evaluators
 
+### S02 controller recovery regressions
+
+```bash
+python -m pytest tests/test_s02_ingress_contracts.py \
+  tests/test_s02_worker_retry.py tests/test_s02_hub_takeover.py \
+  tests/test_s02_hub_response.py tests/authoring/test_s02_response_recovery.py \
+  tests/authoring/test_s02_history_traversal.py \
+  tests/authoring/test_s02_publication_replay.py -q
+python -m pytest tests/test_worker_integration_tokens_v2.py \
+  tests/authoring/test_principals.py tests/authoring/test_http_principal_contracts.py \
+  tests/authoring/test_operator_resolution.py -q
+```
+
+The [S02 recovery contract](docs/repairs/2026-10-22-s02-controller-recovery.md)
+maps defining owners, crash windows, authority and retention limits. These
+fixtures use disposable state and recording/no-inference executors. The local
+bare-Git push is real; its check receipt is synthetic unit input. Operator census
+fixtures are not native Linux/Docker evidence. Run that native qualification and
+the ordinary-client reconnect/write trials separately; local source publication
+does not update a connector or qualify a deployed route.
+
 These evaluators use disposable local state and do not require ChatGPT to select tools naturally:
 
 ```bash

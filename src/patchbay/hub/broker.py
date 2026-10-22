@@ -18,6 +18,7 @@ from patchbay.hub.operations import (
     require_operation_transition,
 )
 from patchbay.hub.store_v2 import (
+    observe_operation_admission,
     HubStoreV2,
     HubStoreV2Conflict,
     HubStoreV2Corrupt,
@@ -460,6 +461,7 @@ class OperationBroker:
                 ),
             }
             result["parent"]["idempotent_replay"] = parent_replay
+            observe_operation_admission(result['parent'])
             return result
 
     def _normalize_batch_child_specs(

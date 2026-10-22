@@ -179,6 +179,17 @@ flags. Use `author_recent_operations` versioned cursor pages to retrieve older
 history. The local CLI/domain recovery default stays 50. Read-only recovery
 does not reconcile, retry or release an execution fence.
 
+MCP and HTTP operation history additionally accept `traversal="snapshot"`
+(HTTP query `traversal=snapshot`). Carry its cursor and next offset through
+every page. It pins the initial operation identity set and excludes later
+inserts, even backdated ones; each page reads current operation states in its
+own SQLite transaction. Default `strict` traversal still invalidates on
+same-task activity, while unrelated-task activity does not invalidate it.
+Snapshot traversal makes progress under activity but is not a retained
+point-in-time authority snapshot. Recover current task and lease again before
+acting. Restore or unsupported row deletion can invalidate traversal guarantees;
+restart discovery after maintenance. The CLI's existing strict interface remains.
+
 For current source, use `candidate.candidate_context_id` and check the revision
 and `commit_oid` in `candidate.candidate_context`. Null means a writer must
 export the current candidate first. `source_context_id` and `source_context`
@@ -247,7 +258,7 @@ patchbay-author --home "$PATCHBAY_AUTHOR_HOME" upgrade-state
 ```
 
 Opening state and recovery reads never install triggers. Before the upgrade,
-operation paging returns `STATE_UPGRADE_REQUIRED`; ordinary recovery remains
+strict operation paging returns `STATE_UPGRADE_REQUIRED`; ordinary recovery remains
 readable. The upgrade is idempotent, preserves operation history, and keeps
 schema version 1 compatible with rollback. Requalify the client/runtime binding
 after upgrading service code.
@@ -282,6 +293,13 @@ Restoring a backup rewinds state to the backup point. Any post-backup effects
 must be independently reconciled before service resumes. A backup demonstrates
 the tested recovery point, not protection against loss of both the state and
 backup media.
+
+Restored credentials and writer epochs also rewind. Keep the restored service
+isolated, reconcile post-backup revocations/claims and external effects, and
+establish current credentials/leases before reopening admission. Current state
+does not supply a cross-restore global anti-replay epoch. Automated restore and
+deduplication-horizon policy remain separate S08/S09 qualification work; S02
+does not claim replay safety after discarded evidence or an old backup.
 
 ## Retention and garbage-collection recovery
 
@@ -368,6 +386,12 @@ authorizes a new key. Request smaller pages or use an existing operator artifact
 Compatibility fields `effect_returned` and `result_identity` remain, with the
 identity now restricted to trusted readback. The former marks a returned
 mutating handler, not proof that an effect succeeded.
+Unexpected domain exceptions instead return `EFFECT_OUTCOME_UNAVAILABLE`
+(`READ_RESULT_UNAVAILABLE` for reads), with `effect_returned=false` and no raw
+exception text. They still require durable readback. A publication interrupted
+by an unexpected exception remains `publication_unknown`; explicit same-key
+replay checks the exact remote feature ref and skips an already completed push.
+This does not approve publication or authorize any new destination.
 New exports remain writes. The compatibility output profile stays the default.
 See the [MCP interface contract](../reference/mcp-interface-contract.md) for
 selectors, bounded input diagnostics, roles and supported protocol versions.

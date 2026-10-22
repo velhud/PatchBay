@@ -435,6 +435,8 @@ async def mcp_endpoint(request: Request):
     
     # Log audit metadata only by default. Prompt/response bodies can contain secrets.
     params = message.get("params", {}) if isinstance(message, dict) else {}
+    if not isinstance(params, dict):
+        params = {}
     audit_logger.info(
         "[%s] method=%s id=%s tool=%s",
         request_context.client_ref,
@@ -474,11 +476,11 @@ async def mcp_endpoint(request: Request):
                 client_ref=request_context.client_ref,
                 owner_ref=request_context.owner_ref,
                 direction="response",
-                status_code=204,
+                status_code=202,
             )
-            # Notification - no response expected (return 204 or empty)
+            # Accepted notification: Streamable HTTP returns no JSON-RPC body.
             return Response(
-                status_code=204,
+                status_code=202,
                 headers={"Mcp-Session-Id": session_id}
             )
             

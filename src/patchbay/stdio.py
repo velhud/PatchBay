@@ -82,15 +82,7 @@ class StdioMCPServer:
     async def handle_payload(self, payload: Any) -> Any:
         context = self.request_context()
         if isinstance(payload, list):
-            responses = []
-            for item in payload:
-                if not isinstance(item, dict):
-                    responses.append(_invalid_request(None, "Batch items must be JSON-RPC objects"))
-                    continue
-                response = await self.protocol.handle_message(item, context=context)
-                if response is not None:
-                    responses.append(response)
-            return responses if responses else None
+            return _invalid_request(None, 'MCP batch request arrays are not supported')
         if not isinstance(payload, dict):
             return _invalid_request(None, "JSON-RPC message must be an object")
         return await self.protocol.handle_message(payload, context=context)

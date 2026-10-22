@@ -1201,13 +1201,13 @@ class WorkerRuntime:
             return refusal
         token = str(preview_token or "").strip()
         idempotency = str(idempotency_key or "").strip()
-        requires_token = self._hub_context_requires_preview_token(request_context)
+        requires_token = self._hub_context_requires_preview_token(request_context) or bool(idempotency)
         if requires_token and not token:
             return self._integration_blocked_result(
                 jobs,
                 request_context=request_context,
                 reason="preview_token_required",
-                note="Hub integration requires the signed preview_token returned by integration_preview.",
+                note="Hub or keyed integration requires the signed preview_token returned by integration_preview.",
             )
         workspace = self._workspace_for_jobs(jobs)
         base_repo = self._validated_base_repo(workspace)

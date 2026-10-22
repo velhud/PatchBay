@@ -615,6 +615,13 @@ def test_invalid_handler_output_and_handler_exceptions_are_internal_mcp_faults()
         "id": 1,
         "error": {"code": -32603, "message": "Internal processing error"},
     }
+    unavailable = handler_error['error'].pop('data')
+    assert unavailable['code'] == 'READ_RESULT_UNAVAILABLE'
+    assert unavailable['boundary'] == 'read_result_unavailable'
+    assert unavailable['effect_may_exist'] is False
+    assert unavailable['effect_returned'] is False and unavailable['success_asserted'] is False
+    assert unavailable['recovery_actions'] == [{'tool': 'patchbay_work_group_list', 'arguments': {}}]
+    assert 'domain implementation exploded' not in str(handler_error)
     assert handler_error == {
         "jsonrpc": "2.0",
         "id": 1,

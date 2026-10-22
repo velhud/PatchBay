@@ -88,6 +88,15 @@ Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_eff
 8. Inspect reports first. Use direct file/diff tools for orientation, focused verification, contradictions, risky changes, or explicit user requests—not as the default broad implementation loop.
 9. Preview isolated integration before applying it. Integration does not commit and does not delete the worker worktree.
 
+For local `codex_worker_start` and `codex_worker_message`, supply a stable
+`idempotency_key` for each deliberate request (1–200 UTF-8 characters). After a
+lost response, recover existing work and retry with the exact key and arguments.
+Omitting the key preserves the legacy behavior; `auto_suffix` or a new key
+requests independent work. A message to an active turn is refused, not queued.
+Keyed integration also requires the signed `preview_token` from preview.
+See the [S02 recovery contract](docs/repairs/2026-10-22-s02-controller-recovery.md)
+for ownership scope and retention limits.
+
 If a terminal job reports `cleanup_blocked_untrusted_process_identity`, do not
 blindly retry or remove the durable fence. Stop the local PatchBay server first,
 then inspect one exact job with the offline operator command. It defaults to an
@@ -221,6 +230,11 @@ reads, select `context_id` alone, or `draft_id` with its exact positive
 `draft_version`. Recovery exposes existing IDs and draft versions. After
 `INVALID_OUTPUT` or a response-size error, follow the returned read-only recovery
 actions and original retry key before attempting another mutation.
+
+For history during ongoing activity, call `author_recent_operations` with
+`traversal="snapshot"`, then carry its unchanged cursor and `next_offset` until
+`partial=false`. This pins the initial operation identities; each page reads
+their current states. Recover the task again before any successor mutation.
 
 Select `candidate.candidate_context_id` for current candidate source; compare
 its `candidate_context` revision/commit with the candidate. If null, an authorized

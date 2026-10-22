@@ -914,7 +914,7 @@ def create_hub_v2_server(
                     "error": {"code": -32603, "message": "Internal processing error"},
                 }
             if response is None:
-                return Response(status_code=204, headers=headers)
+                return Response(status_code=202, headers=headers)
             return JSONResponse(response, headers=headers)
         finally:
             finish_session_request(session_id)

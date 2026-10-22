@@ -359,6 +359,13 @@ class HubProtocol:
         self.capabilities = {"tools": {"listChanged": True}, "resources": {"listChanged": False}}
 
     async def handle_message(self, message: Mapping[str, Any], *, context: RequestContext | None = None) -> dict[str, Any] | None:
+        from patchbay.mcp_framing import request_identity, invalid_request
+        try:
+            has_id, msg_id = request_identity(message)
+        except ValueError as error:
+            return invalid_request(str(error))
+        if not has_id:
+            return None
         method = message.get("method")
         msg_id = message.get("id")
         params = message.get("params") if isinstance(message.get("params"), dict) else {}

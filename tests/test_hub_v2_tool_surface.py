@@ -447,6 +447,15 @@ def test_worker_tools_preserve_every_supported_canonical_input_field_and_schema(
         }
         assert set(supported_canonical_properties) <= set(hub_properties), hub_name
         for field_name, canonical_schema in supported_canonical_properties.items():
+            if field_name == 'idempotency_key' and hub_name in {'patchbay_worker_start', 'patchbay_worker_message'}:
+                # Hub owns its mandatory operation key; local admission keys
+                # are optional and bounded in the independent job-snapshot API.
+                from patchbay.hub.tool_surface import IDEMPOTENCY_KEY_SCHEMA
+                assert hub_properties[field_name] == IDEMPOTENCY_KEY_SCHEMA
+                assert _strip_documentation(canonical_schema) == {'type': 'string', 'minLength': 1, 'maxLength': 200}
+                assert field_name in by_name[hub_name]['inputSchema']['required']
+                assert field_name not in PUBLIC_TOOL_DESCRIPTORS_BY_NAME[canonical_name]['inputSchema']['required']
+                continue
             assert _strip_documentation(hub_properties[field_name]) == (
                 _strip_documentation(canonical_schema)
             ), (hub_name, field_name)

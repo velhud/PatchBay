@@ -2346,6 +2346,16 @@ class HubRuntimeV2:
         group = deepcopy(group_entity["record"])
         if group.get("status") != "open":
             raise HubStoreV2Conflict("group_resume_state_conflict")
+        # Admission may be followed by another controller's takeover before
+        # this method reads the current group. The earlier caller-side check
+        # cannot authorize overwriting that newer owner.
+        active = str(group.get('active_participant_ref') or '')
+        if active and active != identity.participant_ref and not takeover:
+            blocked = public_envelope('blocked', result={'reason': 'active_participant_requires_takeover',
+                'work_group_id': group_id, 'active_participant_ref': active})
+            terminal = self._complete_hub_operation(operation, blocked)
+            blocked['operation'] = self._operation_summary(terminal)
+            return blocked
         participants = list(group.get("participants") or [])
         if identity.participant_ref not in participants:
             participants.append(identity.participant_ref)

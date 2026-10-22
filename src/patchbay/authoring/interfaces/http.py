@@ -204,8 +204,9 @@ def create_app(home: Path, *, expected_instance: str | None = None, scheduler: b
         return await invoke(service.recovery.get, task_id=task_id)
 
     @app.get("/api/tasks/{task_id}/operations")
-    async def recent_operations(task_id: str, request: Request, limit: int = 50, offset: int = 0, cursor: str | None = None):
-        return await invoke(service.recovery.operations, task_id=task_id, limit=limit, offset=offset, cursor=cursor)
+    async def recent_operations(task_id: str, request: Request, limit: int = 50, offset: int = 0, cursor: str | None = None,
+                                traversal: str = 'strict'):
+        return await invoke(service.recovery.operations, task_id=task_id, limit=limit, offset=offset, cursor=cursor, traversal=traversal)
 
     @app.post("/api/claim")
     async def claim(request: Request):

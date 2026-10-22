@@ -8,8 +8,8 @@ from . import mcp_legacy as _legacy
 class MCP(_legacy.MCP):
     """Preserve the independent Author transport while hiding private identity state."""
 
-    def call(self, role: str, name: str, arguments: dict) -> dict:
-        result = super().call(role, name, arguments)
+    def _dispatch(self, role: str, name: str, params: dict) -> dict:
+        result = super()._dispatch(role, name, params)
         if name != "author_capabilities" or not isinstance(result, dict):
             return result
         result = {key: value for key, value in result.items() if key != "instance_id"}

@@ -22,6 +22,13 @@ Direct read/search/git tools remain available for orientation, worker briefing, 
 
 Every delegated worker MUST explicitly use model='gpt-6-luna' with reasoning_effort='high' by default; xhigh or max is allowed. No other model family, older Luna, ambient default, fallback, or escalation is permitted. If Luna is unavailable, report the blocker. Apply this same rule to nested helpers and every handoff. The primary manager is separate from delegated workers; Author Mode has no delegated author or recovery worker.
 
+Give each deliberate local start/follow-up a stable `idempotency_key` when
+retry recovery is needed. After a lost or invalid response, inspect existing
+work first, then keep the exact key and arguments. A new key or `auto_suffix`
+can create independent work. Unkeyed calls have no replay guarantee. Active
+turns do not queue messages. Supply both signed preview token and key for
+keyed integration. Do not change owner scope or take over merely to retry.
+
 ### Hub/Edge startup
 
 When the connector exposes `patchbay_*` tools, use the Hub workflow rather than looking for single-machine `codex_*` tools.
@@ -91,6 +98,12 @@ than guessing. Bounded field errors describe repairable argument constraints.
 After a post-dispatch output/size fault, no success or absence of an effect is
 asserted. Follow the returned read-only recovery actions before another
 mutation; an identical retry keeps its original key and payload.
+
+For complete Author history during activity, use `traversal="snapshot"` on
+`author_recent_operations`, carrying its cursor and next offset through every
+page. It pins operation identities, not authority or a single historical state;
+recover current task/revision/lease again before acting. Strict traversal remains
+the default and rejects same-task changes between pages.
 
 Author execution qualification is Linux/WSL2-only. Do not ask PatchBay to weaken the guard or reinterpret a guarded macOS run as multiple independent source defects.
 

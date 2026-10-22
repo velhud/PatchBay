@@ -23,6 +23,8 @@ WORKER_VIEW_SCHEMA: Dict[str, Any] = {
         "workspace_available": {"type": "boolean"},
         "workspace_location": {"type": "string"},
         "state": {"type": "string"},
+        "request_ref": {"type": "string", "description": "Opaque retained admission reference for a keyed local start or follow-up."},
+        "request_replayed": {"type": "boolean", "description": "True means the original admission was read; no new worker turn was scheduled."},
         "view": {"type": "string"},
         "report": {"type": "string"},
         "status_line": {"type": "string"},
@@ -400,6 +402,8 @@ WORKER_TOOLS = [
                         "and evidence/verification requirements. Let the worker find relevant files unless exact paths matter."
                     ),
                 },
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 200,
+                    "description": "Optional stable key for this intent. Reuse the same key and exact arguments after a lost response; replay reads the original admission and never starts another worker, even with auto_suffix. A new independent worker uses a new key. Legacy unkeyed calls have no replay guarantee."},
                 "repo_path": {
                     "type": "string",
                     "description": "Optional owned or authorized repository path. Defaults to the configured workspace.",
@@ -487,6 +491,8 @@ WORKER_TOOLS = [
             "properties": {
                 "worker": {"type": "string", "description": "Worker name or worker id."},
                 "message": {"type": "string", "description": "Natural-language follow-up or correction."},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 200,
+                    "description": "Optional stable key for this follow-up intent. Same-key replay reads its retained admission without scheduling another turn. A new follow-up uses a new key. This does not queue or steer an active turn."},
                 "repo_path": {
                     "type": "string",
                     "description": "Optional authorized repository path used to resolve a worker name in that workspace. Worker ids are globally unique.",

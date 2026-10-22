@@ -18,6 +18,14 @@ Public wrapper modules may delegate to adjacent `*_legacy.py` implementation mod
 - Cleanup requires complete delivery or explicit discard proof.
 - Read-only workers cannot mutate through Git options or command paths.
 
+Optional local start/message retry keys are persisted in the existing atomic
+job options, serialized through a process-released admission lock. Replaying
+the exact owner/method/key/arguments reads the original admission, including
+after restart; it does not schedule inference. No key, a new key or deliberate
+`auto_suffix` remains a separate request. Unsupported active-turn follow-ups
+are refused rather than enqueued. Keyed integration uses the existing signed
+preview/receipt mechanism and requires both token and key.
+
 ## File and diff views
 
 Worker file views are lossless over contiguous source lines. When a line or response reaches the byte budget, pagination stops rather than skipping ahead and inventing line numbers. Responses include an exact continuation cursor and report when a requested `max_bytes` value was capped by server policy.
@@ -37,6 +45,11 @@ remain intact in structured output. See the [MCP interface contract](mcp-interfa
 - Terminal semantic evidence is persisted before bounded wrapper cleanup.
 - Cancellation, completion, and unknown execution cannot silently upgrade one another after a terminal decision.
 - Hub/Edge attempt, lease, receipt, projection, and idempotency state remains durable and monotonic.
+
+A delayed Hub resume rechecks current controller ownership before its final
+group write. Exact fenced late receipts may repair the existing narrow
+absence-based manual-recovery blocker; ordinary stale results cannot overwrite
+terminal decisions. See the [S02 identity, crash and recovery map](../repairs/2026-10-22-s02-controller-recovery.md).
 
 ## Manager polling and reports
 

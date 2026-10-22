@@ -64,6 +64,16 @@ refresh remain separate route-qualification checks.
 The selection follows the MCP [version negotiation specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation).
 HTTP header handling follows the [transport contract](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#protocol-version-header).
 
+Framing is validated before domain dispatch in Author, local Manager and both
+Hub adapters. Request IDs are strings or integers (including zero), never null,
+booleans, arrays or objects. An ID-less message is a notification and cannot
+invoke a domain tool. Valid `notifications/initialized` remains silent; HTTP
+accepts notifications with 202 and no body. Stdio accepts one JSON-RPC object
+per line and rejects batch arrays before any member dispatch. These rules follow
+the MCP [message contract](https://modelcontextprotocol.io/specification/2025-11-25/basic)
+and [transport contract](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
+checked on 2026-10-22. They do not promise arbitrary JSON-RPC batch support.
+
 ## Compact Manager results
 
 Compact text independently preserves bounded outcome flags, exact short
@@ -100,20 +110,36 @@ Both include `success_asserted=false` and a boundary:
 | `effect_may_exist_result_invalid` | A mutating handler returned, but its output failed validation |
 | `effect_result_too_large` | A mutating Author handler returned, but the envelope exceeded 8 MiB |
 | `read_result_invalid` / `read_result_too_large` | A read returned an invalid/oversized result; no mutation was attempted |
+| `effect_outcome_needs_readback` | A validated domain call raised before returning a usable result; an effect may exist |
+| `read_result_unavailable` | A read raised before returning a usable result |
 
 Author retains the compatibility fields `effect_returned` (a mutating handler
 returned, not success) and `result_identity`, restricted to trusted readback.
 
+Validation includes UTF-8 rendering/JSON encoding after domain dispatch. An
+unexpected domain exception becomes `EFFECT_OUTCOME_UNAVAILABLE` for a write
+or `READ_RESULT_UNAVAILABLE` for a read, without leaking its exception text.
+Explicit Author domain refusals retain their own codes.
+
 Recovery uses already-validated request identities and existing authorized
-durable readback. Author ignores all identities in the bad result. Hub accepts
-an output operation identity only after matching its durable principal, tool,
-original key and any requested group association. Unknown identities are not
+durable readback. Author ignores all identities in the bad result. Hub first
+uses bounded transient IDs observed at its existing admission owner, then
+verifies durable principal, tool, original key and requested group association.
+Its compatibility output-ID fallback requires the same verification; multiple
+admitted IDs are marked ambiguous. Rolled-back IDs are never trusted. Unknown identities are not
 fabricated: use the returned task/group discovery read. Errors include an
 original caller key where available and complete read-only `recovery_actions`.
 Read the original admission before another mutation. An identical retry keeps
 its original key and payload; a corrected terminal rejection is a different
 request under the existing domain rules. No second journal or new success
 state is introduced.
+
+Local worker result faults also return bounded read-only discovery and, where
+a keyed admission is retained, the trusted worker reference. Exact local
+start/message retries read existing atomic job records without scheduling a
+second turn. They are optional and owner-scoped; unkeyed calls retain their
+non-idempotent behavior. See the [S02 contract](../repairs/2026-10-22-s02-controller-recovery.md)
+for crash boundaries, integration token pairing and retention limits.
 
 ## Author effects and unchanged annotation hints
 

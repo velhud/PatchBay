@@ -30,7 +30,7 @@ CATALOG = [
     ("author_get_feedback", I.FeedbackPage, "Read canonical check evidence for the requested task revision. Missing or unknown evidence is never a pass.", False),
     ("author_operation_status", I.OperationRef, "Observe one durable operation without launching, reconciling, cancelling, or retrying any work.", False),
     ("author_recover_task", I.RecoveryRef, "Recover a current factual task capsule, active and uncertain effects, ownership, evidence and required judgment. Recent history defaults to 20 operations; use author_recent_operations pages for the full history. Pure read; do not replace or replay existing work.", False),
-    ("author_recent_operations", I.RecentOperations, "Discover recent accepted task operations after a lost response or operation ID. Continue with the returned versioned cursor; stale pages fail explicitly.", False),
+    ("author_recent_operations", I.RecentOperations, "Discover accepted task operations after a lost response or operation ID. Strict cursors reject task changes. Use traversal=snapshot for complete initial history identities during activity; states are current per page, so recover current state again before any successor effect.", False),
     ("author_read_log", I.ReadLog, "Read a bounded page of an owned operation's retained log. Follow byte offsets; truncation never means complete original output.", False),
     ("author_publication_preview", I.PublicationPreview, "Read exact checked candidate and remote publication preconditions. Does not approve, push, create a PR or merge.", False),
     ("author_create_task", I.CreateTask, "Create an implementation task within an operator-registered repository and its existing policy. Cannot register a new repository or widen authority.", True),
@@ -74,6 +74,10 @@ class MCP:
         return result
 
     def call(self, role: str, name: str, arguments: dict) -> dict:
+        _, params = self._prepare_call(role, name, arguments)
+        return self._dispatch(role, name, params)
+
+    def _prepare_call(self, role: str, name: str, arguments: dict):
         match = next((entry for entry in CATALOG if entry[0] == name), None)
         require(match is not None, "UNKNOWN_TOOL", "Unknown author tool")
         _, contract, _, write = match
@@ -84,6 +88,9 @@ class MCP:
         except ValidationError as exc:
             error = argument_error(contract, exc)
             raise AuthorError(error["code"], error["message"], **error["details"]) from exc
+        return match, params
+
+    def _dispatch(self, role: str, name: str, params: dict):
         service = self.service
         if name == "author_capabilities":
             qualification = self.access.qualified(role, output_profile=self.output_profile)
@@ -131,14 +138,14 @@ class MCP:
         raise AuthorError("UNKNOWN_TOOL", "Unknown author tool")
 
     def handle(self, role: str, message: dict) -> dict | None:
-        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
-            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Expected a JSON-RPC 2.0 request object"}}
-        method, request_id = message["method"], message.get("id")
-        if "id" not in message:
-            # Notifications never start durable domain work, even with a forged tools/call.
+        from patchbay.mcp_framing import request_identity, invalid_request
+        try:
+            has_id, request_id = request_identity(message)
+        except ValueError as error:
+            return invalid_request(str(error))
+        if not has_id:
             return None
-        if request_id is not None and (isinstance(request_id, bool) or not isinstance(request_id, (str, int))):
-            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid request ID"}}
+        method = message['method']
         try:
             params = message.get("params") or {}
             require(isinstance(params, dict), "INVALID_REQUEST", "Expected object parameters")
@@ -156,19 +163,29 @@ class MCP:
             elif method == "tools/list": result = {"tools": self.tools(role)}
             elif method == "tools/call":
                 try:
-                    payload = self.call(role, params.get("name"), params.get("arguments", {}))
-                    entry = next(entry for entry in CATALOG if entry[0] == params["name"])
-                    trusted_arguments = entry[1].model_validate(params.get("arguments", {})).wire()
+                    entry, trusted_arguments = self._prepare_call(role, params.get('name'), params.get('arguments', {}))
+                    try:
+                        from copy import deepcopy
+                        payload = self._dispatch(role, params['name'], deepcopy(trusted_arguments))
+                    except AuthorError:
+                        raise
+                    except Exception as exc:
+                        details = result_fault(self.service, params['name'], trusted_arguments, write=entry[3])
+                        details.update(boundary='effect_outcome_needs_readback' if entry[3] else 'read_result_unavailable',
+                                       effect_returned=False)
+                        raise AuthorError('EFFECT_OUTCOME_UNAVAILABLE' if entry[3] else 'READ_RESULT_UNAVAILABLE',
+                            'The operation response is unavailable; inspect existing durable state before another attempt', **details) from exc
                     # Validate the full result before exposing a successful tool call.
                     try:
                         CONTRACTS[params["name"]].model_validate(payload)
-                    except ValidationError as exc:
+                        text = _summary_text(params["name"], payload) if self.output_profile == "structured-summary-v2" else payload
+                        result = {"content": [{"type": "text", "text": json.dumps(text, ensure_ascii=False)}],
+                                  "structuredContent": payload, "isError": False}
+                        response_bytes = len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+                    except (ValidationError, UnicodeError, TypeError, ValueError, OverflowError, RecursionError) as exc:
                         raise AuthorError("INVALID_OUTPUT", "The server result violated its published output contract; no success is asserted",
                             **result_fault(self.service, params["name"], trusted_arguments, write=entry[3])) from exc
-                    text = _summary_text(params["name"], payload) if self.output_profile == "structured-summary-v2" else payload
-                    result = {"content": [{"type": "text", "text": json.dumps(text, ensure_ascii=False)}],
-                              "structuredContent": payload, "isError": False}
-                    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 8 * 1024**2:
+                    if response_bytes > 8 * 1024**2:
                         raise AuthorError("RESOURCE_LIMIT", "Result exceeds MCP response budget; request a smaller page or an existing operator artifact",
                             **result_fault(self.service, params["name"], trusted_arguments, write=entry[3], too_large=True))
                 except (AuthorError, ValidationError, UnicodeDecodeError) as exc:
@@ -185,7 +202,7 @@ _SUMMARY_FIELDS = (
     "task_id", "id", "operation_id", "request_operation_id", "revision", "version", "commit", "tree",
     "context_id", "draft_id", "path", "sha256", "blob_sha", "receipt_sha", "state", "phase", "status",
     "classification", "next_action", "required_judgment", "next_offset", "next_start_line", "start_line",
-    "total_lines", "bytes", "observed_bytes", "has_more", "partial", "truncated", "result_partial",
+    "total_lines", "bytes", "observed_bytes", "has_more", "partial", "truncated", "traversal", "result_partial",
     "error_partial", "result_bytes", "error_bytes", "operation_count", "operations_partial",
     "active_operation_count", "active_operations_partial", "total_check_results", "total", "cursor", "watermark",
 )

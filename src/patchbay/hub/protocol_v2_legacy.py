@@ -186,6 +186,11 @@ def _validate_json_value(value: Any, *, path: str) -> None:
         raise _InvalidRequest(f"{path}: value is not JSON-compatible ({value_type})")
     if isinstance(value, float) and not math.isfinite(value):
         raise _InvalidRequest(f"{path}: number must be finite")
+    if isinstance(value, str):
+        try:
+            value.encode('utf-8')
+        except UnicodeError as error:
+            raise _InvalidRequest('JSON strings must be valid UTF-8') from error
     if isinstance(value, Mapping):
         for key, child in value.items():
             if not isinstance(key, str):
@@ -346,6 +351,13 @@ class HubProtocolV2:
         context: RequestContext | None = None,
     ) -> dict[str, Any] | None:
         """Handle one JSON-RPC message without interpreting domain outcomes."""
+        from patchbay.mcp_framing import request_identity, invalid_request
+        try:
+            has_id, msg_id = request_identity(message)
+        except ValueError as error:
+            return invalid_request(str(error))
+        if not has_id:
+            return None
         has_id = isinstance(message, Mapping) and "id" in message
         msg_id = message.get("id") if isinstance(message, Mapping) else None
         try:
@@ -446,28 +458,33 @@ class HubProtocolV2:
         arguments = dict(arguments)
         validate_hub_v2_tool_arguments(name, arguments)
 
-        if self._handler_accepts_context:
-            output = await self.handler.handle_tool_call(name, deepcopy(arguments), context=context)
-        else:
-            output = await self.handler.handle_tool_call(name, deepcopy(arguments))  # type: ignore[call-arg]
+        from patchbay.hub.store_v2 import capture_operation_admissions
+        with capture_operation_admissions(name, arguments.get('idempotency_key')) as admissions:
+            try:
+                if self._handler_accepts_context:
+                    output = await self.handler.handle_tool_call(name, deepcopy(arguments), context=context)
+                else:
+                    output = await self.handler.handle_tool_call(name, deepcopy(arguments))  # type: ignore[call-arg]
+            except Exception as error:
+                data = self._result_fault_data(name, arguments, None, context, admissions=admissions)
+                data.update(code='EFFECT_OUTCOME_UNAVAILABLE' if name in HUB_V2_MUTATING_TOOL_NAMES else 'READ_RESULT_UNAVAILABLE',
+                            boundary='effect_outcome_needs_readback' if name in HUB_V2_MUTATING_TOOL_NAMES else 'read_result_unavailable',
+                            effect_returned=False)
+                raise _ResultContractFault(data) from error
         try:
             validate_hub_v2_tool_output(name, output)
             envelope = redact_sensitive_output(deepcopy(dict(output)))
             validate_hub_v2_tool_output(name, envelope)
-        except _HandlerContractError as error:
-            raise _ResultContractFault(self._result_fault_data(name, arguments, output, context)) from error
-        return {
-            "structuredContent": envelope,
-            "content": [{"type": "text", "text": self._compact_text(name, envelope)}],
-            "_meta": {
-                "patchbay/tool_name": name,
-                "patchbay/contract_version": HUB_V2_CONTRACT_VERSION,
-                "patchbay/manifest_hash": HUB_V2_MANIFEST_HASH,
-                "patchbay/schema_hash": HUB_V2_SCHEMA_HASH,
-            },
-        }
+            rendered = {"structuredContent": envelope,
+                        "content": [{"type": "text", "text": self._compact_text(name, envelope)}],
+                        "_meta": {"patchbay/tool_name": name, "patchbay/contract_version": HUB_V2_CONTRACT_VERSION,
+                                  "patchbay/manifest_hash": HUB_V2_MANIFEST_HASH, "patchbay/schema_hash": HUB_V2_SCHEMA_HASH}}
+            json.dumps(rendered, ensure_ascii=False, allow_nan=False).encode('utf-8')
+        except (_HandlerContractError, UnicodeError, TypeError, ValueError, OverflowError, RecursionError) as error:
+            raise _ResultContractFault(self._result_fault_data(name, arguments, output, context, admissions=admissions)) from error
+        return rendered
 
-    def _result_fault_data(self, name: str, arguments: Mapping, output: Any, context: RequestContext | None) -> dict:
+    def _result_fault_data(self, name: str, arguments: Mapping, output: Any, context: RequestContext | None, *, admissions=()) -> dict:
         write = name in HUB_V2_MUTATING_TOOL_NAMES
         data = {"code": "INVALID_OUTPUT", "boundary": "effect_may_exist_result_invalid" if write else "read_result_invalid",
                 "effect_may_exist": write, "success_asserted": False}
@@ -481,14 +498,17 @@ class HubProtocolV2:
         if write and isinstance(key, str) and len(key.encode("utf-8")) <= 200:
             data["original_key"] = key
         store = getattr(self.handler, "store", None)
-        if isinstance(store, HubStoreV2) and isinstance(output, Mapping):
-            operation = output.get("operation")
-            candidate = identity(operation.get("operation_id")) if isinstance(operation, Mapping) else None
+        if len(admissions) > 1:
+            data['admission_ambiguous'] = True
+        if isinstance(store, HubStoreV2):
+            operation = output.get('operation') if isinstance(output, Mapping) else None
+            candidate = identity(admissions[0]) if len(admissions) == 1 else (
+                identity(operation.get('operation_id')) if not admissions and isinstance(operation, Mapping) else None)
             if candidate:
                 try:
                     row = store.get_operation(candidate)
                     principal = (context.owner_ref if context and context.owner_ref else store.principal_ref)
-                    if row and row["principal_ref"] == principal and row["tool"] == name and row["idempotency_key"] == key:
+                    if row and row["principal_ref"] == principal and row["tool"] == name and row["idempotency_key"] == (key.strip() if isinstance(key, str) else key):
                         if group_id:
                             store.assert_operation_group_association(operation_id=candidate, work_group_id=group_id)
                         operation_id = candidate

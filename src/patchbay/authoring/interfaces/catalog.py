@@ -31,6 +31,7 @@ def identity(output_profile: str = OUTPUT_PROFILE) -> dict[str, str]:
     # Bind the independent shared negotiation helper too; a change to it must
     # invalidate Author qualification just like a subtree runtime change.
     sources.append(("../mcp_versions.py", root.parent / "mcp_versions.py"))
+    sources.append(("../mcp_framing.py", root.parent / "mcp_framing.py"))
     stamps = tuple((name, p.stat().st_mtime_ns, p.stat().st_size, p.stat().st_ctime_ns, p.stat().st_ino)
                    for name, p in sources)
     specs = [{"name": name, "description": description, "inputSchema": model.model_json_schema(),

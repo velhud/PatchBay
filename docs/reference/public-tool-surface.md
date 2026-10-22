@@ -43,6 +43,14 @@ These are manager inspection instruments. They are not a mandate for ChatGPT to 
 
 Writing workers use isolated worktrees by default. Integration is explicit, preview-bound, no-commit, and preserves the worker worktree.
 
+Local start/message tools accept an optional `idempotency_key` (1–200 valid
+UTF-8 characters). Exact keyed retries read the retained admission without
+scheduling a second turn; changed arguments conflict. Keys are scoped to method
+and configured owner identity. Unkeyed calls retain legacy behavior and the
+conservative non-idempotent annotation. An active worker message is refused,
+not queued. Local keyed integration requires its signed preview token as well
+as the key. Hub mutation keys remain required under the Hub contract.
+
 ### Pro Request tools
 
 - list/read/claim
@@ -103,6 +111,12 @@ all partial flags and use `author_recent_operations` cursor pages for complete
 history. The domain/CLI recovery default remains 50. Full text plus structured
 content remains the default MCP output; `structured-summary-v2` requires its
 own observed client qualification and keeps full payloads in `structuredContent`.
+
+`author_recent_operations` defaults to `traversal="strict"`: same-task changes
+invalidate its cursor. `traversal="snapshot"` pins initial operation identities
+and permits complete traversal during new activity; states stay live per page.
+Carry both cursor and offset, respect partial flags, then recover current
+authority before writing. This is not a durable snapshot across restore/pruning.
 
 ## Result and safety contracts
 

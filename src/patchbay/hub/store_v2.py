@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 from contextvars import ContextVar
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -28,6 +29,31 @@ from patchbay.hub.sqlite_schema_contract import (
 
 SCHEMA_VERSION = 4
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
+
+# Transient request evidence only. The operation table remains authoritative;
+# protocol fault handling must read these IDs back after the transaction commits.
+_ADMISSION_CAPTURE = ContextVar('hub_operation_admission_capture', default=None)
+
+
+@contextmanager
+def capture_operation_admissions(tool, key):
+    capture = {'tool': tool, 'key': key.strip() if isinstance(key, str) else None, 'ids': deque(maxlen=2), 'active': True}
+    token = _ADMISSION_CAPTURE.set(capture)
+    try:
+        yield capture['ids']
+    finally:
+        capture['active'] = False
+        _ADMISSION_CAPTURE.reset(token)
+
+
+def observe_operation_admission(operation):
+    capture = _ADMISSION_CAPTURE.get()
+    if capture and capture['active'] and operation.get('tool') == capture['tool'] and operation.get('idempotency_key') == capture['key']:
+        operation_id = operation['operation_id']
+        # Two distinct IDs suffice to signal ambiguity; never accumulate a
+        # batch-sized second journal or silently choose one of several effects.
+        if operation_id not in capture['ids'] and len(capture['ids']) < 2:
+            capture['ids'].append(operation_id)
 
 _SCHEMA_OBJECTS_BY_VERSION: dict[int, frozenset[tuple[str, str]]] = {
     1: frozenset(
@@ -2019,6 +2045,7 @@ class HubStoreV2:
                     raise HubStoreV2Conflict("idempotency_payload_conflict")
                 replay = self._operation_from_row(existing)
                 replay["idempotent_replay"] = True
+                observe_operation_admission(replay)
                 return replay
             connection.execute(
                 """
@@ -2051,6 +2078,7 @@ class HubStoreV2:
             row = connection.execute("SELECT * FROM operations WHERE operation_id = ?", (operation_value,)).fetchone()
             result = self._operation_from_row(row)
             result["idempotent_replay"] = False
+            observe_operation_admission(result)
             return result
 
     def get_operation(self, operation_id: str) -> dict[str, Any] | None:

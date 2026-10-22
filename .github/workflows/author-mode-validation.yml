@@ -10,6 +10,7 @@ on:
     paths:
       - 'src/patchbay/authoring/**'
       - 'src/patchbay/mcp_versions.py'
+      - 'src/patchbay/mcp_framing.py'
       - 'tests/authoring/**'
       - '.github/workflows/author-mode-validation.yml'
       - 'pyproject.toml'

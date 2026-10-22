@@ -196,6 +196,7 @@ class RecentOperations(TaskRef):
     limit: StrictInt = Field(50, ge=1, le=200)
     offset: StrictInt = Field(0, ge=0)
     cursor: str | None = Field(None, max_length=64)
+    traversal: Literal['strict', 'snapshot'] = Field('strict', description='Strict pages reject task changes. Snapshot pins the initial history identities so traversal completes during activity; states are current per page, never an execution or authority snapshot. Recover again after traversal.')
 
 
 class ReadLog(OperationRef):

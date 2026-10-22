@@ -211,3 +211,13 @@ class Publisher:
                 uncertain = exc.code in {"PUBLICATION_UNKNOWN", "GITHUB_UNAVAILABLE", "GITHUB_ERROR"}
                 self.store.finish(op["id"], "publication_unknown" if uncertain else "blocked", error=exc.as_dict())
                 raise
+            except Exception:
+                # A lost subprocess reply may follow a successful remote push.
+                # Keep the admitted identity recoverable; finish preserves any
+                # already committed terminal outcome. Explicit same-key replay
+                # performs exact remote readback before considering another push.
+                self.store.finish(op["id"], "publication_unknown", error={
+                    "code": "PUBLICATION_UNKNOWN",
+                    "message": "Publication outcome requires exact remote readback",
+                })
+                raise

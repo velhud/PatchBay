@@ -370,7 +370,7 @@ async def mcp_endpoint(request: Request):
         }
     if response:
         return JSONResponse(response, headers={"Mcp-Session-Id": session_id})
-    return Response(status_code=204, headers={"Mcp-Session-Id": session_id})
+    return Response(status_code=202, headers={"Mcp-Session-Id": session_id})
 
 
 @app.delete("/mcp")

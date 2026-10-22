@@ -257,6 +257,7 @@ class Operations(Output):
     next_offset: int | None
     cursor: str
     watermark: int
+    traversal: str
 
 
 class Preview(Output):

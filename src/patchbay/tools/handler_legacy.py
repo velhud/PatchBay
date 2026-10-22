@@ -275,6 +275,7 @@ class ToolHandler:
         """Start one durable named Codex colleague."""
         repo = self._repo_from_args(args)
         return await self.worker_runtime.start_worker(
+            idempotency_key=args.get('idempotency_key'),
             name=args["name"],
             brief=args["brief"],
             repo_path=repo,
@@ -293,6 +294,7 @@ class ToolHandler:
     async def _codex_worker_message(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Continue or redirect an existing worker by human name or id."""
         return await self.worker_runtime.message_worker(
+            idempotency_key=args.get('idempotency_key'),
             worker=args["worker"],
             message=args["message"],
             repo_path=self._repo_from_args(args),

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 
 from .errors import AuthorError, require
 from .authority import assert_task_scope
@@ -14,26 +16,51 @@ class Recovery:
     def __init__(self, store):
         self.store = store
 
-    def operations(self, task_id: str, *, limit: int = 50, offset: int = 0, cursor: str | None = None) -> dict:
+    def operations(self, task_id: str, *, limit: int = 50, offset: int = 0, cursor: str | None = None,
+                   traversal: str = 'strict') -> dict:
         safe_id(task_id)
         assert_task_scope(task_id)
         require(1 <= limit <= 200 and offset >= 0, "INVALID_REQUEST", "Invalid operation page")
+        require(traversal in {'strict', 'snapshot'}, 'INVALID_REQUEST', 'Unknown operation traversal mode')
         with self.store.connect() as conn:
             conn.execute("BEGIN")
             require(conn.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone(), "NOT_FOUND", "Task is unavailable")
             watermark = conn.execute("SELECT COALESCE(MAX(seq),0) FROM events WHERE task_id=?", (task_id,)).fetchone()[0]
-            state_watermark = self._operation_watermark(conn, task_id)
-            cursor_value = fingerprint({"task_id": task_id, "watermark": watermark,
-                                        "operation_state": state_watermark})
-            if cursor:
-                require(cursor == cursor_value,
-                        "STALE_CURSOR", "Task changed between pages; recover current state and restart pagination", current_watermark=watermark)
-            rows = conn.execute("SELECT " + self.store.operation_summary_columns() + " FROM operations WHERE task_id=? ORDER BY created DESC,id DESC LIMIT ? OFFSET ?",
-                                (task_id, limit + 1, offset)).fetchall()
-            total = conn.execute("SELECT COUNT(*) FROM operations WHERE task_id=?", (task_id,)).fetchone()[0]
+            where, arguments = 'task_id=?', [task_id]
+            if traversal == 'snapshot':
+                ceiling = conn.execute('SELECT COALESCE(MAX(rowid),0) FROM operations WHERE task_id=?', (task_id,)).fetchone()[0]
+                if cursor:
+                    pieces = cursor.split(':')
+                    require(len(pieces) == 3 and pieces[0] == 'h1' and pieces[1].isascii() and pieces[1].isdigit()
+                            and len(pieces[1]) <= 19, 'STALE_CURSOR', 'Invalid history snapshot cursor')
+                    bound = int(pieces[1])
+                    require(bound <= ceiling and hmac.compare_digest(cursor, self._history_cursor(task_id, bound)),
+                            'STALE_CURSOR', 'History cursor is invalid or its retained evidence is unavailable')
+                    ceiling = bound
+                cursor_value = self._history_cursor(task_id, ceiling)
+                # Row identities are pinned; states are read fresh in each page's
+                # transaction. New insertions cannot shift offsets, even if the
+                # host clock moves backwards. No authority is cached in a cursor.
+                where += ' AND rowid<=?'
+                arguments.append(ceiling)
+            else:
+                state_watermark = self._operation_watermark(conn, task_id)
+                cursor_value = fingerprint({"task_id": task_id, "watermark": watermark,
+                                            "operation_state": state_watermark})
+                if cursor:
+                    require(cursor == cursor_value,
+                            "STALE_CURSOR", "Task changed between pages; recover current state and restart pagination or use snapshot traversal", current_watermark=watermark)
+            rows = conn.execute("SELECT " + self.store.operation_summary_columns() + " FROM operations WHERE " + where + " ORDER BY created DESC,id DESC LIMIT ? OFFSET ?",
+                                (*arguments, limit + 1, offset)).fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM operations WHERE " + where, arguments).fetchone()[0]
         return {"task_id": task_id, "operations": [self.store.public_operation(dict(r), summary=True) for r in rows[:limit]],
                 "total": total, "partial": len(rows) > limit, "next_offset": offset + limit if len(rows) > limit else None,
-                "cursor": cursor_value, "watermark": watermark}
+                "cursor": cursor_value, "watermark": watermark, 'traversal': traversal}
+
+    def _history_cursor(self, task_id: str, ceiling: int) -> str:
+        key = self.store.identity['instance_id'].encode('utf-8')
+        tag = hmac.new(key, f'h1:{task_id}:{ceiling}'.encode('utf-8'), hashlib.sha256).hexdigest()[:32]
+        return f'h1:{ceiling}:{tag}'
 
     def _operation_watermark(self, conn, task_id: str) -> int:
         # Indexed, transaction-bound generation changes on every lifecycle write.
@@ -136,7 +163,7 @@ class Recovery:
                 "freshness": {"as_of": now, "watermark": watermark, "consistent_snapshot": True},
                 "safe_reads": [{"tool": "author_get_task", "arguments": {"task_id": task_id}},
                                {"tool": "author_get_feedback", "arguments": {"task_id": task_id, "revision": task["current_revision"]}},
-                               {"tool": "author_recent_operations", "arguments": {"task_id": task_id}}],
+                               {"tool": "author_recent_operations", "arguments": {"task_id": task_id, 'traversal': 'snapshot'}}],
                 "automatic_model_continuation": False, "merge_authorized": False}
 
     def _receipt_is_current(self, run: dict, task: dict, revision: dict) -> bool:
