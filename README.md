@@ -176,3 +176,8 @@ unchanged mixed teams respect the wait budget. Author rejects hidden JUnit
 outcomes and retains separate principal/role/profile qualifications. Existing
 homes need explicit quiescent index maintenance, immutable release verification
 and actual client requalification. See [postimplementation repairs and qualification limits](docs/repairs/2026-10-23-postimplementation.md).
+
+The [live native-client follow-up](docs/repairs/2026-10-23-live-native-client.md)
+records direct Author artifact delivery, parallel Manager delivery, and the
+shared-checkout peer-context repair. Native client execution does not qualify
+an ordinary ChatGPT browser connection or independently attest provider routing.

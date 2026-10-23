@@ -476,7 +476,8 @@ WORKER_TOOLS = [
                     "description": (
                         "How much peer-worker context to include. Default: report. Use changes for changed-file inventory, "
                         "diff for bounded patch context, and review for review-grade report+changes+diff context with explicit "
-                        "visibility notes."
+                        "visibility notes. Shared-write sources supply advisory reports only: their checkout can include "
+                        "other authors' changes and has no isolated candidate or attributable patch."
                     ),
                 },
                 **WORKER_EXECUTION_OPTION_PROPERTIES,
@@ -537,7 +538,8 @@ WORKER_TOOLS = [
                     "enum": ["report", "changes", "diff", "review"],
                     "description": (
                         "How much peer-worker context to include. Default: report. Use review when this continuation "
-                        "should evaluate another worker's report, changed-file list, and bounded diff."
+                        "should evaluate another worker's report, changed-file list, and bounded diff. "
+                        "Shared-write peers supply advisory reports only, without an isolated candidate or attributable patch."
                     ),
                 },
                 **WORKER_TAKEOVER_PROPERTIES,

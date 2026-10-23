@@ -293,3 +293,78 @@ async def test_worker_list_returns_team_report(tmp_path):
     assert "job_id" not in listed["team_report"]
     assert first["worker_id"] not in listed["team_report"]
     assert second["worker_id"] not in listed["team_report"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detail", ["changes", "diff", "review"])
+@pytest.mark.parametrize("followup", [False, True])
+async def test_shared_checkout_peer_context_stays_advisory_on_start_and_followup(tmp_path, detail, followup):
+    """A shared verifier has no isolated delivery baseline or attributable patch."""
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    repo = config["repositories"]["default"]
+    source = await runtime.start_worker(name="Shared Verifier", brief="Check only.",
+        repo_path=repo, workspace_mode="shared_write", model="gpt-6-luna", reasoning_effort="high")
+    await asyncio.sleep(0)
+    source_job = manager.get_job(executor.started[-1])
+    # Existing unrelated base dirt must never become this worker's review target.
+    Path(repo, "README.md").write_text("unrelated-operator-content\n")
+    manager.update_job_state(source_job.job_id, JobState.COMPLETED,
+        result={"summary": "Executable checks passed; source unchanged."},
+        session_id="shared-verifier-session", exit_code=0)
+    runtime.repo_locks.release_job(source_job.job_id)  # Executor completion releases its owned lease.
+    before = subprocess.check_output(["git", "status", "--porcelain"], cwd=repo)
+    if followup:
+        target = await runtime.start_worker(name="Reader", brief="Review.", repo_path=repo,
+            workspace_mode="read_only", model="gpt-6-luna", reasoning_effort="high")
+        await asyncio.sleep(0)
+        job = manager.get_job(executor.started[-1])
+        manager.update_job_state(job.job_id, JobState.COMPLETED,
+            result={"summary": "Ready."}, session_id="reader-session", exit_code=0)
+        result = await runtime.message_worker(worker=target["worker_id"], message="Reconcile verifier report.",
+            repo_path=repo, context_from_workers=[source["worker_id"]], context_detail=detail,
+            model="gpt-6-luna", reasoning_effort="high")
+    else:
+        result = await runtime.start_worker(name="Reader", brief="Review.", repo_path=repo,
+            workspace_mode="read_only", context_from_workers=[source["worker_id"]], context_detail=detail,
+            model="gpt-6-luna", reasoning_effort="high")
+    await asyncio.sleep(0)
+    admitted = manager.get_job(executor.started[-1])
+    assert result["accepted"] is True
+    assert "Executable checks passed; source unchanged." in admitted.prompt
+    assert "Shared checkout context is advisory" in admitted.prompt
+    assert "no isolated candidate or attributable patch" in admitted.prompt
+    assert "unrelated-operator-content" not in admitted.prompt
+    assert "Immutable review target:" not in admitted.prompt
+    assert "Candidate source identity:" not in admitted.prompt
+    assert admitted.options["sandbox"] == "read-only"
+    assert admitted.repo_path == repo
+    assert subprocess.check_output(["git", "status", "--porcelain"], cwd=repo) == before
+    context = runtime._worker_context_prompt([source["worker_id"]], detail=detail, repo_path=repo)
+    assert context["review_targets"] == [] and context["members"] == []
+    assert context["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_shared_checkout_diff_does_not_attribute_operator_dirt(tmp_path):
+    config = make_config(tmp_path)
+    manager = JobManager(config)
+    executor = RecordingExecutor(manager)
+    runtime = WorkerRuntime(config, manager, executor)
+    repo = config["repositories"]["default"]
+    source = await runtime.start_worker(name="Shared Checker", brief="Check only.", repo_path=repo,
+        workspace_mode="shared_write", model="gpt-6-luna", reasoning_effort="high")
+    await asyncio.sleep(0)
+    job = manager.get_job(executor.started[-1])
+    manager.update_job_state(job.job_id, JobState.COMPLETED,
+        result={"summary": "Checks complete."}, session_id="shared-checker-session", exit_code=0)
+    runtime.repo_locks.release_job(job.job_id)
+    Path(repo, "README.md").write_text("unattributable base change\n")
+    result = await runtime.inspect_worker(worker=source["worker_id"], view="diff", file_path="README.md")
+    assert result["diff"] == "" and result["complete"] is False
+    assert result["reason"] == "shared_checkout_unattributed"
+    assert "candidate_tree_sha" not in result and "review_target" not in result
+    assert "unattributable base change" not in str(result)
+    assert Path(repo, "README.md").read_text() == "unattributable base change\n"

@@ -181,3 +181,10 @@ for each caller and selection. Local Pro Request dispatch remains non-idempotent
 and must never be automatically retried. Author qualifications coexist by exact
 principal/role/profile/release binding without widening grants. See the
 [postimplementation contract](../repairs/2026-10-23-postimplementation.md).
+
+Shared-write peers can supply reports to starts and follow-ups at every context
+level. They cannot supply an isolated candidate or attributable patch: their
+checkout may include other authors' changes. The peer handoff states that limit
+rather than failing while looking for a nonexistent delivery baseline. Use an
+isolated source worker for retained, target-bound review. See the
+[live native-client repair](../repairs/2026-10-23-live-native-client.md).

@@ -485,3 +485,18 @@ The recorded follow-up candidate passed 1685 full-suite tests (7 skipped) and
 local check. All required local gates/build/install passed; requirements
 evaluation remained INCOMPLETE with all 52 NOT_RUN. Initial failures and
 fixture filesystems are retained in the [follow-up record](docs/repairs/2026-10-23-postimplementation.md).
+
+## Live native-client peer-context regression
+
+```bash
+python -m pytest tests/test_worker_coordination.py tests/test_s06_review.py tests/test_s10_review_provenance.py -q
+```
+
+Shared-write peer context is advisory. Test start and follow-up with `changes`,
+`diff`, and `review`, preserving unrelated checkout dirt and read-only recipient
+permissions without creating an isolated candidate identity. Keep existing
+isolated-source retention and acceptance regressions. Executable verification
+needs an explicitly writable disposable lane; a read-only review lane cannot
+qualify checks requiring temporary databases or compiler caches. See the
+[live native-client record](docs/repairs/2026-10-23-live-native-client.md) for
+actual delivery evidence and unresolved browser/model boundaries.

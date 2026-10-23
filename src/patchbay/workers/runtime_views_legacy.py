@@ -243,6 +243,11 @@ class RuntimeViewFixes:
                 }
             )
             return view
+        if workspace["mode"] == "shared_write":
+            view.update(file_path=file_path, diff="", complete=False,
+                        reason="shared_checkout_unattributed",
+                        note="Shared checkout changes cannot be attributed to this worker. Use an isolated source worker for candidate diffs.")
+            return view
         root = self._execution_path_for_workspace(workspace)
         rel_path = self._safe_relative_path(root, file_path)
         snapshot = self._candidate_snapshot(jobs)
@@ -294,7 +299,11 @@ class RuntimeViewFixes:
             lines = ["## Context from worker: "+view["name"], "State: "+view["state"],
                      "Latest report (advisory):", self._clip_text(view.get("report") or "No report yet.", _legacy.MAX_CONTEXT_REPORT_CHARS)]
             workspace = self._workspace_for_jobs(jobs)
-            if detail != "report" and workspace["mode"] != "read_only" and workspace["available"]:
+            if detail != "report" and workspace["mode"] == "shared_write" and workspace["available"]:
+                lines += ["Shared checkout context is advisory: no isolated candidate or attributable patch is available.",
+                          "The checkout can include other workers' or operator changes. This report does not bind source acceptance.",
+                          "Use an isolated_write source worker for retained candidate review; keep executable verification separate."]
+            if detail != "report" and workspace["mode"] == "isolated_write" and workspace["available"]:
                 root = self._execution_path_for_workspace(workspace)
                 with self.repo_locks.hold_sync(root, operation="peer_source_capture"):
                     snapshot = self._candidate_snapshot(jobs)
