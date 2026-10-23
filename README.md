@@ -135,6 +135,14 @@ Its local measurements leave native mixed-workload and client qualification expl
 
 ## Documentation
 
+The [local persistence, cleanup and context repair record](docs/repairs/2026-10-23-local-author-and-manager.md)
+documents the direct Author round trip, a longer Extra High/Luna fixture trial,
+Mac cleanup races, logical EOF repair, context changes and separate ChatGPT
+rendering failures. Its fixture results do not qualify a later build or a
+production deployment. For publication, use the
+[public-source checklist](docs/maintainer/workflows/public-source-release.md).
+
+- [Context loading, response efficiency and module boundaries](docs/reference/context-loading.md)
 - [Quick start](QUICKSTART.md)
 - [Workflow modes and authority boundaries](docs/reference/workflow-modes.md)
 - [ChatGPT client instructions](docs/user/chatgpt-instructions.md)

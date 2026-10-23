@@ -206,6 +206,15 @@ def main() -> int:
 
         readme = client.call_tool(8, "codex_read_file", {"repo_path": str(repo), "file_path": "README.md"})
         _check(report, "read_file", "Probe Repo" in readme["result"]["structuredContent"]["text"])
+        readme_data = readme["result"]["structuredContent"]
+        _check(report, "read_file_logical_eof", readme_data["end_line"] == readme_data["total_lines"]
+               and readme_data["truncated"] is False and "next_start_line" not in readme_data)
+        context_result = client.call_tool(840, "codex_load_context", {
+            "repo_path": str(repo), "selected_paths": ["README.md", "README.md"],
+            "include_ai_bridge": False, "include_git": False,
+        })["result"]["structuredContent"]
+        _check(report, "context_unique_selected_source", context_result["selected_files"] == ["README.md"]
+               and context_result["text"].count("### README.md") == 1)
 
         git_status = client.call_tool(82, "codex_git_status", {"repo_path": str(repo)})
         _check(report, "git_status", "##" in git_status["result"]["structuredContent"]["text"])

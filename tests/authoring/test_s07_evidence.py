@@ -128,6 +128,7 @@ def test_real_command_boundary_comparison_is_not_continuous_immutability(setup_a
     assert result["evidence_provenance"]["independent_acceptance"] is False
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux/WSL2 execution admission")
 def test_failed_initial_or_partial_source_observation_preserves_unknown(setup_author, monkeypatch):
     from patchbay.authoring.execution import worker
     service, _, _, task, lease = setup_author

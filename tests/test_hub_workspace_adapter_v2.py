@@ -19,16 +19,16 @@ class FakeFleet:
 
 class DiscoveringFleet(FakeFleet):
     async def discover_workspaces(self, **kwargs) -> dict[str, Any]:
-        assert kwargs["query"] == "RetailMind"
+        assert kwargs["query"] == "SampleProject"
         assert kwargs["max_depth"] == 4
         return {
             "workspaces": [
                 {
                     "machine_id": "machine_alpha",
-                    "workspace_ref": "workspace_retailmind",
-                    "workspace_projection_ref": "wsp_retailmind_alpha",
-                    "alias": "RetailMind",
-                    "path": "/srv/projects/RetailMind",
+                    "workspace_ref": "workspace_sampleproject",
+                    "workspace_projection_ref": "wsp_sampleproject_alpha",
+                    "alias": "SampleProject",
+                    "path": "/srv/projects/SampleProject",
                     "git": True,
                 }
             ],
@@ -228,13 +228,13 @@ async def test_workspace_list_merges_bounded_fleet_discovery_into_existing_proje
     subject = WorkspaceAdapter(DiscoveringFleet(machines), FakeRuntime(), broker)
 
     result = await subject.workspace_list(
-        {"query": "RetailMind", "discover": True, "max_depth": 4, "max_results": 5}
+        {"query": "SampleProject", "discover": True, "max_depth": 4, "max_results": 5}
     )
 
     assert result["status"] == "ok"
     assert result["result"]["truncated"] is True
     assert result["result"]["next_cursor"] == "edge-cursor-2"
-    assert result["result"]["workspaces"][0]["workspace_ref"] == "workspace_retailmind"
+    assert result["result"]["workspaces"][0]["workspace_ref"] == "workspace_sampleproject"
     assert result["result"]["workspaces"][0]["projections"][0]["machine_id"] == "machine_alpha"
     assert broker.calls == []
 

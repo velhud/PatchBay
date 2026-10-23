@@ -2,6 +2,20 @@
 from pathlib import Path
 
 
+def logical_lines(path: Path, max_line_bytes: int, *, total_lines: int):
+    """Keep ``split('\\n')`` coordinates, including the final empty line.
+
+    The caller supplies its independently counted logical line total. Physical
+    lines stay streamed and oversized lines retain their rejection sentinel.
+    """
+    last_line = 0
+    for number, text, byte_count in bounded_lines(path, max_line_bytes):
+        last_line = number
+        yield number, text, byte_count
+    if last_line + 1 == total_lines:
+        yield total_lines, "", 0
+
+
 def bounded_lines(path: Path, max_line_bytes: int):
     """Yield (number, text-or-None, byte-count) including oversized lines.
 

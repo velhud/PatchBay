@@ -422,7 +422,11 @@ class _DarwinTracker:
                 identity = _process_identity(pid)
                 if identity:
                     self.tracked[pid] = identity
-                else:
+                elif _pid_live(pid):
+                    # A reaped/zombie child has no live identity to signal.
+                    # Unknown live processes remain fenced; use the existing
+                    # kernel/status-backed liveness check, never kill(pid,0)
+                    # alone as proof of death.
                     self.mark_uncertain("tracked_child_identity_unavailable")
             if flags & select.KQ_NOTE_FORK:
                 self.fork_seen = True
@@ -438,7 +442,8 @@ class _DarwinTracker:
                     for child_pid in children or set():
                         identity = _process_identity(child_pid)
                         if not identity:
-                            self.mark_uncertain("fork_child_identity_unavailable")
+                            if _pid_live(child_pid):
+                                self.mark_uncertain("fork_child_identity_unavailable")
                             continue
                         if self.tracked.get(child_pid) == identity:
                             continue
@@ -446,7 +451,11 @@ class _DarwinTracker:
                         try:
                             self._register(child_pid)
                         except OSError:
-                            self.mark_uncertain("child_tracker_registration_failed")
+                            # The child may exit between its identity read and
+                            # kqueue registration. An unknown live child still
+                            # invalidates cleanup proof.
+                            if _pid_live(child_pid):
+                                self.mark_uncertain("child_tracker_registration_failed")
             if flags & select.KQ_NOTE_EXIT:
                 self.tracked.pop(pid, None)
 

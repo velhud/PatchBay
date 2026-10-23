@@ -360,7 +360,7 @@ class JobManager:
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def create_worker_worktree(self, worker_id: str, repo_path: str, *, source_revision: str = "") -> tuple[Path, str, str]:
+    def create_worker_worktree(self, worker_id: str, repo_path: str, *, source_revision: str = "") -> tuple[Path, Optional[str], str]:
         from patchbay.repo_locks import RepoMutationLockManager
         # Admission lock is short-lived and precedes job persistence/model work.
         suffix = "".join(ch if ch.isalnum() else "-" for ch in worker_id.lower()).strip("-")[:32]
@@ -368,7 +368,7 @@ class JobManager:
         with RepoMutationLockManager(self.config).hold_sync(str(allocation), operation="create_worker_worktree"):
             return self._create_worker_worktree_at_source(worker_id, repo_path, source_revision=source_revision)
 
-    def _create_worker_worktree_at_source(self, worker_id: str, repo_path: str, *, source_revision: str = "") -> tuple[Path, str, str]:
+    def _create_worker_worktree_at_source(self, worker_id: str, repo_path: str, *, source_revision: str = "") -> tuple[Path, Optional[str], str]:
         """Create one external durable worktree for a named worker."""
         repo_path = str(Path(repo_path).expanduser().resolve())
         self._validate_repo_allowed(repo_path)
@@ -378,17 +378,23 @@ class JobManager:
             raise ValueError("Worker worktree could not be created: base repository is not a git repository") from error
         base_revision = repo.commit(source_revision).hexsha if source_revision else repo.head.commit.hexsha
         suffix = "".join(ch if ch.isalnum() else "-" for ch in worker_id.lower()).strip("-")[:32]
-        branch_name = f"codex/worker-{suffix}"
+        detached = self.config.get("workers", {}).get("detached_worktrees", False)
+        if not isinstance(detached, bool):
+            raise ValueError("workers.detached_worktrees must be a boolean")
+        branch_name = None if detached else f"codex/worker-{suffix}"
         worktree_path = self.worker_worktrees_dir() / f"worker-{suffix}"
         if worktree_path.exists():
             raise ValueError(f"Worker worktree already exists: {worktree_path}")
         # A pre-existing branch/path is never ours to roll back.
-        if repo.git.branch("--list", branch_name).strip():
+        if branch_name and repo.git.branch("--list", branch_name).strip():
             raise ValueError("Worker branch already exists")
         worktree_path.mkdir(mode=0o700)
         created_owned = True
         try:
-            repo.git.worktree("add", str(worktree_path), "-b", branch_name, base_revision)
+            if detached:
+                repo.git.worktree("add", "--detach", str(worktree_path), base_revision)
+            else:
+                repo.git.worktree("add", str(worktree_path), "-b", branch_name, base_revision)
             created_owned = True
             created = git.Repo(str(worktree_path))
             if (created.head.commit.hexsha != base_revision or
@@ -404,7 +410,7 @@ class JobManager:
                         worktree_path.rmdir()
                     except OSError:
                         logger.warning("Owned partial worker allocation preserved for recovery")
-                    if not worktree_path.exists() and repo.git.branch("--list", branch_name).strip():
+                    if branch_name and not worktree_path.exists() and repo.git.branch("--list", branch_name).strip():
                         repo.git.branch("-D", branch_name)
             # Failed Git allocation is preserved unless ownership is proven.
             raise self._worktree_creation_error("Worker worktree could not be created", error) from error

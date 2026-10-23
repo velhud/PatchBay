@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import sys
 import zipfile
 import pytest
 
@@ -13,6 +14,7 @@ from patchbay.authoring.revisions.git_objects import Git
 
 
 @pytest.mark.parametrize('equal_created', [False, True])
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux/WSL2 execution admission")
 def test_automatic_queue_passes_old_blockers_without_targeted_retry(setup_author, monkeypatch, equal_created):
     service, source, repo, task, lease = setup_author
     checks = Checks(service.store)
@@ -100,6 +102,7 @@ def test_failed_stream_publishes_no_context_or_partial_zip(setup_author, monkeyp
     assert not list((service.store.home/'staging').iterdir())
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux/WSL2 execution admission")
 def test_noop_gc_skips_receipt_but_existing_workspace_requires_integrity(setup_author,monkeypatch):
     from patchbay.authoring.errors import AuthorError
     service, _, _, task, lease = setup_author

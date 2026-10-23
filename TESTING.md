@@ -49,6 +49,13 @@ Do not replace the full suite with historical branch counts.
 
 ### macOS process-cleanup qualification
 
+Run `python -m pytest tests/test_darwin_cleanup_races.py -q` for dead-child versus
+unknown-live cleanup races and a native Darwin process-birth check. Run
+`tests/test_worker_runtime.py::test_worker_worktree_can_preserve_refs_with_detached_allocation`
+for both branch-backed and opt-in detached allocation. These tests do not
+qualify hostile Darwin descendant containment. The [local qualification record](docs/repairs/2026-10-23-local-author-and-manager.md)
+keeps actual client results and earlier failed attempts separate from source tests.
+
 The macOS supervisor uses kqueue fork notifications and later process censuses;
 it does not have lossless descendant tracking across a child fork/reap race.
 The Linux rapid marker-stripping detached-descendant test skips on macOS and
@@ -137,6 +144,11 @@ Also verify that importing `patchbay.authoring.interfaces.cli` does not import `
 A macOS run that stops at the explicit Linux/WSL2 guard is a platform qualification result, not proof of five independent defects. Do not remove the guard to make that run pass.
 
 ### Context and response efficiency
+
+The [context-loading contract](docs/reference/context-loading.md) covers duplicate
+selectors, policy-pruned discovery, Unicode serialization and logical EOF.
+Run `python -m pytest tests/test_context_loading_efficiency.py -q` together with
+the existing workspace, MCP, tool-surface and executor artifact regressions.
 
 The S01 deterministic contract regressions exercise supported and malformed
 versions through public protocol/HTTP entrypoints, source-selector alternatives,
@@ -500,3 +512,8 @@ needs an explicitly writable disposable lane; a read-only review lane cannot
 qualify checks requiring temporary databases or compiler caches. See the
 [live native-client record](docs/repairs/2026-10-23-live-native-client.md) for
 actual delivery evidence and unresolved browser/model boundaries.
+
+
+## Local source release verification — 23 October 2026
+
+The [combined-source verification result](docs/testing/local-source-release-2026-10-23.md) records the final full suite, separate Author subset, evaluators, wheel and one real Luna native job. Historical browser trials and formal client/platform qualifications remain separate.

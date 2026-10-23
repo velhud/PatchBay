@@ -63,7 +63,7 @@ def test_fleet_worker_ref_changes_when_edge_generation_changes() -> None:
 
 def test_workspace_projection_ref_binds_machine_generation_and_local_identity() -> None:
     projection = WorkspaceProjectionIdentity.create(
-        workspace_ref="workspace_retailmind",
+        workspace_ref="workspace_sampleproject",
         machine_id="machine_alpha",
         edge_generation="edgegen_first",
         local_identity="git:example/repo",
@@ -71,7 +71,7 @@ def test_workspace_projection_ref_binds_machine_generation_and_local_identity() 
     )
 
     assert projection.projection_ref.startswith("wsp_")
-    assert projection.workspace_ref == "workspace_retailmind"
+    assert projection.workspace_ref == "workspace_sampleproject"
 
 
 def test_stable_ref_and_target_hash_are_deterministic() -> None:

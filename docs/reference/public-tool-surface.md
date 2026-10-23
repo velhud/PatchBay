@@ -188,3 +188,14 @@ checkout may include other authors' changes. The peer handoff states that limit
 rather than failing while looking for a nonexistent delivery baseline. Use an
 isolated source worker for retained, target-bound review. See the
 [live native-client repair](../repairs/2026-10-23-live-native-client.md).
+
+## Context and detached worktrees
+
+Public tool names, input schemas, annotation values and ordering are preserved
+by static-catalog extraction. Eligible small text JSON uses literal UTF-8;
+decoded results and full structured evidence remain unchanged. See
+[context loading](context-loading.md) for duplicate selectors, bounded discovery
+and logical EOF. A private runtime with `workers.detached_worktrees: true`
+returns null worker branch metadata while retaining the isolated worktree and
+pinned source. The default remains branch-backed. Neither change refreshes an
+already installed client's metadata or qualification.

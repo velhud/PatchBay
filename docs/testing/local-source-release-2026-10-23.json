@@ -1,0 +1,60 @@
+{
+  "evidence_class": "bounded_local_source_verification_summary_not_platform_qualification",
+  "baseline_commit": "1409fd97245b9133f2f86e7e4ff2abad9b187bfa",
+  "platform": "macOS",
+  "python": "3.12.11",
+  "python_files": 357,
+  "python_path_and_sha256_manifest_digest": "a6508585d970a8a867d78db7cc7d21c82beba5fcc2a8cea4cbdc6bc282eaae72",
+  "full_suite": {
+    "passed": 1660,
+    "skipped": 63,
+    "failed": 0
+  },
+  "author_subset": {
+    "passed": 347,
+    "skipped": 59,
+    "failed": 0
+  },
+  "audit_regressions": {
+    "passed": 10,
+    "failed": 0
+  },
+  "compilation": "PASS",
+  "dependency_consistency": "PASS; manifests unchanged",
+  "mcp_evaluator": {
+    "checks": 29,
+    "status": "PASS"
+  },
+  "hub_v2_evaluator": {
+    "checks": 32,
+    "status": "PASS"
+  },
+  "hub_edge_evaluator": "PASS",
+  "author_interface_evaluator": "PASS; synthetic profiles; no supplied ordinary-Chat A/B outcomes",
+  "native_probe": {
+    "client": "authenticated loopback HTTP MCP",
+    "codex_cli": "codex-cli 0.163.0-alpha.11.2",
+    "requested_model": "gpt-6-luna",
+    "requested_reasoning_effort": "high",
+    "provider_observed_model": null,
+    "workers": 1,
+    "calls": 9,
+    "saved_bytes_and_actual_command_output_verified": true,
+    "automatic_cleanup_proof_verified": true,
+    "detached_allocation_refs_unchanged": true,
+    "restart_reconnect_exact_readback": "PASS; same retained worker",
+    "qualification_flags_changed": false
+  },
+  "wheel": {
+    "build": "PASS with declared isolated build dependencies",
+    "new_modules_reopened_equal_source": true
+  },
+  "not_qualified_by_this_release": [
+    "New browser-client connection to this combined source",
+    "Linux/WSL2 Author execution on macOS",
+    "Hostile Darwin descendant containment",
+    "Permanent ChatGPT renderer repair",
+    "Production service/ingress deployment",
+    "Native client package/file import"
+  ]
+}

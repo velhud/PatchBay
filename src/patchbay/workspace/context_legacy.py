@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from patchbay.security import public_error_message, redact_text, validate_allowed_path
+from .discovery import context_paths
 
 
 DEFAULT_BLOCKED_GLOBS = [
@@ -527,7 +528,9 @@ class WorkspaceContext:
         workspace = self.open_workspace(args.get("repo"))
         target_path = str(args.get("target_path") or ".")
         self.resolve_path(workspace, target_path)
-        selected_paths = [str(path) for path in args.get("selected_paths") or []]
+        # Repeated selectors should not reread and reinsert identical source.
+        # Preserve first occurrence order, full instruction chains and pages.
+        selected_paths = list(dict.fromkeys(str(path) for path in args.get("selected_paths") or []))
         max_file_bytes = min(int(args.get("max_file_bytes") or 60_000), self.max_read_bytes)
 
         agents = self.read_agents_chain(workspace, target_path)
@@ -1082,7 +1085,7 @@ class WorkspaceContext:
     def find_agents_files(self, workspace: Workspace) -> list[str]:
         candidates = ["AGENTS.override.md", "AGENTS.md", "agents.md", ".agents.md"]
         found: list[str] = []
-        for path in workspace.root.rglob("*"):
+        for path in context_paths(workspace.root, self.blocked_globs):
             if len(found) >= 20:
                 break
             rel = self._display_path(path.resolve(strict=False), workspace.root)
@@ -1476,7 +1479,7 @@ class WorkspaceContext:
         if root.is_file():
             yield root
             return
-        for path in root.rglob("*"):
+        for path in context_paths(root, self.blocked_globs, policy_root=workspace.root):
             try:
                 path, _ = self.resolve_path(workspace, str(path))
             except (ValueError, OSError):

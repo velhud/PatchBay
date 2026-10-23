@@ -243,3 +243,38 @@ def test_stdout_event_observer_tracks_live_status_counters_and_command_phase(tmp
     assert completed_command.current_command_preview is None
     assert completed_command.last_command_preview == "rg worker runtime"
     assert completed_command.last_command_completed_at is not None
+
+
+def test_checkpoint_event_helpers_preserve_executor_override_seams(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    executor = JobExecutor(config, JobManager(config))
+    executor._text_from_agent_item = lambda item: json.dumps({"summary": "overridden summary"})
+    executor._clip_checkpoint_text = lambda value: f"custom:{value}"
+
+    checkpoint = executor._checkpoint_from_event(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ignored"}}
+    )
+
+    assert checkpoint["summary"] == "custom:overridden summary"
+    assert checkpoint["kind"] == "agent_message"
+
+    import patchbay.jobs.executor as executor_module
+
+    monkeypatch.setattr(executor_module, "MAX_CHECKPOINT_TEXT_CHARS", 3)
+    del executor._clip_checkpoint_text
+    assert executor._clip_checkpoint_text("abcdef") == "abc\n...[checkpoint truncated]"
+
+
+def test_activity_event_helpers_preserve_preview_and_clip_overrides(tmp_path):
+    config = make_config(tmp_path)
+    executor = JobExecutor(config, JobManager(config))
+    executor._clip_status_text = lambda value: f"clipped:{value}"
+    item = {"type": "command_execution", "command": "run checks"}
+
+    assert executor._command_preview_from_item(item) == "clipped:run checks"
+    updates = executor._activity_updates_from_event(
+        None, chunk=b"event", now=1.0, event_label="item.started", item=item
+    )
+
+    assert updates["current_phase"] == "command_running"
+    assert updates["current_command_preview"] == "clipped:run checks"

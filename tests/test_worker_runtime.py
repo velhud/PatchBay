@@ -641,6 +641,27 @@ async def test_start_worker_rolls_back_isolated_worktree_when_job_creation_fails
     assert branches.stdout.strip() == ""
 
 
+@pytest.mark.parametrize("detached", [False, True])
+def test_worker_worktree_can_preserve_refs_with_detached_allocation(tmp_path, detached):
+    from git import Repo
+    config = make_config(tmp_path)
+    config["workers"]["detached_worktrees"] = detached
+    manager = JobManager(config)
+    base = Repo(config["repositories"]["default"])
+    before = {ref.path: ref.commit.hexsha for ref in base.references}
+    path, branch, revision = manager.create_worker_worktree("allocation-fixture", str(base.working_tree_dir))
+    allocated = Repo(path)
+    assert allocated.head.commit.hexsha == revision == base.head.commit.hexsha
+    assert allocated.head.is_detached is detached
+    if detached:
+        assert branch is None
+        assert {ref.path: ref.commit.hexsha for ref in base.references} == before
+    else:
+        assert branch == "codex/worker-allocation-fixture"
+    manager.remove_worker_worktree(str(base.working_tree_dir), str(path), branch)
+    assert {ref.path: ref.commit.hexsha for ref in base.references} == before
+
+
 def test_create_worker_worktree_reports_full_filesystem(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     manager = JobManager(config)
