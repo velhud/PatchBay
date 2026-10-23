@@ -42,8 +42,10 @@ class WorkspaceContext(_legacy.WorkspaceContext):
         oversized_line: int | None = None
         required_bytes: int | None = None
 
-        from patchbay.text_pages import bounded_lines
-        for line_number, clean, source_bytes in bounded_lines(target, self.max_read_bytes):
+        from patchbay.text_pages import logical_lines
+        for line_number, clean, source_bytes in logical_lines(
+            target, self.max_read_bytes, total_lines=total_lines
+        ):
             if line_number < start_line:
                 continue
             if line_number > end_line:

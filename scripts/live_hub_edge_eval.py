@@ -465,7 +465,7 @@ def run() -> dict[str, Any]:
                         "arguments": {
                             "title": "Friendly repo smoke",
                             "goal": "Verify a human repo name resolves under an advertised workspace root.",
-                            "repo_path": "RetailMind",
+                            "repo_path": "SampleProject",
                             "allowed_machine_ids": ["live-edge"],
                             "lanes": ["preflight"],
                         },
@@ -475,8 +475,8 @@ def run() -> dict[str, Any]:
                 session_id=session_id,
             )
             friendly_payload = friendly_group["result"]["structuredContent"]["work_group"]
-            expected_friendly_repo = str(root / "repos" / "RetailMind")
-            if friendly_payload["requested_repo_path"] != "RetailMind":
+            expected_friendly_repo = str(root / "repos" / "SampleProject")
+            if friendly_payload["requested_repo_path"] != "SampleProject":
                 raise RuntimeError("Friendly group did not preserve requested repo_path")
             if friendly_payload["repo_path"] != expected_friendly_repo:
                 raise RuntimeError(f"Friendly group resolved {friendly_payload['repo_path']}, expected {expected_friendly_repo}")

@@ -31,6 +31,7 @@ from patchbay.jobs.manager import (
 )
 from patchbay.jobs.process_supervisor import cleanup_proof_budget_seconds
 from patchbay.jobs.session_terminal import CodexSessionTerminalObserver
+from patchbay.jobs import event_helpers
 from patchbay.connector.profiles import normalize_logging_paths, resolve_runtime_path
 from patchbay.repo_locks import (
     REPO_LOCK_OPERATION_OPTION,
@@ -55,7 +56,6 @@ STALE_RUNNING_JOB_CATEGORY = "patchbay_runtime_tracking_lost"
 
 MAX_JOB_CHECKPOINTS = 8
 MAX_CHECKPOINT_TEXT_CHARS = 2_000
-
 _SESSION_OBSERVATION_ID_OPTION = "_session_terminal_observation_session_id"
 _SESSION_OBSERVATION_OFFSET_OPTION = "_session_terminal_observation_initial_offset"
 _JOB_PROCESS_MARKER_ENV = "PATCHBAY_JOB_MARKER"
@@ -2329,6 +2329,9 @@ class JobExecutor:
         boot_id = self._linux_boot_id()
         if start_ticks is not None and boot_id:
             return f"{_LINUX_PROCESS_IDENTITY_PREFIX}{boot_id}:{start_ticks}"
+        if sys.platform == "darwin":
+            from patchbay.jobs.process_supervisor import _process_identity
+            return _process_identity(pid) or None
         return None
 
     @staticmethod
@@ -4389,52 +4392,15 @@ class JobExecutor:
             _telemetry=not (checkpoint or session_started or stdout_completion_observed), **updates)
         return session_started
 
-    def _activity_updates_from_event(
-        self,
-        job: Any,
-        *,
-        chunk: bytes,
-        now: float,
-        event_label: str,
-        item: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        updates: Dict[str, Any] = {
-            "event_count": (int(getattr(job, "event_count", 0) or 0) + 1) if job else 1,
-            "stdout_bytes_seen": (int(getattr(job, "stdout_bytes_seen", 0) or 0) + len(chunk)) if job else len(chunk),
-            "last_stdout_at": now,
-        }
-        item_type = str(item.get("type") or "").strip()
-        item_status = str(item.get("status") or "").strip()
-        if item_type:
-            updates["current_item_type"] = item_type
-        if item_status:
-            updates["current_item_status"] = item_status
-
-        command_preview = self._command_preview_from_item(item)
-        if item_type == "command_execution":
-            if event_label == "item.started":
-                updates["current_phase"] = "command_running"
-                updates["current_command_preview"] = command_preview
-                updates["current_command_started_at"] = now
-            elif event_label == "item.completed":
-                updates["current_phase"] = "command_completed_waiting_for_model"
-                updates["last_command_preview"] = command_preview or str(getattr(job, "current_command_preview", "") or "")
-                updates["last_command_completed_at"] = now
-                updates["current_command_preview"] = None
-                updates["current_command_started_at"] = None
-        elif item_type in {"agent_message", "message"}:
-            updates["current_phase"] = "agent_message_emitted"
-        elif event_label == "turn.completed":
-            updates["current_phase"] = "finalizing_report"
-        elif event_label == "thread.started":
-            updates["current_phase"] = "model_reasoning"
-        elif event_label == "turn.started":
-            updates["current_phase"] = "model_reasoning"
-        elif event_label.startswith("item."):
-            updates["current_phase"] = item_type or "item_activity"
-        elif event_label == "stdout":
-            updates["current_phase"] = "stdout_output"
-        return updates
+    def _activity_updates_from_event(self, job: Any, *, chunk: bytes, now: float, event_label: str, item: Dict[str, Any]) -> Dict[str, Any]:
+        return event_helpers.activity_updates_from_event(
+            job,
+            chunk=chunk,
+            now=now,
+            event_label=event_label,
+            item=item,
+            command_preview=self._command_preview_from_item,
+        )
 
     def _append_checkpoint(self, job_id: str, checkpoint: Dict[str, Any]) -> list[Dict[str, Any]]:
         job = self.job_manager.get_job(job_id)
@@ -4487,146 +4453,38 @@ class JobExecutor:
         )
 
     def _checkpoint_from_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        item = self._agent_item_from_event(event)
-        if not item:
-            return None
-        text = self._text_from_agent_item(item)
-        if not text:
-            return None
-
-        summary = text
-        details: Dict[str, Any] = {}
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            candidate = (
-                parsed.get("summary")
-                or parsed.get("detailed_report")
-                or parsed.get("notes")
-                or parsed.get("message")
-            )
-            if isinstance(candidate, str) and candidate.strip():
-                summary = candidate.strip()
-            for key in (
-                "evidence",
-                "files_changed",
-                "commands_run",
-                "tests_run",
-                "risks",
-                "open_questions",
-                "next_steps",
-            ):
-                value = parsed.get(key)
-                if isinstance(value, list):
-                    details[f"{key}_count"] = len(value)
-            if isinstance(parsed.get("notes"), str) and parsed["notes"].strip() and parsed["notes"].strip() != summary:
-                details["notes"] = self._clip_checkpoint_text(parsed["notes"])
-
-        return {
-            "kind": "agent_message",
-            "event": str(event.get("type") or "json_event"),
-            "item_status": str(item.get("status") or ""),
-            "at": time.time(),
-            "summary": self._clip_checkpoint_text(summary),
-            **details,
-        }
+        return event_helpers.checkpoint_from_event(
+            event,
+            clock=time.time,
+            agent_item=self._agent_item_from_event,
+            text_from_item=self._text_from_agent_item,
+            clip_text=self._clip_checkpoint_text,
+        )
 
     def _event_item_from_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        item = event.get("item") if isinstance(event.get("item"), dict) else {}
-        if item:
-            return item
-        data = event.get("data") if isinstance(event.get("data"), dict) else {}
-        data_item = data.get("item") if isinstance(data.get("item"), dict) else {}
-        if data_item:
-            return data_item
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        payload_item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
-        if payload_item:
-            return payload_item
-        return {}
+        return event_helpers.event_item_from_event(event)
 
     def _agent_item_from_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        item = self._event_item_from_event(event)
-        if item and str(item.get("type") or "") in {"agent_message", "message"}:
-            return item
-        return {}
+        return event_helpers.agent_item_from_event(event, event_item=self._event_item_from_event)
 
     def _command_preview_from_item(self, item: Dict[str, Any]) -> str:
-        if not item:
-            return ""
-        for key in ("command", "cmd", "text", "description", "name"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return self._clip_status_text(value)
-        for key in ("input", "arguments", "params"):
-            value = item.get(key)
-            if isinstance(value, dict):
-                for nested_key in ("command", "cmd", "text", "description"):
-                    nested = value.get(nested_key)
-                    if isinstance(nested, str) and nested.strip():
-                        return self._clip_status_text(nested)
-                if value:
-                    return self._clip_status_text(json.dumps(value, ensure_ascii=False, sort_keys=True))
-            if isinstance(value, str) and value.strip():
-                return self._clip_status_text(value)
-        return ""
+        return event_helpers.command_preview_from_item(item, clip_text=self._clip_status_text)
 
     def _clip_status_text(self, value: str) -> str:
-        text = redact_text(str(value or "").strip())
-        text = " ".join(text.split())
-        if len(text) <= 240:
-            return text
-        return text[:237].rstrip() + "..."
+        return event_helpers.clip_status_text(value)
 
     def _text_from_agent_item(self, item: Dict[str, Any]) -> str:
-        for key in ("text", "message", "content_text"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        content = item.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for entry in content:
-                if isinstance(entry, str) and entry.strip():
-                    parts.append(entry.strip())
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                for key in ("text", "content"):
-                    value = entry.get(key)
-                    if isinstance(value, str) and value.strip():
-                        parts.append(value.strip())
-                        break
-            if parts:
-                return "\n".join(parts).strip()
-        return ""
+        return event_helpers.text_from_agent_item(item)
 
     def _clip_checkpoint_text(self, value: str) -> str:
-        text = redact_text(str(value or "").strip())
-        if len(text) <= MAX_CHECKPOINT_TEXT_CHARS:
-            return text
-        return text[:MAX_CHECKPOINT_TEXT_CHARS].rstrip() + "\n...[checkpoint truncated]"
+        return event_helpers.clip_checkpoint_text(value, max_chars=MAX_CHECKPOINT_TEXT_CHARS)
 
     def _session_id_from_event(self, event: Dict[str, Any]) -> Optional[str]:
-        if event.get('type') != 'thread.started':
-            return None
-        data = event.get('data') if isinstance(event.get('data'),dict) else {}
-        value = event.get('thread_id') or data.get('thread_id')
-        return value if isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}',value) else None
+        return event_helpers.session_id_from_event(event)
 
     def _event_progress_label(self, event: Dict[str, Any]) -> str:
-        event_type = str(event.get("type") or "json_event")
-        item = event.get("item") if isinstance(event.get("item"), dict) else {}
-        if item:
-            item_type = str(item.get("type") or "item")
-            status = str(item.get("status") or "").strip()
-            return f"Codex event: {event_type} ({item_type}{', ' + status if status else ''})."
-        return f"Codex event: {event_type}."
-    
+        return event_helpers.event_progress_label(event)
+
     def _build_env(self, *, job_id: str = "") -> Dict[str, str]:
         """Build a restricted environment for Codex execution."""
         allowed = self.config.get('security', {}).get('allowed_env_keys') or [

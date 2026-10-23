@@ -49,10 +49,14 @@ that deliberately creates a detached session and erases that marker can evade
 macOS cleanup discovery. Run adversarial or intentionally marker-stripping code
 on a Linux VM/container boundary rather than relying on PatchBay cleanup as a
 security boundary. Ordinary Codex workers can run on macOS, but a short-lived
-child may exit before PatchBay captures its process identity. Since that child
-could have created an unobserved descendant, cleanup remains unproven and the
-repository stays fenced. Conclusive macOS cleanup for ordinary workers is not
-qualified until the live-worker gate in `TESTING.md` passes.
+child may exit before PatchBay captures its process identity or registers its
+kqueue event. The existing kernel/status-backed liveness check distinguishes
+a proven-dead child from an unknown live child; only the latter creates a
+missing-identity/registration fence. Missing census evidence and live unknowns
+still block cleanup. This correction does not retrospectively rule out hostile
+unobserved descendants. Qualify ordinary workers on the exact installed source
+and runtime through the live-worker gate in `TESTING.md`; a historical fixture
+pass is not a universal macOS cleanup guarantee.
 
 The supervisor never publishes absence before the target launch gate and
 tracker boundary are established. Cleanup proof is fsync-durable, terminal

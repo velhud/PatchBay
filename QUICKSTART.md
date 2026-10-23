@@ -108,6 +108,12 @@ not a total HTTP deadline. Cancelling a wait never stops execution. A Hub
 `resync_required` response contains a full snapshot: use it as the new baseline.
 See the [S03 observation contract](docs/repairs/2026-10-22-s03-observation.md).
 
+Handle returned terminal reports, failures and cleanup blockers before waiting
+again. After handling them, use `active_only=true` to wait for remaining active
+workers; the same completed selection returns immediately on every call.
+See [context loading](docs/reference/context-loading.md) for response and paging
+behavior.
+
 If a terminal job reports `cleanup_blocked_untrusted_process_identity`, do not
 blindly retry or remove the durable fence. Stop the local PatchBay server first,
 then inspect one exact job with the offline operator command. It defaults to an
@@ -269,6 +275,11 @@ Passing candidates with publication disabled return `awaiting_review`; review
 is recorded externally and does not authorize publication or persist acceptance.
 
 ## Verify the source and deployment
+
+For the ordinary Extra High direct-author/manager qualification, known errors
+and recovery steps, see the [local trial repair record](docs/repairs/2026-10-23-local-author-and-manager.md).
+After a missing ChatGPT final answer, inspect durable task/worker operations
+before retrying writes. A rendering error does not undo an admitted operation.
 
 Run the exact matrix in [TESTING.md](TESTING.md). Mac checks verify portable mechanics; Linux/WSL2 execution and the deployed ordinary-Chat route require their own qualification. No PR is created by the Author workflow. See [Author operations](docs/authoring/operations.md) for explicit inbox watch, recovery, pause, revocation and policy changes.
 

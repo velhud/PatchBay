@@ -32,7 +32,12 @@ async def test_wait_timeout_names_phase_and_reports_observed_state():
 def test_live_hub_v2_eval_report(tmp_path):
     report = run_live_hub_v2_eval_sync(tmp_path)
 
-    assert report["status"] == "passed", report
+    # Keep the actual failure visible even when pytest abbreviates a long
+    # successful-check history in the surrounding report.
+    assert report["status"] == "passed", {
+        "error": report.get("error"),
+        "failed_checks": [check for check in report["checks"] if not check["passed"]],
+    }
     assert report["tool_count"] == 31
     assert tuple(report["tool_names"]) == HUB_V2_TOOL_NAMES
     assert report["result_posts_are_edge_generated"] is True

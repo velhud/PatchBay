@@ -1,6 +1,7 @@
 """S08 source identity and restore ordering, using disposable owned state."""
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,7 @@ def test_drift_invalidates_existing_qualification_and_refuses_refresh(setup_auth
     assert error.value.code == "RELEASE_DRIFT"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux/WSL2 execution admission")
 def test_supervisor_release_mismatch_never_launches_candidate(setup_author, monkeypatch):
     from patchbay.authoring.execution import worker
     from patchbay.authoring.execution.runner import Checks

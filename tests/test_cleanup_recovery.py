@@ -111,7 +111,7 @@ def test_recovery_retries_transient_marker_scan_uncertainty_but_requires_empty_c
     result = recover_cleanup(
         config,
         job.job_id,
-        operator="Codex under Roman authorization",
+        operator="Authorized local operator",
     )
     assert result["ready"] is True
     assert result["applied"] is False
@@ -122,21 +122,21 @@ def test_cleanup_recovery_dry_run_is_read_only_and_apply_records_operator_attest
 ):
     config, job, proof = _fixture(tmp_path)
     before = _state_bytes(config, job.job_id)
-    dry_run = recover_cleanup(config, job.job_id, operator="Roman")
+    dry_run = recover_cleanup(config, job.job_id, operator="fixture-operator")
     assert dry_run["ready"] is True
     assert dry_run["applied"] is False
     assert _state_bytes(config, job.job_id) == before
     assert list(Path(config["logging"]["job_logs_dir"]).glob("*.operator-cleanup-recovery.*")) == []
 
     with pytest.raises(ValueError, match="exact --confirm-quiescence"):
-        recover_cleanup(config, job.job_id, operator="Roman", apply=True)
+        recover_cleanup(config, job.job_id, operator="fixture-operator", apply=True)
     assert _state_bytes(config, job.job_id) == before
     assert list(Path(config["logging"]["job_logs_dir"]).glob("*.operator-cleanup-recovery.*")) == []
 
     result = recover_cleanup(
         config,
         job.job_id,
-        operator="Roman",
+        operator="fixture-operator",
         apply=True,
         confirmation=CONFIRMATION,
     )
@@ -199,7 +199,7 @@ def test_cleanup_recovery_fails_closed_without_state_or_receipt_changes(
         recover_cleanup(
             config,
             job.job_id,
-            operator="Roman",
+            operator="fixture-operator",
             apply=True,
             confirmation=CONFIRMATION,
         )
@@ -212,7 +212,7 @@ def test_recovery_receipt_rejects_bad_mode_or_changed_supervisor_proof(tmp_path,
     result = recover_cleanup(
         config,
         job.job_id,
-        operator="Roman",
+        operator="fixture-operator",
         apply=True,
         confirmation=CONFIRMATION,
     )

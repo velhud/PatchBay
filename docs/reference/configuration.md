@@ -252,6 +252,13 @@ ChatGPT can inspect mode choices with `codex_tool_mode_info` and request a sessi
 
 ## Runtime state
 
+`workers.detached_worktrees` is a boolean, false by default. Set it to true in
+the private runtime config to allocate named workers at a pinned detached HEAD
+without creating `codex/worker-*` branches. Durable worktrees, candidates and
+Git objects remain available; returned branch metadata is null. Existing
+ownership, review, integration and cleanup rules are unchanged. This option
+does not change low-level apply-job branches or delete existing refs.
+
 PatchBay keeps local paths, raw session ids, worker worktree paths, process logs, and runtime files behind the local control boundary unless a specific public tool is designed to expose a bounded summary. Private evidence files can include full ChatGPT tool calls and full worker/Codex prompts when explicitly enabled; they are private runtime evidence, not repository data.
 
 ## Artifact import execution limits

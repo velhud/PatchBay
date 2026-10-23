@@ -144,6 +144,7 @@ power_tools:
 
 workers:
   worktree_root: ""
+  detached_worktrees: false  # Opt in to pinned worktrees without creating worker branches.
   ignore_user_config: false
   file_response_max_bytes: 1000000
   heartbeat_fresh_seconds: 120

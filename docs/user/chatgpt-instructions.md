@@ -2,6 +2,12 @@
 
 PatchBay exposes two different workflows. Determine which one the user selected before acting.
 
+The primary ChatGPT model is selected by the user. The recorded browser trial
+used Extra High; the workflow roles do not require switching to Pro. Verify
+actual tool availability for the selected model/account. After a missing final
+answer, recover durable task/worker state before retrying writes; see
+[client loading errors and recovery](../repairs/2026-10-23-local-author-and-manager.md#chatgpt-loading-failures-and-recovery).
+
 ## Manager/worker mode
 
 In manager/worker mode, ChatGPT Pro manages local Codex colleagues. Workers perform non-trivial repository investigation, implementation, execution, tests, and detailed review. ChatGPT briefs them, compares reports, asks follow-up questions, decides acceptance, and synthesizes the result.
