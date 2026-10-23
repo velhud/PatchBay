@@ -1,0 +1,12 @@
+{
+  "fixtures/manager/ledger.py": "ca35336e7b0cae1b80d98e5103c6f9efd37c52cd75a9cedf0804b37ea036f09d",
+  "fixtures/manager/report.py": "09da42c90dc74198458856b3e5c6422a8fb3a49512faba067c89c3eb85e514e8",
+  "fixtures/manager/SPEC.md": "474d12bdb9d9f7ca830c3eb76fbde6dd7fb54cdc6309dd235a14ebec83c34509",
+  "fixtures/manager/tests/test_delivery.py": "64dad8a0604c9113359486325daeaaa1561433ff1c43e51b1e498f92b3afd7f4",
+  "fixtures/author-simple/app.py": "63098273a7aaa630762d6f145dfcf9c61c8c9b290c6ebeb2a05fea5854ccb476",
+  "fixtures/author-simple/README.md": "bd330e45ed215ac12e0cc8a2a76d46d6d6e249791350598b83a2fdf3c1d629c8",
+  "fixtures/author-simple/tests/test_app.py": "97ea52ab3b1f004397b9b542dad8c2ad930e88e3435f83c2f4e9aff49a7b1873",
+  "fixtures/author-complex/app.py": "fdf4b5d027bb4a178b69549d938b9dd823705b2d006bf007a4595bf6f0ecc0c0",
+  "fixtures/author-complex/SPEC.md": "7dfad0c3736c4e91f3e21f5ca4ddcaf02fc53160363f5514d9b05d40c84a0cae",
+  "fixtures/author-complex/tests/test_reconcile.py": "3df6f068e8e09ac4c92bff1cbb9764ab74dbf7c1afe69f5c7d60a9f95f3420c2"
+}

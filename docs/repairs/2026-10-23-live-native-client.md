@@ -54,9 +54,13 @@ appointed a separate writable verification executor without implementation edits
 Source review remained read-only and advisory.
 
 The existing ordinary-Chat trial connectors failed read-only discovery with
-UNAVAILABLE/network_error. The available ChatGPT browser was signed out and the
-operator deferred sign-in. No ordinary-Chat write qualification was granted and
-these native runs do not repair or qualify that external connection. Strict
+UNAVAILABLE/network_error. The signed-out browser observation concerned the
+wrong in-app browser, not the user's existing Chromium. The user reports that
+Chromium is already logged in; available automation failed to attach to that
+session. No ordinary-Chat write qualification was granted and these native runs
+do not repair or qualify that external connection. The complete
+[continuation record](../handoffs/2026-10-23-linux-to-macos/README.md) preserves
+all attempts, results and limits. Strict
 Docker, native macOS, production ingress/deployment, physical durability and the
 full operational acceptance register remain separate gates. Private endpoints,
 credentials, fixtures and raw logs stay outside this public repository.

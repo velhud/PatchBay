@@ -1,0 +1,155 @@
+{
+  "status": "NATIVE_DELIVERY_DEMONSTRATED_CHATGPT_BROWSER_NOT_RUN",
+  "repository": "https://github.com/velhud/PatchBay.git",
+  "product_repair_commit": "1409fd97245b9133f2f86e7e4ff2abad9b187bfa",
+  "handoff_branch": "codex/patchbay-linux-handoff-20261023",
+  "author": {
+    "route": "native primary author plus shipped deterministic Author CLI",
+    "small_protected_tests": 1,
+    "complex_protected_tests": 18,
+    "additional_operator_generated_cases": 100,
+    "unique_rows": 25000,
+    "cleanup": "proven",
+    "backend": "trusted-local",
+    "browser_mcp_writes": "NOT_RUN",
+    "worker_authoring": false
+  },
+  "manager": {
+    "route": "native primary MCP client",
+    "logical_workers": 5,
+    "native_turns": 9,
+    "implementation_overlap_seconds": 35.019,
+    "integrated_protected_tests": 11,
+    "readonly_check_attempt": "4 passed; 7 setup errors; not a pass",
+    "integration": "fresh preview; target-bound decisions; sequential no-commit; retained worktrees",
+    "terminal_cleanup": "no active or unknown final state",
+    "installed_outer_followup": "admitted and completed",
+    "installed_inner_tool_approval_claim": "UNRESOLVED"
+  },
+  "requested_model_selection": {
+    "primary": "gpt-6-sol/xhigh",
+    "workers": "gpt-6-luna/high",
+    "provider_observed_model": null,
+    "ordinary_chatgpt_ui": "NOT_OBSERVED",
+    "pro_requested": false
+  },
+  "browser": {
+    "required": "user existing logged-in Chromium only",
+    "result": "NOT_RUN_ATTACHMENT_FAILED",
+    "wrong_in_app_browser": "wrong target; no inference about Chromium authentication",
+    "cua_chrome": "unavailable",
+    "vm_playwright": "persistent profile already in use",
+    "connected_trial_plugins": "read-only discovery failed twice per route: UNAVAILABLE/mcp_network_error"
+  },
+  "repository_checks": [
+    {
+      "name": "compile",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 0.093
+    },
+    {
+      "name": "full",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 284.456
+    },
+    {
+      "name": "audit",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 2.132
+    },
+    {
+      "name": "author",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 90.931
+    },
+    {
+      "name": "mcp",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 1.18
+    },
+    {
+      "name": "mcp-terminal",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 5.023
+    },
+    {
+      "name": "hub-edge",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 0.862
+    },
+    {
+      "name": "hub-v2",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 14.006
+    },
+    {
+      "name": "restart",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 50.498
+    },
+    {
+      "name": "interface",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 0.331
+    },
+    {
+      "name": "requirements",
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "seconds": 0.031
+    },
+    {
+      "name": "pip-check",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 0.512
+    },
+    {
+      "name": "wheel",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 1.873
+    },
+    {
+      "name": "diff-check",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "seconds": 0.006
+    }
+  ],
+  "full_suite": {
+    "passed": 1692,
+    "skipped": 7
+  },
+  "dedicated_author": {
+    "passed": 401,
+    "skipped": 5
+  },
+  "requirements": {
+    "status": "INCOMPLETE",
+    "NOT_RUN": 52
+  },
+  "superseded_matrix": "interrupted; teardown error retained; NOT_PASS",
+  "handoff_preparation_tests": "NONE",
+  "excluded": [
+    "ordinary ChatGPT client writes and orchestration",
+    "native macOS Author execution",
+    "strict Docker isolation",
+    "production ingress/deployment",
+    "physical durability",
+    "provider model attestation",
+    "all operational research specifications"
+  ],
+  "continuation": "README.md",
+  "private_evidence": "separate sanitized email attachment; originals retained outside repository; credentials and profiles excluded"
+}
